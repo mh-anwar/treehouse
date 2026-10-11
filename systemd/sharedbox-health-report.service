@@ -1,0 +1,12 @@
+[Unit]
+Description=sharedbox health: weekly health + red-team report by email
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-health report --send
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=10
+MemoryMax=1G
+TimeoutStartSec=1h

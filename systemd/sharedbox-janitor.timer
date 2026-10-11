@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the sharedbox janitor every 6 hours
+
+[Timer]
+OnBootSec=30min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

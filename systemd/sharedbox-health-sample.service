@@ -1,0 +1,8 @@
+[Unit]
+Description=sharedbox health: record a metrics sample
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-health sample
+Nice=10
+LogLevelMax=warning

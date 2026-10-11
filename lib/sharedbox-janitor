@@ -1,0 +1,214 @@
+#!/usr/bin/python3 -I
+"""sharedbox-janitor: periodic housekeeping (root).
+
+  sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
+  sharedbox-janitor guard                            make friend processes first in line for the OOM killer
+
+Root only *reads* (du) and decides. Every deletion runs as the friend via setpriv.
+"""
+
+import argparse
+import json
+import os
+import pwd
+import selectors
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+STATE = os.path.join(sb.STATE_DIR, "janitor-state.json")
+PASS_TIMEOUT = 900          # per user; a friend must not stall the whole run
+PASS_MAX_OUT = 4 << 20      # reply cap; root never buffers more than this from a friend
+
+
+def du(path):
+    r = subprocess.run(["du", "-sx", "--block-size=1", path], capture_output=True, text=True)
+    try:
+        return int(r.stdout.split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def user_pass(pw, plan):
+    env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name,
+           "PATH": "/usr/local/bin:/usr/bin:/bin", "XDG_RUNTIME_DIR": f"/run/user/{pw.pw_uid}",
+           "SHAREDBOX_LIB": sb.LIB_DIR, "SHAREDBOX_SHARE": sb.SHARE_DIR,
+           "SHAREDBOX_CONF": sb.CONF_PATH, "SHAREDBOX_STATE": sb.STATE_DIR}
+    p = subprocess.Popen(
+        ["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
+         "--reset-env", "--", sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), "_pass"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env, cwd=pw.pw_dir)
+    out, err = bytearray(), bytearray()
+    deadline = time.monotonic() + PASS_TIMEOUT
+    try:
+        try:
+            p.stdin.write(json.dumps(plan).encode())
+            p.stdin.close()
+        except BrokenPipeError:
+            pass
+        # bounded read of both pipes: the friend controls them (size, and how long they stay open)
+        with selectors.DefaultSelector() as sel:
+            sel.register(p.stdout, selectors.EVENT_READ, out)
+            sel.register(p.stderr, selectors.EVENT_READ, err)
+            while sel.get_map():
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise RuntimeError(f"timed out after {PASS_TIMEOUT}s")
+                for key, _ in sel.select(left):
+                    chunk = os.read(key.fd, 1 << 16)
+                    if not chunk:
+                        sel.unregister(key.fileobj)
+                        continue
+                    key.data.extend(chunk)
+                    if key.data is err:
+                        del err[:-1000]
+                    elif len(out) > PASS_MAX_OUT:
+                        raise RuntimeError(f"reply larger than {PASS_MAX_OUT} bytes")
+        rc = p.wait(timeout=max(1, deadline - time.monotonic()))
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        for f in (p.stdin, p.stdout, p.stderr):
+            f.close()
+    if rc != 0:
+        raise RuntimeError(err.decode(errors="replace"))
+    rep = json.loads(out)
+    if not valid_reply(rep):
+        raise RuntimeError("malformed reply")
+    return rep
+
+
+def _is_int(v):
+    return type(v) is int
+
+
+def _rows(v, required):
+    """List of flat dicts (str/number/bool values) carrying `required` {key: type check}."""
+    return isinstance(v, list) and all(
+        isinstance(d, dict)
+        and all(isinstance(k, str) and isinstance(x, (str, int, float)) for k, x in d.items())
+        and all(chk(d.get(k)) for k, chk in required.items())
+        for d in v)
+
+
+def valid_reply(rep):
+    """The reply comes from code running as the friend: check every field root uses."""
+    is_str = lambda v: isinstance(v, str)  # noqa: E731
+    return (isinstance(rep, dict) and _is_int(rep.get("freed")) and rep["freed"] >= 0
+            and _rows(rep.get("deleted"), {"path": is_str, "reason": is_str, "bytes": _is_int})
+            and _rows(rep.get("projects"), {"name": is_str})
+            and _rows(rep.get("services", []), {"name": is_str, "state": is_str}))
+
+
+def cmd_run(cfg, a):
+    reg = sb.registry()
+    users = sb.friend_users(reg)
+    state = sb.read_json(STATE, {}) or {}
+    now = int(time.time())
+    box = sb.box_load()
+    free_pct = 100 * box["disk_free"] / box["disk_total"]
+    low = free_pct < float(cfg["DISK_LOW_FREE_PCT"])
+    critical = free_pct < float(cfg["DISK_CRITICAL_FREE_PCT"])
+    scale = 0.5 if low else 1.0
+    grace = 0 if critical else sb.cfg_int(cfg, "OVER_BUDGET_GRACE_HOURS") * 3600
+    if low:
+        sb.log_event("disk_pressure", None, free_pct=round(free_pct, 1), critical=critical)
+
+    usage_out = {"generated": now, "free_pct": round(free_pct, 1), "users": {}}
+    prev = sb.read_json(sb.USAGE, {}) or {}
+    for name, rec in sorted(users.items()):
+        if a.user and name != a.user:
+            usage_out["users"][name] = prev.get("users", {}).get(name, {})
+            continue
+        try:
+            pw = pwd.getpwnam(name)
+            lim = sb.user_limits(cfg, rec)
+            budget = int(float(lim["DISK_BUDGET_GB"]) * (1 << 30))
+            used = du(pw.pw_dir) or 0
+            st = state.setdefault(name, {})
+            over = used > budget
+            if over and not st.get("over_since"):
+                st["over_since"] = now
+                sb.log_event("over_budget", name, used=used, budget=budget)
+            elif not over:
+                st.pop("over_since", None)
+            deadline = st["over_since"] + grace if over else None
+            plan = {
+                "usage": used, "budget": budget, "over": over, "over_deadline": deadline,
+                "over_budget_delete": bool(over and now >= deadline),
+                "force_caches": critical,
+                "project_ttl_days": sb.cfg_int(cfg, "PROJECT_TTL_DAYS") * scale,
+                "artifact_ttl_days": sb.cfg_int(cfg, "ARTIFACT_TTL_DAYS") * scale,
+                "cache_ttl_days": sb.cfg_int(cfg, "CACHE_TTL_DAYS") * scale,
+                "tmp_ttl_days": sb.cfg_int(cfg, "TMP_TTL_DAYS"),
+                "warn_days": sb.cfg_int(cfg, "WARN_DAYS"),
+                "dry_run": a.dry_run, "box": box,
+            }
+            rep = user_pass(pw, plan)
+            if rep["freed"]:
+                used = max(0, used - rep["freed"]) if not a.dry_run else used
+            for d in rep["deleted"]:
+                if a.dry_run:
+                    print(f"{name}: would delete {sb.human(d['bytes']):>8} {sb.printable(d['path'])}  "
+                          f"({sb.printable(d['reason'])})")
+                elif d["bytes"] > 50 << 20 or "project" in d["reason"]:
+                    sb.log_event("deleted", name, path=d["path"], bytes=d["bytes"], reason=d["reason"])
+            usage_out["users"][name] = {
+                "disk": used, "budget": budget, "over": over, "over_deadline": deadline,
+                "projects": len(rep["projects"]),
+                "pending_deletions": [p["name"] for p in rep["projects"] if p.get("delete_on")],
+                "services": rep.get("services", []), "freed": rep["freed"],
+            }
+        except Exception as e:  # one broken home (or hostile reply) must not stop the others
+            # events.jsonl is world-readable: keep the friend-controlled error text in the journal only
+            sb.log_event("janitor_error", name, error=type(e).__name__)
+            print(f"{name}: error: {str(e)[-1000:]!r}", file=sys.stderr)
+    if not a.dry_run:
+        sb.write_json(STATE, state, mode=0o600)
+        sb.write_json(sb.USAGE, usage_out, mode=0o644)
+    else:
+        print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "services"}
+                          for k, v in usage_out["users"].items()}, indent=2))
+
+
+def cmd_guard(cfg, a):
+    adj = sb.cfg_int(cfg, "OOM_SCORE_ADJ")
+    lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            uid = os.stat(f"/proc/{pid}").st_uid
+            if not lo <= uid <= hi:
+                continue
+            path = f"/proc/{pid}/oom_score_adj"
+            with open(path) as f:
+                cur = int(f.read())
+            if cur < adj:
+                with open(path, "w") as f:
+                    f.write(str(adj))
+        except (OSError, ValueError):
+            pass
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-janitor: must run as root")
+    cfg = sb.load_config()
+    p = argparse.ArgumentParser(prog="sharedbox-janitor", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    x = s.add_parser("run"); x.add_argument("--dry-run", action="store_true")
+    x.add_argument("--user"); x.set_defaults(fn=cmd_run)
+    s.add_parser("guard").set_defaults(fn=cmd_guard)
+    a = p.parse_args()
+    a.fn(cfg, a)
+
+
+if __name__ == "__main__":
+    main()

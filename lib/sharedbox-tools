@@ -1,0 +1,348 @@
+#!/usr/bin/python3 -I
+"""sharedbox-tools: system-wide toolchain for friends and their agents (root).
+
+  sharedbox-tools install [--dry-run]    install everything enabled in sharedbox.conf
+  sharedbox-tools update                 update npm-installed agents (+ uv); apt is left to unattended-upgrades
+  sharedbox-tools add apt|npm NAME...    install extra packages and remember them (e.g. for `box request`s)
+  sharedbox-tools remove apt|npm NAME... uninstall packages (also remove them from TOOLS_* in sharedbox.conf)
+  sharedbox-tools status                 installed versions (also written to /var/lib/sharedbox/tools.json)
+
+Only installs packages. It never upgrades the whole system, restarts services, or touches the network config.
+"""
+
+import argparse
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import zipfile
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+TOOLS_JSON = os.path.join(sb.STATE_DIR, "tools.json")
+EXTRA = "/etc/sharedbox/tools.local"   # lines: "apt NAME" / "npm NAME@VERSION" (pinned at `add`)
+ANDROID_REPO = "https://dl.google.com/android/repository/"
+NPM_PREFIX = "/usr/local"
+# registry packages only (no git/url/file specs), optional version
+NPM_SPEC = re.compile(r"(@[a-zA-Z0-9][\w.-]*/)?[a-zA-Z0-9][\w.-]*(@[\w.-]+)?")
+
+# binary -> how to show it to users
+KNOWN = [
+    ("claude", "Claude Code"), ("codex", "OpenAI Codex"), ("gemini", "Gemini CLI"),
+    ("opencode", "opencode"), ("node", "Node.js"), ("npm", "npm"), ("python3", "Python"),
+    ("uv", "uv"), ("pipx", "pipx"), ("git", "git"), ("gh", "GitHub CLI"), ("tmux", "tmux"),
+    ("rg", "ripgrep"), ("fdfind", "fd"), ("jq", "jq"), ("sqlite3", "sqlite3"), ("gcc", "gcc"),
+    ("make", "make"), ("java", "Java"), ("go", "Go"), ("rustup", "rustup"),
+    ("sdkmanager", "Android SDK"), ("xvfb-run", "Xvfb"),
+]
+
+
+def log(msg):
+    print(f"==> {msg}", flush=True)
+
+
+def run(cmd, dry, env=None, check=True):
+    if dry:
+        print("    would run: " + " ".join(cmd))
+        return 0
+    return subprocess.run(cmd, check=check, env=env).returncode
+
+
+def words(cfg, key):
+    return cfg.get(key, "").split()
+
+
+def extras(kind):
+    try:
+        with open(EXTRA) as f:
+            return [l.split()[1] for l in f if l.startswith(kind + " ") and len(l.split()) == 2]
+    except FileNotFoundError:
+        return []
+
+
+# ---------- apt ----------
+
+def apt_available(pkgs):
+    ok = []
+    for p in pkgs:
+        r = subprocess.run(["apt-cache", "show", "--no-all-versions", p],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            ok.append(p)
+        else:
+            print(f"    skipping {p}: not available in apt", file=sys.stderr)
+    return ok
+
+
+def apt_install(pkgs, dry):
+    pkgs = apt_available(pkgs)
+    if not pkgs:
+        return
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
+    run(["apt-get", "install", "-y", "--no-install-recommends",
+         "-o", "Dpkg::Options::=--force-confold"] + pkgs, dry, env=env)
+
+
+# ---------- npm agents ----------
+
+def npm_install(pkgs, dry, latest=False, scripts=True):
+    """scripts=False for extras: requested by friends, so no install scripts run as root."""
+    if not pkgs:
+        return
+    if not shutil.which("npm") and not dry:
+        print("    npm missing; skipping npm packages", file=sys.stderr)
+        return
+    spec = [p + "@latest" if latest and "@" not in p[1:] else p for p in pkgs]
+    run(["npm", "install", "-g", "--prefix", NPM_PREFIX, "--no-fund", "--no-audit"]
+        + ([] if scripts else ["--ignore-scripts"]) + spec, dry, check=False)
+
+
+def npm_name(spec):
+    """'@scope/pkg@1.2' -> '@scope/pkg'"""
+    i = spec.find("@", 1)
+    return spec if i < 0 else spec[:i]
+
+
+def npm_installed(name):
+    pj = os.path.join(NPM_PREFIX, "lib", "node_modules", name, "package.json")
+    v = (sb.read_json(pj, {}) or {}).get("version")
+    return v if isinstance(v, str) and re.fullmatch(r"[\w.+-]+", v) else None
+
+
+def npm_extras_pinned():
+    """Extras as name@version. Unpinned legacy lines are pinned to what is installed now;
+    if it isn't installed they are skipped, never pulled at @latest."""
+    out = []
+    for spec in extras("npm"):
+        if "@" in spec[1:]:
+            out.append(spec)
+        elif npm_installed(spec):
+            out.append(f"{spec}@{npm_installed(spec)}")
+        else:
+            print(f"    skipping npm extra {spec}: no pinned version; re-add it with "
+                  "`sharedbox-tools add npm NAME`", file=sys.stderr)
+    return out
+
+
+# ---------- uv ----------
+
+def uv_install(dry):
+    if dry:
+        print("    would install uv + uvx into /usr/local/bin (astral.sh installer)")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        script = os.path.join(d, "install.sh")
+        urllib.request.urlretrieve("https://astral.sh/uv/install.sh", script)
+        env = dict(os.environ, UV_UNMANAGED_INSTALL="/usr/local/bin", INSTALLER_NO_MODIFY_PATH="1")
+        r = subprocess.run(["sh", script], env=env, check=False)
+    if r.returncode != 0 or not os.path.exists("/usr/local/bin/uv"):
+        print("    warning: uv install failed. Users can still use pipx; retry with "
+              "`sudo sharedbox-tools install`", file=sys.stderr)
+
+
+# ---------- android ----------
+
+def android_install(cfg, dry):
+    root = cfg.get("ANDROID_SDK_ROOT", "/opt/android-sdk")
+    log(f"Android SDK in {root} (accepting the Android SDK license on the owner's behalf)")
+    if dry:
+        print("    would download cmdline-tools, then sdkmanager platform-tools, platforms, build-tools")
+        return
+    xml = urllib.request.urlopen(ANDROID_REPO + "repository2-3.xml", timeout=60).read().decode()
+    blk = re.search(r'<remotePackage path="cmdline-tools;latest">(.*?)</remotePackage>', xml, re.S)
+    if not blk:
+        sys.exit("could not find cmdline-tools in the Android repository index")
+    arch = None
+    for a in re.findall(r"<archive>(.*?)</archive>", blk.group(1), re.S):
+        if "<host-os>linux</host-os>" in a:
+            arch = a
+    if not arch:
+        sys.exit("no linux cmdline-tools archive found")
+    url = re.search(r"<url>([^<]+)</url>", arch).group(1)
+    sha1 = re.search(r'<checksum type="sha1">([0-9a-f]+)</checksum>', arch).group(1)
+
+    sdkm = os.path.join(root, "cmdline-tools", "latest", "bin", "sdkmanager")
+    if not os.path.exists(sdkm):
+        with tempfile.TemporaryDirectory() as d:
+            z = os.path.join(d, "tools.zip")
+            urllib.request.urlretrieve(ANDROID_REPO + url, z)
+            h = hashlib.sha1()
+            with open(z, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != sha1:
+                sys.exit("cmdline-tools checksum mismatch; aborting")
+            with zipfile.ZipFile(z) as zf:
+                zf.extractall(d)
+            os.makedirs(os.path.join(root, "cmdline-tools"), exist_ok=True)
+            shutil.move(os.path.join(d, "cmdline-tools"), os.path.join(root, "cmdline-tools", "latest"))
+        for dp, _, fs in os.walk(os.path.join(root, "cmdline-tools", "latest", "bin")):
+            for fn in fs:
+                os.chmod(os.path.join(dp, fn), 0o755)
+
+    platforms = sorted({int(x) for x in re.findall(r'path="platforms;android-(\d+)"', xml)})
+    btools = sorted(set(re.findall(r'path="build-tools;(\d+\.\d+\.\d+)"', xml)),
+                    key=lambda v: tuple(map(int, v.split("."))))
+    n_plat = sb.cfg_int(cfg, "ANDROID_PLATFORMS") if "ANDROID_PLATFORMS" in cfg else 3
+    want = (["platform-tools"] + [f"platforms;android-{p}" for p in platforms[-n_plat:]]
+            + [f"build-tools;{b}" for b in btools[-2:]])
+    env = dict(os.environ, ANDROID_HOME=root, ANDROID_SDK_ROOT=root)
+    subprocess.run([sdkm, f"--sdk_root={root}", "--licenses"], input="y\n" * 50, text=True,
+                   env=env, stdout=subprocess.DEVNULL, check=False)
+    subprocess.run([sdkm, f"--sdk_root={root}", "--install"] + want, env=env, check=False)
+    subprocess.run(["chmod", "-R", "a+rX", root], check=False)
+
+
+# ---------- status ----------
+
+def versions():
+    out = {}
+    for binary, label in KNOWN:
+        path = shutil.which(binary, path="/usr/local/bin:/usr/bin:/bin:"
+                            "/opt/android-sdk/cmdline-tools/latest/bin")
+        if not path:
+            continue
+        flag = {"java": "-version", "go": "version", "tmux": "-V"}.get(binary, "--version")
+        try:
+            r = subprocess.run([path, flag], capture_output=True, text=True, timeout=20,
+                               env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/nonexistent",
+                                    "DISABLE_AUTOUPDATER": "1", "NO_COLOR": "1"})
+            text = (r.stdout or r.stderr).strip()
+        except (OSError, subprocess.TimeoutExpired):
+            text = ""
+        m = re.search(r"\d+\.\d+(\.\d+)?", text)
+        out[binary] = {"label": label, "version": m.group(0) if m else "installed", "path": path}
+    return out
+
+
+def write_status():
+    v = versions()
+    sb.write_json(TOOLS_JSON, {"updated": int(time.time()), "tools": v}, mode=0o644)
+    return v
+
+
+# ---------- commands ----------
+
+def cmd_install(cfg, a):
+    dry = a.dry_run
+    pkgs = words(cfg, "TOOLS_APT") + extras("apt")
+    if cfg.get("TOOLS_BROWSER_DEPS", "1") == "1":
+        pkgs += words(cfg, "TOOLS_APT_BROWSER")
+    if cfg.get("TOOLS_ANDROID", "0") == "1":
+        pkgs += ["openjdk-21-jdk-headless"]
+    log("apt packages")
+    apt_install(sorted(set(pkgs)), dry)
+    log("agents (npm, into /usr/local)")
+    npm_install(words(cfg, "TOOLS_NPM"), dry)
+    npm_install(npm_extras_pinned(), dry, scripts=False)
+    if cfg.get("TOOLS_UV", "1") == "1" and (dry or not shutil.which("uv")):
+        log("uv")
+        uv_install(dry)
+    if cfg.get("TOOLS_ANDROID", "0") == "1":
+        android_install(cfg, dry)
+    if not dry:
+        for k, v in sorted(write_status().items()):
+            print(f"    {v['label']:<14} {v['version']}")
+
+
+def cmd_update(cfg, a):
+    npm_install(words(cfg, "TOOLS_NPM"), False, latest=True)   # owner-configured: latest, with scripts
+    npm_install(npm_extras_pinned(), False, scripts=False)     # extras stay at the approved version
+    if shutil.which("uv") and os.path.dirname(shutil.which("uv")) == "/usr/local/bin":
+        uv_install(False)
+    write_status()
+    sb.log_event("tools_updated", None)
+
+
+def cmd_add(cfg, a):
+    for n in a.names:
+        if not re.fullmatch(r"[@a-zA-Z0-9._/+-]+", n) or (a.kind == "npm" and not NPM_SPEC.fullmatch(n)):
+            sys.exit(f"bad package name: {n}")
+    names = a.names
+    if a.kind == "apt":
+        apt_install(names, False)
+    else:
+        npm_install(names, False, scripts=False)
+        # pin what was approved; `update` reinstalls exactly this version
+        names = []
+        for n in a.names:
+            v = npm_installed(npm_name(n))
+            if v:
+                names.append(f"{npm_name(n)}@{v}")
+            else:
+                print(f"    {n} did not install; not recorded", file=sys.stderr)
+    try:
+        with open(EXTRA) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        lines = []
+    key = npm_name if a.kind == "npm" else (lambda n: n)
+    new = {key(n) for n in names}
+    keep = [l for l in lines if not (len(l.split()) == 2 and l.split()[0] == a.kind
+                                     and key(l.split()[1]) in new)]
+    with open(EXTRA, "w") as f:
+        f.writelines(keep + [f"{a.kind} {n}\n" for n in names])
+    write_status()
+    sb.log_event("tools_added", None, packages=" ".join(a.names))
+
+
+def cmd_remove(cfg, a):
+    for n in a.names:
+        if not re.fullmatch(r"[@a-zA-Z0-9._/+-]+", n):
+            sys.exit(f"bad package name: {n}")
+    key = npm_name if a.kind == "npm" else (lambda n: n)
+    if a.kind == "npm":
+        run(["npm", "uninstall", "-g", "--prefix", NPM_PREFIX] + [key(n) for n in a.names],
+            False, check=False)
+    else:
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
+        run(["apt-get", "remove", "-y"] + a.names, False, env=env, check=False)
+    gone = {key(n) for n in a.names}
+    try:
+        with open(EXTRA) as f:
+            keep = [l for l in f if not (len(l.split()) == 2 and l.split()[0] == a.kind
+                                         and key(l.split()[1]) in gone)]
+        with open(EXTRA, "w") as f:
+            f.writelines(keep)
+    except FileNotFoundError:
+        pass
+    listed = [n for n in a.names if n in words(cfg, "TOOLS_NPM" if a.kind == "npm" else "TOOLS_APT")]
+    if listed:
+        print(f"note: {' '.join(listed)} is still listed in {sb.CONF_PATH}; remove it there "
+              "or the next install/update will bring it back", file=sys.stderr)
+    write_status()
+    sb.log_event("tools_removed", None, packages=" ".join(a.names))
+
+
+def cmd_status(cfg, a):
+    for k, v in sorted(write_status().items()):
+        print(f"{v['label']:<14} {v['version']:<12} {v['path']}")
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-tools: must run as root")
+    cfg = sb.load_config()
+    p = argparse.ArgumentParser(prog="sharedbox-tools", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    x = s.add_parser("install"); x.add_argument("--dry-run", action="store_true")
+    x.set_defaults(fn=cmd_install)
+    s.add_parser("update").set_defaults(fn=cmd_update)
+    x = s.add_parser("add"); x.add_argument("kind", choices=["apt", "npm"])
+    x.add_argument("names", nargs="+"); x.set_defaults(fn=cmd_add)
+    x = s.add_parser("remove"); x.add_argument("kind", choices=["apt", "npm"])
+    x.add_argument("names", nargs="+"); x.set_defaults(fn=cmd_remove)
+    s.add_parser("status").set_defaults(fn=cmd_status)
+    a = p.parse_args()
+    a.fn(cfg, a)
+
+
+if __name__ == "__main__":
+    main()

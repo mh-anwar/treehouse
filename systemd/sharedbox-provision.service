@@ -1,0 +1,6 @@
+[Unit]
+Description=sharedbox: process join requests
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-admin process-spool

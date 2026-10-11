@@ -1,0 +1,10 @@
+[Unit]
+Description=sharedbox health: email about urgent problems (disk, failed services, security, tripwires)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-health check --send
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min

@@ -1,0 +1,12 @@
+[Unit]
+Description=sharedbox janitor: measure disk usage, clean up, publish notices
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-janitor run
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+TimeoutStartSec=2h
+# bounds root + every friend pass it spawns (they run in this cgroup)
+MemoryMax=1G

@@ -1,0 +1,8 @@
+[Unit]
+Description=sharedbox: watch for join requests
+
+[Path]
+PathExistsGlob=/var/lib/sharedbox/spool/req-*.json
+
+[Install]
+WantedBy=multi-user.target

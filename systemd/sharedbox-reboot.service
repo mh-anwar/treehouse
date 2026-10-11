@@ -1,0 +1,8 @@
+[Unit]
+Description=sharedbox: scheduled weekly reboot (clears memory leaks and processes on old libraries)
+
+[Service]
+Type=oneshot
+# never reboot a box that just came up (e.g. an update reboot a few minutes earlier)
+ExecCondition=/bin/sh -c 'test "$(cut -d. -f1 /proc/uptime)" -gt 3600'
+ExecStart=/sbin/shutdown -r +5 "sharedbox: scheduled reboot in 5 minutes. Services from box serve come back by themselves."

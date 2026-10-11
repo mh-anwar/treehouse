@@ -1,0 +1,465 @@
+#!/usr/bin/python3 -I
+"""sharedbox-admin: root-only management of friend accounts.
+
+  sharedbox-admin list
+  sharedbox-admin add USER --key 'ssh-ed25519 AAAA...' [--login someone@example.com]
+  sharedbox-admin pending | approve ID | deny ID
+  sharedbox-admin limits USER [KEY=VALUE ...]     e.g. MEMORY_MAX=8G CPU_QUOTA=400% DISK_BUDGET_GB=40
+  sharedbox-admin suspend USER | resume USER
+  sharedbox-admin kill USER                       stop every process the user has (account stays)
+  sharedbox-admin remove USER [--archive]
+  sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
+  sharedbox-admin reapply                         rewrite every friend's limit drop-ins
+  sharedbox-admin process-spool                   (run by sharedbox-provision.service)
+
+Never touches admin accounts, sshd, tailscaled, networking or the firewall.
+"""
+
+import argparse
+import glob
+import grp
+import json
+import os
+import pwd
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+SYSTEMD_DIR = "/etc/systemd/system"
+MANAGED_PROPS = {
+    "CPU_QUOTA": "CPUQuota",
+    "CPU_WEIGHT": "CPUWeight",
+    "IO_WEIGHT": "IOWeight",
+    "MEMORY_HIGH": "MemoryHigh",
+    "MEMORY_MAX": "MemoryMax",
+    "MEMORY_SWAP_MAX": "MemorySwapMax",
+    "TASKS_MAX": "TasksMax",
+}
+
+
+def die(msg, code=1):
+    print(f"sharedbox-admin: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def run(cmd, check=True, **kw):
+    return subprocess.run(cmd, check=check, **kw)
+
+
+def as_user(pw, cmd, input_text=None):
+    """Run cmd as the friend (never write into a friend's home as root)."""
+    env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name,
+           "PATH": "/usr/local/bin:/usr/bin:/bin",
+           "XDG_RUNTIME_DIR": f"/run/user/{pw.pw_uid}",
+           "SHAREDBOX_LIB": sb.LIB_DIR, "SHAREDBOX_SHARE": sb.SHARE_DIR,
+           "SHAREDBOX_CONF": sb.CONF_PATH, "SHAREDBOX_STATE": sb.STATE_DIR}
+    return subprocess.run(
+        ["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
+         "--reset-env", "--"] + cmd,
+        input=input_text, text=True, capture_output=True, env=env, cwd=pw.pw_dir)
+
+
+def daemon_reload():
+    run(["systemctl", "daemon-reload"])
+
+
+# ---------- limits ----------
+
+def write_dropins(cfg, name, rec, uid):
+    lim = sb.user_limits(cfg, rec)
+    lines = ["# managed by sharedbox — edit with: sharedbox-admin limits " + name, "[Slice]"]
+    for key, prop in MANAGED_PROPS.items():
+        if lim.get(key):
+            lines.append(f"{prop}={lim[key]}")
+    d = os.path.join(SYSTEMD_DIR, f"user-{uid}.slice.d")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    # user manager (and so the friend's long-running services) is first in line for the OOM killer
+    d = os.path.join(SYSTEMD_DIR, f"user@{uid}.service.d")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
+        f.write("# managed by sharedbox\n[Service]\n"
+                f"OOMScoreAdjust={cfg['OOM_SCORE_ADJ']}\n")
+
+
+def remove_dropins(uid):
+    for d in (f"user-{uid}.slice.d", f"user@{uid}.service.d"):
+        p = os.path.join(SYSTEMD_DIR, d, "60-sharedbox.conf")
+        if os.path.exists(p):
+            os.unlink(p)
+        try:
+            os.rmdir(os.path.join(SYSTEMD_DIR, d))
+        except OSError:
+            pass
+
+
+# ---------- registry ----------
+
+def save_registry(reg):
+    sb.write_json(sb.REGISTRY, reg, mode=0o644)
+
+
+def require_friend(name):
+    reg = sb.registry()
+    if name not in reg["users"]:
+        die(f"{name} is not a sharedbox user")
+    return reg, reg["users"][name]
+
+
+def next_uid(cfg):
+    lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
+    used = {p.pw_uid for p in pwd.getpwall()} | {g.gr_gid for g in grp.getgrall()}
+    for uid in range(lo, hi + 1):
+        if uid not in used:
+            return uid
+    raise RuntimeError("no free uid in friend range")
+
+
+# ---------- create ----------
+
+def create_user(cfg, name, key, login=None, ts_id=None, node=None):
+    """Create a friend account. Returns (record, error)."""
+    err = sb.validate_username(name, cfg)
+    if err:
+        return None, err
+    key, err = sb.validate_pubkey(key)
+    if err:
+        return None, err
+    reg = sb.registry()
+    if ts_id and any(r.get("ts_id") == ts_id for r in reg["users"].values()):
+        return None, "this Tailscale account already has a user on this box"
+    if len(reg["users"]) >= sb.cfg_int(cfg, "MAX_USERS"):
+        return None, "the box is full (MAX_USERS reached) — ask the admin"
+
+    uid = next_uid(cfg)
+    gecos = f"sharedbox {login or ''}".strip()
+    run(["useradd", "--create-home", "--uid", str(uid), "--user-group",
+         "--groups", cfg["FRIENDS_GROUP"], "--shell", "/bin/bash",
+         "--comment", gecos, "-K", "HOME_MODE=0700", name])
+    run(["usermod", "-p", "*", name])  # no password; key-only login
+    pw = pwd.getpwnam(name)
+    lo, hi = sb.port_range(cfg, uid)
+
+    # home layout + key, written as the user
+    r = as_user(pw, [sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), "_init-home"],
+                 input_text=key + "\n")
+    if r.returncode != 0:
+        run(["userdel", "-r", name], check=False)
+        return None, "failed to initialise home: " + (r.stderr or r.stdout)[-500:]
+
+    rec = {"login": login, "ts_id": ts_id, "node": node, "created": int(time.time()),
+           "status": "active", "limits": {}, "uid": uid}
+    reg["users"][name] = rec
+    save_registry(reg)
+
+    write_dropins(cfg, name, rec, uid)
+    daemon_reload()
+    run(["loginctl", "enable-linger", name], check=False)
+    # last step: grant ssh access
+    run(["gpasswd", "-a", name, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
+    sb.log_event("user_created", name, login=login, ports=f"{lo}-{hi}")
+    return rec, None
+
+
+# ---------- spool (join requests from the web service) ----------
+
+def read_untrusted(path, uid, limit=64 << 10):
+    """Read a small regular file owned by `uid` from a directory others can write.
+
+    No symlinks (O_NOFOLLOW), no FIFOs/devices (O_NONBLOCK + S_ISREG), no hardlinks to
+    someone else's file (owner + link count checked on the opened fd). None if anything is off.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_nlink != 1:
+            return None
+        return f.read(limit + 1)[:limit].decode(errors="replace")
+
+
+def process_spool(cfg):
+    svc = pwd.getpwnam(cfg["SERVICE_USER"])
+    for path in sorted(glob.glob(os.path.join(sb.SPOOL, "req-*.json"))):
+        rid = os.path.basename(path)[4:-5]
+        raw = read_untrusted(path, svc.pw_uid)
+        try:
+            os.unlink(path)  # unlink never follows symlinks
+        except FileNotFoundError:
+            continue
+        if not (rid.isascii() and rid.isalnum() and len(rid) <= 64) or raw is None:
+            continue
+        try:
+            req = json.loads(raw)
+            if not isinstance(req, dict):
+                raise ValueError("not an object")
+            result = handle_join(cfg, rid, req)
+        except Exception as e:  # one bad request must not wedge the path unit
+            print(f"request {rid}: {e!r}", file=sys.stderr)
+            result = {"ok": False, "error": "internal error; ask the owner"}
+        sb.write_json(os.path.join(sb.SPOOL, f"res-{rid}.json"), result, mode=0o640,
+                      owner=(0, svc.pw_gid))
+    # results nobody collected
+    for path in glob.glob(os.path.join(sb.SPOOL, "res-*.json")):
+        try:
+            if time.time() - os.lstat(path).st_mtime > 3600:
+                os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def handle_join(cfg, rid, req):
+    ip = str(req.get("ip", ""))
+    who = sb.tailscale_whois(ip) if ip else None
+    # re-verify identity ourselves rather than trusting the web process
+    if not who or who["id"] != str(req.get("ts_id")):
+        return {"ok": False, "error": "could not verify your Tailscale identity"}
+    if ip == sb.tailscale_ip4():
+        return {"ok": False, "error": "requests from the box itself are not allowed"}
+    mode = cfg["JOIN_MODE"]
+    if mode == "closed":
+        return {"ok": False, "error": "signups are closed"}
+    name = str(req.get("username", ""))
+    err = sb.validate_username(name, cfg)
+    key, kerr = sb.validate_pubkey(str(req.get("key", "")))
+    if err or kerr:
+        return {"ok": False, "error": err or kerr}
+    if mode == "approve":
+        os.makedirs(sb.PENDING, mode=0o700, exist_ok=True)
+        if any((sb.read_json(p, {}) or {}).get("ts_id") == who["id"]
+               for p in glob.glob(os.path.join(sb.PENDING, "*.json"))):
+            return {"ok": True, "pending": True}
+        sb.write_json(os.path.join(sb.PENDING, f"{rid}.json"),
+                      {"username": name, "key": key, "login": who["login"],
+                       "ts_id": who["id"], "node": who["node"], "ts": int(time.time())},
+                      mode=0o600)
+        sb.log_event("join_pending", name, login=who["login"])
+        return {"ok": True, "pending": True}
+    rec, err = create_user(cfg, name, key, who["login"], who["id"], who["node"])
+    if err:
+        return {"ok": False, "error": err}
+    lo, hi = sb.port_range(cfg, rec["uid"])
+    return {"ok": True, "username": name, "ports": [lo, hi]}
+
+
+# ---------- commands ----------
+
+def cmd_list(cfg, a):
+    users = sb.friend_users()
+    usage = (sb.read_json(sb.USAGE, {}) or {}).get("users", {})
+    print(f"{'USER':<16}{'UID':<6}{'STATUS':<11}{'DISK':>8}  {'PORTS':<12} LOGIN")
+    for name, r in sorted(users.items()):
+        lo, hi = sb.port_range(cfg, r["uid"])
+        d = usage.get(name, {}).get("disk")
+        print(f"{name:<16}{r['uid']:<6}{r.get('status', '?'):<11}{sb.human(d) if d else '-':>8}  "
+              f"{lo}-{hi:<6} {sb.printable(r.get('login') or '')}")
+
+
+def cmd_add(cfg, a):
+    rec, err = create_user(cfg, a.user, a.key, a.login)
+    if err:
+        die(err)
+    lo, hi = sb.port_range(cfg, rec["uid"])
+    print(f"created {a.user} (uid {rec['uid']}, ports {lo}-{hi})")
+
+
+def cmd_pending(cfg, a):
+    for p in sorted(glob.glob(os.path.join(sb.PENDING, "*.json"))):
+        r = sb.read_json(p, {})
+        print(f"{os.path.basename(p)[:-5]}  {r['username']:<16} {sb.printable(r['login'])}  "
+              f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))}")
+
+
+def cmd_approve(cfg, a):
+    p = os.path.join(sb.PENDING, f"{a.id}.json")
+    r = sb.read_json(p)
+    if not r:
+        die("no such pending request")
+    rec, err = create_user(cfg, r["username"], r["key"], r["login"], r["ts_id"], r["node"])
+    if err:
+        die(err)
+    os.unlink(p)
+    print(f"approved {r['username']}")
+
+
+def cmd_deny(cfg, a):
+    p = os.path.join(sb.PENDING, f"{a.id}.json")
+    if not os.path.exists(p):
+        die("no such pending request")
+    os.unlink(p)
+    print("denied")
+
+
+def cmd_limits(cfg, a):
+    reg, rec = require_friend(a.user)
+    if not a.settings:
+        print(json.dumps(sb.user_limits(cfg, rec), indent=2))
+        return
+    allowed = set(MANAGED_PROPS) | {"DISK_BUDGET_GB"}
+    for s in a.settings:
+        k, _, v = s.partition("=")
+        if k not in allowed:
+            die(f"unknown limit {k}; allowed: {', '.join(sorted(allowed))}")
+        if v in ("", "default"):
+            rec["limits"].pop(k, None)
+        else:
+            rec["limits"][k] = v
+    save_registry(reg)
+    write_dropins(cfg, a.user, rec, pwd.getpwnam(a.user).pw_uid)
+    daemon_reload()
+    sb.log_event("limits_changed", a.user, limits=rec["limits"])
+    print(json.dumps(sb.user_limits(cfg, rec), indent=2))
+
+
+def kill_stragglers(name):
+    """Processes outside the user's slice (cron/at sessions have no pam_systemd) survive a
+    slice stop; kill everything the uid still runs. Repeat to catch forks in flight."""
+    for _ in range(5):
+        if run(["pkill", "-KILL", "-u", name], check=False).returncode == 1:  # 1 = none left
+            return
+        time.sleep(0.2)
+
+
+def stop_everything(name):
+    uid = pwd.getpwnam(name).pw_uid
+    run(["loginctl", "disable-linger", name], check=False)
+    run(["systemctl", "stop", f"user-{uid}.slice"], check=False)
+    kill_stragglers(name)
+
+
+def cmd_suspend(cfg, a):
+    reg, rec = require_friend(a.user)
+    run(["gpasswd", "-d", a.user, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
+    # an expired account fails PAM's account phase, so cron/at stop starting jobs for it too
+    run(["usermod", "--expiredate", "1", a.user], check=False)
+    stop_everything(a.user)
+    rec["status"] = "suspended"
+    save_registry(reg)
+    sb.log_event("user_suspended", a.user)
+    print(f"suspended {a.user}: ssh access removed, processes stopped, files kept")
+
+
+def cmd_resume(cfg, a):
+    reg, rec = require_friend(a.user)
+    run(["usermod", "--expiredate", "", a.user], check=False)
+    run(["loginctl", "enable-linger", a.user], check=False)
+    run(["gpasswd", "-a", a.user, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
+    rec["status"] = "active"
+    save_registry(reg)
+    sb.log_event("user_resumed", a.user)
+    print(f"resumed {a.user}")
+
+
+def cmd_kill(cfg, a):
+    require_friend(a.user)
+    uid = pwd.getpwnam(a.user).pw_uid
+    run(["systemctl", "stop", f"user-{uid}.slice"], check=False)
+    kill_stragglers(a.user)
+    if sb.registry()["users"][a.user].get("status") == "active":
+        run(["systemctl", "start", f"user@{uid}.service"], check=False)  # bring their services back
+    sb.log_event("user_killed", a.user)
+    print(f"stopped all processes of {a.user}; their enabled services restart via linger")
+
+
+def cmd_remove(cfg, a):
+    reg, rec = require_friend(a.user)
+    pw = pwd.getpwnam(a.user)
+    run(["gpasswd", "-d", a.user, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
+    stop_everything(a.user)
+    if a.archive:
+        dest = os.path.join(sb.STATE_DIR, "archive")
+        os.makedirs(dest, mode=0o700, exist_ok=True)
+        out = os.path.join(dest, f"{a.user}-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz")
+        run(["tar", "--one-file-system", "-czf", out, "-C", os.path.dirname(pw.pw_dir),
+             os.path.basename(pw.pw_dir)], check=False)
+        print(f"archived to {out}")
+    run(["crontab", "-r", "-u", a.user], check=False, stderr=subprocess.DEVNULL)
+    kill_stragglers(a.user)
+    r = run(["userdel", "-r", a.user], check=False, capture_output=True, text=True)
+    if r.returncode != 0:
+        try:
+            pwd.getpwnam(a.user)
+        except KeyError:  # account is gone, only the home/mail cleanup failed (e.g. exit 12)
+            print(f"warning: userdel: {r.stderr.strip()}; check {pw.pw_dir}", file=sys.stderr)
+        else:
+            die(f"userdel failed ({r.returncode}): {r.stderr.strip()}; registry and limits left as they were")
+    remove_dropins(pw.pw_uid)
+    daemon_reload()
+    del reg["users"][a.user]
+    save_registry(reg)
+    sb.log_event("user_removed", a.user)
+    print(f"removed {a.user}")
+
+
+def cmd_requests(cfg, a):
+    if a.done:
+        p = os.path.join(sb.REQUESTS, os.path.basename(a.done))
+        os.unlink(p)
+        print("closed")
+        return
+    # friends can write this directory: lstat only, and every byte shown is sanitized
+    files = []
+    for p in glob.glob(os.path.join(sb.REQUESTS, "*.txt")):
+        try:
+            files.append((p, os.lstat(p)))
+        except FileNotFoundError:
+            pass
+    files.sort(key=lambda x: x[1].st_mtime)
+    if not files:
+        print("no open requests")
+    for p, st in files:
+        try:
+            who = pwd.getpwuid(st.st_uid).pw_name  # owner, not the claimed filename
+        except KeyError:
+            who = "?"
+        text = read_untrusted(p, st.st_uid, 1000)
+        text = "(not a plain file; ignored)" if text is None else text.strip()
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
+        print(f"{sb.printable(os.path.basename(p))}\n  {when}  {who}: {sb.printable(text)}")
+    if files:
+        print("\nfulfil e.g. with: sharedbox-tools add apt PKG   then: sharedbox-admin requests --done FILE")
+
+
+def cmd_reapply(cfg, a):
+    for name, rec in sb.friend_users().items():
+        write_dropins(cfg, name, rec, rec["uid"])
+        print(f"rewrote limits for {name}")
+    daemon_reload()
+
+
+def main():
+    if os.geteuid() != 0:
+        die("must run as root")
+    cfg = sb.load_config()
+    p = argparse.ArgumentParser(prog="sharedbox-admin", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    s.add_parser("list").set_defaults(fn=cmd_list)
+    x = s.add_parser("add"); x.add_argument("user"); x.add_argument("--key", required=True)
+    x.add_argument("--login"); x.set_defaults(fn=cmd_add)
+    s.add_parser("pending").set_defaults(fn=cmd_pending)
+    x = s.add_parser("approve"); x.add_argument("id"); x.set_defaults(fn=cmd_approve)
+    x = s.add_parser("deny"); x.add_argument("id"); x.set_defaults(fn=cmd_deny)
+    x = s.add_parser("limits"); x.add_argument("user"); x.add_argument("settings", nargs="*")
+    x.set_defaults(fn=cmd_limits)
+    for n, fn in (("suspend", cmd_suspend), ("resume", cmd_resume), ("kill", cmd_kill)):
+        x = s.add_parser(n); x.add_argument("user"); x.set_defaults(fn=fn)
+    x = s.add_parser("remove"); x.add_argument("user"); x.add_argument("--archive", action="store_true")
+    x.set_defaults(fn=cmd_remove)
+    s.add_parser("reapply").set_defaults(fn=cmd_reapply)
+    x = s.add_parser("requests"); x.add_argument("--done"); x.set_defaults(fn=cmd_requests)
+    s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
+    a = p.parse_args()
+    a.fn(cfg, a)
+
+
+if __name__ == "__main__":
+    main()

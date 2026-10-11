@@ -1,0 +1,751 @@
+#!/usr/bin/python3 -I
+"""box — your view of this shared machine.
+
+  box status [--agent|--json]      usage, limits, box load, pending deletions
+  box ports                        your port range (+ which are in use)
+  box heavy -- CMD...              run a heavy job: queued, low priority, capped parallelism
+  box serve add NAME [--port P] -- CMD...   long-running server (survives logout/reboot)
+  box serve ls | logs NAME | restart NAME | stop NAME | start NAME | rm NAME
+  box clean [--dry-run]            clean caches/old tmp/idle build outputs now
+  box rules                        the rules your agents are given
+  box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
+  box setup [--check]              guided setup: git identity, GitHub, agent logins
+  box agents                       installed coding agents + whether you're logged in
+  box request "TEXT"               ask the owner for something (e.g. a system package)
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import pwd
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+BEGIN = "<!-- sharedbox:begin (managed automatically; edits inside this block are overwritten) -->"
+END = "<!-- sharedbox:end -->"
+AGENT_FILES = [".claude/CLAUDE.md", ".codex/AGENTS.md", ".gemini/GEMINI.md",
+               ".config/opencode/AGENTS.md", "AGENTS.md"]
+
+CFG = sb.load_config()
+ME = pwd.getpwuid(os.getuid())
+HOME = os.environ.get("HOME") or ME.pw_dir
+STATUS_FILE = os.path.join(HOME, ".sharedbox", "status.json")
+
+
+def is_friend():
+    return sb.cfg_int(CFG, "FRIEND_UID_MIN") <= ME.pw_uid <= sb.cfg_int(CFG, "FRIEND_UID_MAX")
+
+
+def my_limits():
+    rec = sb.registry().get("users", {}).get(ME.pw_name)
+    return sb.user_limits(CFG, rec)
+
+
+def ports():
+    return sb.port_range(CFG, ME.pw_uid) if is_friend() else None
+
+
+def fmt_ts(ts):
+    return time.strftime("%a %b %d %H:%M", time.localtime(ts))
+
+
+# ---------- status ----------
+
+def gather():
+    st = sb.read_json(STATUS_FILE, {}) or {}
+    cg = sb.read_cgroup(sb.slice_path(ME.pw_uid))
+    if cg:  # sample CPU over a short window
+        time.sleep(0.5)
+        cg2 = sb.read_cgroup(sb.slice_path(ME.pw_uid))
+        dt = cg2["t"] - cg["t"]
+        cg2["cpu_pct"] = round((cg2["cpu_usec"] - cg["cpu_usec"]) / 1e6 / dt * 100) if dt else 0
+        cg2["throttled"] = cg2["throttled_usec"] > cg["throttled_usec"]
+        cg = cg2
+    return {"user": ME.pw_name, "friend": is_friend(), "ports": ports(),
+            "limits": my_limits() if is_friend() else None, "live": cg,
+            "box": sb.box_load(), "janitor": st}
+
+
+def scheduled_reboot():
+    """Epoch seconds of a pending `shutdown -r`, or None."""
+    try:
+        with open("/run/systemd/shutdown/scheduled") as f:
+            kv = dict(l.strip().split("=", 1) for l in f if "=" in l)
+        if kv.get("MODE", "reboot") == "reboot" and kv.get("USEC"):
+            return int(kv["USEC"]) / 1e6
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def reboot_days():
+    return [d.strip()[:3].title() for d in CFG.get("SCHEDULED_REBOOT_DAYS", "").split(",")
+            if d.strip()[:3].title() in DAYS]
+
+
+def next_weekly_reboot(now=None):
+    """Epoch seconds of the next SCHEDULED_REBOOT_DAYS reboot, or None."""
+    days = reboot_days()
+    try:
+        hh, mm = (int(x) for x in CFG.get("REBOOT_TIME", "04:00").split(":")[:2])
+    except ValueError:
+        return None
+    now = now or time.time()
+    for i in range(8):
+        t = time.localtime(now + i * 86400)
+        if DAYS[t.tm_wday] not in days:
+            continue
+        ts = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, hh, mm, 0, 0, 0, -1))
+        if ts > now:
+            return ts
+    return None
+
+
+def advice(g):
+    out = []
+    rb = scheduled_reboot()
+    wk = next_weekly_reboot()
+    if wk and wk - time.time() < 12 * 3600 and not (rb and abs(rb - wk) < 3600):
+        out.append(f"The box will REBOOT on {fmt_ts(wk)} (scheduled weekly reboot). Only `box serve` "
+                   "services and `box t3` come back by themselves. Save work and finish long jobs before then.")
+    if rb:
+        out.append(f"The box will REBOOT on {fmt_ts(rb)} for security updates. Only `box serve` "
+                   "services and `box t3` come back by themselves. Save work and finish long jobs before then.")
+    b = g["box"]
+    if b["level"] == "busy":
+        out.append("The box is BUSY right now. Postpone heavy builds/tests if possible; "
+                   "if not, use `box heavy --` and reduce parallelism.")
+    elif b["level"] == "moderate":
+        out.append("The box is moderately loaded. Use `box heavy --` for builds.")
+    live = g["live"] or {}
+    if live.get("mem_high") and live["mem"] > 0.85 * live["mem_high"]:
+        out.append("You are close to your RAM limit. Stop unused servers, daemons, or watchers "
+                   "(e.g. `./gradlew --stop`) before starting anything else.")
+    if live.get("throttled"):
+        out.append("Your CPU is being throttled at your quota. Lower parallelism.")
+    j = g["janitor"]
+    if j.get("over_budget"):
+        out.append(f"You are OVER your disk budget. Caches and build outputs were wiped. "
+                   f"Delete things you don't need, or the oldest idle projects will be removed "
+                   f"after {fmt_ts(j['over_budget_deadline'])}." if j.get("over_budget_deadline")
+                   else "You are OVER your disk budget. Free space now.")
+    for p in j.get("projects", []):
+        if p.get("delete_on"):
+            out.append(f"Project ~/projects/{p['name']} will be DELETED on {fmt_ts(p['delete_on'])} "
+                       f"(idle {p['idle_days']}d). Touch/commit to keep it, or push it to git.")
+    if b["disk_free"] < b["disk_total"] * 0.1:
+        out.append("The machine's disk is almost full. Avoid large downloads.")
+    return out
+
+
+def cmd_status(a):
+    g = gather()
+    if a.json:
+        g["advice"] = advice(g)
+        print(json.dumps(g, indent=2))
+        return
+    b, live, lim, j = g["box"], g["live"] or {}, g["limits"], g["janitor"]
+    lines = []
+    if a.agent:
+        lines.append(f"## Shared box status for {g['user']} ({time.strftime('%H:%M')})")
+    lines.append(f"Box: {b['level']} | load {b['loadavg'][0]:.1f}/{b['ncpu']} cpus | "
+                 f"RAM avail {sb.human(b['mem_avail'])}/{sb.human(b['mem_total'])} | "
+                 f"disk free {sb.human(b['disk_free'])}/{sb.human(b['disk_total'])}")
+    if lim:
+        lines.append(f"You: CPU {live.get('cpu_pct', 0)}% (cap {lim['CPU_QUOTA']}) | "
+                     f"RAM {sb.human(live.get('mem', 0))} (soft {lim['MEMORY_HIGH']}, hard {lim['MEMORY_MAX']}) | "
+                     f"procs {live.get('pids', 0)}/{lim['TASKS_MAX']} | "
+                     f"disk {sb.human(j.get('disk')) if j.get('disk') else '?'} / {lim['DISK_BUDGET_GB']}G"
+                     + (f" (measured {fmt_ts(j['measured'])})" if j.get('measured') else ""))
+        lines.append(f"Ports: {g['ports'][0]}-{g['ports'][1]}  |  servers: "
+                     + (", ".join(f"{s['name']}({s['state']})" for s in j.get("services", [])) or "none"))
+    for ad in advice(g):
+        lines.append(("- " if a.agent else "! ") + ad)
+    if a.agent and lim:
+        lines.append("Rules: use ~/projects (auto-deleted when idle), ~/services, ~/keep; prefix heavy "
+                     "jobs with `box heavy --`; servers via `box serve`. Full rules: `box rules`.")
+    print("\n".join(lines))
+
+
+# ---------- ports ----------
+
+def port_in_use(p):
+    for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        s = socket.socket(fam, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((addr, p))
+        except OSError:
+            return True
+        finally:
+            s.close()
+    return False
+
+
+def cmd_ports(a):
+    r = ports()
+    if not r:
+        sys.exit("you are not a sharedbox friend account; any free port is fine")
+    used = [p for p in range(r[0], r[1] + 1) if port_in_use(p)]
+    print(f"your ports: {r[0]}-{r[1]}  ({r[0]} is reserved for your T3 Code server)")
+    print("in use: " + (", ".join(map(str, used)) or "none"))
+
+
+# ---------- heavy ----------
+
+def cmd_heavy(a):
+    cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+    if not cmd:
+        sys.exit("usage: box heavy -- COMMAND...")
+    n = sb.cfg_int(CFG, "HEAVY_SLOTS")
+    deadline = time.time() + sb.cfg_int(CFG, "HEAVY_WAIT_MAX_MIN") * 60
+    fd, announced, last = None, False, 0
+    while fd is None and os.environ.get("SHAREDBOX_HEAVY") != "1":  # nested: parent holds a slot
+        opened = 0
+        for i in range(n):
+            try:
+                f = os.open(os.path.join(sb.SLOTS, f"slot-{i}"), os.O_RDONLY)
+            except OSError:
+                continue
+            opened += 1
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fd = f
+                break
+            except BlockingIOError:
+                os.close(f)
+        if fd is not None or opened == 0:  # no queue installed: just run
+            break
+        if time.time() > deadline:
+            print("box heavy: waited too long for a slot, running anyway at lowest priority",
+                  file=sys.stderr)
+            break
+        if not announced or time.time() - last > 60:
+            print(f"box heavy: {n} heavy job(s) already running on the box; waiting for a slot…",
+                  file=sys.stderr)
+            announced, last = True, time.time()
+        time.sleep(5)
+    if fd is not None:
+        os.set_inheritable(fd, True)  # lock is held until the command exits
+    jobs = CFG["BUILD_JOBS"]
+    env = dict(os.environ, MAKEFLAGS=f"-j{jobs}", CMAKE_BUILD_PARALLEL_LEVEL=jobs,
+               CARGO_BUILD_JOBS=jobs, SHAREDBOX_HEAVY="1")
+    prefix = ["nice", "-n", "10"] + (["ionice", "-c", "2", "-n", "7"] if shutil.which("ionice") else [])
+    try:
+        os.execvpe(prefix[0], prefix + cmd, env)
+    except FileNotFoundError:
+        sys.exit(f"box heavy: command not found: {cmd[0]}")
+
+
+# ---------- serve ----------
+
+UNIT_DIR = os.path.join(HOME, ".config", "systemd", "user")
+
+
+def sctl(*args, capture=False):
+    env = dict(os.environ, XDG_RUNTIME_DIR=f"/run/user/{ME.pw_uid}")
+    return subprocess.run(["systemctl", "--user", *args], env=env, text=True,
+                          capture_output=capture)
+
+
+def unit(name):
+    if not name.replace("-", "").replace("_", "").isalnum() or len(name) > 40:
+        sys.exit("service name: letters, digits, - and _ only")
+    return f"sb-{name}.service"
+
+
+def sd_escape(s):
+    return s.replace("%", "%%").replace("$", "$$")
+
+
+def list_services():
+    r = sctl("list-units", "--all", "--plain", "--no-legend", "--type=service", "sb-*", capture=True)
+    out = []
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) >= 4 and parts[0].startswith("sb-"):
+            out.append({"name": parts[0][3:-8], "state": parts[3] if parts[2] == "active" else parts[2]})
+    return out
+
+
+def cmd_serve(a):
+    act = a.action
+    if act == "ls":
+        svcs = list_services()
+        if not svcs:
+            print("no services. create one with: box serve add NAME --port P -- COMMAND...")
+        for s in svcs:
+            port = ""
+            try:
+                with open(os.path.join(UNIT_DIR, f"sb-{s['name']}.service")) as f:
+                    for l in f:
+                        if l.startswith("Environment=PORT="):
+                            port = l.strip().split("=", 2)[2]
+            except OSError:
+                pass
+            print(f"{s['name']:<20} {s['state']:<10} port {port}")
+        return
+    if not a.name:
+        sys.exit(f"usage: box serve {act} NAME")
+    u = unit(a.name)
+    if act == "add":
+        cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+        if not cmd:
+            sys.exit("usage: box serve add NAME [--port P] -- COMMAND...")
+        exe = shutil.which(cmd[0])
+        if not exe:
+            sys.exit(f"command not found: {cmd[0]}")
+        cmd[0] = exe
+        r = ports()
+        port = a.port
+        if r and port is None:
+            port = next((p for p in range(r[0] + 1, r[1] + 1) if not port_in_use(p)), None)
+        if r and port is not None and not (r[0] <= port <= r[1]):
+            print(f"warning: port {port} is outside your range {r[0]}-{r[1]}", file=sys.stderr)
+        wd = os.getcwd()
+        if wd.startswith(os.path.join(HOME, "projects") + "/"):
+            print("note: this runs from ~/projects. The project won't be auto-deleted while this "
+                  f"service exists (even if stopped). `box serve rm {a.name}` releases it.", file=sys.stderr)
+        os.makedirs(UNIT_DIR, exist_ok=True)
+        body = [
+            "[Unit]", f"Description=box serve {a.name}",
+            "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
+            "[Service]", f"WorkingDirectory={sd_escape(wd)}",
+            f"Environment=PATH={sd_escape(os.environ.get('PATH', '/usr/bin:/bin'))}",
+        ]
+        if port is not None:
+            body.append(f"Environment=PORT={port}")
+        body += [f"ExecStart={sd_escape(shlex.join(cmd))}", "Restart=on-failure", "RestartSec=5",
+                 "", "[Install]", "WantedBy=default.target", ""]
+        with open(os.path.join(UNIT_DIR, u), "w") as f:
+            f.write("\n".join(body))
+        sctl("daemon-reload")
+        r2 = sctl("enable", "--now", u)
+        if r2.returncode == 0:
+            print(f"started {a.name}" + (f" on port {port} (also in $PORT)" if port else "")
+                  + f". logs: box serve logs {a.name}")
+        sys.exit(r2.returncode)
+    if act == "logs":
+        os.execvp("journalctl", ["journalctl", "--user", "-u", u, "-n", "200", "--no-pager"]
+                  + (["-f"] if a.follow else []))
+    if act == "rm":
+        sctl("disable", "--now", u)
+        try:
+            os.unlink(os.path.join(UNIT_DIR, u))
+        except FileNotFoundError:
+            pass
+        sctl("daemon-reload")
+        print(f"removed {a.name}")
+        return
+    sys.exit(sctl(act, u).returncode)
+
+
+# ---------- clean ----------
+
+def cmd_clean(a):
+    import sbclean
+    plan = {"project_ttl_days": 10 ** 6,  # manual clean never deletes projects
+            "artifact_ttl_days": sb.cfg_int(CFG, "ARTIFACT_TTL_DAYS"),
+            "cache_ttl_days": 0, "tmp_ttl_days": sb.cfg_int(CFG, "TMP_TTL_DAYS"),
+            "warn_days": 0, "dry_run": a.dry_run}
+    rep = sbclean.run_pass(plan)
+    for d in rep["deleted"]:
+        print(f"{'would delete' if a.dry_run else 'deleted'} {sb.human(d['bytes']):>8}  {d['path']}")
+    print(f"total: {sb.human(rep['freed'])}")
+
+
+# ---------- agent rules ----------
+
+def render_rules(notices=()):
+    lim = my_limits()
+    r = ports() or (0, 0)
+    with open(os.path.join(sb.SHARE_DIR, "AGENTS.md")) as f:
+        tpl = f.read()
+    tv = tools()
+    order = ["claude", "codex", "gemini", "opencode", "node", "python3", "uv", "pipx", "git", "gh",
+             "tmux", "rg", "fdfind", "jq", "sqlite3", "gcc", "java", "go", "rustup", "xvfb-run"]
+    tl = ", ".join(f"{tv[k]['label']} {tv[k]['version']}".strip() for k in order if k in tv) \
+        or "run `box agents` to see what's installed"
+    sdk = CFG["ANDROID_SDK_ROOT"]
+    android = ""
+    if os.path.isdir(sdk):
+        android = (f"\n- Android: SDK at `{sdk}` (`ANDROID_HOME` is set), JDK 21, latest platforms/build-tools. "
+                   "It's read-only. If a project pins a missing platform/build-tools version, raise "
+                   "`compileSdk`/`buildToolsVersion` to an installed one (`ls $ANDROID_HOME/platforms`) "
+                   "or `box request` it. Always build APKs with `box heavy -- ./gradlew assembleDebug`.")
+    extras = []
+    if "xvfb-run" in tv:
+        extras.append("- Headless browsers (Playwright/Puppeteer) work: system libs are installed. Use "
+                      "`npx playwright install chromium` (the browser download is per user and counts "
+                      "against the disk budget). Use `xvfb-run` if something needs a display.")
+    if android:
+        extras.append(android.lstrip("\n"))
+    if "gh" in tv:
+        extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, ask the user to run "
+                      "`box setup`. Don't ask for tokens in chat.")
+    nt = ""
+    if notices:
+        nt = "## Current notices (updated by the janitor)\n" + "\n".join(f"- {n}" for n in notices)
+    return tpl.format(
+        host=socket.gethostname(), user=ME.pw_name, cpu=lim["CPU_QUOTA"],
+        mem_high=lim["MEMORY_HIGH"], mem_max=lim["MEMORY_MAX"], tasks=lim["TASKS_MAX"],
+        disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}",
+        project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
+        cache_ttl=CFG["CACHE_TTL_DAYS"], artifact_ttl=CFG["ARTIFACT_TTL_DAYS"],
+        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"],
+        reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
+                     "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
+        tools=tl, extras="\n".join(extras), notices=nt).strip()
+
+
+def sync_agent_files(notices=()):
+    block = f"{BEGIN}\n{render_rules(notices)}\n{END}"
+    for rel in AGENT_FILES:
+        p = os.path.join(HOME, rel)
+        try:
+            with open(p) as f:
+                cur = f.read()
+        except FileNotFoundError:
+            cur = ""
+        if BEGIN in cur and END in cur:
+            pre, rest = cur.split(BEGIN, 1)
+            post = rest.split(END, 1)[1]
+            new = pre + block + post
+        else:
+            new = block + "\n" + ("\n" + cur if cur else "")
+        if new != cur:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                f.write(new)
+
+
+def cmd_rules(a):
+    print(render_rules())
+
+
+# ---------- T3 Code (web UI for agents) ----------
+
+T3_UNIT = "sb-t3.service"
+
+
+def t3_env():
+    r = ports()
+    host = sb.tailscale_ip4()
+    if not r or not host:
+        sys.exit("box t3: needs a friend account and Tailscale running on the box")
+    return host, r[0], {"T3CODE_HOST": host, "T3CODE_PORT": str(r[0]),
+                        "T3CODE_PROJECT_ROOT": os.path.join(HOME, "projects"), "T3CODE_NO_BROWSER": "1"}
+
+
+def t3_pair(host, port, env, ttl="30m"):
+    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", f"{ME.pw_name} (box t3)"],
+                       env=dict(os.environ, **env), capture_output=True, text=True, timeout=60)
+    url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines()
+                if l.startswith("Pairing URL:")), None)
+    if not url:
+        sys.exit("box t3: pairing failed:\n" + (r.stdout + r.stderr)[-1500:])
+    return url
+
+
+def listening(host, port):
+    try:
+        socket.create_connection((host, port), timeout=1).close()
+        return True
+    except OSError:
+        return False
+
+
+def cmd_t3(a):
+    if not shutil.which("t3"):
+        sys.exit('T3 Code is not installed on this box. Ask the owner: box request "install t3 (npm)"')
+    host, port, env = t3_env()
+    if a.action == "stop":
+        sys.exit(sctl("disable", "--now", T3_UNIT).returncode)
+    if a.action == "logs":
+        os.execvp("journalctl", ["journalctl", "--user", "-u", T3_UNIT, "-n", "200", "--no-pager"])
+    if a.action == "status":
+        up = listening(host, port)
+        print(f"T3 Code: {'running' if up else 'not running'} at http://{host}:{port}/")
+        return
+    # start (if needed) + pair
+    os.makedirs(os.path.join(HOME, "projects"), exist_ok=True)
+    os.makedirs(UNIT_DIR, exist_ok=True)
+    unit = ["[Unit]", "Description=T3 Code (box t3)", "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
+            "[Service]", "WorkingDirectory=%h/projects",
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"]
+    unit += [f"Environment={k}={sd_escape(v)}" for k, v in env.items()]
+    unit += ["ExecStart=/usr/local/bin/t3 serve", "Restart=on-failure", "RestartSec=5", "",
+             "[Install]", "WantedBy=default.target", ""]
+    path = os.path.join(UNIT_DIR, T3_UNIT)
+    body = "\n".join(unit)
+    try:
+        changed = open(path).read() != body
+    except FileNotFoundError:
+        changed = True
+    if changed:
+        with open(path, "w") as f:
+            f.write(body)
+        sctl("daemon-reload")
+    if changed and listening(host, port):
+        sctl("restart", T3_UNIT)
+    else:
+        sctl("enable", "--now", T3_UNIT)
+    if not listening(host, port):
+        print("starting T3 Code (the first start downloads it, about 1 minute)…", file=sys.stderr)
+    deadline = time.time() + 300
+    while not listening(host, port):
+        if time.time() > deadline:
+            sys.exit("box t3: server did not come up; see `box t3 logs`")
+        time.sleep(2)
+    time.sleep(2)
+    url = t3_pair(host, port, env)
+    print(f"""
+T3 Code is running at http://{host}:{port}/ (only you can use it, after pairing)
+
+Open this link in your browser within 30 minutes to pair it:
+
+  {url}
+
+Need another device later? Run `box t3 pair` for a fresh link.
+First time? Log in to your agent once in a terminal (`box setup`), and T3 will use that login.
+T3_PAIR_URL={url}""")
+
+
+# ---------- agents / onboarding ----------
+
+# name, label, login command, credential files (any), api-key env vars, how-to
+AGENTS = [
+    ("claude", "Claude Code", ["claude"], [".claude/.credentials.json"], ["ANTHROPIC_API_KEY"],
+     "run `claude`, pick a login method, open the URL it prints on your laptop, paste the code back, then /exit"),
+    ("codex", "OpenAI Codex", ["codex", "login", "--device-auth"], [".codex/auth.json"], ["OPENAI_API_KEY"],
+     "run `codex login --device-auth` and enter the code at the URL it prints"),
+    ("opencode", "opencode", ["opencode", "auth", "login"], [".local/share/opencode/auth.json"], [],
+     "run `opencode auth login` and pick a provider"),
+]
+
+
+def tools():
+    return (sb.read_json(sb.TOOLS_JSON, {}) or {}).get("tools", {})
+
+
+def logged_in(files, envs):
+    return any(os.path.exists(os.path.join(HOME, f)) for f in files) or any(os.environ.get(e) for e in envs)
+
+
+def gh_ok():
+    return os.path.exists(os.path.join(HOME, ".config", "gh", "hosts.yml"))
+
+
+def git_ident():
+    def g(k):
+        r = subprocess.run(["git", "config", "--global", k], capture_output=True, text=True)
+        return r.stdout.strip()
+    return g("user.name"), g("user.email")
+
+
+def cmd_agents(a):
+    tv = tools()
+    print(f"{'agent':<14}{'version':<12}{'logged in':<11}how to log in")
+    for name, label, _, files, envs, how in AGENTS:
+        if not shutil.which(name):
+            print(f"{label:<14}{'-':<12}{'':<11}not installed (ask the owner: box request \"install {name}\")")
+            continue
+        ver = tv.get(name, {}).get("version", "?")
+        print(f"{label:<14}{ver:<12}{'yes' if logged_in(files, envs) else 'NO':<11}{how}")
+    print(f"{'GitHub (gh)':<14}{tv.get('gh', {}).get('version', '-'):<12}{'yes' if gh_ok() else 'NO':<11}"
+          "run `gh auth login --web` then `gh auth setup-git`")
+
+
+def ask(q, default=True):
+    try:
+        r = input(f"{q} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+    except EOFError:
+        return False
+    return default if not r else r.startswith("y")
+
+
+def cmd_setup(a):
+    missing = []
+    name, email = git_ident()
+    if not (name and email):
+        missing.append("git identity (git config --global user.name / user.email)")
+    if shutil.which("gh") and not gh_ok():
+        missing.append("GitHub login (gh auth login --web && gh auth setup-git)")
+    if not any(shutil.which(n) and logged_in(f, e) for n, _, _, f, e, _ in AGENTS):
+        missing.append("no coding agent is logged in yet (see `box agents`)")
+    if a.check or not sys.stdin.isatty():
+        print("setup complete" if not missing else "missing:\n" + "\n".join(f"- {m}" for m in missing))
+        return
+    print(f"Let's get you set up on {socket.gethostname()}. Ctrl-C any time; rerun with `box setup`.\n")
+    # 1. git
+    if not (name and email):
+        print("1) git identity (used in your commits)")
+        name = input(f"   your name{f' [{name}]' if name else ''}: ").strip() or name
+        email = input(f"   your email{f' [{email}]' if email else ''}: ").strip() or email
+        if name:
+            subprocess.run(["git", "config", "--global", "user.name", name])
+        if email:
+            subprocess.run(["git", "config", "--global", "user.email", email])
+    else:
+        print(f"1) git identity: {name} <{email}> ✓")
+    subprocess.run(["git", "config", "--global", "init.defaultBranch", "main"])
+    # 2. github
+    if shutil.which("gh"):
+        if gh_ok():
+            print("2) GitHub: logged in ✓")
+        elif ask("2) Log in to GitHub now? (lets you and your agents clone/push private repos)"):
+            subprocess.run(["gh", "auth", "login", "--web", "--git-protocol", "https"])
+            subprocess.run(["gh", "auth", "setup-git"])
+    # 3. agents
+    print("\n3) Coding agents. Use your own subscription or API key:")
+    avail = [x for x in AGENTS if shutil.which(x[0])]
+    for i, (n, label, _, files, envs, _) in enumerate(avail, 1):
+        print(f"   {i}. {label:<14} {'logged in ✓' if logged_in(files, envs) else 'not logged in'}")
+    try:
+        pick = input("   Log in to which? (numbers like 1,3 · Enter to skip): ").strip()
+    except EOFError:
+        pick = ""
+    for tok in pick.replace(" ", ",").split(","):
+        if tok.isdigit() and 1 <= int(tok) <= len(avail):
+            n, label, cmd, _, _, how = avail[int(tok) - 1]
+            print(f"\n--- {label}: {how}")
+            subprocess.run(cmd)
+    print(f"""
+All set. Tips:
+  • Start agents inside tmux so they keep running when you disconnect:  tmux new -A -s main
+    (detach: Ctrl-b d · come back later: tmux attach)
+  • Work in ~/projects/<name>. Projects idle for {CFG['PROJECT_TTL_DAYS']} days are deleted, so push to git.
+  • `box` shows your usage · `box agents` shows agent logins · `box rules` shows what your agents are told
+""")
+    os.makedirs(os.path.join(HOME, ".sharedbox"), exist_ok=True)
+    open(os.path.join(HOME, ".sharedbox", "setup-done"), "w").close()
+
+
+def cmd_welcome(a):
+    r = ports()
+    tv = tools()
+    have = ", ".join(t["label"] for k, t in sorted(tv.items())
+                     if k in ("claude", "codex", "gemini", "opencode")) or "see `box agents`"
+    print(f"""
+Welcome to {socket.gethostname()}, {ME.pw_name}!
+
+  Agents installed:  {have}
+  Your ports:        {f'{r[0]}-{r[1]}' if r else 'any'}
+  Get started:       box setup     (git, GitHub and agent logins, about 2 minutes)
+  Web UI:            box t3        (your own T3 Code; prints a link to open in your browser)
+  Or terminal:       tmux new -A -s main   →   cd ~/projects && mkdir myapp && cd myapp && claude
+
+Your agents already know the house rules (limits, where files go, how to run builds and servers).
+""")
+
+
+def cmd_request(a):
+    text = " ".join(a.text).strip()
+    if not text:
+        sys.exit('usage: box request "install ffmpeg (apt) for video thumbnails"')
+    if len(text) > 1000:
+        sys.exit("keep it under 1000 characters")
+    path = os.path.join(sb.REQUESTS, f"{ME.pw_name}-{int(time.time())}-{os.getpid()}.txt")
+    try:
+        # 0600: other friends can't list the directory but could guess names
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            f.write(text + "\n")
+    except OSError as e:
+        sys.exit(f"could not file the request: {e}")
+    print("request sent to the box owner. Meanwhile, most tools install without sudo: "
+          "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
+
+
+# ---------- internal (called by root tools via setpriv, as this user) ----------
+
+def cmd_init_home(a):
+    key = sys.stdin.read().strip()
+    os.umask(0o077)
+    for d in ("projects", "services", "keep", ".sharedbox", ".ssh"):
+        os.makedirs(os.path.join(HOME, d), exist_ok=True)
+    with open(os.path.join(HOME, ".ssh", "authorized_keys"), "w") as f:
+        f.write(key + "\n")
+    os.chmod(os.path.join(HOME, ".ssh"), 0o700)
+    os.chmod(os.path.join(HOME, ".ssh", "authorized_keys"), 0o600)
+    skel = os.path.join(sb.SHARE_DIR, "skel")
+    jobs = CFG["BUILD_JOBS"]
+    for root, _, files in os.walk(skel):
+        for fn in files:
+            src = os.path.join(root, fn)
+            dst = os.path.join(HOME, os.path.relpath(src, skel))
+            if os.path.exists(dst):
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(src) as f:
+                txt = f.read().replace("@BUILD_JOBS@", jobs)
+            with open(dst, "w") as f:
+                f.write(txt)
+    sync_agent_files()
+
+
+def cmd_pass(a):
+    import sbclean
+    plan = json.load(sys.stdin)
+    rep = sbclean.run_pass(plan)
+    rep["services"] = list_services()
+    status = {"measured": int(time.time()), "disk": plan.get("usage"),
+              "budget": plan.get("budget"), "over_budget": plan.get("over"),
+              "over_budget_deadline": plan.get("over_deadline"),
+              "projects": rep["projects"], "services": rep["services"],
+              "last_deleted": rep["deleted"][-20:]}
+    if not plan.get("dry_run"):
+        os.makedirs(os.path.dirname(STATUS_FILE), exist_ok=True)
+        sb.write_json(STATUS_FILE, status, mode=0o600)
+        notices = [n for n in advice({"box": plan.get("box") or sb.box_load(), "live": {},
+                                      "janitor": status})
+                   if "DELETED" in n or "OVER" in n or "REBOOT" in n]
+        sync_agent_files(notices)
+    json.dump(rep, sys.stdout)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="box", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd")
+    x = s.add_parser("status"); x.add_argument("--agent", action="store_true")
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_status)
+    s.add_parser("ports").set_defaults(fn=cmd_ports)
+    x = s.add_parser("heavy"); x.add_argument("cmd", nargs=argparse.REMAINDER)
+    x.set_defaults(fn=cmd_heavy)
+    x = s.add_parser("serve")
+    x.add_argument("action", choices=["add", "ls", "logs", "restart", "stop", "start", "rm"])
+    x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
+    x.add_argument("-f", "--follow", action="store_true")
+    x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_serve)
+    x = s.add_parser("clean"); x.add_argument("--dry-run", action="store_true")
+    x.set_defaults(fn=cmd_clean)
+    s.add_parser("rules").set_defaults(fn=cmd_rules)
+    x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
+    x.set_defaults(fn=cmd_setup)
+    s.add_parser("agents").set_defaults(fn=cmd_agents)
+    x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
+                                           choices=["start", "pair", "status", "stop", "logs"])
+    x.set_defaults(fn=cmd_t3)
+    s.add_parser("welcome").set_defaults(fn=cmd_welcome)
+    x = s.add_parser("request"); x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_request)
+    s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
+    s.add_parser("_pass").set_defaults(fn=cmd_pass)
+    a = p.parse_args()
+    if not a.cmd:
+        a = p.parse_args(["status"])
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

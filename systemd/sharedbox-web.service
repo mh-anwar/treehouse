@@ -1,0 +1,28 @@
+[Unit]
+Description=sharedbox dashboard and join page
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=sharedbox
+Group=sharedbox
+ExecStart=/usr/lib/sharedbox/sharedbox-web
+Restart=always
+RestartSec=10
+# hardening: read-only everything except the join spool
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sharedbox/spool
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryMax=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

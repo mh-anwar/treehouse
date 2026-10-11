@@ -1,0 +1,10 @@
+[Unit]
+Description=Update sharedbox coding agents daily
+
+[Timer]
+OnCalendar=*-*-* 05:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

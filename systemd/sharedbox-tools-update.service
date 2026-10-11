@@ -1,0 +1,11 @@
+[Unit]
+Description=sharedbox: update preinstalled coding agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-tools update
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=1h

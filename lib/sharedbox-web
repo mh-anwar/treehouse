@@ -1,0 +1,447 @@
+#!/usr/bin/python3 -I
+"""sharedbox-web: dashboard + self-service join page. Runs unprivileged.
+
+Identity comes from `tailscale whois <peer ip>`; account creation is done by root
+(sharedbox-provision.path) which re-verifies everything this process sends it.
+"""
+
+import hashlib
+import hmac
+import html
+import json
+import os
+import pwd
+import secrets
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+CFG = sb.load_config()
+SECRET = secrets.token_bytes(32)
+HOST = socket.gethostname()
+SELF_IP = None
+ALLOWED_HOSTS = set()  # Host header values we answer to (DNS rebinding guard), filled in main()
+SAMPLE_EVERY = 5
+HISTORY_EVERY = 60
+
+state_lock = threading.Lock()
+live = {}       # row key -> latest sample dict
+history = {}    # row key -> deque[(ts, cpu_pct, mem)]
+rate = {}       # ip -> deque[ts] of join posts
+
+
+# ---------- sampling ----------
+
+def rows():
+    """(key, label, kind, cgroup path) for every row on the dashboard."""
+    out = []
+    for name in sb.admin_users(CFG):
+        try:
+            uid = pwd.getpwnam(name).pw_uid
+        except KeyError:
+            continue
+        out.append((name, name, "admin", sb.slice_path(uid)))
+    for name, rec in sorted(sb.friend_users().items()):
+        out.append((name, name, "friend", sb.slice_path(rec["uid"])))
+    out.append(("system", "system services", "system", os.path.join(sb.CGROUP_ROOT, "system.slice")))
+    return out
+
+
+def sampler():
+    prev, last_hist = {}, 0
+    while True:
+        now = time.time()
+        snap = {}
+        for key, label, kind, path in rows():
+            c = sb.read_cgroup(path)
+            row = {"label": label, "kind": kind, "online": c is not None}
+            if c:
+                p = prev.get(key)
+                if p:
+                    dt = c["t"] - p["t"]
+                    row["cpu_pct"] = round((c["cpu_usec"] - p["cpu_usec"]) / 1e6 / dt * 100, 1)
+                    row["throttled"] = c["throttled_usec"] > p["throttled_usec"]
+                row.update({k: c[k] for k in ("mem", "mem_high", "mem_max", "swap", "pids",
+                                              "pids_max", "cpu_quota_cores")})
+                prev[key] = c
+            snap[key] = row
+        hist_tick = now - last_hist >= HISTORY_EVERY
+        with state_lock:
+            live.clear()
+            live.update(snap)
+            if hist_tick:
+                for key, row in snap.items():
+                    h = history.setdefault(key, deque(maxlen=24 * 60))
+                    h.append((int(now), row.get("cpu_pct", 0), row.get("mem", 0)))
+        if hist_tick:
+            last_hist = now
+        time.sleep(SAMPLE_EVERY)
+
+
+def api_state():
+    usage = sb.read_json(sb.USAGE, {}) or {}
+    reg = sb.friend_users()
+    out_rows = []
+    with state_lock:
+        for key, row in live.items():
+            r = dict(row)
+            u = usage.get("users", {}).get(key)
+            if u:
+                r["disk"], r["budget"], r["over"] = u.get("disk"), u.get("budget"), u.get("over")
+                r["services"] = u.get("services", [])
+                r["pending_deletions"] = u.get("pending_deletions", [])
+            if key in reg:
+                lo, hi = sb.port_range(CFG, reg[key]["uid"])
+                r["ports"] = f"{lo}-{hi}"
+                r["status"] = reg[key].get("status", "active")
+            r["history"] = list(history.get(key, []))[-180:]
+            out_rows.append(r)
+    pending = requests = 0
+    try:
+        pending = len(os.listdir(sb.PENDING))
+    except OSError:
+        pass
+    try:
+        requests = len([f for f in os.listdir(sb.REQUESTS) if f.endswith(".txt")])
+    except OSError:
+        pass
+    tv = (sb.read_json(sb.TOOLS_JSON, {}) or {}).get("tools", {})
+    events = [e for e in sb.recent_events(40) if e.get("kind") != "janitor_error"]
+    return {"host": HOST, "time": int(time.time()), "box": sb.box_load(), "rows": out_rows,
+            "janitor_ran": usage.get("generated"), "join_mode": CFG["JOIN_MODE"],
+            "pending_signups": pending, "open_requests": requests,
+            "agents": [f"{tv[k]['label']} {tv[k]['version']}" for k in ("claude", "codex", "gemini", "opencode") if k in tv],
+            "events": events[::-1]}
+
+
+# ---------- join ----------
+
+def token_for(ip, ts_id):
+    return hmac.new(SECRET, f"{ip}|{ts_id}".encode(), hashlib.sha256).hexdigest()
+
+
+def existing_account(ts_id):
+    for name, rec in sb.friend_users().items():
+        if rec.get("ts_id") == ts_id:
+            return name, rec
+    return None, None
+
+
+def submit_join(ip, who, username, key):
+    rid = secrets.token_hex(12)
+    req = {"ip": ip, "ts_id": who["id"], "login": who["login"], "username": username,
+           "key": key, "ts": int(time.time())}
+    sb.write_json(os.path.join(sb.SPOOL, f"req-{rid}.json"), req, mode=0o600)
+    res_path = os.path.join(sb.SPOOL, f"res-{rid}.json")
+    for _ in range(120):
+        time.sleep(0.25)
+        res = sb.read_json(res_path)
+        if res is not None:
+            try:
+                os.unlink(res_path)
+            except OSError:
+                pass
+            return res
+    return {"ok": False, "error": "timed out waiting for the provisioner; try again in a minute"}
+
+
+# ---------- html ----------
+
+def page(title, body):
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(title)}</title><style>{CSS}</style></head>
+<body><header><a href="/" class="brand">▣ {html.escape(HOST)}</a>
+<nav><a href="/">dashboard</a><a href="/join">join</a></nav></header>
+<main>{body}</main></body></html>"""
+
+
+CSS = """
+:root{--bg:#0d0f12;--panel:#151920;--line:#252b35;--fg:#e6e9ef;--mut:#8a93a3;--acc:#5aa9ff;
+--ok:#3ecf8e;--warn:#f5b041;--bad:#ff6b6b;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;
+border-bottom:1px solid var(--line)}.brand{font-weight:700;color:var(--fg);text-decoration:none}
+nav a{color:var(--mut);margin-left:18px;text-decoration:none}nav a:hover{color:var(--fg)}
+main{max-width:1200px;margin:0 auto;padding:24px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card h3{margin:0 0 6px;font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.big{font-size:24px;font-weight:650}.sub{color:var(--mut);font-size:12px}
+.bar{height:6px;background:#222833;border-radius:3px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--acc)}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:12px;color:var(--mut);font-weight:600}tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
+.pill.ok{color:var(--ok);border-color:#1f5f45}.pill.warn{color:var(--warn);border-color:#6b5420}
+.pill.bad{color:var(--bad);border-color:#6b2a2a}
+.mini{width:100%;min-width:90px}.mini .bar{margin-top:3px}
+h2{font-size:15px;margin:26px 0 10px}ul.ev{list-style:none;padding:0;margin:0;background:var(--panel);
+border:1px solid var(--line);border-radius:10px}ul.ev li{padding:7px 12px;border-bottom:1px solid var(--line);font-size:13px}
+ul.ev li:last-child{border:0}.mut{color:var(--mut)}code,pre{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#0a0c0f;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
+form label{display:block;margin:14px 0 6px;color:var(--mut)}input,textarea{width:100%;background:#0a0c0f;
+color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
+textarea{font-family:ui-monospace,monospace;font-size:12px;height:90px}
+button{margin-top:16px;background:var(--acc);color:#04111f;border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer}
+.box{max-width:680px}.err{color:var(--bad)}svg.spark{display:block}
+"""
+
+DASH_JS = r"""
+const H=n=>{if(n==null)return'–';const u=['B','K','M','G','T'];let i=0;while(n>=1024&&i<4){n/=1024;i++}return(i?n.toFixed(1):n)+u[i]};
+const pct=(a,b)=>b?Math.min(100,100*a/b):0;
+const cls=p=>p>90?'var(--bad)':p>70?'var(--warn)':'var(--acc)';
+const bar=(p)=>`<div class="bar"><i style="width:${p}%;background:${cls(p)}"></i></div>`;
+function spark(h){if(!h||h.length<2)return'';const w=110,ht=26,m=Math.max(100,...h.map(x=>x[1]));
+const pts=h.map((x,i)=>`${(i/(h.length-1)*w).toFixed(1)},${(ht-x[1]/m*ht).toFixed(1)}`).join(' ');
+return `<svg class="spark" width="${w}" height="${ht}"><polyline fill="none" stroke="var(--acc)" stroke-width="1.5" points="${pts}"/></svg>`}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function tick(){
+ let s;try{s=await (await fetch('/api/state')).json()}catch(e){return}
+ const b=s.box, memUsed=b.mem_total-b.mem_avail, diskUsed=b.disk_total-b.disk_free;
+ const lvl={calm:'ok',moderate:'warn',busy:'bad'}[b.level];
+ document.getElementById('cards').innerHTML=`
+ <div class="card"><h3>Status</h3><div class="big"><span class="pill ${lvl}" style="font-size:16px">${b.level}</span></div>
+  <div class="sub">pressure — cpu ${b.psi_cpu.toFixed(0)}% · mem ${b.psi_mem.toFixed(0)}% · io ${b.psi_io.toFixed(0)}%</div></div>
+ <div class="card"><h3>CPU load</h3><div class="big">${b.loadavg[0].toFixed(2)} <span class="sub">/ ${b.ncpu} cores</span></div>${bar(pct(b.loadavg[0],b.ncpu))}</div>
+ <div class="card"><h3>Memory</h3><div class="big">${H(memUsed)} <span class="sub">/ ${H(b.mem_total)}</span></div>${bar(pct(memUsed,b.mem_total))}</div>
+ <div class="card"><h3>Disk</h3><div class="big">${H(diskUsed)} <span class="sub">/ ${H(b.disk_total)}</span></div>${bar(pct(diskUsed,b.disk_total))}</div>
+ <div class="card"><h3>People</h3><div class="big">${s.rows.filter(r=>r.kind=='friend').length}</div>
+  <div class="sub">join mode: ${esc(s.join_mode)}${s.pending_signups?` · <b style="color:var(--warn)">${s.pending_signups} pending</b>`:''}${s.open_requests?` · <b style="color:var(--warn)">${s.open_requests} request(s)</b>`:''}</div></div>
+ <div class="card"><h3>Agents installed</h3><div class="sub" style="font-size:13px;color:var(--fg)">${s.agents.map(esc).join('<br>')||'–'}</div></div>`;
+ const order={admin:0,friend:1,system:2};
+ const rows=s.rows.sort((a,b)=>order[a.kind]-order[b.kind]||(b.cpu_pct||0)-(a.cpu_pct||0));
+ document.getElementById('rows').innerHTML=rows.map(r=>{
+  const cpuCap=r.cpu_quota_cores?r.cpu_quota_cores*100:b.ncpu*100;
+  const memCap=r.mem_max||b.mem_total;
+  const flags=[];
+  if(r.kind!='friend')flags.push(`<span class="pill">${r.kind}</span>`);
+  if(r.status&&r.status!='active')flags.push(`<span class="pill bad">${esc(r.status)}</span>`);
+  if(r.throttled)flags.push('<span class="pill warn">cpu capped</span>');
+  if(r.mem_high&&r.mem>0.9*r.mem_high)flags.push('<span class="pill warn">mem near limit</span>');
+  if(r.over)flags.push('<span class="pill bad">over disk budget</span>');
+  if((r.pending_deletions||[]).length)flags.push(`<span class="pill warn">${r.pending_deletions.length} project(s) expiring</span>`);
+  if(r.kind=='friend'&&!r.online)flags.push('<span class="pill">offline</span>');
+  const svcs=(r.services||[]).map(x=>`<span class="pill ${x.state=='running'?'ok':x.state=='failed'?'bad':''}">${esc(x.name)}</span>`).join(' ');
+  return `<tr><td><b>${esc(r.label)}</b> ${flags.join(' ')}</td>
+  <td class="num mini">${(r.cpu_pct??0).toFixed(0)}% <span class="mut">/ ${cpuCap.toFixed(0)}%</span>${bar(pct(r.cpu_pct||0,cpuCap))}</td>
+  <td>${spark(r.history)}</td>
+  <td class="num mini">${H(r.mem)} <span class="mut">/ ${r.mem_max?H(r.mem_max):'–'}</span>${bar(pct(r.mem||0,memCap))}</td>
+  <td class="num">${r.pids??'–'}</td>
+  <td class="num mini">${r.disk!=null?H(r.disk):'–'} <span class="mut">/ ${r.budget?H(r.budget):'–'}</span>${r.budget?bar(pct(r.disk,r.budget)):''}</td>
+  <td class="num mut">${esc(r.ports||'')}</td><td>${svcs}</td></tr>`}).join('');
+ const t=x=>new Date(x*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+ document.getElementById('events').innerHTML=s.events.map(e=>{
+  let d=esc(e.kind).replace(/_/g,' ');if(e.path)d+=` <code>${esc(e.path)}</code> (${esc(H(e.bytes))}, ${esc(e.reason)})`;
+  if(e.login)d+=` <span class="mut">${esc(e.login)}</span>`;if(e.free_pct!=null)d+=` — ${esc(e.free_pct)}% free`;
+  return `<li><span class="mut">${t(e.ts)}</span> · <b>${esc(e.user||'box')}</b> · ${d}</li>`}).join('')||'<li class="mut">nothing yet</li>';
+ document.getElementById('foot').textContent=`janitor last ran ${s.janitor_ran?t(s.janitor_ran):'never'} · refreshed ${new Date().toLocaleTimeString()}`;
+}
+tick();setInterval(tick,5000);
+"""
+
+
+def dashboard():
+    return page(f"{HOST} — shared box", f"""
+<div id="cards" class="cards"></div>
+<table><thead><tr><th>who</th><th>cpu</th><th>cpu · 3h</th><th>memory</th><th>procs</th>
+<th>disk</th><th>ports</th><th>servers</th></tr></thead><tbody id="rows"></tbody></table>
+<h2>Recent activity</h2><ul class="ev" id="events"></ul>
+<p class="sub" id="foot"></p><script>{DASH_JS}</script>""")
+
+
+def join_page(ip, who, msg=None, err=None, form=None):
+    e = html.escape
+    if not who:
+        return page("join", """<div class="box"><h2>Can't identify you</h2>
+<p>This page only works over Tailscale. Ask the owner to share this machine with you, accept the
+invite, then open this page using the machine's Tailscale name.</p></div>""")
+    name, rec = existing_account(who["id"])
+    if name:
+        lo, hi = sb.port_range(CFG, rec["uid"])
+        return page("join", f"""<div class="box"><h2>You're already set up, {e(who['display'])}</h2>
+<p>Your account is <b>{e(name)}</b>. Your ports are <b>{lo}-{hi}</b>.</p>
+<pre>ssh {e(name)}@{e(HOST)}</pre>
+<p class="sub">Lost your key? Ask the owner to reset it.</p></div>""")
+    if CFG["JOIN_MODE"] == "closed":
+        return page("join", "<div class='box'><h2>Signups are closed</h2><p>Ask the owner.</p></div>")
+    if msg:
+        return page("join", f"<div class='box'>{msg}</div>")
+    form = form or {}
+    tok = token_for(ip, who["id"])
+    note = ("Your request goes to the owner for approval." if CFG["JOIN_MODE"] == "approve"
+            else "Your account is created right away.")
+    return page("join", f"""<div class="box"><h2>Join {e(HOST)}</h2>
+<p>Hi <b>{e(who['display'])}</b> <span class="mut">({e(who['login'])}, device {e(who['node'])})</span>.
+{note}</p>
+{f'<p class="err">{e(err)}</p>' if err else ''}
+<form method="post" action="/join">
+<input type="hidden" name="token" value="{tok}">
+<label>Username (3–16 lowercase letters/digits)</label>
+<input name="username" value="{e(form.get('username', ''))}" pattern="[a-z][a-z0-9]{{2,15}}" required autocomplete="off">
+<label>SSH public key. Run <code>cat ~/.ssh/id_ed25519.pub</code> on your computer.
+If the file doesn't exist, run <code>ssh-keygen -t ed25519</code> first.</label>
+<textarea name="key" required placeholder="ssh-ed25519 AAAA... you@laptop">{e(form.get('key', ''))}</textarea>
+<button type="submit">Create my account</button></form>
+<h2>What you get</h2><ul>
+<li>A normal Linux account. Run Claude Code, Codex, etc. there with your own subscriptions or API keys.</li>
+<li>Fair-share limits: {e(CFG['CPU_QUOTA'])} CPU, {e(CFG['MEMORY_MAX'])} RAM, {e(CFG['DISK_BUDGET_GB'])}G disk.</li>
+<li>A block of {e(CFG['PORT_BLOCK'])} ports for your servers, which keep running after you log out.</li>
+<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted automatically. Use git. Nothing here is backed up.</li>
+</ul></div>""")
+
+
+# ---------- http ----------
+
+def allowed_hosts(bind):
+    """Names this box is legitimately reached by: hostname, MagicDNS name, its IPs, WEB_HOSTS."""
+    names = {HOST, "localhost", "127.0.0.1", "::1", bind, SELF_IP}
+    try:
+        st = json.loads(subprocess.run(["tailscale", "status", "--json", "--peers=false"],
+                                       capture_output=True, text=True, timeout=5).stdout)
+        me = st.get("Self") or {}
+        dns = (me.get("DNSName") or "").rstrip(".")
+        names |= {dns, dns.split(".")[0], me.get("HostName") or ""}
+        names |= set(me.get("TailscaleIPs") or [])
+    except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+        pass
+    names |= {h.strip() for h in CFG.get("WEB_HOSTS", "").split(",")}
+    return {n.lower() for n in names if n}
+
+
+def host_ok(value):
+    """Host header (port stripped) checked against ALLOWED_HOSTS."""
+    try:
+        host = urllib.parse.urlsplit("//" + (value or "")).hostname
+    except ValueError:
+        return False
+    return bool(host) and host.lower() in ALLOWED_HOSTS
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "sharedbox"
+    timeout = 30  # slow clients must not pin handler threads forever
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def send(self, code, body, ctype="text/html; charset=utf-8"):
+        data = body.encode() if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                         "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def ident(self):
+        ip = self.client_address[0]
+        if ip.startswith("::ffff:"):
+            ip = ip[7:]
+        if ip in ("127.0.0.1", "::1") or ip == SELF_IP:
+            return ip, None  # local users must not be able to sign up as the owner
+        return ip, sb.tailscale_whois(ip)
+
+    def do_GET(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path != "/healthz" and not host_ok(self.headers.get("Host")):
+            return self.send(421, "unknown host; use this machine's Tailscale name", "text/plain")
+        if path == "/":
+            self.send(200, dashboard())
+        elif path == "/api/state":
+            self.send(200, json.dumps(api_state()), "application/json")
+        elif path == "/join":
+            ip, who = self.ident()
+            self.send(200, join_page(ip, who))
+        elif path == "/healthz":
+            self.send(200, "ok", "text/plain")
+        else:
+            self.send(404, page("not found", "<p>not found</p>"))
+
+    def do_POST(self):
+        if urllib.parse.urlsplit(self.path).path != "/join":
+            return self.send(404, "not found", "text/plain")
+        host = self.headers.get("Host")
+        if not host_ok(host):
+            return self.send(421, "unknown host; use this machine's Tailscale name", "text/plain")
+        origin = self.headers.get("Origin")
+        if origin is not None and urllib.parse.urlsplit(origin).netloc != host:
+            return self.send(403, "bad origin", "text/plain")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if not 0 <= n <= 16384:
+            return self.send(413, "too large", "text/plain")
+        body = self.rfile.read(n).decode(errors="replace")
+        form = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+        ip, who = self.ident()
+        if not who:
+            return self.send(403, join_page(ip, None))
+        if not hmac.compare_digest(form.get("token", ""), token_for(ip, who["id"])):
+            return self.send(400, join_page(ip, who, err="form expired, please submit again", form=form))
+        q = rate.setdefault(ip, deque(maxlen=10))
+        now = time.time()
+        if len([t for t in q if now - t < 600]) >= 5:
+            return self.send(429, join_page(ip, who, err="too many attempts, wait 10 minutes", form=form))
+        q.append(now)
+        username = form.get("username", "").strip().lower()
+        err = sb.validate_username(username, CFG)
+        key, kerr = sb.validate_pubkey(form.get("key", ""))
+        if err or kerr:
+            return self.send(400, join_page(ip, who, err=err or kerr, form=form))
+        res = submit_join(ip, who, username, key)
+        if not res.get("ok"):
+            return self.send(400, join_page(ip, who, err=res.get("error"), form=form))
+        if res.get("pending"):
+            return self.send(200, join_page(ip, who, msg="<h2>Request sent</h2><p>The owner will "
+                                                         "approve it soon. Check back on this page.</p>"))
+        lo, hi = res["ports"]
+        e = html.escape
+        return self.send(200, join_page(ip, who, msg=f"""<h2>Welcome, {e(username)} 🎉</h2>
+<p>Connect from the computer whose key you pasted:</p><pre>ssh {e(username)}@{e(HOST)}</pre>
+<p>Then run <code>box setup</code>. It walks you through git, GitHub and logging in to your coding
+agent (Claude Code, Codex and opencode are preinstalled; use your own account). Takes about 2 minutes.</p>
+<pre>box setup                    # log in to GitHub + your agent (once)
+box t3                       # start your own T3 Code web UI, prints a pairing link</pre>
+<p>Prefer the terminal? <code>tmux new -A -s main</code>, then run <code>claude</code> or <code>codex</code> in <code>~/projects/&lt;name&gt;</code>.</p>
+<p>Your ports: <b>{lo}-{hi}</b>. Your agents already know the house rules (limits, where files go,
+how to run builds and servers). <code>box</code> shows your status at any time.</p>"""))
+
+
+def main():
+    global SELF_IP
+    port = sb.cfg_int(CFG, "WEB_PORT")
+    bind = CFG["WEB_BIND"]
+    SELF_IP = sb.tailscale_ip4()
+    if bind == "tailscale":
+        bind = SELF_IP
+        if not bind:
+            sys.exit("tailscale IP not available yet")  # systemd restarts us
+    ALLOWED_HOSTS.update(allowed_hosts(bind))
+    threading.Thread(target=sampler, daemon=True).start()
+    fam = socket.AF_INET6 if ":" in bind else socket.AF_INET
+    ThreadingHTTPServer.address_family = fam
+    srv = ThreadingHTTPServer((bind, port), Handler)
+    srv.daemon_threads = True
+    print(f"sharedbox-web on http://{bind}:{port}", flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

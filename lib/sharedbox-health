@@ -1,0 +1,490 @@
+#!/usr/bin/python3 -I
+"""sharedbox-health: box health + security reporting by email (root).
+
+  sharedbox-health sample                 record a metrics sample (timer, every 5 min)
+  sharedbox-health report [--send]        weekly report; prints it unless --send
+  sharedbox-health check  [--send]        urgent problems only; emails if anything is new (timer, hourly)
+  sharedbox-health audit  [--quick]       run the security self-audit and print findings
+  sharedbox-health test-email             send a test message
+
+Mail settings: MAIL_TO, SMTP_* in sharedbox.conf; password in SMTP_PASSWORD_FILE (chmod 600).
+"""
+
+import argparse
+import glob
+import html
+import json
+import os
+import pwd
+import re
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+import sbaudit  # noqa: E402
+import sbmail  # noqa: E402
+
+HDIR = os.path.join(sb.STATE_DIR, "health")
+METRICS = os.path.join(HDIR, "metrics.jsonl")
+SAMPLE_STATE = os.path.join(HDIR, "sample-state.json")
+ALERT_STATE = os.path.join(HDIR, "alerts.json")
+TRAP_LOG = os.path.join(sb.STATE_DIR, "trap", "hits.jsonl")
+WEEK = 7 * 86400
+KEEP = 9 * 86400
+
+
+def run(cmd, timeout=60):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def jsonl(path, since=0):
+    out = []
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("ts", 0) >= since:
+                    out.append(r)
+    except OSError:
+        pass
+    return out
+
+
+# ---------------------------------------------------------------- sampling
+
+def cpu_times():
+    f = open("/proc/stat").readline().split()[1:]
+    v = list(map(int, f))
+    idle = v[3] + v[4]
+    return sum(v), idle
+
+
+def max_temp():
+    best = None
+    for p in glob.glob("/sys/class/hwmon/hwmon*/temp*_input"):
+        try:
+            t = int(open(p).read()) / 1000
+        except (OSError, ValueError):
+            continue
+        if 0 < t < 150:
+            best = max(best or t, t)
+    return best
+
+
+def cmd_sample(cfg, a):
+    os.makedirs(HDIR, mode=0o755, exist_ok=True)
+    now = time.time()
+    total, idle = cpu_times()
+    st = sb.read_json(SAMPLE_STATE, {}) or {}
+    cpu = None
+    if st.get("total") and total > st["total"]:
+        cpu = round(100 * (1 - (idle - st["idle"]) / (total - st["total"])), 1)
+    mi = sb.meminfo()
+    box = sb.box_load()
+    users = {}
+    for name, rec in sb.friend_users().items():
+        c = sb.read_cgroup(sb.slice_path(rec["uid"]))
+        if c:
+            users[name] = [c["cpu_usec"], c["mem"]]
+    for name in sb.admin_users(cfg):
+        try:
+            c = sb.read_cgroup(sb.slice_path(pwd.getpwnam(name).pw_uid))
+        except KeyError:
+            c = None
+        if c:
+            users[name] = [c["cpu_usec"], c["mem"]]
+    rec = {
+        "ts": int(now), "cpu": cpu, "load1": box["loadavg"][0],
+        "mem": round(100 * (1 - mi["MemAvailable"] / mi["MemTotal"]), 1),
+        "swap": mi.get("SwapTotal", 0) - mi.get("SwapFree", 0),
+        "disk_free": round(100 * box["disk_free"] / box["disk_total"], 2),
+        "disk_free_b": box["disk_free"],
+        "psi": [box["psi_cpu"], box["psi_mem"], box["psi_io"]],
+        "temp": max_temp(), "users": users,
+    }
+    sb.write_json(SAMPLE_STATE, {"total": total, "idle": idle}, mode=0o600)
+    with open(METRICS, "a") as f:
+        f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    if os.path.getsize(METRICS) > 4 << 20 or now % 86400 < 300:   # trim about once a day
+        keep = jsonl(METRICS, now - KEEP)
+        tmp = METRICS + ".tmp"
+        with open(tmp, "w") as f:
+            for r in keep:
+                f.write(json.dumps(r, separators=(",", ":")) + "\n")
+        os.replace(tmp, METRICS)
+
+
+# ---------------------------------------------------------------- gathering
+
+def stats(vals):
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return None
+    vals.sort()
+    return {"avg": sum(vals) / len(vals), "max": vals[-1], "p95": vals[int(0.95 * (len(vals) - 1))]}
+
+
+def journal(args, since):
+    return run(["journalctl", "--no-pager", "-q", "-o", "short-iso", "--since", f"@{int(since)}"] + args,
+               timeout=120)
+
+
+def gather(cfg, since):
+    now = time.time()
+    m = jsonl(METRICS, since)
+    g = {"since": since, "now": now, "samples": len(m)}
+    g["cpu"] = stats([r.get("cpu") for r in m])
+    g["mem"] = stats([r.get("mem") for r in m])
+    g["load"] = stats([r.get("load1") for r in m])
+    g["temp"] = stats([r.get("temp") for r in m])
+    g["psi_mem"] = stats([r["psi"][1] for r in m if r.get("psi")])
+    g["swap_max"] = max([r.get("swap", 0) for r in m] or [0])
+
+    total, free = sb.disk_free("/")
+    g["disk_total"], g["disk_free"] = total, free
+    g["disk_free_pct"] = 100 * free / total
+    if len(m) > 12:
+        span = (m[-1]["ts"] - m[0]["ts"]) / 86400
+        grew = m[0]["disk_free_b"] - m[-1]["disk_free_b"]
+        g["disk_per_day"] = grew / span if span > 0.5 else None
+    # top users by CPU time and peak RAM over the window
+    usage = {}
+    if len(m) >= 2:
+        first, last = m[0].get("users", {}), m[-1].get("users", {})
+        for u, (cpu_last, _) in last.items():
+            if u in first and cpu_last >= first[u][0]:
+                usage.setdefault(u, {})["cpu_h"] = (cpu_last - first[u][0]) / 3.6e9
+        for r in m:
+            for u, (_, mem) in r.get("users", {}).items():
+                d = usage.setdefault(u, {})
+                d["mem_peak"] = max(d.get("mem_peak", 0), mem)
+    g["usage"] = usage
+    disk = (sb.read_json(sb.USAGE, {}) or {}).get("users", {})
+    g["disk_users"] = {u: d.get("usage") or d.get("used") for u, d in disk.items() if isinstance(d, dict)}
+
+    # boots / uptime
+    up = float(open("/proc/uptime").read().split()[0])
+    g["uptime_days"] = up / 86400
+    try:
+        boots = json.loads(run(["journalctl", "--list-boots", "--no-pager", "-o", "json"]) or "[]")
+        g["boots"] = [b["first_entry"] / 1e6 for b in boots if b["first_entry"] / 1e6 >= since]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        g["boots"] = []
+    # gaps in sampling = the box was down (or sampling broken)
+    g["downtime_min"] = sum(max(0, (b["ts"] - a_["ts"]) - 600) for a_, b in zip(m, m[1:])) / 60
+    g["kernel"] = os.uname().release
+
+    failed = run(["systemctl", "--failed", "--plain", "--no-legend"]).split("\n")
+    g["failed_units"] = [l.split()[0] for l in failed if l.strip()]
+    kern = journal(["-k"], since)
+    g["oom"] = re.findall(r"[Oo]ut of memory: Killed process \d+ \(([^)]+)\)", kern)
+    g["disk_errors"] = [l for l in kern.splitlines()
+                        if re.search(r"I/O error|EXT4-fs error|EXT4-fs warning|critical medium error|"
+                                     r"nvme.*(timeout|reset)|ata\d+.*(failed|error)", l)][:10]
+    g["smart"] = smart_status()
+    sshlog = journal(["-t", "sshd", "-t", "sshd-session"], since)
+    acc = {}
+    for mm in re.finditer(r"Accepted \S+ for (\S+) from (\S+)", sshlog):
+        acc.setdefault(mm.group(1), set()).add(mm.group(2))
+    g["ssh_accepted"] = {u: sorted(ips) for u, ips in acc.items()}
+    g["ssh_failed"] = len(re.findall(r"Failed \S+ for|Invalid user|Connection closed by invalid", sshlog))
+
+    g["apt"] = apt_history(since)
+    g["events"] = sb_events(since)
+    g["trap"] = jsonl(TRAP_LOG, since)
+    return g
+
+
+def trap_wins(days):
+    """The 'Trap wins' lines from sharedbox-trap's counters (same text as `sharedbox-trap stats`)."""
+    import importlib.machinery
+    import importlib.util
+    try:
+        loader = importlib.machinery.SourceFileLoader("sbtrap", os.path.join(sb.LIB_DIR, "sharedbox-trap"))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("sbtrap", loader))
+        loader.exec_module(mod)
+        return mod.wins_lines(mod.wins(days))
+    except Exception as e:
+        return [f"trap stats unavailable: {e}"]
+
+
+def smart_status():
+    if not run(["sh", "-c", "command -v smartctl"]).strip():
+        return None
+    out = {}
+    for dev in sorted(os.listdir("/sys/block")):
+        if dev.startswith(("loop", "ram", "zram", "dm-", "md")):
+            continue
+        r = run(["smartctl", "-H", "-A", f"/dev/{dev}"], timeout=30)
+        h = re.search(r"(?:overall-health self-assessment test result|SMART Health Status):\s*(\S+)", r)
+        wear = re.search(r"Percentage Used:\s+(\d+)%", r)
+        if h:
+            out[dev] = h.group(1) + (f", {wear.group(1)}% worn" if wear else "")
+    return out
+
+
+def apt_history(since):
+    ups, cur_ok = [], False
+    try:
+        lines = open("/var/log/apt/history.log").read().splitlines()
+    except OSError:
+        return ups
+    for l in lines:
+        if l.startswith("Start-Date:"):
+            try:
+                cur_ok = time.mktime(time.strptime(l.split(": ", 1)[1].strip(), "%Y-%m-%d  %H:%M:%S")) >= since
+            except ValueError:
+                cur_ok = False
+        elif cur_ok and l.startswith(("Upgrade:", "Install:")):
+            ups += re.findall(r"(\S+?):\S+ \(", l)
+    return sorted(set(ups))
+
+
+def sb_events(since):
+    ev = {}
+    for r in jsonl(sb.EVENTS, since):
+        ev.setdefault(r["kind"], []).append(r)
+    return ev
+
+
+# ---------------------------------------------------------------- verdict + rendering
+
+def problems(cfg, g, findings):
+    """(level, message) list; level 'red' or 'yellow'."""
+    p = []
+    crit, low = float(cfg["DISK_CRITICAL_FREE_PCT"]), float(cfg["DISK_LOW_FREE_PCT"])
+    if g["disk_free_pct"] < crit:
+        p.append(("red", f"disk almost full: {g['disk_free_pct']:.0f}% free"))
+    elif g["disk_free_pct"] < low:
+        p.append(("yellow", f"disk getting full: {g['disk_free_pct']:.0f}% free"))
+    if g.get("disk_per_day") and g["disk_per_day"] > 0:
+        days = g["disk_free"] / g["disk_per_day"]
+        if days < 30:
+            p.append(("yellow" if days > 7 else "red", f"at this week's rate the disk fills in ~{days:.0f} days"))
+    if g["failed_units"]:
+        p.append(("yellow", "failed services: " + ", ".join(g["failed_units"][:6])))
+    if g["oom"]:
+        p.append(("yellow", f"{len(g['oom'])} process(es) killed for running out of memory"))
+    if g["disk_errors"]:
+        p.append(("red", f"{len(g['disk_errors'])} disk/filesystem error(s) in the kernel log"))
+    for dev, s in (g.get("smart") or {}).items():
+        if not s.startswith(("PASSED", "OK")):
+            p.append(("red", f"disk {dev} SMART health: {s}"))
+    if g["temp"] and g["temp"]["max"] >= 90:
+        p.append(("yellow", f"CPU hit {g['temp']['max']:.0f}°C"))
+    if g["samples"] == 0:
+        p.append(("yellow", "no metrics recorded (is sharedbox-health-sample.timer running?)"))
+    for f in findings:
+        if f["sev"] == "high":
+            p.append(("red", f"security: {f['title']}"))
+    nmed = sum(1 for f in findings if f["sev"] == "medium")
+    if nmed:
+        p.append(("yellow", f"{nmed} medium security finding(s)"))
+    local_trap = [h for h in g["trap"] if h.get("internal")]
+    if local_trap:
+        srcs = sorted({h["ip"] for h in local_trap})
+        p.append(("red", f"something INSIDE your network probed decoy ports: {', '.join(srcs[:5])}"))
+    return p
+
+
+def pct(s, unit="%"):
+    return f"avg {s['avg']:.0f}{unit}, peak {s['max']:.0f}{unit}" if s else "no data"
+
+
+def build_report(cfg, g, findings, new_ids, resolved):
+    probs = problems(cfg, g, findings)
+    level = "red" if any(l == "red" for l, _ in probs) else "yellow" if probs else "green"
+    icon = {"green": "🟢", "yellow": "🟡", "red": "🔴"}[level]
+    word = {"green": "all good", "yellow": "needs a look", "red": "needs attention"}[level]
+    S = []   # sections: (title, [lines])
+
+    S.append(("Verdict", [f"{icon} {word}"] + [f"{'🔴' if l == 'red' else '🟡'} {m}" for l, m in probs]))
+    ncpu = os.cpu_count()
+    res = [f"CPU: {pct(g['cpu'])} (p95 {g['cpu']['p95']:.0f}%)" if g["cpu"] else "CPU: no data",
+           f"Load: {pct(g['load'], '')} on {ncpu} cores" if g["load"] else "",
+           f"RAM: {pct(g['mem'])}" + (f", swap peak {sb.human(g['swap_max'])}" if g["swap_max"] else ""),
+           f"Memory pressure: {pct(g['psi_mem'])} of time stalled" if g["psi_mem"] and g["psi_mem"]["max"] > 1 else "",
+           f"Disk: {sb.human(g['disk_free'])} free of {sb.human(g['disk_total'])} ({g['disk_free_pct']:.0f}%)"
+           + (f", {'+' if g['disk_per_day'] >= 0 else ''}{sb.human(abs(g['disk_per_day']))}/day used"
+              if g.get("disk_per_day") is not None else ""),
+           f"Temperature: {pct(g['temp'], '°C')}" if g["temp"] else ""]
+    if g.get("smart"):
+        res.append("Disks (SMART): " + ", ".join(f"{d} {s}" for d, s in g["smart"].items()))
+    elif g.get("smart") is None:
+        res.append("Disks (SMART): install smartmontools to get disk health")
+    S.append(("Resources this week", [r for r in res if r]))
+
+    up = [f"Up {g['uptime_days']:.1f} days, kernel {g['kernel']}",
+          f"Reboots this week: {len(g['boots'])}" + (" (" + ", ".join(time.strftime('%a %H:%M', time.localtime(b))
+                                                      for b in g["boots"]) + ")" if g["boots"] else ""),
+          f"Unaccounted gaps in monitoring: {g['downtime_min']:.0f} min" if g["downtime_min"] > 30 else "",
+          f"Failed services: {', '.join(g['failed_units']) or 'none'}",
+          f"Out-of-memory kills: {', '.join(g['oom'][:10]) or 'none'}"]
+    up += [f"  {l}" for l in g["disk_errors"][:5]]
+    S.append(("Uptime & stability", [u for u in up if u]))
+
+    us = []
+    rows = sorted(g["usage"].items(), key=lambda kv: -kv[1].get("cpu_h", 0))
+    for u, d in rows[:8]:
+        disk = g["disk_users"].get(u)
+        us.append(f"{u}: {d.get('cpu_h', 0):.1f} CPU-hours, RAM peak {sb.human(d.get('mem_peak', 0))}"
+                  + (f", disk {sb.human(disk)}" if disk else ""))
+    ev = g["events"]
+    if ev.get("user_created"):
+        us.append("New friends: " + ", ".join(e["user"] for e in ev["user_created"]))
+    if ev.get("deleted"):
+        us.append(f"Janitor deleted {len(ev['deleted'])} item(s)")
+    for k in ("over_budget", "user_suspended", "janitor_error", "disk_pressure"):
+        if ev.get(k):
+            us.append(f"{k.replace('_', ' ')}: {len(ev[k])}x " + ", ".join(sorted({e.get('user') or '' for e in ev[k]})))
+    S.append(("Who used the box", us or ["no per-user data yet"]))
+
+    sec = []
+    sec.append(f"SSH logins: " + ("; ".join(f"{u} from {', '.join(ips[:3])}" for u, ips in g["ssh_accepted"].items())
+                                  or "none"))
+    sec.append(f"Failed/invalid SSH attempts: {g['ssh_failed']}")
+    if g["apt"]:
+        sec.append(f"Packages updated: {len(g['apt'])} (" + ", ".join(g["apt"][:12])
+                   + (", …" if len(g["apt"]) > 12 else "") + ")")
+    S.append(("Security activity", sec))
+    S.append(("Trap wins", trap_wins(7)))
+
+    if findings:
+        fl = []
+        for f in findings:
+            if f["sev"] == "info" and not f["id"].startswith("exposed"):
+                continue
+            mark = "NEW " if f["id"] in new_ids else ""
+            fl.append(f"[{f['sev'].upper()}] {mark}{f['title']}"
+                      + (f"\n      {f['detail']}" if f["detail"] else "")
+                      + (f"\n      fix: {f['fix']}" if f["fix"] else ""))
+        if resolved:
+            fl.append("Resolved since last week: " + "; ".join(r["title"] for r in resolved[:10]))
+        S.append(("Red-team audit", fl or ["no findings"]))
+
+    subject = f"{icon} weekly health: {word}" + (f" ({len(probs)} issue{'s' * (len(probs) != 1)})" if probs else "")
+    text = "\n\n".join(f"== {t} ==\n" + "\n".join(lines) for t, lines in S)
+    host = socket.gethostname()
+    text = f"{host} — week ending {time.strftime('%a %d %b %Y')}\n\n{text}\n\n-- sharedbox-health\n"
+    color = {"green": "#1a7f37", "yellow": "#9a6700", "red": "#cf222e"}[level]
+    h = [f"<div style='font-family:-apple-system,Segoe UI,sans-serif;max-width:720px;color:#1f2328'>",
+         f"<h2 style='margin:0 0 4px'>{html.escape(host)}</h2>",
+         f"<div style='color:#656d76;margin-bottom:16px'>week ending {time.strftime('%a %d %b %Y')}</div>"]
+    for t, lines in S:
+        h.append(f"<h3 style='border-bottom:1px solid #d0d7de;padding-bottom:4px;margin:20px 0 8px"
+                 + (f";color:{color}" if t == "Verdict" else "") + f"'>{html.escape(t)}</h3>")
+        h.append("<div style='white-space:pre-wrap;font-size:14px;line-height:1.5'>"
+                 + "\n".join(_hl(l) for l in lines) + "</div>")
+    h.append("<p style='color:#656d76;font-size:12px;margin-top:24px'>sharedbox-health · "
+             "run <code>sudo sharedbox-health report</code> for this report on demand</p></div>")
+    return subject, text, "".join(h)
+
+
+def _hl(line):
+    e = html.escape(line)
+    for sev, c in (("[HIGH]", "#cf222e"), ("[MEDIUM]", "#9a6700"), ("[LOW]", "#656d76")):
+        e = e.replace(sev, f"<b style='color:{c}'>{sev}</b>")
+    return e.replace("NEW ", "<b style='background:#fff8c5'>NEW</b> ")
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_report(cfg, a):
+    since = time.time() - WEEK
+    au = sbaudit.Audit(cfg)
+    findings = au.run_all(deep=True, since=since)
+    new, resolved = au.save(deep=True)
+    g = gather(cfg, since)
+    subject, text, page = build_report(cfg, g, findings, {f["id"] for f in new}, resolved)
+    if a.send:
+        sbmail.send(cfg, subject, text, page)
+        print(f"sent: {subject}")
+    else:
+        print(f"Subject: {subject}\n\n{text}")
+
+
+def cmd_check(cfg, a):
+    """Hourly: email only about urgent things that weren't already reported."""
+    since = time.time() - 2 * 3600
+    au = sbaudit.Audit(cfg)
+    findings = au.run_all(deep=False, since=since)
+    g = gather(cfg, since)
+    urgent = [(l, m) for l, m in problems(cfg, g, findings) if l == "red"]
+    stale = (time.time() - os.path.getmtime(METRICS)) / 60 if os.path.exists(METRICS) else None
+    if stale and stale > 30:
+        urgent.append(("red", f"metrics sampling stopped {stale:.0f} min ago"))
+    state = sb.read_json(ALERT_STATE, {}) or {}
+    now = time.time()
+    fresh = [m for _, m in urgent if now - state.get(m, 0) > 24 * 3600]   # same alert at most daily
+    for m in fresh:
+        state[m] = now
+    state = {k: v for k, v in state.items() if now - v < 7 * 86400}
+    if not fresh:
+        if not a.send:
+            print("nothing urgent")
+        return
+    detail = []
+    for f in findings:
+        if f["sev"] == "high":
+            detail.append(f"- {f['title']}\n  {f['detail']}\n  fix: {f['fix']}")
+    text = "Urgent:\n" + "\n".join(f"- {m}" for m in fresh) + ("\n\nDetails:\n" + "\n".join(detail) if detail else "") \
+        + "\n\nFull report: sudo sharedbox-health report\n"
+    if a.send:
+        sbmail.send(cfg, f"🔴 ALERT: {fresh[0]}" + (f" (+{len(fresh) - 1} more)" if len(fresh) > 1 else ""), text)
+        sb.write_json(ALERT_STATE, state, mode=0o600)
+    else:
+        print(text)
+
+
+def cmd_audit(cfg, a):
+    au = sbaudit.Audit(cfg)
+    findings = au.run_all(deep=not a.quick)
+    for f in findings:
+        print(f"[{f['sev'].upper():6}] {f['title']}")
+        if f["detail"]:
+            print(f"         {f['detail']}")
+        if f["fix"]:
+            print(f"         fix: {f['fix']}")
+    if not findings:
+        print("no findings")
+    for k, v in au.facts.items():
+        if k in ("public", "exposed_ports", "firewall") and v:
+            print(f"{k}: {v}")
+
+
+def cmd_test(cfg, a):
+    sbmail.send(cfg, "test email", "If you can read this, sharedbox-health can email you.\n"
+                                   "Weekly report: Mondays; urgent alerts: as they happen.\n")
+    print(f"sent to {cfg['MAIL_TO']}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="sharedbox-health", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    s.add_parser("sample").set_defaults(fn=cmd_sample)
+    x = s.add_parser("report"); x.add_argument("--send", action="store_true"); x.set_defaults(fn=cmd_report)
+    x = s.add_parser("check"); x.add_argument("--send", action="store_true"); x.set_defaults(fn=cmd_check)
+    x = s.add_parser("audit"); x.add_argument("--quick", action="store_true"); x.set_defaults(fn=cmd_audit)
+    s.add_parser("test-email").set_defaults(fn=cmd_test)
+    a = p.parse_args()
+    if os.geteuid() != 0 and a.cmd != "audit":
+        sys.exit("run with sudo")
+    cfg = sb.load_config()
+    try:
+        a.fn(cfg, a)
+    except sbmail.MailNotConfigured as e:
+        sys.exit(f"email not configured: {e}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,563 @@
+#!/usr/bin/python3 -I
+"""sharedbox-trap: decoy ports, bait URLs and an AI-crawler maze that waste attackers' time.
+
+  sharedbox-trap serve                    the daemon (sharedbox-trap.service, runs as `sharedbox`)
+  sharedbox-trap publish PORT             put the web app on 127.0.0.1:PORT on the public internet
+                                          (Tailscale Funnel -> trap proxy -> app)          [root]
+  sharedbox-trap unpublish PORT           take it off the internet                         [root]
+  sharedbox-trap stats [--days N]         our wins: bombs delivered, hours wasted, bots mazed
+
+Decoy ports (TRAP_PORTS, bound to the LAN + Tailscale addresses only, never 127.0.0.1):
+  speaks HTTP  -> gzip bomb: ~10 MB on the wire, TRAP_BOMB_GB of zeros once the client inflates it
+  anything else -> tarpit: an endless pre-banner, one line every ~10 s, for up to TRAP_TARPIT_HOURS
+  Nothing legitimate ever connects to these, so a hit from inside your network (LAN/tailnet)
+  means something there is scanning: sharedbox-health emails you about it.
+
+Published apps go through the trap proxy, which decides per request:
+  bait URL (/.env, /wp-login.php, ...)          -> gzip bomb (HTTP tarpit when over the bomb budget)
+  /robots.txt                                   -> ours: AI crawlers disallowed, /archive/ off-limits
+  AI crawler User-Agent, or an IP that fetched
+  the forbidden /archive/ (ignored robots.txt)  -> endless slow link maze of generated babble
+  everything else                               -> the real app (websockets included)
+"""
+
+import argparse
+import asyncio
+import datetime
+import hashlib
+import ipaddress
+import json
+import os
+import random
+import re
+import signal
+import subprocess
+import sys
+import time
+import zlib
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+TDIR = os.path.join(sb.STATE_DIR, "trap")
+HITS = os.path.join(TDIR, "hits.jsonl")
+STATS = os.path.join(TDIR, "stats.json")
+BOMB = os.path.join(TDIR, "bomb.gz")
+PUBLISHED = os.path.join(TDIR, "published.json")
+
+REQ_RE = re.compile(rb"^([A-Z]{3,10}) (\S{1,4096}) HTTP/1\.[01]\r?\n")
+INTERNAL = [ipaddress.ip_network(n) for n in
+            ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fd7a:115c:a1e0::/48",
+             "fc00::/7", "fe80::/10", "169.254.0.0/16")]
+# User-Agent substrings of AI training/answer crawlers (case-insensitive). Add more: TRAP_AI_AGENTS_EXTRA
+AI_AGENTS = ("GPTBot ChatGPT-User OAI-SearchBot ClaudeBot Claude-User Claude-SearchBot Claude-Web anthropic-ai "
+             "CCBot Bytespider PerplexityBot Perplexity-User Amazonbot meta-externalagent meta-externalfetcher "
+             "FacebookBot Google-CloudVertexBot GoogleOther cohere-ai cohere-training-data-crawler Diffbot "
+             "ImagesiftBot Omgilibot omgili YouBot Timpibot PetalBot AI2Bot Ai2Bot-Dolma DuckAssistBot "
+             "MistralAI-User PanguBot img2dataset webzio-extended Brightbot iaskspider ICC-Crawler Novellum "
+             "QualifiedBot Crawlspace TikTokSpider VelenPublicWebCrawler FirecrawlAgent Sidetrade "
+             "Kangaroo-Bot Scrapy SemrushBot-OCOB Andibot bigsur.ai Echobot quillbot.com").split()
+ROBOTS = "\n".join([*(f"User-agent: {a}" for a in AI_AGENTS), "Disallow: /", "",
+                    "User-agent: *", "Disallow: {maze}", ""])
+SYL = ("ka ri to ne mu sa lo ve pi da qu en or al is um ex tra con pre lith morph vox syn cal ter "
+       "gen nul arch omni flux quor dex an ul ith ob vel").split()
+
+
+def is_internal(ip):
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    return any(a in n for n in INTERNAL if n.version == a.version)
+
+
+def peer_ip(writer):
+    ip = (writer.get_extra_info("peername") or ("?",))[0]
+    return ip[7:] if ip.startswith("::ffff:") else ip
+
+
+class Trap:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.bomb_gb = float(cfg["TRAP_BOMB_GB"])
+        self.max_conns = int(cfg["TRAP_MAX_CONNS"])
+        self.max_bombs = int(cfg["TRAP_MAX_BOMBS"])
+        self.bombs_per_ip = int(cfg["TRAP_BOMBS_PER_IP_HOUR"])
+        self.tarpit_max = float(cfg["TRAP_TARPIT_HOURS"]) * 3600
+        self.maze = "/" + cfg["TRAP_MAZE_PREFIX"].strip("/") + "/"
+        self.bait = [p for p in re.split(r"[,\s]+", cfg["TRAP_BAIT_PATHS"]) if p.startswith("/")]
+        extra = [a for a in re.split(r"[,\s]+", cfg.get("TRAP_AI_AGENTS_EXTRA", "")) if a]
+        self.ai_re = re.compile("|".join(re.escape(a) for a in AI_AGENTS + extra), re.I)
+        self.conns = 0
+        self.bombing = 0
+        self.ip_bombs = {}      # ip -> [ts]
+        self.ip_logged = {}     # ip -> (hour, n)
+        self.liars = {}         # ip -> until ts (fetched the robots-forbidden maze)
+        self.bomb = None
+        self.stats = sb.read_json(STATS, {}) or {}
+        self.stats.setdefault("days", {})
+
+    # ---------- bookkeeping ----------
+    def day(self):
+        d = self.stats["days"].setdefault(datetime.date.today().isoformat(), {})
+        return d
+
+    def count(self, key, n=1, sub=None):
+        d = self.day()
+        if sub is None:
+            d[key] = d.get(key, 0) + n
+        else:
+            m = d.setdefault(key, {})
+            if sub in m or len(m) < 500:
+                m[sub] = m.get(sub, 0) + n
+
+    def save_stats(self):
+        days = self.stats["days"]
+        for k in sorted(days)[:-90]:
+            del days[k]
+        try:
+            sb.write_json(STATS, self.stats, mode=0o644)
+        except OSError as e:
+            print(f"stats write failed: {e}", flush=True)
+
+    async def flush_stats(self):
+        while True:
+            await asyncio.sleep(60)
+            self.save_stats()
+
+    def log(self, **rec):
+        ip = rec.get("ip", "?")
+        hour = int(time.time() // 3600)
+        h, n = self.ip_logged.get(ip, (hour, 0))
+        n = n + 1 if h == hour else 1
+        self.ip_logged[ip] = (hour, n)
+        if len(self.ip_logged) > 50000:
+            self.ip_logged.clear()
+        if n > 30:          # one noisy scanner must not flood the log; counters still count it
+            return
+        try:
+            with open(HITS, "a") as f:
+                f.write(json.dumps({"ts": int(time.time()), **rec}, separators=(",", ":")) + "\n")
+            if os.path.getsize(HITS) > 50 << 20:
+                os.replace(HITS, HITS + ".1")
+        except OSError:
+            pass
+
+    # ---------- bomb ----------
+    def load_bomb(self):
+        want = f"{self.bomb_gb:g}"
+        try:
+            if open(BOMB + ".size").read().strip() == want:
+                self.bomb = open(BOMB, "rb").read()
+                return
+        except OSError:
+            pass
+        print(f"building {want} GB gzip bomb (one-time, ~1 min)...", flush=True)
+        co = zlib.compressobj(9, zlib.DEFLATED, 31)
+        chunk = bytes(1 << 20)
+        parts = [co.compress(b"<!doctype html><html><head><title>Index</title></head><body>")]
+        for _ in range(int(self.bomb_gb * 1024)):
+            parts.append(co.compress(chunk))
+        parts.append(co.flush())
+        self.bomb = b"".join(parts)
+        with open(BOMB + ".tmp", "wb") as f:
+            f.write(self.bomb)
+        os.replace(BOMB + ".tmp", BOMB)
+        with open(BOMB + ".size", "w") as f:
+            f.write(want)
+        print(f"bomb ready: {len(self.bomb) / 1e6:.1f} MB -> {want} GB", flush=True)
+
+    def may_bomb(self, ip):
+        now = time.time()
+        recent = [t for t in self.ip_bombs.get(ip, []) if now - t < 3600]
+        if self.bombing >= self.max_bombs or len(recent) >= self.bombs_per_ip:
+            return False
+        self.ip_bombs[ip] = recent + [now]
+        if len(self.ip_bombs) > 50000:
+            self.ip_bombs.clear()
+        return True
+
+    async def send_bomb(self, writer, head_only):
+        self.bombing += 1
+        self.count("bombs_sent")
+        try:
+            writer.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                          "Content-Encoding: gzip\r\nCache-Control: no-store\r\nServer: Apache/2.4.41 (Ubuntu)\r\n"
+                          f"Content-Length: {len(self.bomb)}\r\nConnection: close\r\n\r\n").encode())
+            if not head_only:
+                view = memoryview(self.bomb)
+                for i in range(0, len(view), 1 << 16):
+                    writer.write(view[i:i + (1 << 16)])
+                    await asyncio.wait_for(writer.drain(), timeout=60)
+                self.count("bombs_delivered")
+                self.count("gb_inflated", self.bomb_gb)
+            await writer.drain()
+        finally:
+            self.bombing -= 1
+
+    # ---------- tarpits ----------
+    async def drip(self, writer, http):
+        """endlessh-style: a junk line every ~10 s until they give up (or TRAP_TARPIT_HOURS)."""
+        deadline = time.monotonic() + self.tarpit_max
+        if http:
+            writer.write(b"HTTP/1.1 200 OK\r\n")
+        while time.monotonic() < deadline:
+            writer.write(b"X-%x: %x\r\n" % (random.getrandbits(32), random.getrandbits(32)) if http
+                         else b"%x\r\n" % random.getrandbits(64))
+            await asyncio.wait_for(writer.drain(), timeout=120)
+            await asyncio.sleep(random.uniform(8, 12))
+
+    async def maze_page(self, writer, path, head_only):
+        """Deterministic babble page with links deeper into the maze, served slowly."""
+        rng = random.Random(hashlib.sha256(path.encode()).digest())
+        word = lambda: "".join(rng.choice(SYL) for _ in range(rng.randint(1, 4)))  # noqa: E731
+        sent = lambda n: " ".join(word() for _ in range(n)).capitalize() + "."  # noqa: E731
+        title = " ".join(word() for _ in range(rng.randint(2, 6))).title()
+        paras = "".join(f"<p>{' '.join(sent(rng.randint(6, 18)) for _ in range(rng.randint(3, 7)))}</p>"
+                        for _ in range(rng.randint(3, 8)))
+        links = "".join(f'<li><a href="{self.maze}{word()}-{rng.getrandbits(40):x}/">'
+                        f"{' '.join(word() for _ in range(rng.randint(2, 5)))}</a></li>"
+                        for _ in range(8))
+        body = (f"<!doctype html><html><head><title>{title}</title></head><body><h1>{title}</h1>"
+                f"{paras}<ul>{links}</ul></body></html>").encode()
+        await asyncio.sleep(random.uniform(*map(float, self.cfg["TRAP_MAZE_DELAY"].split("-"))))
+        writer.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                      f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode())
+        if not head_only:
+            step = max(1, len(body) // 8)
+            for i in range(0, len(body), step):    # drip the body over ~10 s
+                writer.write(body[i:i + step])
+                await asyncio.wait_for(writer.drain(), timeout=60)
+                await asyncio.sleep(random.uniform(0.8, 1.6))
+        await writer.drain()
+
+    # ---------- decoy ports ----------
+    async def handle_port(self, reader, writer, port):
+        ip = peer_ip(writer)
+        if self.conns >= self.max_conns:
+            writer.close()
+            return
+        self.conns += 1
+        start, action = time.monotonic(), "tarpit"
+        internal = is_internal(ip)
+        try:
+            try:
+                head = await asyncio.wait_for(reader.read(4096), timeout=3)
+            except asyncio.TimeoutError:
+                head = b""
+            m = REQ_RE.match(head)
+            if m:
+                action = "bomb" if self.may_bomb(ip) else "http-tarpit"
+            self.count("port_hits")
+            self.count("ips", sub=ip)
+            if internal:
+                self.count("internal", sub=ip)
+            self.log(event="hit", ip=ip, port=port, source="port", action=action, internal=internal,
+                     path=m.group(2).decode("latin-1")[:300] if m else None,
+                     probe=None if m or not head else head[:40].hex())
+            if action == "bomb":
+                await self.send_bomb(writer, m.group(1) == b"HEAD")
+            else:
+                await self.drip(writer, http=action == "http-tarpit")
+        except (ConnectionError, asyncio.TimeoutError, OSError):
+            pass
+        finally:
+            self.conns -= 1
+            secs = time.monotonic() - start
+            if action != "bomb":
+                self.count("tarpit_secs", round(secs))
+                if secs >= 60:
+                    self.log(event="close", ip=ip, port=port, action=action, secs=round(secs))
+            writer.close()
+
+    # ---------- proxy in front of published apps ----------
+    async def handle_proxy(self, reader, writer, upstream):
+        if self.conns >= self.max_conns:
+            writer.close()
+            return
+        self.conns += 1
+        ip, start, action = peer_ip(writer), time.monotonic(), None
+        try:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                more = await asyncio.wait_for(reader.read(8192), timeout=15)
+                if not more:
+                    return
+                head += more
+                if len(head) > 65536:
+                    writer.write(b"HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n")
+                    return
+            hdr_end = head.index(b"\r\n\r\n")
+            m = REQ_RE.match(head)
+            if not m:
+                writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+                return
+            method, target = m.group(1).decode(), m.group(2).decode("latin-1")
+            path = target.split("?", 1)[0]
+            hdrs = head[:hdr_end].decode("latin-1")
+            ua = (re.search(r"(?im)^user-agent:[ \t]*(.*)$", hdrs) or [None, ""])[1].strip()
+            fwd = (re.search(r"(?im)^x-forwarded-for:[ \t]*([^,\r\n]+)", hdrs) or [None, ""])[1].strip()
+            ip = fwd or ip
+            now = time.time()
+            ai = self.ai_re.search(ua)
+            if any(path == b or (b.endswith("/") and path.startswith(b)) for b in self.bait):
+                action = "bomb" if self.may_bomb(ip) else "http-tarpit"
+            elif path == "/robots.txt":
+                action = "robots"
+            elif path.startswith(self.maze):
+                if self.liars.get(ip, 0) < now and not ai:
+                    self.count("robots_liars")
+                    self.log(event="robots-liar", ip=ip, ua=ua[:200], path=path[:200])
+                self.liars[ip] = now + 86400
+                action = "maze"
+            elif ai or self.liars.get(ip, 0) > now:
+                action = "maze"
+            if action is None:
+                await self.pipe(reader, writer, head, hdr_end, ip, upstream)
+                return
+            self.count("ips", sub=ip)
+            if action == "maze":
+                bot = ai.group(0) if ai else "robots.txt liar"
+                self.count("maze_pages")
+                self.count("bots", sub=bot)
+                if path == self.maze or not path.startswith(self.maze):
+                    self.log(event="maze", ip=ip, bot=bot, ua=ua[:200], path=path[:200])
+                await self.maze_page(writer, path, method == "HEAD")
+            elif action == "robots":
+                body = ROBOTS.replace("{maze}", self.maze).encode()
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n"
+                             b"Connection: close\r\n\r\n%s" % (len(body), body))
+                await writer.drain()
+            else:
+                self.count("bait_hits")
+                self.log(event="hit", ip=ip, source="public", action=action, path=path[:300], ua=ua[:200])
+                if action == "bomb":
+                    await self.send_bomb(writer, method == "HEAD")
+                else:
+                    await self.drip(writer, http=True)
+        except (ConnectionError, asyncio.TimeoutError, OSError, ValueError):
+            pass
+        finally:
+            self.conns -= 1
+            secs = round(time.monotonic() - start)
+            if action == "maze":
+                self.count("maze_secs", secs)
+            elif action == "http-tarpit":
+                self.count("tarpit_secs", secs)
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    async def pipe(self, reader, writer, head, hdr_end, ip, upstream):
+        """Forward one request (or a websocket) to the app. Connection: close keeps every
+        request on its own connection, so each one passes the checks above."""
+        lines = head[:hdr_end].split(b"\r\n")
+        upgrade = any(l.lower().startswith(b"upgrade:") for l in lines[1:])
+        keep = [l for l in lines[1:] if not l.lower().startswith((b"connection:", b"keep-alive:",
+                                                                  b"proxy-connection:"))]
+        if not any(l.lower().startswith(b"x-forwarded-for:") for l in keep):
+            keep.append(b"X-Forwarded-For: " + ip.encode())
+        keep.append(b"Connection: upgrade" if upgrade else b"Connection: close")
+        try:
+            ur, uw = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", upstream), timeout=10)
+        except (OSError, asyncio.TimeoutError):
+            writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        uw.write(b"\r\n".join([lines[0], *keep]) + b"\r\n\r\n" + head[hdr_end + 4:])
+        self.count("passed")
+
+        async def copy(src, dst):
+            try:
+                while data := await src.read(65536):
+                    dst.write(data)
+                    await dst.drain()
+            except (ConnectionError, OSError):
+                pass
+            finally:
+                try:
+                    dst.write_eof() if dst.can_write_eof() else None
+                except (OSError, RuntimeError):
+                    pass
+
+        try:
+            await asyncio.gather(copy(reader, uw), copy(ur, writer))
+        finally:
+            uw.close()
+
+    # ---------- listeners ----------
+    async def serve(self):
+        self.load_bomb()
+        servers = []
+        addrs = bind_addresses(self.cfg)
+        ports = [int(p) for p in re.split(r"[,\s]+", self.cfg["TRAP_PORTS"]) if p.strip()]
+        for addr in addrs:
+            for port in ports:
+                try:
+                    servers.append(await asyncio.start_server(
+                        lambda r, w, p=port: self.handle_port(r, w, p), addr, port, reuse_address=True))
+                except OSError as e:
+                    print(f"skip {addr}:{port}: {e.strerror}", flush=True)
+        pub = sb.read_json(PUBLISHED, {}) or {}
+        for app, rec in pub.items():
+            try:
+                servers.append(await asyncio.start_server(
+                    lambda r, w, up=int(app): self.handle_proxy(r, w, up), "127.0.0.1", rec["proxy"]))
+                print(f"proxy 127.0.0.1:{rec['proxy']} -> app 127.0.0.1:{app}", flush=True)
+            except OSError as e:
+                print(f"skip proxy for app {app}: {e.strerror}", flush=True)
+        print(f"trap: decoy ports {ports} on {', '.join(addrs) or 'nothing'}; "
+              f"{len(pub)} published app(s)", flush=True)
+        if not servers:
+            sys.exit("nothing to listen on")
+        stop = asyncio.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+        tasks = [asyncio.ensure_future(t) for t in (self.flush_stats(), *(s.serve_forever() for s in servers))]
+        await stop.wait()
+        self.save_stats()
+        for t in tasks:
+            t.cancel()
+
+
+def bind_addresses(cfg):
+    """TRAP_BIND: comma list of lan (default-route interface IPv4), tailscale (its v4+v6), or IPs."""
+    out = []
+    for item in [x.strip() for x in cfg["TRAP_BIND"].split(",") if x.strip()]:
+        if item == "lan":
+            for line in open("/proc/net/route").read().splitlines()[1:]:
+                f = line.split()
+                if f[1] == "00000000" and f[0] != "tailscale0":
+                    r = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", f[0]], capture_output=True, text=True)
+                    out += re.findall(r"inet (\S+)/", r.stdout)
+                    break
+        elif item == "tailscale":
+            r = subprocess.run(["ip", "-o", "addr", "show", "dev", "tailscale0"], capture_output=True, text=True)
+            out += [a for a in re.findall(r"inet6? (\S+)/", r.stdout) if not a.startswith("fe80")]
+        else:
+            out.append(item)
+    return list(dict.fromkeys(out))
+
+
+# ---------------------------------------------------------------- admin commands
+
+def need_root():
+    if os.geteuid() != 0:
+        sys.exit("run with sudo")
+
+
+def ts(*args):
+    print("+ tailscale", " ".join(args))
+    r = subprocess.run(["tailscale", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"failed: {(r.stderr or r.stdout).strip()}\n(Funnel must be allowed for this machine in "
+                 "the tailnet policy file: nodeAttrs with \"funnel\")")
+    return r.stdout
+
+
+def cmd_publish(cfg, a):
+    need_root()
+    pub = sb.read_json(PUBLISHED, {}) or {}
+    https = a.https_port
+    base = int(cfg["TRAP_PROXY_BASE"])
+    used = {r["proxy"] for r in pub.values()}
+    rec = pub.get(str(a.port)) or {"proxy": next(p for p in range(base, base + 100) if p not in used)}
+    rec["https"] = https
+    pub[str(a.port)] = rec
+    sb.write_json(PUBLISHED, pub, mode=0o644)
+    subprocess.run(["systemctl", "restart", "sharedbox-trap.service"], check=False)
+    time.sleep(1)
+    ts("funnel", "--bg", f"--https={https}", f"http://127.0.0.1:{rec['proxy']}")
+    print(ts("funnel", "status"))
+    print(f"app on 127.0.0.1:{a.port} is PUBLIC via the trap proxy (127.0.0.1:{rec['proxy']}).\n"
+          f"Undo: sudo sharedbox-trap unpublish {a.port}")
+
+
+def cmd_unpublish(cfg, a):
+    need_root()
+    pub = sb.read_json(PUBLISHED, {}) or {}
+    rec = pub.pop(str(a.port), None)
+    if not rec:
+        sys.exit(f"app {a.port} is not published")
+    ts("funnel", f"--https={rec.get('https', 443)}", "off")
+    sb.write_json(PUBLISHED, pub, mode=0o644)
+    subprocess.run(["systemctl", "restart", "sharedbox-trap.service"], check=False)
+    print(f"app {a.port} is no longer public")
+
+
+def wins(days):
+    """Aggregate the daily counters for the last N days."""
+    st = sb.read_json(STATS, {}) or {}
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days - 1)).isoformat()
+    tot = {}
+    for d, v in st.get("days", {}).items():
+        if d < cutoff:
+            continue
+        for k, x in v.items():
+            if isinstance(x, dict):
+                m = tot.setdefault(k, {})
+                for kk, n in x.items():
+                    m[kk] = m.get(kk, 0) + n
+            else:
+                tot[k] = tot.get(k, 0) + x
+    return tot
+
+
+def wins_lines(w):
+    if not w:
+        return ["no trap activity yet"]
+    out = []
+    if w.get("bombs_delivered") or w.get("bombs_sent"):
+        out.append(f"💣 {w.get('bombs_delivered', 0)} zip bombs delivered "
+                   f"({w.get('gb_inflated', 0):.0f} GB of junk inflated on attackers' machines; "
+                   f"{w.get('bombs_sent', 0)} sent)")
+    if w.get("tarpit_secs"):
+        out.append(f"🪤 scanners stuck in tarpits for {w['tarpit_secs'] / 3600:.1f} hours")
+    if w.get("maze_pages"):
+        bots = sorted(w.get("bots", {}).items(), key=lambda kv: -kv[1])
+        out.append(f"🌀 {w['maze_pages']} maze pages fed to AI crawlers, wasting "
+                   f"{w.get('maze_secs', 0) / 3600:.1f} hours of their crawl time")
+        out.append("   " + ", ".join(f"{b} ({n})" for b, n in bots[:8]))
+    if w.get("robots_liars"):
+        out.append(f"🤥 {w['robots_liars']} crawler(s) caught ignoring robots.txt")
+    if w.get("bait_hits") or w.get("port_hits"):
+        out.append(f"🎣 {w.get('bait_hits', 0)} bait-URL hits on public apps, "
+                   f"{w.get('port_hits', 0)} decoy-port hits from {len(w.get('ips', {}))} IPs")
+    if w.get("passed"):
+        out.append(f"✅ {w['passed']} normal requests passed through to your apps")
+    if w.get("internal"):
+        out.append("⚠️ from INSIDE your network: " + ", ".join(f"{ip} ({n})" for ip, n in w["internal"].items()))
+    top = sorted(w.get("ips", {}).items(), key=lambda kv: -kv[1])[:5]
+    if top:
+        out.append("   most persistent: " + ", ".join(f"{ip} ({n})" for ip, n in top))
+    return out or ["no trap activity"]
+
+
+def cmd_stats(cfg, a):
+    print(f"last {a.days} days:")
+    for line in wins_lines(wins(a.days)):
+        print(line)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="sharedbox-trap", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    s.add_parser("serve")
+    x = s.add_parser("publish"); x.add_argument("port", type=int)
+    x.add_argument("--https-port", type=int, default=443, choices=(443, 8443, 10000))
+    x = s.add_parser("unpublish"); x.add_argument("port", type=int)
+    x = s.add_parser("stats"); x.add_argument("--days", type=int, default=7)
+    a = p.parse_args()
+    cfg = sb.load_config()
+    if a.cmd == "serve":
+        os.makedirs(TDIR, exist_ok=True)
+        asyncio.run(Trap(cfg).serve())
+    else:
+        {"publish": cmd_publish, "unpublish": cmd_unpublish, "stats": cmd_stats}[a.cmd](cfg, a)
+
+
+if __name__ == "__main__":
+    main()
