@@ -138,7 +138,16 @@ def uv_install(dry):
         return
     with tempfile.TemporaryDirectory() as d:
         script = os.path.join(d, "install.sh")
-        urllib.request.urlretrieve("https://astral.sh/uv/install.sh", script)
+        # astral.sh's release host 403s Python's default "Python-urllib" User-Agent.
+        req = urllib.request.Request("https://astral.sh/uv/install.sh",
+                                     headers={"User-Agent": "sharedbox-tools"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp, open(script, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        except OSError as e:
+            print(f"    warning: could not download the uv installer ({e}). Users can still use "
+                  "pipx; retry with `sudo sharedbox-tools install`", file=sys.stderr)
+            return
         env = dict(os.environ, UV_UNMANAGED_INSTALL="/usr/local/bin", INSTALLER_NO_MODIFY_PATH="1")
         r = subprocess.run(["sh", script], env=env, check=False)
     if r.returncode != 0 or not os.path.exists("/usr/local/bin/uv"):
