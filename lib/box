@@ -482,19 +482,8 @@ def listening(host, port):
         return False
 
 
-def cmd_t3(a):
-    if not shutil.which("t3"):
-        sys.exit('T3 Code is not installed on this box. Ask the owner: box request "install t3 (npm)"')
-    host, port, env = t3_env()
-    if a.action == "stop":
-        sys.exit(sctl("disable", "--now", T3_UNIT).returncode)
-    if a.action == "logs":
-        os.execvp("journalctl", ["journalctl", "--user", "-u", T3_UNIT, "-n", "200", "--no-pager"])
-    if a.action == "status":
-        up = listening(host, port)
-        print(f"T3 Code: {'running' if up else 'not running'} at http://{host}:{port}/")
-        return
-    # start (if needed) + pair
+def t3_ensure(host, port, env, quiet=False):
+    """Write the T3 user unit and make sure it's enabled and started. Doesn't wait for it."""
     os.makedirs(os.path.join(HOME, "projects"), exist_ok=True)
     os.makedirs(UNIT_DIR, exist_ok=True)
     unit = ["[Unit]", "Description=T3 Code (box t3)", "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
@@ -512,11 +501,27 @@ def cmd_t3(a):
     if changed:
         with open(path, "w") as f:
             f.write(body)
-        sctl("daemon-reload")
+        sctl("daemon-reload", capture=quiet)
     if changed and listening(host, port):
-        sctl("restart", T3_UNIT)
+        sctl("restart", T3_UNIT, capture=quiet)
     else:
-        sctl("enable", "--now", T3_UNIT)
+        sctl("enable", "--now", T3_UNIT, capture=quiet)
+
+
+def cmd_t3(a):
+    if not shutil.which("t3"):
+        sys.exit('T3 Code is not installed on this box. Ask the owner: box request "install t3 (npm)"')
+    host, port, env = t3_env()
+    if a.action == "stop":
+        sys.exit(sctl("disable", "--now", T3_UNIT).returncode)
+    if a.action == "logs":
+        os.execvp("journalctl", ["journalctl", "--user", "-u", T3_UNIT, "-n", "200", "--no-pager"])
+    if a.action == "status":
+        up = listening(host, port)
+        print(f"T3 Code: {'running' if up else 'not running'} at http://{host}:{port}/")
+        return
+    # start (if needed) + pair
+    t3_ensure(host, port, env)
     if not listening(host, port):
         print("starting T3 Code (the first start downloads it, about 1 minute)…", file=sys.stderr)
     deadline = time.time() + 300
