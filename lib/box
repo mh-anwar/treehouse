@@ -407,8 +407,9 @@ def render_rules(notices=()):
     if android:
         extras.append(android.lstrip("\n"))
     if "gh" in tv:
-        extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, ask the user to run "
-                      "`box setup`. Don't ask for tokens in chat.")
+        extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
+                      "with the device-code steps above. Don't send them to `box setup` or a terminal, "
+                      "and don't ask for tokens in chat.")
     nt = ""
     if notices:
         nt = "## Current notices (updated by the janitor)\n" + "\n".join(f"- {n}" for n in notices)
