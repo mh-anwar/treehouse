@@ -201,6 +201,7 @@ def gather(cfg, since):
     g["apt"] = apt_history(since)
     g["events"] = sb_events(since)
     g["trap"] = jsonl(TRAP_LOG, since)
+    g["issues"] = sb.read_issues(since)
     return g
 
 
@@ -357,6 +358,15 @@ def build_report(cfg, g, findings, new_ids, resolved):
                    + (", …" if len(g["apt"]) > 12 else "") + ")")
     S.append(("Security activity", sec))
     S.append(("Trap wins", trap_wins(7)))
+
+    iss = g.get("issues") or []
+    if iss:
+        groups = sb.group_issues(iss)
+        il = [f"{len(iss)} logged by {len({r['user'] for r in iss})} user(s)' agents, {len(groups)} distinct "
+              "(details: sudo sharedbox-admin issues)"]
+        for n, users, _, _, r in groups[:12]:
+            il.append(f"{n}x [{r['kind']}] {sb.printable(r['text'])[:220]} ({', '.join(users)})")
+        S.append(("What slowed agents down", il))
 
     if findings:
         fl = []

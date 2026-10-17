@@ -253,6 +253,64 @@ def printable(s):
     return "".join(c if c.isprintable() else "?" for c in str(s))
 
 
+# ---------- agent-reported issues (each user's ~/.sharedbox/issues.jsonl) ----------
+
+ISSUES_REL = os.path.join(".sharedbox", "issues.jsonl")
+ISSUE_KINDS = ("slow", "broken", "missing", "limit", "confusing", "other")
+
+
+def read_issues(since=0, users=None, limit=1 << 20):
+    """Every user's agent-reported issues newer than `since`, oldest first.
+
+    Runs as root over files users control: O_NOFOLLOW + owner/regular-file checks on the opened fd,
+    only the last `limit` bytes, and malformed lines are skipped. Text is NOT sanitized here; use
+    printable()/html.escape when showing it.
+    """
+    import stat as _stat
+    out = []
+    for pw in pwd.getpwall():
+        if pw.pw_uid < 1000 or pw.pw_uid >= 65534 or (users and pw.pw_name not in users):
+            continue
+        path = os.path.join(pw.pw_dir, ISSUES_REL)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError:
+            continue
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode) or st.st_uid != pw.pw_uid or st.st_nlink != 1:
+                continue
+            if st.st_size > limit:
+                f.seek(st.st_size - limit)
+                f.readline()  # drop the partial first line
+            data = f.read(limit).decode(errors="replace")
+        for line in data.splitlines():
+            try:
+                r = json.loads(line)
+                ts = float(r.get("ts", 0))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if ts >= since and isinstance(r.get("text"), str):
+                r["user"] = pw.pw_name  # the file's owner, not whatever the line claims
+                r["kind"] = r.get("kind") if r.get("kind") in ISSUE_KINDS else "other"
+                out.append(r)
+    out.sort(key=lambda r: r["ts"])
+    return out
+
+
+def group_issues(issues):
+    """Collapse repeats: [(count, users, first_ts, last_ts, sample)] most-reported first."""
+    groups = {}
+    for r in issues:
+        key = (r["kind"], re.sub(r"\W+", " ", r["text"].lower()).strip()[:80])
+        g = groups.setdefault(key, {"n": 0, "users": set(), "first": r["ts"], "last": r["ts"], "r": r})
+        g["n"] += 1
+        g["users"].add(r["user"])
+        g["last"], g["r"] = r["ts"], r
+    return sorted(((g["n"], sorted(g["users"]), g["first"], g["last"], g["r"]) for g in groups.values()),
+                  key=lambda x: (-len(x[1]), -x[0], -x[3]))
+
+
 # ---------- cgroup / system reads (world-readable) ----------
 
 def slice_path(uid):

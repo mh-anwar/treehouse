@@ -26,6 +26,10 @@ can starve the machine.
   - `box setup` / `box agents`: onboarding wizard and agent login status
   - `box t3`: the user's own [T3 Code](https://t3.codes) web UI on their reserved port, with a pairing link
   - `box request "..."`: ask the owner for a system package. Agents are told to do this instead of trying sudo
+  - `box issue "..."`: agents log anything about the box that slowed them down or failed (missing tools, limits,
+    flaky installs, confusing rules) to `~/.sharedbox/issues.jsonl`, without being asked. `box` also logs
+    RAM/CPU throttling, OOM kills and long `box heavy` queue waits on its own. The owner sees everyone's in
+    `sharedbox-admin issues` and in the weekly health email
   - `box heavy -- <cmd>`: a box-wide queue for builds, run at low priority with capped parallelism
   - `box serve add`: long-running servers that survive logout and reboot
   - `box ports`: your port range
@@ -86,6 +90,7 @@ sharedbox-admin kill NAME                              stop all their processes 
 sharedbox-admin remove NAME --archive                  tarball the home, then delete the account
 sharedbox-janitor run --dry-run                        see what the janitor would delete right now
 sharedbox-admin requests [--done FILE]                 what friends/agents asked for via `box request`
+sharedbox-admin issues [--days N] [--user U] [--raw]   friction agents logged via `box issue`, grouped
 sharedbox-tools add apt ffmpeg                         install an extra package for everyone (remembered)
 sharedbox-tools status | update                        installed versions / update agents now
 sharedbox-tools remove npm|apt NAME                    uninstall a package and stop installing it

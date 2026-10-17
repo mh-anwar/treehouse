@@ -12,6 +12,8 @@
   box setup [--check]              guided setup: git identity, GitHub, agent logins
   box agents                       installed coding agents + whether you're logged in
   box request "TEXT"               ask the owner for something (e.g. a system package)
+  box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
+  box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
 """
 
 import argparse
@@ -150,6 +152,11 @@ def advice(g):
 
 
 def cmd_status(a):
+    if a.agent:
+        try:
+            auto_issues()
+        except Exception:  # never break session start
+            pass
     g = gather()
     if a.json:
         g["advice"] = advice(g)
@@ -174,7 +181,8 @@ def cmd_status(a):
         lines.append(("- " if a.agent else "! ") + ad)
     if a.agent and lim:
         lines.append("Rules: use ~/projects (auto-deleted when idle), ~/services, ~/keep; prefix heavy "
-                     "jobs with `box heavy --`; servers via `box serve`. Full rules: `box rules`.")
+                     "jobs with `box heavy --`; servers via `box serve`; log anything about this machine that "
+                     "slows you down or fails with `box issue \"...\"`. Full rules: `box rules`.")
     print("\n".join(lines))
 
 
@@ -236,6 +244,13 @@ def cmd_heavy(a):
                   file=sys.stderr)
             announced, last = True, time.time()
         time.sleep(5)
+    waited = time.time() - (deadline - sb.cfg_int(CFG, "HEAVY_WAIT_MAX_MIN") * 60)
+    if announced and waited > 300:
+        try:
+            log_issue(f"`box heavy` waited {waited / 60:.0f} min for a slot ({n} slot(s)) before "
+                      f"running: {shlex.join(cmd)[:200]}", "slow", auto=True, dedupe_s=3600)
+        except OSError:
+            pass
     if fd is not None:
         os.set_inheritable(fd, True)  # lock is held until the command exits
     jobs = CFG["BUILD_JOBS"]
@@ -667,6 +682,156 @@ def cmd_request(a):
           "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
 
 
+# ---------- issues (agents log friction; the owner reads everyone's) ----------
+
+ISSUES_FILE = os.path.join(HOME, sb.ISSUES_REL)
+ISSUES_MAX_BYTES = 1 << 20
+AUTO_STATE = os.path.join(HOME, ".sharedbox", "auto-issues.json")
+AGENT_COMMS = {"claude": "claude", "codex": "codex", "gemini": "gemini", "opencode": "opencode",
+               "aider": "aider", "cursor-agent": "cursor", "goose": "goose", "amp": "amp"}
+
+
+def which_agent():
+    """Best guess at the coding agent this runs under (env first, then the process tree)."""
+    if os.environ.get("CLAUDECODE"):
+        return "claude"
+    if os.environ.get("AI_AGENT"):
+        return os.environ["AI_AGENT"].split("_")[0][:40]
+    for k, name in (("CODEX_SANDBOX", "codex"), ("CODEX_THREAD_ID", "codex"),
+                    ("GEMINI_CLI", "gemini"), ("OPENCODE", "opencode")):
+        if os.environ.get(k):
+            return name
+    pid = os.getppid()
+    for _ in range(12):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                st = f.read()
+            comm = st[st.index("(") + 1:st.rindex(")")]
+            pid = int(st[st.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+        for k, name in AGENT_COMMS.items():
+            if comm.startswith(k):
+                return name
+        if pid <= 1:
+            break
+    return "human" if sys.stdin.isatty() else "unknown"
+
+
+def log_issue(text, kind="other", auto=False, dedupe_s=600):
+    """Append one issue; skip exact repeats from the last `dedupe_s` seconds. True if written."""
+    text = " ".join(text.split())[:2000]
+    if not text:
+        return False
+    now = time.time()
+    recent = [r for r in read_my_issues() if now - r.get("ts", 0) < dedupe_s]
+    if any(r.get("text") == text for r in recent):
+        return False
+    cwd = os.getcwd() if os.path.exists(".") else ""
+    rec = {"ts": round(now), "kind": kind if kind in sb.ISSUE_KINDS else "other", "text": text,
+           "agent": which_agent(), "cwd": cwd, "auto": auto,
+           "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID")
+           or os.environ.get("T3CODE_THREAD_ID") or ""}
+    os.makedirs(os.path.dirname(ISSUES_FILE), mode=0o700, exist_ok=True)
+    fd = os.open(ISSUES_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(rec) + "\n")
+        size = f.tell()
+    if size > ISSUES_MAX_BYTES:  # keep the newest half
+        with open(ISSUES_FILE, "rb") as f:
+            f.seek(size - ISSUES_MAX_BYTES // 2)
+            f.readline()
+            tail = f.read()
+        tmp = ISSUES_FILE + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "wb") as f:
+            f.write(tail)
+        os.replace(tmp, ISSUES_FILE)
+    return True
+
+
+def read_my_issues(since=0):
+    out = []
+    try:
+        with open(ISSUES_FILE, errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    if r.get("ts", 0) >= since:
+                        out.append(r)
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def auto_issues():
+    """Log slowdowns the agent can't see itself: RAM soft-limit throttling, CPU throttling, OOM kills.
+
+    Called at session start (`box status --agent`); at most one entry per signal per day.
+    """
+    path = sb.slice_path(ME.pw_uid)
+    cur = {}
+    try:
+        with open(os.path.join(path, "memory.events")) as f:
+            ev = dict(l.split() for l in f if l.strip())
+        cur["mem_high"], cur["oom_kill"] = int(ev.get("high", 0)), int(ev.get("oom_kill", 0))
+        with open(os.path.join(path, "cpu.stat")) as f:
+            cs = dict(l.split() for l in f if l.strip())
+        cur["throttled_usec"] = int(cs.get("throttled_usec", 0))
+    except (OSError, ValueError):
+        return
+    st = sb.read_json(AUTO_STATE, {}) or {}
+    prev, last = st.get("counters"), st.get("logged", {})
+    now = time.time()
+    if prev:
+        cg = sb.read_cgroup(path) or {}
+        d_high = cur["mem_high"] - prev.get("mem_high", 0)
+        d_oom = cur["oom_kill"] - prev.get("oom_kill", 0)
+        d_thr = (cur["throttled_usec"] - prev.get("throttled_usec", 0)) / 1e6
+        found = []
+        if d_oom > 0:
+            found.append(("oom", "limit", f"{d_oom} process(es) of {ME.pw_name} were OOM-killed "
+                          f"(hard RAM limit {sb.human(cg.get('mem_max')) if cg.get('mem_max') else 'max'})"))
+        if d_high > 100:
+            found.append(("mem_high", "slow", f"RAM soft limit hit {d_high} times since last session "
+                          f"(memory.high {sb.human(cg.get('mem_high')) if cg.get('mem_high') else 'max'}, "
+                          f"now using {sb.human(cg.get('mem', 0))}); processes were throttled"))
+        if d_thr > 60:
+            found.append(("cpu", "slow", f"CPU quota throttled processes for {d_thr / 60:.0f} min since "
+                          "last session"))
+        for key, kind, text in found:
+            if now - last.get(key, 0) > 86400:
+                if log_issue(text, kind, auto=True):
+                    last[key] = now
+    os.makedirs(os.path.dirname(AUTO_STATE), mode=0o700, exist_ok=True)
+    sb.write_json(AUTO_STATE, {"counters": cur, "logged": last}, mode=0o600)
+
+
+def cmd_issue(a):
+    text = " ".join(a.text).strip()
+    if not text:
+        sys.exit('usage: box issue [--kind slow|broken|missing|limit|confusing|other] "what happened, '
+                 'what you tried, what it cost"')
+    if log_issue(text, a.kind, dedupe_s=600):
+        print(f"logged to {ISSUES_FILE}. The box owner reviews these. Keep working around it.")
+    else:
+        print("already logged in the last 10 minutes; not repeated.")
+
+
+def cmd_issues(a):
+    rows = read_my_issues(time.time() - a.days * 86400)
+    if a.json:
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print(f"no issues logged in the last {a.days} days ({ISSUES_FILE})")
+    for r in rows:
+        print(f"{fmt_ts(r.get('ts', 0))}  [{r.get('kind', '?')}]{' (auto)' if r.get('auto') else ''} "
+              f"{r.get('agent', '?')}: {sb.printable(r.get('text', ''))}")
+
+
 # ---------- internal (called by root tools via setpriv, as this user) ----------
 
 def cmd_init_home(a):
@@ -739,8 +904,13 @@ def main():
     x.set_defaults(fn=cmd_t3)
     s.add_parser("welcome").set_defaults(fn=cmd_welcome)
     x = s.add_parser("request"); x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_request)
+    x = s.add_parser("issue"); x.add_argument("--kind", "-k", default="other", choices=sb.ISSUE_KINDS)
+    x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_issue)
+    x = s.add_parser("issues"); x.add_argument("--days", type=int, default=14)
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_issues)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
+    s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     a = p.parse_args()
     if not a.cmd:
         a = p.parse_args(["status"])

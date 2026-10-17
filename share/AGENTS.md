@@ -43,6 +43,18 @@ Preinstalled system-wide: {tools}.
   how busy the box is, and any **pending deletions**. If the box is `busy`, avoid heavy
   work unless the user insists.
 
+## Report what slows you down (do this without being asked)
+Whenever something about **this machine** costs you time or doesn't work, log it right away with one line and
+keep going. Don't ask the user first, and don't stop to wait for a fix:
+`box issue --kind <slow|broken|missing|limit|confusing|other> "<what happened> | <what you tried / workaround> | <cost>"`
+- Log things like: a missing command or system library, permission denied, an install that failed or crawled,
+  a build that was killed or throttled (RAM/CPU limit, `box heavy` queue), a port you couldn't bind, network or
+  registry errors, auth that didn't work, the janitor deleting something you needed, and rules here that were
+  wrong, unclear or got in the way.
+- Don't log bugs in the user's own code, or failing tests you caused.
+- One entry per distinct problem. Exact repeats within 10 minutes are dropped. Never include secrets.
+- Entries go to `~/.sharedbox/issues.jsonl`, which the box owner reviews to fix the box. `box issues` lists them.
+
 ## Where files go (the janitor enforces this)
 - `~/projects/<name>/`: put your work here. A project **not touched at all for {project_ttl} days
   (no file read or written) is deleted.** You get {warn} days of warning in `box status`. A project is

@@ -9,6 +9,7 @@
   sharedbox-admin kill USER                       stop every process the user has (account stays)
   sharedbox-admin remove USER [--archive]
   sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
+  sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
   sharedbox-admin reapply                         rewrite every friend's limit drop-ins
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
 
@@ -428,6 +429,29 @@ def cmd_requests(cfg, a):
         print("\nfulfil e.g. with: sharedbox-tools add apt PKG   then: sharedbox-admin requests --done FILE")
 
 
+def cmd_issues(cfg, a):
+    since = time.time() - a.days * 86400
+    rows = sb.read_issues(since, users=[a.user] if a.user else None)
+    if not rows:
+        print(f"no agent-reported issues in the last {a.days} days")
+        return
+    P = sb.printable
+    if a.raw:
+        for r in rows:
+            print(f"{time.strftime('%m-%d %H:%M', time.localtime(r['ts']))}  {r['user']:<10} "
+                  f"[{r['kind']}]{' auto' if r.get('auto') else ''} {P(r.get('agent', '?'))}  "
+                  f"{P(r['text'])}\n      cwd {P(r.get('cwd', ''))}")
+        return
+    groups = sb.group_issues(rows)
+    print(f"{len(rows)} issue(s) from {len({r['user'] for r in rows})} user(s), {len(groups)} distinct, "
+          f"last {a.days} days (most widespread first):\n")
+    for n, users, first, last, r in groups:
+        print(f"{n:>3}x [{r['kind']}]{' auto' if r.get('auto') else ''} {P(r['text'])}\n"
+              f"      {', '.join(users)} · last {time.strftime('%a %d %b %H:%M', time.localtime(last))}"
+              f" · {P(r.get('agent', '?'))} in {P(r.get('cwd', ''))}")
+    print("\nraw lines: sharedbox-admin issues --raw   files: ~USER/.sharedbox/issues.jsonl")
+
+
 def cmd_reapply(cfg, a):
     for name, rec in sb.friend_users().items():
         write_dropins(cfg, name, rec, rec["uid"])
@@ -456,6 +480,8 @@ def main():
     x.set_defaults(fn=cmd_remove)
     s.add_parser("reapply").set_defaults(fn=cmd_reapply)
     x = s.add_parser("requests"); x.add_argument("--done"); x.set_defaults(fn=cmd_requests)
+    x = s.add_parser("issues"); x.add_argument("--days", type=int, default=7); x.add_argument("--user")
+    x.add_argument("--raw", action="store_true"); x.set_defaults(fn=cmd_issues)
     s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
     a = p.parse_args()
     a.fn(cfg, a)
