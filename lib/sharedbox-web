@@ -36,6 +36,8 @@ state_lock = threading.Lock()
 live = {}       # row key -> latest sample dict
 history = {}    # row key -> deque[(ts, cpu_pct, mem)]
 rate = {}       # ip -> deque[ts] of join posts
+portal_rate = {}  # tailscale id -> deque[ts] of portal posts
+portal_poll = {}  # tailscale id -> last automatic login check
 
 
 # ---------- sampling ----------
@@ -135,13 +137,13 @@ def existing_account(ts_id):
     return None, None
 
 
-def submit_join(ip, who, username, key):
+def spool_call(req, wait=30):
+    """Hand a request to the root provisioner and wait for its answer."""
     rid = secrets.token_hex(12)
-    req = {"ip": ip, "ts_id": who["id"], "login": who["login"], "username": username,
-           "key": key, "ts": int(time.time())}
-    sb.write_json(os.path.join(sb.SPOOL, f"req-{rid}.json"), req, mode=0o600)
+    sb.write_json(os.path.join(sb.SPOOL, f"req-{rid}.json"), dict(req, ts=int(time.time())), mode=0o600)
     res_path = os.path.join(sb.SPOOL, f"res-{rid}.json")
-    for _ in range(120):
+    deadline = time.time() + wait
+    while time.time() < deadline:
         time.sleep(0.25)
         res = sb.read_json(res_path)
         if res is not None:
@@ -150,7 +152,18 @@ def submit_join(ip, who, username, key):
             except OSError:
                 pass
             return res
-    return {"ok": False, "error": "timed out waiting for the provisioner; try again in a minute"}
+    return {"ok": False, "error": "the box is busy; try again in a minute"}
+
+
+def submit_join(ip, who, username, key):
+    return spool_call({"action": "join", "ip": ip, "ts_id": who["id"], "login": who["login"],
+                       "username": username, "key": key})
+
+
+def portal_call(ip, who, action, **kw):
+    # logins wait ~25 s for a code; T3's very first start downloads it
+    wait = {"status": 30, "t3": 240}.get(action, 90)
+    return spool_call(dict({"action": action, "ip": ip, "ts_id": who["id"]}, **kw), wait=wait)
 
 
 # ---------- html ----------
@@ -269,11 +282,7 @@ def join_page(ip, who, msg=None, err=None, form=None):
 invite, then open this page using the machine's Tailscale name.</p></div>""")
     name, rec = existing_account(who["id"])
     if name:
-        lo, hi = sb.port_range(CFG, rec["uid"])
-        return page("join", f"""<div class="box"><h2>You're already set up, {e(who['display'])}</h2>
-<p>Your account is <b>{e(name)}</b>. Your ports are <b>{lo}-{hi}</b>.</p>
-<pre>ssh {e(name)}@{e(HOST)}</pre>
-<p class="sub">Lost your key? Ask the owner to reset it.</p></div>""")
+        return portal_page(ip, who, name, rec)
     if CFG["JOIN_MODE"] == "closed":
         return page("join", "<div class='box'><h2>Signups are closed</h2><p>Ask the owner.</p></div>")
     if msg:
@@ -300,6 +309,133 @@ If the file doesn't exist, run <code>ssh-keygen -t ed25519</code> first.</label>
 <li>A block of {e(CFG['PORT_BLOCK'])} ports for your servers, which keep running after you log out.</li>
 <li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted automatically. Use git. Nothing here is backed up.</li>
 </ul></div>""")
+
+
+# ---------- portal: everything a new friend needs, in the browser ----------
+
+def cores(pct):
+    try:
+        return f"{float(str(pct).rstrip('%')) / 100:g}"
+    except ValueError:
+        return str(pct)
+
+
+def safe_url(u, schemes=("https://", "http://")):
+    u = str(u or "")
+    return u if u.startswith(schemes) and len(u) < 4096 else ""
+
+
+def portal_page(ip, who, name, rec, result=None, welcome=False):
+    """The friend's home page: open T3, log in to an AI and GitHub. No terminal anywhere."""
+    e = html.escape
+    tok = token_for(ip, who["id"])
+    st = portal_call(ip, who, "status")
+    logins, t3 = st.get("logins") or {}, st.get("t3")
+
+    def btn(action, label, key="", extra="", primary=True):
+        style = "" if primary else ' style="background:#252b35;color:var(--fg)"'
+        return f"""<form method="post" action="/me" style="display:inline">
+<input type="hidden" name="token" value="{tok}"><input type="hidden" name="action" value="{action}">
+<input type="hidden" name="key" value="{e(key)}">{extra}<button{style}>{e(label)}</button></form>"""
+
+    def done(ok):
+        return '<span class="pill ok">done ✓</span>' if ok else '<span class="pill warn">to do</span>'
+
+    out = []
+    if welcome:
+        out.append(f"<h2>Welcome, {e(name)} 🎉</h2><p>Two quick steps and you're building.</p>")
+    else:
+        out.append(f"<h2>Hi {e(who['display'])}</h2><p class='mut'>Your account on {e(HOST)} is "
+                   f"<b>{e(name)}</b>.</p>")
+    if result:
+        out.append(portal_result(result, btn))
+    ai = [k for k in ("claude", "codex") if k in logins]
+    ai_ok = any(logins[k]["ok"] for k in ai)
+    out.append(f"<h2>1. Connect your AI {done(ai_ok)}</h2>")
+    if not ai:
+        out.append("<p class='mut'>No coding agents are installed on the box yet. Ask the owner.</p>")
+    elif ai_ok:
+        out.append("<p class='mut'>Logged in: " + ", ".join(e(logins[k]["label"]) for k in ai if logins[k]["ok"])
+                   + ".</p>")
+    else:
+        out.append("<p>Pick the one you pay for. You only do this once.</p><p>")
+        if "claude" in logins:
+            out.append(btn("login", "Log in with Claude", "claude") + " ")
+        if "codex" in logins:
+            out.append(btn("login", "Log in with ChatGPT (Codex)", "codex") + " ")
+        out.append("</p>")
+        if "claude" in logins:
+            out.append("<p class='sub'>Pay for Claude by API key (Anthropic Console) instead? "
+                       + btn("login", "Console login", "claude",
+                             '<input type="hidden" name="console" value="1">', primary=False) + "</p>")
+    out.append(f"<h2>2. Open T3 Code {done(bool(t3 and t3.get('running')) and ai_ok)}</h2>")
+    if not t3:
+        out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
+    else:
+        out.append("<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
+                   "It keeps running when you close the tab.</p>" + btn("t3", "Open my T3 Code")
+                   + f"<p class='sub'>Already opened it on this device? Just go to "
+                     f"<a href='{e(safe_url(t3['url']))}'>{e(t3['url'])}</a> (bookmark it).</p>")
+    if "gh" in logins:
+        out.append(f"<h2>Optional: GitHub {done(logins['gh']['ok'])}</h2>")
+        if logins["gh"]["ok"]:
+            out.append("<p class='mut'>Connected. Your agents can push code and make repos for you.</p>")
+        else:
+            out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
+                       "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
+    ssh_cmd = f"ssh {name}@{HOST}"
+    out.append(f"""<details{' open' if result and result.get('key_added') is not None else ''}>
+<summary class="mut" style="margin-top:26px;cursor:pointer">For terminal users: SSH access</summary>
+{'<p>Your key is set up. Connect with:</p><pre>' + e(ssh_cmd) + '</pre>' if st.get('ssh') else
+ '<p class="mut">No SSH key yet. Paste one to get terminal access (<code>cat ~/.ssh/id_ed25519.pub</code> on your computer).</p>'}
+<form method="post" action="/me"><input type="hidden" name="token" value="{tok}">
+<input type="hidden" name="action" value="add-key">
+<textarea name="sshkey" required placeholder="ssh-ed25519 AAAA... you@laptop"></textarea>
+<button style="background:#252b35;color:var(--fg)">Add SSH key</button></form>
+<p class="sub">Then: <code>{e(ssh_cmd)}</code>, and <code>box</code> shows your usage, ports and limits.</p></details>""")
+    out.append(f"""<h2>Good to know</h2><ul>
+<li>Projects untouched for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted. Ask your agent to put them on GitHub.</li>
+<li>Bookmark this page. Come back here any time to log in again or get a new T3 link.</li>
+<li>Stuck? Ask your agent in T3 Code. It knows how this machine works.</li></ul>""")
+    if st.get("ok") is False and st.get("error"):
+        out.append(f"<p class='err'>{e(st['error'])}</p>")
+    return page("you", "<div class='box'>" + "".join(out) + "</div>")
+
+
+def portal_result(res, btn):
+    e = html.escape
+    if not res.get("ok"):
+        return f"<div class='card'><p class='err'>{e(res.get('error') or 'something went wrong')}</p></div>"
+    if res.get("pair_url"):
+        return f"""<div class="card"><h3>Your T3 Code is ready</h3>
+<p><a href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener"><button>Open T3 Code →</button></a></p>
+<p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
+or come back here for a new link on another device.</p></div>"""
+    if res.get("key_added"):
+        return "<div class='card'><p><span class='pill ok'>✓</span> SSH key added.</p></div>"
+    if res.get("done"):
+        return "<div class='card'><p><span class='pill ok'>✓</span> Logged in.</p></div>"
+    key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
+    open_btn = f'<a href="{e(url)}" target="_blank" rel="noopener"><button>Open the login page →</button></a>'
+    if res.get("paste"):
+        return f"""<div class="card"><h3>Finish logging in</h3>
+<p>1. {open_btn}</p><p>2. Sign in. The page then shows a code. Copy it and paste it here:</p>
+<form method="post" action="/me"><input type="hidden" name="token" value="{e(res['_tok'])}">
+<input type="hidden" name="action" value="code"><input type="hidden" name="key" value="{e(key)}">
+<input name="code" autocomplete="off" required placeholder="paste the code"><button>Finish</button></form></div>"""
+    return f"""<div class="card"><h3>Finish logging in</h3>
+<p>1. {open_btn}</p><p>2. Sign in and type this code:</p>
+<p class="big" style="letter-spacing:.08em">{e(res.get('code') or '')}</p>
+<p id="wait" class="mut">3. That's it. This page moves on by itself once you're in.</p>
+<p class="sub">Not moving? {btn("check", "Check now", key, primary=False)}</p></div>
+<script>
+(function(){{const body=new URLSearchParams({{token:{json.dumps(res['_tok'])},action:"check",
+key:{json.dumps(key)},format:"json"}});const t0=Date.now();
+async function poll(){{if(Date.now()-t0>15*60*1000){{document.getElementById("wait").textContent=
+"The code expired. Reload this page and start again.";return}}
+try{{const r=await fetch("/me",{{method:"POST",body}});const j=await r.json();
+if(j.done){{location.href="/me";return}}}}catch(e){{}}setTimeout(poll,3000)}}
+setTimeout(poll,4000)}})();</script>"""
 
 
 # ---------- http ----------
@@ -365,7 +501,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, dashboard())
         elif path == "/api/state":
             self.send(200, json.dumps(api_state()), "application/json")
-        elif path == "/join":
+        elif path in ("/join", "/me"):
             ip, who = self.ident()
             self.send(200, join_page(ip, who))
         elif path == "/healthz":
@@ -374,7 +510,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, page("not found", "<p>not found</p>"))
 
     def do_POST(self):
-        if urllib.parse.urlsplit(self.path).path != "/join":
+        path = urllib.parse.urlsplit(self.path).path
+        if path not in ("/join", "/me"):
             return self.send(404, "not found", "text/plain")
         host = self.headers.get("Host")
         if not host_ok(host):
@@ -395,6 +532,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, join_page(ip, None))
         if not hmac.compare_digest(form.get("token", ""), token_for(ip, who["id"])):
             return self.send(400, join_page(ip, who, err="form expired, please submit again", form=form))
+        if path == "/me":
+            return self.portal_post(ip, who, form)
         q = rate.setdefault(ip, deque(maxlen=10))
         now = time.time()
         if len([t for t in q if now - t < 600]) >= 5:
@@ -411,17 +550,47 @@ class Handler(BaseHTTPRequestHandler):
         if res.get("pending"):
             return self.send(200, join_page(ip, who, msg="<h2>Request sent</h2><p>The owner will "
                                                          "approve it soon. Check back on this page.</p>"))
-        lo, hi = res["ports"]
-        e = html.escape
-        return self.send(200, join_page(ip, who, msg=f"""<h2>Welcome, {e(username)} 🎉</h2>
-<p>Connect from the computer whose key you pasted:</p><pre>ssh {e(username)}@{e(HOST)}</pre>
-<p>Then run <code>box setup</code>. It walks you through git, GitHub and logging in to your coding
-agent (Claude Code, Codex and opencode are preinstalled; use your own account). Takes about 2 minutes.</p>
-<pre>box setup                    # log in to GitHub + your agent (once)
-box t3                       # start your own T3 Code web UI, prints a pairing link</pre>
-<p>Prefer the terminal? <code>tmux new -A -s main</code>, then run <code>claude</code> or <code>codex</code> in <code>~/projects/&lt;name&gt;</code>.</p>
-<p>Your ports: <b>{lo}-{hi}</b>. Your agents already know the house rules (limits, where files go,
-how to run builds and servers). <code>box</code> shows your status at any time.</p>"""))
+        name, rec = existing_account(who["id"])
+        if not name:
+            return self.send(200, join_page(ip, who, msg="<h2>Account created</h2><p>Reload this page.</p>"))
+        return self.send(200, portal_page(ip, who, name, rec, welcome=True))
+
+    def portal_post(self, ip, who, form):
+        name, rec = existing_account(who["id"])
+        if not name:
+            return self.send(200, join_page(ip, who))
+        action, key = form.get("action", ""), form.get("key", "")
+        as_json = form.get("format") == "json"
+        now = time.time()
+        if as_json and action == "check":  # the page polls this while someone types a code
+            last = portal_poll.get(who["id"], 0)
+            if now - last < 2:
+                return self.send(429, json.dumps({"ok": False}), "application/json")
+            portal_poll[who["id"]] = now
+        else:
+            q = portal_rate.setdefault(who["id"], deque(maxlen=40))
+            if len([t for t in q if now - t < 600]) >= 30:
+                return self.send(429, portal_page(ip, who, name, rec,
+                                                  {"ok": False, "error": "too many tries; wait a few minutes"}))
+            q.append(now)
+        if action not in ("t3", "login", "code", "check", "add-key") or key not in ("", "claude", "codex", "gh"):
+            return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
+        if action == "add-key":
+            key_txt = form.get("sshkey", "")
+            res = portal_call(ip, who, "add-key", sshkey=key_txt[:8192])
+            res = dict(res, key_added=bool(res.get("ok")))
+            return self.send(200, portal_page(ip, who, name, rec, res))
+        kw = {"key": key}
+        if action == "login" and form.get("console"):
+            kw["console"] = True
+        if action == "code":
+            kw["code"] = form.get("code", "")[:1000]
+        res = portal_call(ip, who, action, **kw)
+        if as_json:
+            return self.send(200, json.dumps({"ok": bool(res.get("ok")), "done": bool(res.get("done"))}),
+                             "application/json")
+        res = dict(res, key=key, _tok=token_for(ip, who["id"]))
+        self.send(200, portal_page(ip, who, name, rec, res))
 
 
 def main():
