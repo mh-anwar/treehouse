@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
@@ -52,7 +53,7 @@ def run(cmd, check=True, **kw):
     return subprocess.run(cmd, check=check, **kw)
 
 
-def as_user(pw, cmd, input_text=None):
+def as_user(pw, cmd, input_text=None, timeout=None):
     """Run cmd as the friend (never write into a friend's home as root)."""
     env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name,
            "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -62,7 +63,7 @@ def as_user(pw, cmd, input_text=None):
     return subprocess.run(
         ["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
          "--reset-env", "--"] + cmd,
-        input=input_text, text=True, capture_output=True, env=env, cwd=pw.pw_dir)
+        input=input_text, text=True, capture_output=True, env=env, cwd=pw.pw_dir, timeout=timeout)
 
 
 def daemon_reload():
@@ -189,25 +190,45 @@ def read_untrusted(path, uid, limit=64 << 10):
 
 def process_spool(cfg):
     svc = pwd.getpwnam(cfg["SERVICE_USER"])
-    for path in sorted(glob.glob(os.path.join(sb.SPOOL, "req-*.json"))):
-        rid = os.path.basename(path)[4:-5]
-        raw = read_untrusted(path, svc.pw_uid)
+
+    def answer(rid, fn, req):
         try:
-            os.unlink(path)  # unlink never follows symlinks
-        except FileNotFoundError:
-            continue
-        if not (rid.isascii() and rid.isalnum() and len(rid) <= 64) or raw is None:
-            continue
-        try:
-            req = json.loads(raw)
-            if not isinstance(req, dict):
-                raise ValueError("not an object")
-            result = handle_join(cfg, rid, req)
+            result = fn(cfg, rid, req)
         except Exception as e:  # one bad request must not wedge the path unit
             print(f"request {rid}: {e!r}", file=sys.stderr)
             result = {"ok": False, "error": "internal error; ask the owner"}
         sb.write_json(os.path.join(sb.SPOOL, f"res-{rid}.json"), result, mode=0o640,
                       owner=(0, svc.pw_gid))
+
+    # joins run one at a time (registry, uids); portal actions (logins, T3) can take a while,
+    # so they run in parallel, and we keep picking up new requests until everything is done
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        running = set()
+        while True:
+            paths = sorted(glob.glob(os.path.join(sb.SPOOL, "req-*.json")))
+            running = {f for f in running if not f.done()}
+            if not paths and not running:
+                break
+            for path in paths:
+                rid = os.path.basename(path)[4:-5]
+                raw = read_untrusted(path, svc.pw_uid)
+                try:
+                    os.unlink(path)  # unlink never follows symlinks
+                except FileNotFoundError:
+                    continue
+                if not (rid.isascii() and rid.isalnum() and len(rid) <= 64) or raw is None:
+                    continue
+                try:
+                    req = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(req, dict):
+                    continue
+                if req.get("action", "join") == "join":
+                    answer(rid, handle_join, req)
+                else:
+                    running.add(pool.submit(answer, rid, handle_portal, req))
+            time.sleep(0.2)
     # results nobody collected
     for path in glob.glob(os.path.join(sb.SPOOL, "res-*.json")):
         try:
@@ -249,6 +270,80 @@ def handle_join(cfg, rid, req):
         return {"ok": False, "error": err}
     lo, hi = sb.port_range(cfg, rec["uid"])
     return {"ok": True, "username": name, "ports": [lo, hi]}
+
+
+# ---------- portal (web page actions for an existing account) ----------
+
+PORTAL_KEYS = ("claude", "codex", "gh")
+
+
+def box_portal(pw, args, input_text=None):
+    try:  # runs the friend's own binaries (their PATH), so never wait on them forever
+        r = as_user(pw, [sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), "_portal", *args],
+                    input_text=input_text, timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "that took too long; try again"}
+    for line in reversed((r.stdout or "").splitlines()):
+        try:
+            out = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(out, dict):
+            return out
+    return {"ok": False, "error": "internal error; ask the owner"}
+
+
+def handle_portal(cfg, rid, req):
+    ip = str(req.get("ip", ""))
+    who = sb.tailscale_whois(ip) if ip else None
+    # re-verify identity ourselves rather than trusting the web process
+    if not who or who["id"] != str(req.get("ts_id")) or ip == sb.tailscale_ip4():
+        return {"ok": False, "error": "could not verify your Tailscale identity"}
+    name = next((n for n, r in sb.friend_users().items() if r.get("ts_id") == who["id"]), None)
+    if not name:
+        return {"ok": False, "error": "no account for this Tailscale login yet"}
+    rec = sb.friend_users()[name]
+    if rec.get("status", "active") != "active":
+        return {"ok": False, "error": "your account is suspended; ask the owner"}
+    pw = pwd.getpwnam(name)
+    action, key = req.get("action"), req.get("key")
+    if action == "status":
+        return box_portal(pw, ["status"])
+    if action == "t3":
+        return box_portal(pw, ["t3-pair"])
+    if action == "add-key":
+        key, err = sb.validate_pubkey(str(req.get("sshkey", "")))
+        return {"ok": False, "error": err} if err else box_portal(pw, ["add-key"], input_text=key + "\n")
+    if key not in PORTAL_KEYS:
+        return {"ok": False, "error": "unknown login"}
+    if action == "login":
+        return box_portal(pw, ["login-start", key] + (["console"] if req.get("console") else []))
+    if action == "code":
+        return box_portal(pw, ["login-code", key], input_text=str(req.get("code", ""))[:1000])
+    if action == "check":
+        return box_portal(pw, ["login-check", key])
+    return {"ok": False, "error": "unknown action"}
+
+
+def cmd_invite(cfg, a):
+    """A message to paste to a friend. No terminal anywhere in it."""
+    host = socket.gethostname()
+    try:
+        st = json.loads(run(["tailscale", "status", "--json", "--peers=false"], capture_output=True,
+                            text=True, timeout=10).stdout)
+        host = (st.get("Self", {}).get("DNSName") or host).rstrip(".") or host
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    url = f"http://{host}:{cfg['WEB_PORT']}/join"
+    print(f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
+builds things for you in your browser and keeps running when you close your laptop.
+
+1. Install Tailscale and sign in: https://tailscale.com/download
+2. Accept the "shared machine" invite I sent you (check your email), using that same Tailscale account.
+3. Open {url}
+   Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
+
+Bookmark {url.replace('/join', '/me')} for later. Stuck? Ask the agent, or text me.""")
 
 
 # ---------- commands ----------
