@@ -21,6 +21,7 @@ import fcntl
 import json
 import os
 import pwd
+import re
 import shlex
 import shutil
 import socket
@@ -840,6 +841,242 @@ def cmd_issues(a):
 
 # ---------- internal (called by root tools via setpriv, as this user) ----------
 
+# ---------- web portal helpers (box _portal; called as the user by sharedbox-admin) ----------
+# Lets someone with only a browser start T3 and log in to their agents/GitHub from the join page.
+# Every action prints exactly one JSON line on stdout.
+
+PORTAL_LOGINS = {
+    # key: (label, command, the user pastes a code back?)
+    "claude": ("Claude", ["claude", "auth", "login"], True),
+    "codex": ("Codex (ChatGPT)", ["codex", "login", "--device-auth"], False),
+    "gh": ("GitHub", ["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
+           False),
+}
+LOGIN_SOCK = "sblogin"
+URL_RE = re.compile(r"https://[^\s\"'<>]+")
+DEVICE_CODE_RE = re.compile(r"(?:code:?\s*|^\s*)([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$", re.M)  # alone or after "code:"
+PASTE_RE = re.compile(r"[A-Za-z0-9#_.~+/=-]{4,600}")
+
+
+def portal_logged_in(key):
+    if key == "gh":
+        return gh_ok()
+    for name, _, _, files, envs, _ in AGENTS:
+        if name == key:
+            return logged_in(files, envs)
+    return False
+
+
+def user_env():
+    return dict(os.environ, PATH=f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                XDG_RUNTIME_DIR=f"/run/user/{ME.pw_uid}")
+
+
+def tmux(*args):
+    return subprocess.run(["tmux", "-L", LOGIN_SOCK, *args], env=user_env(),
+                          capture_output=True, text=True, timeout=20)
+
+
+def login_screen(key):
+    return tmux("capture-pane", "-p", "-J", "-S", "-300", "-t", key).stdout
+
+
+def gh_finish():
+    """After a GitHub login: git credential helper + a git identity if none is set."""
+    env = user_env()
+    subprocess.run(["gh", "auth", "setup-git"], env=env, capture_output=True, timeout=30)
+    name, email = git_ident()
+    if name and email:
+        return
+    r = subprocess.run(["gh", "api", "user", "--jq", '[.id, .login, .name // ""] | @tsv'],
+                       env=env, capture_output=True, text=True, timeout=30)
+    try:
+        uid, login, full = r.stdout.rstrip("\n").split("\t")
+    except ValueError:
+        return
+    if not name:
+        subprocess.run(["git", "config", "--global", "user.name", full or login])
+    if not email:
+        subprocess.run(["git", "config", "--global", "user.email", f"{uid}+{login}@users.noreply.github.com"])
+
+
+def portal_status():
+    out = {"logins": {}, "t3": None}
+    for key, (label, cmd, _) in PORTAL_LOGINS.items():
+        if shutil.which(cmd[0]):
+            out["logins"][key] = {"label": label, "ok": portal_logged_in(key)}
+    if out["logins"].get("gh", {}).get("ok") and not all(git_ident()):
+        gh_finish()
+    r, host = ports(), sb.tailscale_ip4()
+    if r and host and shutil.which("t3"):
+        out["t3"] = {"url": f"http://{host}:{r[0]}/", "running": listening(host, r[0])}
+    name, email = git_ident()
+    out["git"] = {"name": name, "email": email}
+    out["ssh"] = bool(ssh_keys())
+    return out
+
+
+def portal_t3(pair):
+    if not shutil.which("t3"):
+        return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
+    r, host = ports(), sb.tailscale_ip4()
+    if not r or not host:
+        return {"ok": False, "error": "Tailscale isn't running on the box. Ask the owner."}
+    host, port, env = t3_env()
+    t3_ensure(host, port, env, quiet=True)
+    if not pair:
+        return {"ok": True}
+    deadline = time.time() + 150  # the very first start downloads T3
+    while not listening(host, port):
+        if time.time() > deadline:
+            return {"ok": False, "starting": True,
+                    "error": "T3 Code is still starting (the first start downloads it). Try again in a minute."}
+        time.sleep(2)
+    time.sleep(2)
+    t3_starter(env)
+    r = subprocess.run(["t3", "pair", "--ttl", "30m", "--label", f"{ME.pw_name} (join page)"],
+                       env=dict(user_env(), **env), capture_output=True, text=True, timeout=60)
+    url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines() if l.startswith("Pairing URL:")), None)
+    if not url:
+        return {"ok": False, "error": "pairing failed; try again, or ask the owner to check `box t3 logs`"}
+    return {"ok": True, "pair_url": url, "url": f"http://{host}:{port}/"}
+
+
+def t3_starter(env):
+    """First time only: a ready-made project, so T3 opens straight into something to chat in."""
+    marker = os.path.join(HOME, ".sharedbox", "t3-starter")
+    if os.path.exists(marker):
+        return
+    d = os.path.join(HOME, "projects", "my-first-app")
+    os.makedirs(d, exist_ok=True)
+    if not os.path.exists(os.path.join(d, ".git")):
+        subprocess.run(["git", "init", "-q", "-b", "main", d], capture_output=True)
+        with open(os.path.join(d, "README.md"), "w") as f:
+            f.write("# My first app\n\nAsk your agent to build something here, e.g. "
+                    "\"make me a simple website about my favourite movies and give me the link\".\n")
+    r = subprocess.run(["t3", "project", "add", d, "--title", "My first app"],
+                       env=dict(user_env(), **env), capture_output=True, text=True, timeout=60)
+    if r.returncode == 0:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+
+
+def ssh_keys():
+    try:
+        with open(os.path.join(HOME, ".ssh", "authorized_keys")) as f:
+            return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    except OSError:
+        return []
+
+
+def portal_add_key(key):
+    key, err = sb.validate_pubkey(key)
+    if err:
+        return {"ok": False, "error": err}
+    keys = ssh_keys()
+    if key.split()[:2] not in [k.split()[:2] for k in keys]:
+        os.makedirs(os.path.join(HOME, ".ssh"), mode=0o700, exist_ok=True)
+        path = os.path.join(HOME, ".ssh", "authorized_keys")
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "w") as f:
+            f.write(key + "\n")
+    return {"ok": True, "key_added": True}
+
+
+def portal_login_start(key, console=False):
+    label, cmd, paste = PORTAL_LOGINS[key]
+    if not shutil.which(cmd[0]):
+        return {"ok": False, "error": f"{label} isn't installed on this box. Ask the owner."}
+    if portal_logged_in(key):
+        if key == "gh":
+            gh_finish()
+        return {"ok": True, "done": True}
+    if key == "claude" and console:
+        cmd = cmd + ["--console"]
+    tmux("kill-session", "-t", key)
+    # keep the pane around after the login exits so its last words can be read
+    # gh asks extra y/n questions when it has a terminal; with no terminal it just prints the code
+    run = '"$@" </dev/null 2>&1 | cat' if key == "gh" else '"$@"'
+    wrapped = ["sh", "-c", run + '; echo "[login exited $?]"; sleep 1200', "sh", *cmd]
+    tm = ["tmux", "-L", LOGIN_SOCK, "new-session", "-d", "-s", key, "-x", "250", "-y", "60", "--", *wrapped]
+    # a scope under the user's own systemd keeps it alive after the (root-run) caller exits
+    r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *tm],
+                       env=user_env(), capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        subprocess.run(tm, env=user_env(), capture_output=True, timeout=30)
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        time.sleep(1)
+        screen = login_screen(key)
+        urls = URL_RE.findall(screen)
+        codes = [] if paste else DEVICE_CODE_RE.findall(screen)
+        if urls and (paste or codes):
+            return {"ok": True, "url": urls[0], "code": codes[0] if codes else None, "paste": paste}
+        if "[login exited" in screen:
+            if portal_logged_in(key):
+                return {"ok": True, "done": True}
+            break
+    return {"ok": False, "error": f"{label} login didn't start: " + tail(login_screen(key))}
+
+
+def portal_login_code(key, code):
+    code = (code or "").strip()
+    if not PASTE_RE.fullmatch(code):
+        return {"ok": False, "error": "that code doesn't look right; copy it again from the browser"}
+    if tmux("has-session", "-t", key).returncode != 0:
+        return {"ok": False, "error": "that login expired; start it again"}
+    tmux("send-keys", "-t", key, "-l", "--", code)
+    tmux("send-keys", "-t", key, "Enter")
+    return portal_login_wait(key, 30)
+
+
+def portal_login_wait(key, seconds):
+    label = PORTAL_LOGINS[key][0]
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if portal_logged_in(key):
+            if key == "gh":
+                gh_finish()
+            tmux("kill-session", "-t", key)
+            return {"ok": True, "done": True}
+        if "[login exited" in login_screen(key):
+            break
+        time.sleep(1)
+    if portal_logged_in(key):
+        return {"ok": True, "done": True}
+    return {"ok": False, "error": f"{label} login hasn't finished: " + tail(login_screen(key))}
+
+
+def tail(screen, n=4):
+    lines = [l.strip() for l in screen.splitlines()
+             if l.strip() and "[login exited" not in l and "https://" not in l]
+    return " / ".join(lines[-n:])[-400:] or "no output"
+
+
+def portal_url():
+    return f"http://{socket.gethostname()}:{CFG['WEB_PORT']}/me"
+
+
+def cmd_portal(a):
+    try:
+        if a.action == "status":
+            out = portal_status()
+        elif a.action in ("t3-start", "t3-pair"):
+            out = portal_t3(a.action == "t3-pair")
+        elif a.action == "login-start" and a.key in PORTAL_LOGINS:
+            out = portal_login_start(a.key, console=a.arg == "console")
+        elif a.action == "login-code" and a.key in PORTAL_LOGINS:
+            out = portal_login_code(a.key, sys.stdin.read(4096))
+        elif a.action == "add-key":
+            out = portal_add_key(sys.stdin.read(8192))
+        elif a.action == "login-check" and a.key in PORTAL_LOGINS:
+            out = portal_login_wait(a.key, 5)
+        else:
+            out = {"ok": False, "error": "unknown action"}
+    except (OSError, subprocess.SubprocessError) as e:
+        out = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    print(json.dumps(out))
+
+
 def cmd_init_home(a):
     key = sys.stdin.read().strip()
     os.umask(0o077)
@@ -915,6 +1152,8 @@ def main():
     x = s.add_parser("issues"); x.add_argument("--days", type=int, default=14)
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_issues)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
+    x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
+    x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     a = p.parse_args()
