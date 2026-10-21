@@ -423,7 +423,26 @@ def render_rules(notices=()):
         tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"],
         reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
                      "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
-        tools=tl, extras="\n".join(extras), notices=nt).strip()
+        tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url()).strip()
+
+
+def burst_text(lim, key, what):
+    """'5 cores (500%) while the box is quiet, 3 cores when it's busy' style text for the rules."""
+    base, burst = lim[key], lim.get("BURST_" + key)
+    fmt = (lambda v: f"{float(str(v).rstrip('%')) / 100:g} cores") if what == "cores" else str
+    if not burst or burst == base:
+        return fmt(base)
+    return f"up to {fmt(burst)} while the box is quiet, {fmt(base)} when it's busy"
+
+
+def burst_now(lim, key):
+    """The limit in force right now, according to the guard's last balancing run."""
+    st = sb.read_json(os.path.join(sb.STATE_DIR, "balance.json"), {}) or {}
+    busy = st.get("cpu_busy") if key == "CPU_QUOTA" else st.get("mem_tight")
+    burst = lim.get("BURST_" + key)
+    if not burst or busy:
+        return f"{lim[key]}{' (box busy)' if burst else ''}"
+    return f"{burst} (box quiet; {lim[key]} when busy)"
 
 
 def sync_agent_files(notices=()):
@@ -540,7 +559,7 @@ Open this link in your browser within 30 minutes to pair it:
   {url}
 
 Need another device later? Run `box t3 pair` for a fresh link.
-First time? Log in to your agent once in a terminal (`box setup`), and T3 will use that login.
+First time? Log in to your agent at {portal_url()} (or `box setup` in a terminal); T3 uses that login.
 T3_PAIR_URL={url}""")
 
 
@@ -664,7 +683,8 @@ Welcome to {socket.gethostname()}, {ME.pw_name}!
 
   Agents installed:  {have}
   Your ports:        {f'{r[0]}-{r[1]}' if r else 'any'}
-  Get started:       box setup     (git, GitHub and agent logins, about 2 minutes)
+  Get started:       {portal_url()}   (log in to your agent + GitHub in the browser)
+                     or `box setup` here in the terminal
   Web UI:            box t3        (your own T3 Code; prints a link to open in your browser)
   Or terminal:       tmux new -A -s main   →   cd ~/projects && mkdir myapp && cd myapp && claude
 
