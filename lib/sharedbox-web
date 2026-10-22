@@ -299,13 +299,17 @@ invite, then open this page using the machine's Tailscale name.</p></div>""")
 <input type="hidden" name="token" value="{tok}">
 <label>Username (3–16 lowercase letters/digits)</label>
 <input name="username" value="{e(form.get('username', ''))}" pattern="[a-z][a-z0-9]{{2,15}}" required autocomplete="off">
-<label>SSH public key. Run <code>cat ~/.ssh/id_ed25519.pub</code> on your computer.
-If the file doesn't exist, run <code>ssh-keygen -t ed25519</code> first.</label>
-<textarea name="key" required placeholder="ssh-ed25519 AAAA... you@laptop">{e(form.get('key', ''))}</textarea>
+<details{' open' if form.get('key') else ''}><summary class="mut" style="margin-top:14px;cursor:pointer">
+Optional: SSH access from a terminal</summary>
+<label>SSH public key. Skip this if you just want the web app.
+Run <code>cat ~/.ssh/id_ed25519.pub</code> on your computer to get it.</label>
+<textarea name="key" placeholder="ssh-ed25519 AAAA... you@laptop">{e(form.get('key', ''))}</textarea></details>
 <button type="submit">Create my account</button></form>
 <h2>What you get</h2><ul>
-<li>A normal Linux account. Run Claude Code, Codex, etc. there with your own subscriptions or API keys.</li>
-<li>Fair-share limits: {e(CFG['CPU_QUOTA'])} CPU, {e(CFG['MEMORY_MAX'])} RAM, {e(CFG['DISK_BUDGET_GB'])}G disk.</li>
+<li>Your own T3 Code: a web app where you chat with Claude or Codex and it builds things for you. Use your own subscription.</li>
+<li>Fair-share limits: {e(CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG['CPU_QUOTA']))} cores, up to
+{e(CFG.get('BURST_MEMORY_HIGH') or CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG.get('BURST_CPU_QUOTA') or CFG['CPU_QUOTA']))} cores
+while the box is quiet. {e(CFG['DISK_BUDGET_GB'])}G of disk.</li>
 <li>A block of {e(CFG['PORT_BLOCK'])} ports for your servers, which keep running after you log out.</li>
 <li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted automatically. Use git. Nothing here is backed up.</li>
 </ul></div>""")
@@ -541,7 +545,9 @@ class Handler(BaseHTTPRequestHandler):
         q.append(now)
         username = form.get("username", "").strip().lower()
         err = sb.validate_username(username, CFG)
-        key, kerr = sb.validate_pubkey(form.get("key", ""))
+        key, kerr = "", None  # the SSH key is optional
+        if form.get("key", "").strip():
+            key, kerr = sb.validate_pubkey(form.get("key", ""))
         if err or kerr:
             return self.send(400, join_page(ip, who, err=err or kerr, form=form))
         res = submit_join(ip, who, username, key)

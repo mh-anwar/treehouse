@@ -130,9 +130,12 @@ def create_user(cfg, name, key, login=None, ts_id=None, node=None):
     err = sb.validate_username(name, cfg)
     if err:
         return None, err
-    key, err = sb.validate_pubkey(key)
-    if err:
-        return None, err
+    if (key or "").strip():  # optional: most friends only use the web UI and never SSH in
+        key, err = sb.validate_pubkey(key)
+        if err:
+            return None, err
+    else:
+        key = ""
     reg = sb.registry()
     if ts_id and any(r.get("ts_id") == ts_id for r in reg["users"].values()):
         return None, "this Tailscale account already has a user on this box"
@@ -251,7 +254,9 @@ def handle_join(cfg, rid, req):
         return {"ok": False, "error": "signups are closed"}
     name = str(req.get("username", ""))
     err = sb.validate_username(name, cfg)
-    key, kerr = sb.validate_pubkey(str(req.get("key", "")))
+    key, kerr = "", None
+    if str(req.get("key", "")).strip():
+        key, kerr = sb.validate_pubkey(str(req.get("key", "")))
     if err or kerr:
         return {"ok": False, "error": err or kerr}
     if mode == "approve":
