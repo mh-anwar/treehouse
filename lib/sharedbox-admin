@@ -168,6 +168,9 @@ def create_user(cfg, name, key, login=None, ts_id=None, node=None):
     run(["loginctl", "enable-linger", name], check=False)
     # last step: grant ssh access
     run(["gpasswd", "-a", name, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
+    # start their T3 Code now (first start downloads it), so the join page's button is quick
+    run(["systemctl", "start", f"user@{uid}.service"], check=False)
+    box_portal(pw, ["t3-start"])
     sb.log_event("user_created", name, login=login, ports=f"{lo}-{hi}")
     return rec, None
 
