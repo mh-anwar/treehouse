@@ -218,7 +218,11 @@ if [[ $APPLY == 1 ]]; then
     else
         warn "sharedbox-web is not running yet. Check: journalctl -u sharedbox-web"
     fi
-    say "next: share this machine with friends in the Tailscale admin console, then send them the join link"
+    # push the new agent rules into every account now, not at the next 6-hourly janitor run
+    systemctl start --no-block sharedbox-janitor.service || true
+    say "refreshing every user's agent rules (janitor run started)"
+    say "next: share this machine with friends in the Tailscale admin console, then send them the text from:"
+    say "  sudo sharedbox-admin invite"
 else
     say "dry run only. Re-run with --apply to install."
 fi
