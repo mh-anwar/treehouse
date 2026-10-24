@@ -11,6 +11,7 @@
   sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
   sharedbox-admin reapply                         rewrite every friend's limit drop-ins
+  sharedbox-admin invite                          a message to paste to a new friend
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
@@ -23,6 +24,7 @@ import json
 import os
 import pwd
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -585,6 +587,7 @@ def main():
     x = s.add_parser("requests"); x.add_argument("--done"); x.set_defaults(fn=cmd_requests)
     x = s.add_parser("issues"); x.add_argument("--days", type=int, default=7); x.add_argument("--user")
     x.add_argument("--raw", action="store_true"); x.set_defaults(fn=cmd_issues)
+    s.add_parser("invite").set_defaults(fn=cmd_invite)
     s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
     a = p.parse_args()
     a.fn(cfg, a)
