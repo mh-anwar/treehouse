@@ -47,14 +47,21 @@ DEFAULTS = {
     "CPU_QUOTA": "300%",
     "CPU_WEIGHT": "20",
     "IO_WEIGHT": "20",
-    "MEMORY_HIGH": "5G",
-    "MEMORY_MAX": "6G",
+    "MEMORY_HIGH": "7G",
+    "MEMORY_MAX": "16G",
+    # dynamic balancing: while the box has room, friends may use up to these instead
+    # (sharedbox-janitor guard drops them back to CPU_QUOTA / MEMORY_HIGH when the box gets busy)
+    "BURST_CPU_QUOTA": "500%",
+    "BURST_MEMORY_HIGH": "15G",
+    "BALANCE_MEM_TIGHT_PCT": "25",   # box free memory below this % -> everyone back to MEMORY_HIGH
+    "BALANCE_MEM_OK_PCT": "40",      # ...and bursting is allowed again once it's back above this %
+    "BALANCE_CPU_BUSY": "0.75",      # 1-min load above this x cores -> everyone back to CPU_QUOTA
     "MEMORY_SWAP_MAX": "1G",
     "TASKS_MAX": "2048",
     "OOM_SCORE_ADJ": "500",
     "BUILD_JOBS": "2",
     # disk + cleanup policy
-    "DISK_BUDGET_GB": "20",
+    "DISK_BUDGET_GB": "40",
     "PROJECT_TTL_DAYS": "7",
     "ARTIFACT_TTL_DAYS": "3",
     "CACHE_TTL_DAYS": "7",
@@ -218,7 +225,7 @@ def port_range(cfg, uid):
 def user_limits(cfg, rec=None):
     lim = {k: cfg[k] for k in ("CPU_QUOTA", "CPU_WEIGHT", "IO_WEIGHT", "MEMORY_HIGH",
                                "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX",
-                               "DISK_BUDGET_GB")}
+                               "DISK_BUDGET_GB", "BURST_CPU_QUOTA", "BURST_MEMORY_HIGH")}
     if rec:
         lim.update(rec.get("limits", {}))
     return lim

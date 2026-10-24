@@ -76,10 +76,13 @@ def daemon_reload():
 
 def write_dropins(cfg, name, rec, uid):
     lim = sb.user_limits(cfg, rec)
-    lines = ["# managed by sharedbox — edit with: sharedbox-admin limits " + name, "[Slice]"]
+    lines = ["# managed by sharedbox — edit with: sharedbox-admin limits " + name,
+             "# CPUQuota/MemoryHigh are the burst values; sharedbox-janitor guard lowers them at runtime",
+             "# to CPU_QUOTA/MEMORY_HIGH while the box is busy", "[Slice]"]
     for key, prop in MANAGED_PROPS.items():
-        if lim.get(key):
-            lines.append(f"{prop}={lim[key]}")
+        val = lim.get("BURST_" + key) or lim.get(key)
+        if val:
+            lines.append(f"{prop}={val}")
     d = os.path.join(SYSTEMD_DIR, f"user-{uid}.slice.d")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
@@ -409,7 +412,7 @@ def cmd_limits(cfg, a):
     if not a.settings:
         print(json.dumps(sb.user_limits(cfg, rec), indent=2))
         return
-    allowed = set(MANAGED_PROPS) | {"DISK_BUDGET_GB"}
+    allowed = set(MANAGED_PROPS) | {"DISK_BUDGET_GB", "BURST_CPU_QUOTA", "BURST_MEMORY_HIGH"}
     for s in a.settings:
         k, _, v = s.partition("=")
         if k not in allowed:

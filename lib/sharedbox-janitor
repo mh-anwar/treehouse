@@ -177,6 +177,10 @@ def cmd_run(cfg, a):
 
 
 def cmd_guard(cfg, a):
+    try:
+        balance(cfg)
+    except Exception as e:  # balancing must never stop the OOM guard below
+        print(f"balance: {e!r}", file=sys.stderr)
     adj = sb.cfg_int(cfg, "OOM_SCORE_ADJ")
     lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
     for pid in os.listdir("/proc"):
@@ -194,6 +198,69 @@ def cmd_guard(cfg, a):
                     f.write(str(adj))
         except (OSError, ValueError):
             pass
+
+
+# ---------- dynamic balancing ----------
+# Friends get the burst limits (BURST_CPU_QUOTA / BURST_MEMORY_HIGH) while the box has room, and
+# their base limits (CPU_QUOTA / MEMORY_HIGH) while it's busy. Runtime-only changes: after a
+# reboot the drop-ins (burst values) apply until the next guard run. CPU is also shared fairly by
+# CPUWeight whenever several people want it at once.
+
+BALANCE_STATE = os.path.join(sb.STATE_DIR, "balance.json")
+
+
+def box_pressure(cfg, prev):
+    mem = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            mem[k] = int(v.split()[0]) * 1024
+    free_pct = 100 * mem["MemAvailable"] / mem["MemTotal"]
+    tight_at, ok_at = float(cfg["BALANCE_MEM_TIGHT_PCT"]), float(cfg["BALANCE_MEM_OK_PCT"])
+    mem_tight = free_pct < (ok_at if prev.get("mem_tight") else tight_at)  # hysteresis
+    load, ncpu = os.getloadavg()[0], os.cpu_count() or 1
+    busy_at = float(cfg["BALANCE_CPU_BUSY"])
+    cpu_busy = load > ncpu * (busy_at - 0.15 if prev.get("cpu_busy") else busy_at)
+    return {"mem_tight": mem_tight, "cpu_busy": cpu_busy, "free_pct": round(free_pct, 1),
+            "load": round(load, 2), "ts": int(time.time())}
+
+
+def read_cg(uid, name):
+    try:
+        with open(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/{name}") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def cpu_quota_us(pct):
+    return int(float(str(pct).rstrip("%")) * 1000)  # per 100 ms period: 300% -> 300000
+
+
+def balance(cfg):
+    prev = sb.read_json(BALANCE_STATE, {}) or {}
+    st = box_pressure(cfg, prev)
+    for name, rec in sb.friend_users().items():
+        uid, lim = rec["uid"], sb.user_limits(cfg, rec)
+        if read_cg(uid, "cpu.max") is None:
+            continue  # not logged in / nothing running
+        cpu = lim["CPU_QUOTA"] if st["cpu_busy"] or not lim.get("BURST_CPU_QUOTA") else lim["BURST_CPU_QUOTA"]
+        mem = (lim["MEMORY_HIGH"] if st["mem_tight"] or not lim.get("BURST_MEMORY_HIGH")
+               else lim["BURST_MEMORY_HIGH"])
+        props = []
+        cur_cpu = (read_cg(uid, "cpu.max") or "").split()
+        if not cur_cpu or cur_cpu[0] == "max" or int(cur_cpu[0]) != cpu_quota_us(cpu):
+            props.append(f"CPUQuota={cpu}")
+        cur_mem = read_cg(uid, "memory.high")
+        if cur_mem is None or cur_mem == "max" or int(cur_mem) != sb.parse_size(mem):
+            props.append(f"MemoryHigh={mem}")
+        if props:
+            subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],
+                           capture_output=True)
+    if (st["mem_tight"], st["cpu_busy"]) != (prev.get("mem_tight"), prev.get("cpu_busy")):
+        sb.log_event("balance", None, mem_tight=st["mem_tight"], cpu_busy=st["cpu_busy"],
+                     free_pct=st["free_pct"], load=st["load"])
+    sb.write_json(BALANCE_STATE, st, mode=0o644)
 
 
 def main():

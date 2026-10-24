@@ -42,8 +42,8 @@ The user is **not sitting at {host}**. They reach you from their own device over
 
 | Resource | Your limit |
 |---|---|
-| CPU | {cpu} (lower priority than the box owner) |
-| RAM | {mem_high} soft / {mem_max} hard. Over the hard limit, your biggest process gets killed |
+| CPU | {cpu} (lower priority than the box owner; shared fairly when several people are busy) |
+| RAM | {mem_high} soft (past it you're slowed down) / {mem_max} hard (past it your biggest process gets killed) |
 | Processes | {tasks} |
 | Disk | {disk} budget for your whole home dir |
 | Ports | **{ports}**. Bind your servers to these ports only. The first one is reserved for the user's T3 Code server |
