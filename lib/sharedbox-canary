@@ -443,7 +443,7 @@ class Responder:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        action = cfg.get("CANARY_ACTION", "freeze").strip().lower()
+        action = cfg.get("CANARY_ACTION", "alert").strip().lower()
         if action not in ("alert", "freeze"):
             print(f"unknown CANARY_ACTION={action!r}; alerting only", file=sys.stderr)
             action = "alert"
@@ -570,7 +570,7 @@ def cmd_watch(cfg, a):
     fan, mask, perm, n = open_watch(lib, paths)
     print(f"watching {n}/{len(paths)} decoys in {cfg.get('CANARY_DIR', '/srv/backups/prod')} "
           f"({'open permission events' if perm else 'open notifications only: kernel lacks permission events'}); "
-          f"action={cfg.get('CANARY_ACTION', 'freeze')}", file=sys.stderr, flush=True)
+          f"action={cfg.get('CANARY_ACTION', 'alert')}", file=sys.stderr, flush=True)
     q = queue.Queue(maxsize=1000)
     threading.Thread(target=Responder(cfg).run, args=(q,), daemon=True).start()
     poller = select.poll()
@@ -633,7 +633,7 @@ def cmd_status(cfg, a):
     need_root()
     d = cfg.get("CANARY_DIR", "/srv/backups/prod")
     r = subprocess.run(["systemctl", "is-active", "sharedbox-canary.service"], capture_output=True, text=True)
-    print(f"daemon: {r.stdout.strip() or 'unknown'}   action: {cfg.get('CANARY_ACTION', 'freeze')}   dir: {d}")
+    print(f"daemon: {r.stdout.strip() or 'unknown'}   action: {cfg.get('CANARY_ACTION', 'alert')}   dir: {d}")
     for name, watch in DECOYS.items():
         p = os.path.join(d, name)
         try:
@@ -660,7 +660,7 @@ def cmd_status(cfg, a):
 
 def cmd_test(cfg, a):
     d = cfg.get("CANARY_DIR", "/srv/backups/prod")
-    action = cfg.get("CANARY_ACTION", "freeze")
+    action = cfg.get("CANARY_ACTION", "alert")
     print(f"""To check the tripwire end to end:
 
   1. sudo systemctl status sharedbox-canary      (should be active, "watching N/N decoys")

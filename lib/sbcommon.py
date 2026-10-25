@@ -107,7 +107,7 @@ DEFAULTS = {
     "TRAP_PROXY_BASE": "8800",
     # tripwire decoy secrets
     "CANARY_DIR": "/srv/backups/prod",
-    "CANARY_ACTION": "freeze",
+    "CANARY_ACTION": "alert",
 }
 
 
