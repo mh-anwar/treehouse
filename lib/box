@@ -117,6 +117,15 @@ def next_weekly_reboot(now=None):
 
 def advice(g):
     out = []
+    al = sb.security_alert(ME.pw_name)
+    if al:
+        out.append(f"SECURITY: on {fmt_ts(al['ts'])} a program running as this user "
+                   f"(`{al.get('cmd') or al.get('exe') or '?'}`) opened the box's decoy secrets "
+                   f"({al['file']}). Tell the user at the start of your next reply, in plain words: nothing "
+                   "real leaked, but something on their account looked for passwords/keys, usually a "
+                   "malicious package or script. Offer to check recently installed npm/pip packages, "
+                   "autostarts (~/.config/autostart, systemd --user units, shell rc files) and running "
+                   "processes. Never open files under the decoy directory yourself.")
     rb = scheduled_reboot()
     wk = next_weekly_reboot()
     if wk and wk - time.time() < 12 * 3600 and not (rb and abs(rb - wk) < 3600):
@@ -1122,6 +1131,21 @@ def cmd_init_home(a):
     sync_agent_files()
 
 
+NOTICE_KEYS = ("SECURITY", "DELETED", "OVER", "REBOOT")
+
+
+def rule_notices(box=None, janitor=None):
+    """Notices worth baking into agent rule files (the long-lived ones)."""
+    if janitor is None:
+        janitor = sb.read_json(STATUS_FILE, {}) or {}
+    return [n for n in advice({"box": box or sb.box_load(), "live": {}, "janitor": janitor})
+            if any(k in n for k in NOTICE_KEYS)]
+
+
+def cmd_sync_rules(a):
+    sync_agent_files(rule_notices())
+
+
 def cmd_pass(a):
     import sbclean
     plan = json.load(sys.stdin)
@@ -1135,10 +1159,7 @@ def cmd_pass(a):
     if not plan.get("dry_run"):
         os.makedirs(os.path.dirname(STATUS_FILE), exist_ok=True)
         sb.write_json(STATUS_FILE, status, mode=0o600)
-        notices = [n for n in advice({"box": plan.get("box") or sb.box_load(), "live": {},
-                                      "janitor": status})
-                   if "DELETED" in n or "OVER" in n or "REBOOT" in n]
-        sync_agent_files(notices)
+        sync_agent_files(rule_notices(plan.get("box"), status))
     json.dump(rep, sys.stdout)
 
 
@@ -1175,6 +1196,7 @@ def main():
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
+    s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     a = p.parse_args()
     if not a.cmd:

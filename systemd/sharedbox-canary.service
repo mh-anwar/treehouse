@@ -1,5 +1,5 @@
 [Unit]
-Description=sharedbox tripwire: decoy secrets, freeze whoever opens them
+Description=sharedbox tripwire: decoy secrets, alert the owner and whoever opens them
 After=local-fs.target
 
 [Service]
@@ -13,12 +13,13 @@ Nice=-5
 OOMScoreAdjust=-500
 # Runs as root: fanotify needs CAP_SYS_ADMIN, reading other users' /proc/PID/{environ,exe,cwd}
 # needs CAP_SYS_PTRACE, and `systemctl freeze` talks to PID 1 over its private socket.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN
+# CAP_SETUID/SETGID: refresh the friend's agent rules as the friend (setpriv), never as root.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_SETUID CAP_SETGID
 NoNewPrivileges=yes
 # /usr, /boot, /etc read-only; /srv/backups and /var/lib/sharedbox stay writable
 ProtectSystem=full
 PrivateTmp=yes
-PrivateDevices=yes
+# no PrivateDevices: the alert is written to the friend's open terminals (/dev/pts)
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

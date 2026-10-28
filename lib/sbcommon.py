@@ -26,6 +26,8 @@ PENDING = os.path.join(STATE_DIR, "pending")
 SLOTS = os.path.join(STATE_DIR, "slots")
 REQUESTS = os.path.join(STATE_DIR, "requests")
 TOOLS_JSON = os.path.join(STATE_DIR, "tools.json")
+ALERTS = os.path.join(STATE_DIR, "alerts")   # per-friend security alerts (tripwire), root-owned, group=friend
+ALERT_DAYS = 7
 
 DEFAULTS = {
     # who may join: open | approve | closed
@@ -194,6 +196,14 @@ def recent_events(n=50):
 
 
 # ---------- registry ----------
+
+def security_alert(user):
+    """The friend's latest tripwire alert if it is recent, else None."""
+    rec = read_json(os.path.join(ALERTS, f"{user}.json"))
+    if rec and time.time() - rec.get("ts", 0) < ALERT_DAYS * 86400:
+        return rec
+    return None
+
 
 def registry():
     return read_json(REGISTRY, {"users": {}})

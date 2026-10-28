@@ -20,7 +20,7 @@ def configured(cfg):
     return bool(cfg.get("MAIL_TO") and cfg.get("SMTP_HOST") and os.path.exists(cfg["SMTP_PASSWORD_FILE"]))
 
 
-def send(cfg, subject, text, html=None):
+def send(cfg, subject, text, html=None, to=None):
     if not cfg.get("MAIL_TO") or not cfg.get("SMTP_HOST"):
         raise MailNotConfigured("set MAIL_TO and SMTP_HOST in sharedbox.conf")
     pw_file = cfg["SMTP_PASSWORD_FILE"]
@@ -39,7 +39,7 @@ def send(cfg, subject, text, html=None):
     msg = EmailMessage()
     msg["Subject"] = f"[{host}] {subject}"
     msg["From"] = f"sharedbox on {host} <{sender}>"
-    msg["To"] = cfg["MAIL_TO"]
+    msg["To"] = to or cfg["MAIL_TO"]
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=host)
     msg.set_content(text)

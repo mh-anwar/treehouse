@@ -1,5 +1,6 @@
 #!/usr/bin/python3 -I
-"""sharedbox-canary: decoy "secrets" tripwire. Whoever opens them is recorded, emailed about, and frozen.
+"""sharedbox-canary: decoy "secrets" tripwire. Whoever opens them is recorded and both the owner and the
+friend are told (optionally frozen).
 
   sharedbox-canary plant          create the decoys in CANARY_DIR (idempotent; never overwrites)   [root]
   sharedbox-canary watch          the daemon (sharedbox-canary.service)                            [root]
@@ -14,10 +15,13 @@ secrets on this box. The daemon watches them with fanotify (open permission even
 held for a few milliseconds while we read who it is from /proc, then always allowed, so they take
 the bait), and then:
 
-  CANARY_ACTION=freeze (default)  friend accounts (uid FRIEND_UID_MIN..MAX, not admins) are frozen:
+  CANARY_ACTION=freeze            friend accounts (uid FRIEND_UID_MIN..MAX, not admins) are frozen:
                                   `systemctl freeze user-UID.slice` pauses every process of theirs in
                                   place for forensics. Reversible: sudo sharedbox-canary thaw USER
-  CANARY_ACTION=alert             record + email only
+  CANARY_ACTION=alert (default)   record + email only
+  Either way the friend is told too: a message on their open terminals, a SECURITY notice in their
+  agents' rules (so the agent tells them in T3), and an email if their Tailscale login is an address.
+  The usual cause is a malicious package or script snooping, not the friend themself.
   root/admin openers are only ever alerted on. One freeze+email per user per 10 minutes; further
   hits are counted.
 
@@ -438,6 +442,72 @@ def mail_ok(cfg):
         return False
 
 
+def _email_like(login):
+    return bool(login) and "@" in login and "." in login.rsplit("@", 1)[1]
+
+
+def notify_friend(cfg, user, uid, rec):
+    """Tell the friend whose account opened a decoy: alert file, terminals, agent rules, email."""
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return
+    short = (f"A program running as you ({rec['cmd'][:120] or rec['exe'] or '?'}, pid {rec['pid']}) "
+             f"opened a decoy secrets file ({rec['file']}). Nothing real was exposed, but something "
+             f"on your account is snooping for passwords and keys. The owner has been told.")
+    # 1. alert file: root-owned, readable by the friend; `box` turns it into a SECURITY notice
+    path = os.path.join(sb.ALERTS, f"{user}.json")
+    try:
+        os.makedirs(sb.ALERTS, mode=0o755, exist_ok=True)
+        sb.write_json(path, {"ts": rec["ts"], "file": rec["file"], "cmd": rec["cmd"][:300],
+                             "pid": rec["pid"], "exe": rec["exe"]}, mode=0o640)
+        os.chown(path, 0, pw.pw_gid)
+    except OSError as e:
+        print(f"alert file for {user} failed: {e}", file=sys.stderr)
+    # 2. every terminal they have open
+    banner = (f"\r\n\a*** sharedbox SECURITY ALERT ***\r\n{short}\r\n"
+              "Ask your agent or the box owner what to do.\r\n")
+    try:
+        ttys = os.listdir("/dev/pts")
+    except OSError:
+        ttys = []
+    for t in ttys:
+        tty = os.path.join("/dev/pts", t)
+        try:
+            if not t.isdigit() or os.stat(tty).st_uid != uid:
+                continue
+            fd = os.open(tty, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+            try:
+                os.write(fd, banner.encode())
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+    # 3. refresh their agents' rules now (as them, never as root) so the next agent turn sees it
+    env = {"HOME": pw.pw_dir, "USER": user, "LOGNAME": user, "PATH": "/usr/local/bin:/usr/bin:/bin",
+           "SHAREDBOX_LIB": sb.LIB_DIR, "SHAREDBOX_SHARE": sb.SHARE_DIR,
+           "SHAREDBOX_CONF": sb.CONF_PATH, "SHAREDBOX_STATE": sb.STATE_DIR}
+    try:
+        subprocess.run(["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
+                        "--reset-env", "--", sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"),
+                        "_sync-rules"], env=env, cwd=pw.pw_dir, capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"rule sync for {user} failed: {e}", file=sys.stderr)
+    # 4. email, if their Tailscale login is an email address
+    login = (sb.registry().get("users", {}).get(user) or {}).get("login", "")
+    if _email_like(login) and mail_ok(cfg):
+        try:
+            sbmail.send(cfg, "Security alert on your sharedbox account",
+                        f"Hi {user},\n\n{short}\n\nWhat to do:\n"
+                        "- Think about anything you installed or ran recently (npm/pip packages, scripts).\n"
+                        "  A malicious package is the usual cause.\n"
+                        "- Ask your agent: \"check my account for anything suspicious\".\n"
+                        "- If unsure, rotate passwords/tokens you have used on the box.\n\n"
+                        "Your account was not locked. The box owner got the same alert.\n", to=login)
+        except Exception as e:  # noqa: BLE001
+            print(f"friend email failed: {e}", file=sys.stderr)
+
+
 class Responder:
     """Runs off the event loop: decide, freeze, record, email."""
 
@@ -479,6 +549,8 @@ class Responder:
             rec["frozen"] = ok
             note = f"froze user-{uid}.slice" if ok else f"FREEZE FAILED: {err}"
         append_hit(rec)
+        if friend:
+            threading.Thread(target=notify_friend, daemon=True, args=(self.cfg, user, uid, rec)).start()
         sb.log_event("canary", user, file=rec["file"], pid=rec["pid"], cmd=rec["cmd"][:200], frozen=rec["frozen"])
         print(f"TRIPWIRE: {user} (uid {uid}) pid {rec['pid']} `{rec['cmd'][:200]}` opened {rec['file']} "
               f"from {rec['ip'] or '?'}; {note}", file=sys.stderr, flush=True)
