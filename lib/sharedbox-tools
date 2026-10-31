@@ -2,9 +2,11 @@
 """sharedbox-tools: system-wide toolchain for friends and their agents (root).
 
   sharedbox-tools install [--dry-run]    install everything enabled in sharedbox.conf
-  sharedbox-tools update                 update npm-installed agents (+ uv); apt is left to unattended-upgrades
-  sharedbox-tools add apt|npm NAME...    install extra packages and remember them (e.g. for `box request`s)
-  sharedbox-tools remove apt|npm NAME... uninstall packages (also remove them from TOOLS_* in sharedbox.conf)
+  sharedbox-tools update                 update npm-installed agents (+ uv); system packages are left to
+                                         unattended-upgrades (Debian/Ubuntu) or the owner's pacman -Syu (Arch)
+  sharedbox-tools add pkg|npm NAME...    install extra packages and remember them (e.g. for `box request`s)
+  sharedbox-tools remove pkg|npm NAME... uninstall packages (also remove them from TOOLS_* in sharedbox.conf)
+                                         `pkg` = the system package manager (apt or pacman); `apt` still works
   sharedbox-tools status                 installed versions (also written to /var/lib/sharedbox/tools.json)
 
 Only installs packages. It never upgrades the whole system, restarts services, or touches the network config.
@@ -24,9 +26,10 @@ import zipfile
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbdistro as distro  # noqa: E402
 
 TOOLS_JSON = os.path.join(sb.STATE_DIR, "tools.json")
-EXTRA = "/etc/sharedbox/tools.local"   # lines: "apt NAME" / "npm NAME@VERSION" (pinned at `add`)
+EXTRA = "/etc/sharedbox/tools.local"   # lines: "apt NAME" (Debian) / "pkg NAME" (Arch) / "npm NAME@VERSION" (pinned at `add`)
 ANDROID_REPO = "https://dl.google.com/android/repository/"
 NPM_PREFIX = "/usr/local"
 # registry packages only (no git/url/file specs), optional version
@@ -66,27 +69,42 @@ def extras(kind):
         return []
 
 
-# ---------- apt ----------
+# ---------- system packages (apt / pacman, see sbdistro) ----------
 
-def apt_available(pkgs):
-    ok = []
-    for p in pkgs:
-        r = subprocess.run(["apt-cache", "show", "--no-all-versions", p],
-                           capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            ok.append(p)
-        else:
-            print(f"    skipping {p}: not available in apt", file=sys.stderr)
-    return ok
+PKG_KINDS = ("pkg", "apt")   # "apt" is the old name, still accepted everywhere
 
 
-def apt_install(pkgs, dry):
-    pkgs = apt_available(pkgs)
-    if not pkgs:
-        return
-    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
-    run(["apt-get", "install", "-y", "--no-install-recommends",
-         "-o", "Dpkg::Options::=--force-confold"] + pkgs, dry, env=env)
+def pkg_kind():
+    """What `add pkg` records in tools.local: "apt" on Debian/Ubuntu (unchanged format), else "pkg"."""
+    return "apt" if distro.current() == "debian" else "pkg"
+
+
+def pkg_extras():
+    """Extra system packages, native names. Old "apt NAME" lines are translated on Arch."""
+    return distro.native_names(extras("apt") + extras("pkg"))
+
+
+def system_packages(cfg):
+    """TOOLS_APT (+ browser libs, + JDK) as native names. On Arch, TOOLS_PACMAN / TOOLS_PACMAN_BROWSER
+    replace the translated Debian lists when set."""
+    arch = distro.current() == "arch"
+    base = words(cfg, "TOOLS_PACMAN") if arch and words(cfg, "TOOLS_PACMAN") else words(cfg, "TOOLS_APT")
+    pkgs = list(base)
+    if cfg.get("TOOLS_BROWSER_DEPS", "1") == "1":
+        pkgs += (words(cfg, "TOOLS_PACMAN_BROWSER") if arch and words(cfg, "TOOLS_PACMAN_BROWSER")
+                 else words(cfg, "TOOLS_APT_BROWSER"))
+    if cfg.get("TOOLS_ANDROID", "0") == "1":
+        pkgs += ["openjdk-21-jdk-headless"]
+    return distro.native_names(pkgs) + pkg_extras()
+
+
+def pkg_install(pkgs, dry):
+    try:
+        distro.install(pkgs, dry)
+        return True
+    except distro.Unsupported as e:
+        print(f"    error: {e}\n    skipped: {' '.join(pkgs)}", file=sys.stderr)
+        return False
 
 
 # ---------- npm agents ----------
@@ -215,6 +233,8 @@ def versions():
     for binary, label in KNOWN:
         path = shutil.which(binary, path="/usr/local/bin:/usr/bin:/bin:"
                             "/opt/android-sdk/cmdline-tools/latest/bin")
+        if not path and binary == "fdfind" and distro.current() == "arch":
+            path = shutil.which("fd", path="/usr/local/bin:/usr/bin:/bin")   # Arch names it fd
         if not path:
             continue
         flag = {"java": "-version", "go": "version", "tmux": "-V"}.get(binary, "--version")
@@ -240,13 +260,10 @@ def write_status():
 
 def cmd_install(cfg, a):
     dry = a.dry_run
-    pkgs = words(cfg, "TOOLS_APT") + extras("apt")
-    if cfg.get("TOOLS_BROWSER_DEPS", "1") == "1":
-        pkgs += words(cfg, "TOOLS_APT_BROWSER")
-    if cfg.get("TOOLS_ANDROID", "0") == "1":
-        pkgs += ["openjdk-21-jdk-headless"]
-    log("apt packages")
-    apt_install(sorted(set(pkgs)), dry)
+    pkgs = system_packages(cfg)
+    log(f"{'apt' if distro.current() == 'debian' else 'system'} packages"
+        + ("" if distro.current() == "debian" else f" ({distro.package_manager() or 'unsupported distro'})"))
+    pkgs_ok = pkg_install(sorted(set(pkgs)), dry)
     log("agents (npm, into /usr/local)")
     npm_install(words(cfg, "TOOLS_NPM"), dry)
     npm_install(npm_extras_pinned(), dry, scripts=False)
@@ -258,6 +275,8 @@ def cmd_install(cfg, a):
     if not dry:
         for k, v in sorted(write_status().items()):
             print(f"    {v['label']:<14} {v['version']}")
+    if not pkgs_ok:
+        sys.exit(1)
 
 
 def cmd_update(cfg, a):
@@ -269,13 +288,26 @@ def cmd_update(cfg, a):
     sb.log_event("tools_updated", None)
 
 
+def pkg_installed(name):
+    """Arch only: is the package (or group) installed now?"""
+    for q in (["pacman", "-Q", "--", name], ["pacman", "-Qg", "--", name]):
+        if subprocess.run(q, capture_output=True).returncode == 0:
+            return True
+    return False
+
+
 def cmd_add(cfg, a):
     for n in a.names:
         if not re.fullmatch(r"[@a-zA-Z0-9._/+-]+", n) or (a.kind == "npm" and not NPM_SPEC.fullmatch(n)):
             sys.exit(f"bad package name: {n}")
     names = a.names
-    if a.kind == "apt":
-        apt_install(names, False)
+    if a.kind in PKG_KINDS:
+        a.kind = pkg_kind()
+        names = distro.native_names(names)
+        if not pkg_install(names, False):
+            sys.exit(1)
+        if a.kind != "apt":   # pacman problems are warnings; record only what actually installed
+            names = [n for n in names if pkg_installed(n)]
     else:
         npm_install(names, False, scripts=False)
         # pin what was approved; `update` reinstalls exactly this version
@@ -292,9 +324,10 @@ def cmd_add(cfg, a):
     except FileNotFoundError:
         lines = []
     key = npm_name if a.kind == "npm" else (lambda n: n)
+    kinds, tr = (("npm",), str) if a.kind == "npm" else (PKG_KINDS, distro.native_name)
     new = {key(n) for n in names}
-    keep = [l for l in lines if not (len(l.split()) == 2 and l.split()[0] == a.kind
-                                     and key(l.split()[1]) in new)]
+    keep = [l for l in lines if not (len(l.split()) == 2 and l.split()[0] in kinds
+                                     and key(tr(l.split()[1])) in new)]
     with open(EXTRA, "w") as f:
         f.writelines(keep + [f"{a.kind} {n}\n" for n in names])
     write_status()
@@ -306,22 +339,34 @@ def cmd_remove(cfg, a):
         if not re.fullmatch(r"[@a-zA-Z0-9._/+-]+", n):
             sys.exit(f"bad package name: {n}")
     key = npm_name if a.kind == "npm" else (lambda n: n)
+    names = a.names
     if a.kind == "npm":
         run(["npm", "uninstall", "-g", "--prefix", NPM_PREFIX] + [key(n) for n in a.names],
             False, check=False)
     else:
-        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
-        run(["apt-get", "remove", "-y"] + a.names, False, env=env, check=False)
-    gone = {key(n) for n in a.names}
+        names = distro.native_names(a.names)
+        try:
+            distro.remove(names)
+        except distro.Unsupported as e:
+            sys.exit(f"error: {e}")
+    kinds, tr = (("npm",), str) if a.kind == "npm" else (PKG_KINDS, distro.native_name)
+    gone = {key(n) for n in names}
     try:
         with open(EXTRA) as f:
-            keep = [l for l in f if not (len(l.split()) == 2 and l.split()[0] == a.kind
-                                         and key(l.split()[1]) in gone)]
+            keep = [l for l in f if not (len(l.split()) == 2 and l.split()[0] in kinds
+                                         and key(tr(l.split()[1])) in gone)]
         with open(EXTRA, "w") as f:
             f.writelines(keep)
     except FileNotFoundError:
         pass
-    listed = [n for n in a.names if n in words(cfg, "TOOLS_NPM" if a.kind == "npm" else "TOOLS_APT")]
+    if a.kind == "npm":
+        conf = words(cfg, "TOOLS_NPM")
+    elif distro.current() == "debian":
+        conf = words(cfg, "TOOLS_APT")
+    else:
+        conf = distro.native_names(words(cfg, "TOOLS_APT") + words(cfg, "TOOLS_APT_BROWSER")
+                                   + words(cfg, "TOOLS_PACMAN") + words(cfg, "TOOLS_PACMAN_BROWSER"))
+    listed = [n for n in names if n in conf]
     if listed:
         print(f"note: {' '.join(listed)} is still listed in {sb.CONF_PATH}; remove it there "
               "or the next install/update will bring it back", file=sys.stderr)
@@ -344,9 +389,9 @@ def main():
     x = s.add_parser("install"); x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_install)
     s.add_parser("update").set_defaults(fn=cmd_update)
-    x = s.add_parser("add"); x.add_argument("kind", choices=["apt", "npm"])
+    x = s.add_parser("add"); x.add_argument("kind", choices=["pkg", "apt", "npm"])
     x.add_argument("names", nargs="+"); x.set_defaults(fn=cmd_add)
-    x = s.add_parser("remove"); x.add_argument("kind", choices=["apt", "npm"])
+    x = s.add_parser("remove"); x.add_argument("kind", choices=["pkg", "apt", "npm"])
     x.add_argument("names", nargs="+"); x.set_defaults(fn=cmd_remove)
     s.add_parser("status").set_defaults(fn=cmd_status)
     a = p.parse_args()
