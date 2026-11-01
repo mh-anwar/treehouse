@@ -15,10 +15,13 @@ fi
 systemctl disable --now sharedbox-web.service sharedbox-provision.path \
     sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer sharedbox-reboot.timer 2>/dev/null || true
 rm -f /etc/systemd/system/sharedbox-*.{service,timer,path}
+# apt timer drop-ins exist only on Debian/Ubuntu (install.sh adds nothing like it on Arch); no-ops elsewhere
 rm -f /etc/systemd/system/apt-daily.timer.d/sharedbox.conf /etc/systemd/system/apt-daily-upgrade.timer.d/sharedbox.conf
 rmdir /etc/systemd/system/apt-daily.timer.d /etc/systemd/system/apt-daily-upgrade.timer.d 2>/dev/null || true
 systemctl daemon-reload
-systemctl restart apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true   # back to Ubuntu's schedule
+if systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
+    systemctl restart apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true   # back to Ubuntu's schedule
+fi
 rm -rf /usr/lib/sharedbox /usr/share/sharedbox
 rm -f /usr/local/bin/box /usr/local/sbin/sharedbox-admin /usr/local/sbin/sharedbox-janitor /usr/local/sbin/sharedbox-tools \
     /etc/profile.d/sharedbox.sh

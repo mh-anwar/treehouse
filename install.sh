@@ -44,10 +44,23 @@ command -v systemctl >/dev/null || { echo "systemd required" >&2; exit 1; }
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' \
     || { echo "python >= 3.12 required" >&2; exit 1; }
 [[ $(stat -fc %T /sys/fs/cgroup) == cgroup2fs ]] || { echo "cgroup v2 required" >&2; exit 1; }
+# distro: debian (apt) | arch (pacman) | unknown. Prints what it found + missing tools with the install command.
+DISTRO_FAMILY=unknown
+eval "$(python3 -I "$SRC/lib/sbdistro.py" shell)"
+python3 -I "$SRC/lib/sbdistro.py" preflight
+[[ $DISTRO_FAMILY != unknown ]] || warn "unsupported distro: package installs (sharedbox-tools, smartmontools) will fail; install them yourself"
 for t in setpriv ssh-keygen useradd loginctl du; do
     command -v $t >/dev/null || { echo "missing tool: $t" >&2; exit 1; }
 done
 command -v tailscale >/dev/null || warn "tailscale not found. Set WEB_BIND in $ETC/sharedbox.conf to an IP"
+# sshd: never modified here, only checked. Debian names the unit ssh, Arch sshd; Ubuntu may socket-activate it.
+SSHD_UNIT=ssh; systemctl cat ssh.service >/dev/null 2>&1 || SSHD_UNIT=sshd
+systemctl is-active -q "$SSHD_UNIT.service" "$SSHD_UNIT.socket" 2>/dev/null \
+    || warn "sshd is not running, so friends can't log in. Start it yourself: systemctl enable --now $SSHD_UNIT"
+if [[ -d /etc/ssh/sshd_config.d && -r /etc/ssh/sshd_config ]] \
+    && ! grep -qiE '^[[:space:]]*Include[[:space:]]+[^[:space:]]*sshd_config\.d/' /etc/ssh/sshd_config; then
+    warn "/etc/ssh/sshd_config doesn't Include sshd_config.d/, so drop-ins there are ignored: put AllowGroups/PasswordAuthentication in sshd_config itself"
+fi
 
 # read existing config if present, else defaults from the shipped file
 conf_get() { sed -n "s/^$1=//p" "${ETC}/sharedbox.conf" 2>/dev/null | tail -1 || true; }
@@ -72,7 +85,7 @@ getent passwd sharedbox >/dev/null || do_ useradd --system --no-create-home --ho
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap \
          sharedbox-canary; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -128,7 +141,11 @@ done
 
 # ---------- tools ----------
 if [[ $TOOLS == 1 ]]; then
-    say "tools: coding agents, toolchains, browser libs (apt install only, no system upgrade)"
+    if [[ $DISTRO_FAMILY == arch ]]; then
+        say "tools: coding agents, toolchains, browser libs (pacman -S --needed only: no -Sy, no system upgrade, no AUR)"
+    else
+        say "tools: coding agents, toolchains, browser libs (apt install only, no system upgrade)"
+    fi
     if [[ $APPLY == 1 ]]; then "$LIB/sharedbox-tools" install || warn "some tools failed; rerun: sudo sharedbox-tools install"
     else PYTHONDONTWRITEBYTECODE=1 SHAREDBOX_LIB="$SRC/lib" SHAREDBOX_CONF="$SRC/etc/sharedbox.conf" python3 -I "$SRC/lib/sharedbox-tools" install --dry-run \
         || echo "    would run: sharedbox-tools install"; fi
@@ -151,8 +168,15 @@ do_ sh -c "printf '[Unit]\\nDescription=sharedbox health: weekly report ($REPORT
 do_ systemctl daemon-reload
 do_ systemctl enable --now sharedbox-health-sample.timer sharedbox-health-check.timer sharedbox-health-report.timer
 do_ systemctl restart sharedbox-health-report.timer
-command -v smartctl >/dev/null || do_ apt-get install -y --no-install-recommends smartmontools \
-    || warn "smartmontools not installed; reports won't include disk health"
+if ! command -v smartctl >/dev/null; then
+    case $DISTRO_FAMILY in
+        arch) do_ pacman -S --needed --noconfirm smartmontools \
+                  || warn "smartmontools not installed (stale sync db? run a full pacman -Syu); reports won't include disk health" ;;
+        unknown) warn "smartmontools not installed; reports won't include disk health. Install it with your package manager" ;;
+        *) do_ apt-get install -y --no-install-recommends smartmontools \
+               || warn "smartmontools not installed; reports won't include disk health" ;;
+    esac
+fi
 if [[ ! -s $(conf_get SMTP_PASSWORD_FILE || true) && ! -s $ETC/smtp-password ]]; then
     warn "email not set up yet: set MAIL_TO in $ETC/sharedbox.conf (or --mail-to), then put a Gmail app"
     warn "password in $ETC/smtp-password:  sudo install -m 600 /dev/stdin $ETC/smtp-password  (paste, Enter, Ctrl-D)"
@@ -173,8 +197,17 @@ do_ systemctl restart sharedbox-canary.service
 # Ubuntu installs security updates daily around 06:00-07:00 by default. Move that to the night so
 # updates that need a reboot are applied by the Automatic-Reboot-Time the same night, not a day later.
 # Only the two apt timers get a drop-in; apt's own config is not touched and nothing is run now.
+# Arch has no unattended-upgrades, and unattended full upgrades are risky there: nothing is installed or
+# scheduled. The weekly health email nags about pending updates (checkupdates) and reboot-required instead.
 UPGRADE_TIME=$(conf_get APT_UPGRADE_TIME); UPGRADE_TIME=${UPGRADE_TIME:-03:00}
-if [[ $UPGRADE_TIME != off ]] && systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
+if [[ $DISTRO_FAMILY == arch ]]; then
+    say "updates: Arch has NO automatic security updates, and sharedbox doesn't add any (unattended"
+    say "  full upgrades can break Arch). Update by hand regularly: read archlinux.org/news, then"
+    say "  $(command -v omarchy-update >/dev/null && echo 'omarchy-update (as yourself)' || echo 'sudo pacman -Syu'), and reboot after kernel updates."
+    say "  The weekly health email lists pending updates and says when a reboot is needed."
+    command -v checkupdates >/dev/null \
+        || warn "checkupdates not found, so the report can't count pending updates: pacman -S --needed pacman-contrib"
+elif [[ $UPGRADE_TIME != off ]] && systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
     LISTS_TIME=$(date -d "$UPGRADE_TIME 30 min ago" +%H:%M)
     say "apt: refresh package lists at $LISTS_TIME, install security updates at $UPGRADE_TIME"
     do_ install -d -m 755 /etc/systemd/system/apt-daily.timer.d /etc/systemd/system/apt-daily-upgrade.timer.d
