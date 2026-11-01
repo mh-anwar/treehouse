@@ -25,6 +25,7 @@ import time
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbaudit  # noqa: E402
+import sbdistro as distro  # noqa: E402
 import sbmail  # noqa: E402
 
 HDIR = os.path.join(sb.STATE_DIR, "health")
@@ -234,20 +235,8 @@ def smart_status():
 
 
 def apt_history(since):
-    ups, cur_ok = [], False
-    try:
-        lines = open("/var/log/apt/history.log").read().splitlines()
-    except OSError:
-        return ups
-    for l in lines:
-        if l.startswith("Start-Date:"):
-            try:
-                cur_ok = time.mktime(time.strptime(l.split(": ", 1)[1].strip(), "%Y-%m-%d  %H:%M:%S")) >= since
-            except ValueError:
-                cur_ok = False
-        elif cur_ok and l.startswith(("Upgrade:", "Install:")):
-            ups += re.findall(r"(\S+?):\S+ \(", l)
-    return sorted(set(ups))
+    """Packages installed/upgraded since `since`: apt's history.log or pacman.log (sbdistro)."""
+    return distro.package_history(since)
 
 
 def sb_events(since):

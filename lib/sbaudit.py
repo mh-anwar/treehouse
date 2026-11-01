@@ -4,9 +4,10 @@ Run as root by `sharedbox-health audit` and by the weekly report. Read-only: it 
 the system. Each finding has a stable id so the report can say what is new since last time.
 
 Areas: network exposure, sshd, privileged groups/sudo, home isolation, SSH key and persistence
-changes, setuid inventory, world-writable system paths, package integrity (dpkg --verify),
+changes, setuid inventory, world-writable system paths, package integrity (dpkg --verify / pacman -Qkk),
 live compromise indicators (processes from /tmp or memfd, reverse shells, miners), kernel
-hardening, pending security updates, tripwire (canary) hits.
+hardening, pending (security) updates and reboot-required, tripwire (canary) hits.
+Distro differences (Debian/Ubuntu vs Arch/Omarchy) live in sbdistro.
 """
 
 import glob
@@ -22,6 +23,7 @@ import subprocess
 import time
 
 import sbcommon as sb
+import sbdistro as distro
 
 AUDIT_DIR = os.path.join(sb.STATE_DIR, "audit")
 LAST = os.path.join(AUDIT_DIR, "last.json")
@@ -32,7 +34,7 @@ SEV_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 TAILNET4 = ipaddress.ip_network("100.64.0.0/10")
 TAILNET6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 PRIV_GROUPS = ("sudo", "admin", "wheel", "docker", "lxd", "incus-admin", "adm", "disk", "shadow",
-               "libvirt", "systemd-journal")
+               "libvirt", "systemd-journal", "log")   # log: Arch's adm
 MINERS = re.compile(r"xmrig|kdevtmpfsi|kinsing|minerd|cpuminer|nbminer|t-rex|lolminer|phoenixminer"
                     r"|xmr-stak|ccminer|ethminer|\bsrbminer", re.I)
 SUSPICIOUS_PORTS = {1080, 3333, 4444, 5555, 6666, 6667, 6697, 7777, 9050, 14444, 14433, 45700}
@@ -42,6 +44,10 @@ WATCHED = ["/etc/sudoers", "/etc/sudoers.d/*", "/etc/ld.so.preload", "/etc/pam.d
            "/etc/systemd/system/*.timer", "/etc/profile.d/*", "/etc/environment",
            "/etc/security/*.conf", "/root/.bashrc", "/root/.profile", "/etc/rc.local",
            "/var/spool/cron/crontabs/*", "/etc/apt/sources.list.d/*", "/etc/apt/apt.conf.d/*"]
+# Arch: package sources/hooks instead of /etc/apt, cronie's spool instead of crontabs/
+WATCHED_ARCH = ["/etc/pacman.conf", "/etc/pacman.d/*", "/etc/pacman.d/hooks/*", "/usr/share/libalpm/hooks/*",
+                "/var/spool/cron/*", "/etc/makepkg.conf"]
+UPDATES_CACHE_H = 6   # checkupdates (Arch) downloads the package databases; the hourly check reuses this
 
 
 def run(cmd, timeout=120):
@@ -83,12 +89,20 @@ class Audit:
 
     # ------------------------------------------------------------------ network
     def firewall_active(self):
+        """Name of the active host firewall, or None. Works without any of these installed:
+        ufw (Ubuntu, Omarchy), nftables, iptables (nft or legacy backend), firewalld."""
         rc, out = run(["ufw", "status"])
         if rc == 0 and out.startswith("Status: active"):
             return "ufw"
         rc, out = run(["nft", "list", "ruleset"])
         if rc == 0 and re.search(r"hook input .*policy drop", out):
             return "nftables"
+        rc, out = run(["iptables", "-S", "INPUT"])   # iptables-nft without nft(8), or iptables-legacy
+        if rc == 0 and re.search(r"^-P INPUT DROP", out, re.M):
+            return "iptables"
+        rc, out = run(["firewall-cmd", "--state"], timeout=10)
+        if rc == 0 and out.strip() == "running":
+            return "firewalld"
         return None
 
     def check_exposure(self):
@@ -137,7 +151,7 @@ class Audit:
                      "(see README: Firewall)")
         if not fw:
             self.add("firewall:off", "medium" if exposed else "low",
-                     "No host firewall (ufw/nftables input policy is accept)",
+                     "No host firewall (ufw/nftables/iptables input policy is accept)",
                      "Nothing stops a new server from being reachable from the LAN/internet.",
                      "README: Firewall (allows Tailscale + LAN ssh, denies the rest)")
 
@@ -290,7 +304,7 @@ class Audit:
     # ------------------------------------------------------------------ persistence / tampering
     def check_watched(self):
         hashes = {}
-        for pat in WATCHED:
+        for pat in WATCHED + (WATCHED_ARCH if distro.current() == "arch" else []):
             for p in glob.glob(pat):
                 if os.path.isfile(p):
                     hashes[p] = sha(p)
@@ -355,17 +369,20 @@ class Audit:
 
     def check_dpkg(self):
         rc, out = run(["dpkg", "--verify"], timeout=900)
-        bad = []
-        for line in out.splitlines():
-            m = re.match(r"^(\S{9})\s+(c?)\s*(/\S.*)$", line)
-            if not m or m.group(2) == "c" or "5" not in m.group(1):
-                continue
-            bad.append(m.group(3))
+        bad = distro.parse_dpkg_verify(out)
         for p in bad[:25]:
             sev = "high" if re.match(r"/(usr/)?s?bin/|/usr/lib/x86_64-linux-gnu/security/|/lib/", p) else "low"
             self.add(f"dpkg:{p}", sev, f"system file differs from its package: {p}",
                      "A tampered binary or library is how rootkits hide. (Low severity for data files.)",
                      f"apt reinstall $(dpkg -S {p} | cut -d: -f1)")
+
+    def check_pacman(self):
+        bad = distro.verify_packages("arch") or []
+        for p, pkg in bad[:25]:
+            sev = "high" if re.match(r"/(usr/)?s?bin/|/usr/lib/security/|/(usr/)?lib(64)?/[^/]+\.so", p) else "low"
+            self.add(f"pkgfile:{p}", sev, f"system file differs from its package: {p}",
+                     "A tampered binary or library is how rootkits hide. (Low severity for data files.)",
+                     f"pacman -S {pkg}   (reinstall; check `pacman -Qkk {pkg}` first)")
 
     # ------------------------------------------------------------------ live compromise indicators
     def check_processes(self):
@@ -432,23 +449,57 @@ class Audit:
             self.add("apparmor", "medium", "AppArmor is disabled")
 
     def check_updates(self):
-        rc, out = run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "upgrade"], timeout=180)
-        sec = sorted({m.group(1) for m in re.finditer(r"^Inst (\S+) .*-security", out, re.M)})
+        if distro.current() == "arch":
+            return self.check_updates_arch()
+        # Debian/Ubuntu (and, as before, anything that isn't Arch)
+        sec = distro.pending_updates("debian")["security"]
         self.facts["pending_security"] = sec
         if sec:
             self.add("updates:security", "medium" if len(sec) > 5 else "low",
                      f"{len(sec)} security update(s) not installed yet", ", ".join(sec[:15]),
                      "normally installed tonight by unattended-upgrades; if this persists, check "
                      "journalctl -u apt-daily-upgrade")
-        if os.path.exists("/var/run/reboot-required"):
-            age = (time.time() - os.path.getmtime("/var/run/reboot-required")) / 86400
+        age = distro.reboot_required("debian")
+        if age is not None:
             self.facts["reboot_required_days"] = round(age, 1)
             if age > 3:
                 self.add("reboot", "medium", f"reboot pending for {age:.0f} days (kernel/libc fixes not active)")
-        uu = read("/etc/apt/apt.conf.d/20auto-upgrades") or ""
-        if 'Unattended-Upgrade "1"' not in uu:
-            self.add("unattended", "medium", "unattended security upgrades are not enabled", "",
-                     "dpkg-reconfigure -plow unattended-upgrades")
+        au = distro.auto_updates("debian")
+        if not au["enabled"]:
+            self.add("unattended", "medium", "unattended security upgrades are not enabled", "", au["fix"])
+
+    def check_updates_arch(self):
+        """Arch has no unattended upgrades (and unattended full upgrades are risky), so the owner is
+        told here, in the weekly email: pending updates (needs checkupdates) and reboot-required."""
+        au = distro.auto_updates("arch")
+        self.facts["auto_updates"] = au["how"]
+        cache = os.path.join(AUDIT_DIR, "updates.json")
+        c = sb.read_json(cache, {}) or {}
+        if time.time() - c.get("ts", 0) < UPDATES_CACHE_H * 3600 and isinstance(c.get("result"), dict):
+            res = c["result"]
+        else:
+            res = distro.pending_updates("arch")
+            if res["supported"] and not res["error"]:
+                try:
+                    sb.write_json(cache, {"ts": int(time.time()), "result": res}, mode=0o600)
+                except OSError:
+                    pass
+        pend = res.get("all")
+        self.facts["pending_updates"] = pend if pend is not None else (res.get("error") or "unknown")
+        if not res.get("supported"):
+            self.add("updates:unchecked", "low", "can't check for pending updates",
+                     res.get("error") or "", "pacman -S --needed pacman-contrib")
+        elif pend:
+            self.add("updates:pending", "medium" if len(pend) > 50 else "low",
+                     f"{len(pend)} package update(s) pending (no automatic updates on Arch)",
+                     ", ".join(pend[:15]) + (", ..." if len(pend) > 15 else ""), au["fix"])
+        age = distro.reboot_required("arch")
+        if age is not None:
+            self.facts["reboot_required_days"] = round(age, 1)
+            self.add("reboot", "medium" if age > 3 else "low",
+                     f"reboot pending for {age:.0f} days: the running kernel {os.uname().release} "
+                     "was upgraded (its modules are gone, so new USB/filesystem drivers can't load)",
+                     "", "reboot at a quiet time (or wait for the scheduled reboot)")
 
     def check_canary(self, since):
         hits = []
@@ -476,7 +527,8 @@ class Audit:
                   self.check_keys, self.check_watched, self.check_processes, self.check_kernel,
                   self.check_updates, lambda: self.check_canary(since)]
         if deep:
-            checks += [self.check_setuid, self.check_writable, self.check_dpkg]
+            checks += [self.check_setuid, self.check_writable,
+                       self.check_pacman if distro.current() == "arch" else self.check_dpkg]
         for c in checks:
             try:
                 c()
