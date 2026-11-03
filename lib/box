@@ -31,6 +31,7 @@ import time
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbdistro  # noqa: E402
 
 BEGIN = "<!-- sharedbox:begin (managed automatically; edits inside this block are overwritten) -->"
 END = "<!-- sharedbox:end -->"
@@ -429,10 +430,19 @@ def render_rules(notices=()):
         disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}",
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
         cache_ttl=CFG["CACHE_TTL_DAYS"], artifact_ttl=CFG["ARTIFACT_TTL_DAYS"],
-        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"],
+        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], updates=updates_text(),
         reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
                      "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url()).strip()
+
+
+def updates_text():
+    """First sentence of the Reboots section in AGENTS.md: how this box gets its updates."""
+    if sbdistro.current() == "arch":
+        return ("System updates are installed by the owner, not automatically. When one needs a reboot "
+                "(usually a kernel update), the box usually")
+    return ("Security updates install automatically every night. When one needs a reboot (usually a kernel "
+            "update), the box")
 
 
 def burst_text(lim, key, what):
@@ -704,7 +714,7 @@ Your agents already know the house rules (limits, where files go, how to run bui
 def cmd_request(a):
     text = " ".join(a.text).strip()
     if not text:
-        sys.exit('usage: box request "install ffmpeg (apt) for video thumbnails"')
+        sys.exit('usage: box request "install ffmpeg (system package) for video thumbnails"')
     if len(text) > 1000:
         sys.exit("keep it under 1000 characters")
     path = os.path.join(sb.REQUESTS, f"{ME.pw_name}-{int(time.time())}-{os.getpid()}.txt")

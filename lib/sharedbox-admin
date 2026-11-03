@@ -534,7 +534,7 @@ def cmd_requests(cfg, a):
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
         print(f"{sb.printable(os.path.basename(p))}\n  {when}  {who}: {sb.printable(text)}")
     if files:
-        print("\nfulfil e.g. with: sharedbox-tools add apt PKG   then: sharedbox-admin requests --done FILE")
+        print("\nfulfil e.g. with: sharedbox-tools add pkg PKG   then: sharedbox-admin requests --done FILE")
 
 
 def cmd_issues(cfg, a):

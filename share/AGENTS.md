@@ -50,10 +50,10 @@ The user is **not sitting at {host}**. They reach you from their own device over
 
 ## Tools on this machine
 Preinstalled system-wide: {tools}.
-- There is **no sudo**, so never run `sudo` or `apt`. Install what you need into the home directory instead:
+- There is **no sudo**, so never run `sudo` or a system package manager (`apt`, `pacman`). Install what you need into the home directory instead:
   `npm i -g X` (goes to ~/.local), `uv tool install X` / `uv venv`, `pipx install X`, `cargo install X`
   (run `rustup default stable` first), `go install X@latest`. ~/.local/bin is on PATH.
-- If something truly needs a system package, run `box request "install <pkg> (apt): <why>"` and tell the
+- If something truly needs a system package, run `box request "install <pkg> (system package): <why>"` and tell the
   user that you did. Don't wait for it; find a workaround in the meantime.
 {extras}
 
@@ -99,7 +99,7 @@ keep going. Don't ask the user first, and don't stop to wait for a fix:
 - There is no sudo and no Docker. Install tools into your home (`~/.local`, nvm, uv, rustup, …).
 
 ## Reboots
-Security updates install automatically every night. When one needs a reboot (usually a kernel update), the box
+{updates}
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
 - Things that come back by themselves: `box serve` services, the user's `box t3` server, and everything on disk.
 - Things that are lost: processes in `tmux`/`screen`/`nohup`/`&`, terminal sessions, running builds and tests,

@@ -75,8 +75,9 @@ DEFAULTS = {
     # heavy-job queue (box heavy)
     "HEAVY_SLOTS": "2",
     "HEAVY_WAIT_MAX_MIN": "30",
-    # when the box may reboot for security updates (only told to agents; the actual
-    # schedule is Unattended-Upgrade::Automatic-Reboot-Time in /etc/apt/apt.conf.d)
+    # when the box may reboot for security updates (only told to agents; on Debian/Ubuntu the actual
+    # schedule is Unattended-Upgrade::Automatic-Reboot-Time in /etc/apt/apt.conf.d; Arch has no
+    # automatic updates, so only SCHEDULED_REBOOT_DAYS reboots it there)
     "REBOOT_TIME": "04:00",
     "SCHEDULED_REBOOT_DAYS": "Wed,Sun",
     "TOOLS_ANDROID": "0",
