@@ -339,7 +339,7 @@ def build_report(cfg, g, findings, new_ids, resolved):
     S.append(("Who used the box", us or ["no per-user data yet"]))
 
     sec = []
-    sec.append(f"SSH logins: " + ("; ".join(f"{u} from {', '.join(ips[:3])}" for u, ips in g["ssh_accepted"].items())
+    sec.append("SSH logins: " + ("; ".join(f"{u} from {', '.join(ips[:3])}" for u, ips in g["ssh_accepted"].items())
                                   or "none"))
     sec.append(f"Failed/invalid SSH attempts: {g['ssh_failed']}")
     if g["apt"]:
@@ -375,11 +375,11 @@ def build_report(cfg, g, findings, new_ids, resolved):
     host = socket.gethostname()
     text = f"{host} — week ending {time.strftime('%a %d %b %Y')}\n\n{text}\n\n-- sharedbox-health\n"
     color = {"green": "#1a7f37", "yellow": "#9a6700", "red": "#cf222e"}[level]
-    h = [f"<div style='font-family:-apple-system,Segoe UI,sans-serif;max-width:720px;color:#1f2328'>",
+    h = ["<div style='font-family:-apple-system,Segoe UI,sans-serif;max-width:720px;color:#1f2328'>",
          f"<h2 style='margin:0 0 4px'>{html.escape(host)}</h2>",
          f"<div style='color:#656d76;margin-bottom:16px'>week ending {time.strftime('%a %d %b %Y')}</div>"]
     for t, lines in S:
-        h.append(f"<h3 style='border-bottom:1px solid #d0d7de;padding-bottom:4px;margin:20px 0 8px"
+        h.append("<h3 style='border-bottom:1px solid #d0d7de;padding-bottom:4px;margin:20px 0 8px"
                  + (f";color:{color}" if t == "Verdict" else "") + f"'>{html.escape(t)}</h3>")
         h.append("<div style='white-space:pre-wrap;font-size:14px;line-height:1.5'>"
                  + "\n".join(_hl(l) for l in lines) + "</div>")
