@@ -1,0 +1,16 @@
+name: lint
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: ruff (syntax + pyflakes)
+        run: uvx ruff check --select E9,F lib/*.py lib/box lib/sharedbox-*
+      - name: bash syntax
+        run: bash -n install.sh uninstall.sh
+      - name: shellcheck
+        run: shellcheck -S error install.sh uninstall.sh
