@@ -1,0 +1,23 @@
+name: Bug report
+description: Something broke on your box
+labels: [bug]
+body:
+  - type: input
+    id: distro
+    attributes:
+      label: Distro and version
+      placeholder: Ubuntu 24.04 / Omarchy 3.x / Arch
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: e.g. install.sh output, `journalctl -u sharedbox-<unit> -n 50`. Remove usernames/IPs you don't want public.
+      render: text

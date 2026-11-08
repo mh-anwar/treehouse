@@ -1,0 +1,10 @@
+name: Feature idea
+description: Something that would make sharing a box easier
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like, and who is it for (owner, technical friend, non-technical friend)?
+    validations:
+      required: true
