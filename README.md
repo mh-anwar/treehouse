@@ -62,18 +62,34 @@ No SSH keys, no terminal, no "can you run this command for me".
 
 ## Quick start
 
+You need a Linux machine (Ubuntu 24.04 or Omarchy) and a coding agent that can reach it.
+Then tell your agent:
+
+```text
+Set up treehouse on this machine. Follow https://github.com/mh-anwar/treehouse/blob/main/INSTALL.md
+```
+
+That's it. Your agent checks the machine, asks you three questions, installs everything, sets up email
+alerts and a public join link, checks it all works, and hands you an invite message for your first friend.
+The only things you do yourself are click "approve" on a login page and maybe type your sudo password.
+
+<details>
+<summary>Doing it by hand instead</summary>
+
 ```bash
 git clone https://github.com/mh-anwar/treehouse && cd treehouse
 sudo ./install.sh                                    # dry run: prints every action, changes nothing
 sudo ./install.sh --apply --admins you --mail-to you@gmail.com
 sudo sharedbox-admin invite                          # a message to paste to your first friend
 ```
+</details>
 
 The installer is additive and safe on a live machine. It **never** touches sshd, tailscaled, networking
 or the firewall, never changes limits for existing users, and never reboots. `./uninstall.sh` reverses it.
 
-**Requirements:** Linux with systemd + cgroup v2, Python ≥ 3.12, Tailscale. Tested on Ubuntu 24.04;
-Omarchy/Arch support is new. Please [open an issue](../../issues) with what breaks.
+**Requirements:** Linux with systemd + cgroup v2, Python ≥ 3.12, Tailscale on the server (friends don't
+need it). Tested on Ubuntu 24.04; Omarchy/Arch support is new. Please [open an issue](../../issues) with
+what breaks.
 
 ## How it works
 
