@@ -1,14 +1,14 @@
 <div align="center">
 
-# sharedbox
+# treehouse
 
-**One Linux machine. All your friends. All their AI coding agents. Zero admin.**
+### Build your friends an AI treehouse.
 
-Turn a spare PC into a shared dev box where friends sign up in the browser, log in to
-Claude Code / Codex / opencode with a click, and get a fair slice of the machine,
-without you ever running `useradd` or touching a terminal for them.
+Turn a spare computer into a shared home for your friends' AI coding agents.
+They join from a link, log in to Claude Code / Codex / opencode with a click,
+and get a fair slice of the machine. You never touch a terminal for them.
 
-`stdlib Python` · `systemd` · `cgroup v2` · `Tailscale` · no containers, no database
+`stdlib Python` · `systemd` · `cgroup v2` · no containers, no database
 
 **Ubuntu / Debian** ✅  **Omarchy / Arch** 🧪 (experimental)
 
@@ -21,7 +21,7 @@ without you ever running `useradd` or touching a terminal for them.
 AI agents made "I'll just code on my laptop" expensive: builds, dev servers, and five agent
 sessions at once. Meanwhile there's an old desktop in your closet with 32 GB of RAM doing nothing.
 
-sharedbox turns that machine into a box your friends can actually use, including the
+treehouse turns that machine into a box your friends can actually use, including the
 non-technical ones:
 
 1. You share the machine with them on Tailscale.
@@ -63,7 +63,7 @@ No SSH keys, no terminal, no "can you run this command for me".
 ## Quick start
 
 ```bash
-git clone https://github.com/mh-anwar/sharedbox && cd sharedbox
+git clone https://github.com/mh-anwar/treehouse && cd treehouse
 sudo ./install.sh                                    # dry run: prints every action, changes nothing
 sudo ./install.sh --apply --admins you --mail-to you@gmail.com
 sudo sharedbox-admin invite                          # a message to paste to your first friend
@@ -152,7 +152,7 @@ sharedbox-canary status
 
 ## Contributing
 
-PRs welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md). The codebase is plain stdlib Python and
+PRs welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md). Commands and paths are still named `sharedbox-*` (the project's old name). The codebase is plain stdlib Python and
 bash, so there's nothing to build.
 
 ## License
