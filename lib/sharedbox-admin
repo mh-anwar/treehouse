@@ -11,7 +11,12 @@
   sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
   sharedbox-admin reapply                         rewrite every friend's limit drop-ins
-  sharedbox-admin invite                          a message to paste to a new friend
+  sharedbox-admin invite [--days N] [--note TEXT] [--tailscale]   a message to paste to a new friend
+                                                  (with PUBLIC_URL set: includes a one-time signup link)
+  sharedbox-admin invite --list | --revoke ID      outstanding invite links
+  sharedbox-admin login-link USER                 one-time public login link for USER (new device/phone)
+  sharedbox-admin sessions [USER] [--revoke ID|all]   public-gateway logins (browsers/devices)
+  sharedbox-admin public status                   is the public front door (sharedbox-gate + Funnel) set up?
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
@@ -23,11 +28,13 @@ import grp
 import json
 import os
 import pwd
+import secrets
 import socket
 import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
@@ -129,7 +136,7 @@ def next_uid(cfg):
 
 # ---------- create ----------
 
-def create_user(cfg, name, key, login=None, ts_id=None, node=None):
+def create_user(cfg, name, key, login=None, ts_id=None, node=None, email=None):
     """Create a friend account. Returns (record, error)."""
     err = sb.validate_username(name, cfg)
     if err:
@@ -164,6 +171,8 @@ def create_user(cfg, name, key, login=None, ts_id=None, node=None):
 
     rec = {"login": login, "ts_id": ts_id, "node": node, "created": int(time.time()),
            "status": "active", "limits": {}, "uid": uid}
+    if email:
+        rec["email"] = email
     reg["users"][name] = rec
     save_registry(reg)
 
@@ -236,9 +245,12 @@ def process_spool(cfg):
                     continue
                 if req.get("action", "join") == "join":
                     answer(rid, handle_join, req)
+                elif req.get("action") in GATE_ACTIONS:
+                    answer(rid, handle_gate, req)  # quick, and must not race (single-use tokens)
                 else:
                     running.add(pool.submit(answer, rid, handle_portal, req))
             time.sleep(0.2)
+    gate_prune()
     # results nobody collected
     for path in glob.glob(os.path.join(sb.SPOOL, "res-*.json")):
         try:
@@ -249,6 +261,8 @@ def process_spool(cfg):
 
 
 def handle_join(cfg, rid, req):
+    if req.get("invite") is not None:
+        return handle_invite_join(cfg, rid, req)
     ip = str(req.get("ip", ""))
     who = sb.tailscale_whois(ip) if ip else None
     # re-verify identity ourselves rather than trusting the web process
@@ -284,6 +298,160 @@ def handle_join(cfg, rid, req):
     return {"ok": True, "username": name, "ports": [lo, hi]}
 
 
+# ---------- public front door: invites, sessions, device logins (records read by sharedbox-gate) ----------
+# Every token is 32 random bytes, handed out once and stored only as sha256 in GATE_DIR/<kind>/<hash>.json
+# (0640 root:sharedbox). Only root mints or consumes them; the gate and web only read, so neither a friend
+# nor a compromised web/gate process can forge an invite, a session or a login link.
+
+GATE_ACTIONS = ("redeem", "session-refresh", "logout")
+
+
+def gate_dirs():
+    gid = grp.getgrnam(sb.load_config()["SERVICE_USER"]).gr_gid
+    for d in [sb.GATE_DIR] + [os.path.join(sb.GATE_DIR, k) for k in sb.GATE_KINDS]:
+        os.makedirs(d, mode=0o750, exist_ok=True)
+        st = os.lstat(d)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError(f"{d} is not a directory")
+        if (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) != (0, gid, 0o750):
+            os.chown(d, 0, gid)
+            os.chmod(d, 0o750)
+    return gid
+
+
+def gate_mint(kind, ttl, **fields):
+    """Create a token of `kind`; returns (token, hash). The token itself is never stored."""
+    gid = gate_dirs()
+    tok = secrets.token_urlsafe(32)
+    h = sb.token_hash(tok)
+    now = int(time.time())
+    sb.write_json(sb.gate_path(kind, h), dict(fields, hash=h, created=now, expires=now + int(ttl)),
+                  mode=0o640, owner=(0, gid))
+    return tok, h
+
+
+def gate_consume(kind, tok):
+    """Single use: the record if `tok` is live, deleted in the same step (only root does this)."""
+    rec, h = sb.gate_lookup(kind, tok)
+    if not rec:
+        return None
+    try:
+        os.unlink(sb.gate_path(kind, h))
+    except FileNotFoundError:
+        return None
+    return rec
+
+
+def gate_delete(kind, pred):
+    n = 0
+    for h, rec in sb.gate_records(kind):
+        if pred(h, rec):
+            try:
+                os.unlink(sb.gate_path(kind, h))
+                n += 1
+            except FileNotFoundError:
+                pass
+    return n
+
+
+def gate_prune():
+    now = time.time()
+    for kind in sb.GATE_KINDS:
+        gate_delete(kind, lambda h, r: float(r.get("expires", 0) or 0) < now)
+
+
+def revoke_user_gate(name):
+    """Log USER out everywhere: every public session and unused login link."""
+    return (gate_delete("sessions", lambda h, r: r.get("user") == name)
+            + gate_delete("logins", lambda h, r: r.get("user") == name))
+
+
+def session_ttl(cfg):
+    return sb.cfg_int(cfg, "SESSION_DAYS") * 86400
+
+
+def mint_session(cfg, name, via, label=""):
+    tok, h = gate_mint("sessions", session_ttl(cfg), user=name, via=via, label=sb.printable(label)[:80])
+    sb.log_event("gate_login", name, via=via, session=h[:12])
+    return tok
+
+
+def session_identity(cfg, secret):
+    """(username, record, hash) for a live session of an active friend, else (None, None, None)."""
+    rec, h = sb.gate_lookup("sessions", secret if isinstance(secret, str) else "")
+    if not rec or not sb.active_friend(rec.get("user")):
+        return None, None, None
+    return rec["user"], rec, h
+
+
+def mint_login_link(cfg, name):
+    """One-time public login link for an existing friend (10 minutes). At most 5 open per user."""
+    pub = sb.public_url(cfg)
+    if not pub:
+        return None
+    mine = sorted((r.get("created", 0), h) for h, r in sb.gate_records("logins") if r.get("user") == name)
+    for _, h in mine[:max(0, len(mine) - 4)]:
+        try:
+            os.unlink(sb.gate_path("logins", h))
+        except FileNotFoundError:
+            pass
+    tok, _ = gate_mint("logins", sb.cfg_int(cfg, "LOGIN_LINK_MINUTES") * 60, user=name)
+    return f"{pub}/login/{tok}"
+
+
+def handle_invite_join(cfg, rid, req):
+    """Signup through a public invite link. The invite is re-verified here, not trusted from the web."""
+    if not sb.public_url(cfg):
+        return {"ok": False, "error": "public signups are turned off; ask your friend"}
+    tok = str(req.get("invite", ""))
+    inv, _ = sb.gate_lookup("invites", tok)
+    if not inv:
+        return {"ok": False, "bad_invite": True,
+                "error": "this invite link was already used or has expired; ask your friend for a new one"}
+    name = str(req.get("username", ""))
+    err = sb.validate_username(name, cfg)
+    email, eerr = sb.validate_email(str(req.get("email", ""))[:300])
+    if err or eerr:
+        return {"ok": False, "error": err or eerr}
+    # an invite is the owner's approval, so JOIN_MODE (open/approve/closed) doesn't apply; MAX_USERS does
+    rec, err = create_user(cfg, name, "", login="invite", email=email or None)
+    if err:
+        return {"ok": False, "error": err}
+    # consumed only once the account exists, so a taken username can simply be retried
+    gate_consume("invites", tok)
+    sb.log_event("invite_used", name, invite=inv["hash"][:12], note=inv.get("note", ""))
+    session = mint_session(cfg, name, "invite", str(req.get("ua", "")))
+    lo, hi = sb.port_range(cfg, rec["uid"])
+    return {"ok": True, "username": name, "ports": [lo, hi], "session": session}
+
+
+def handle_gate(cfg, rid, req):
+    action = req.get("action")
+    if not sb.public_url(cfg):
+        return {"ok": False, "error": "the public gateway is turned off"}
+    if action == "redeem":
+        rec = gate_consume("logins", str(req.get("login", "")))
+        if not rec:
+            return {"ok": False, "error": "this login link was already used or has expired; get a new one"}
+        if not sb.active_friend(rec.get("user")):
+            return {"ok": False, "error": "that account is suspended or gone; ask the owner"}
+        return {"ok": True, "username": rec["user"],
+                "session": mint_session(cfg, rec["user"], "login-link", str(req.get("ua", "")))}
+    name, rec, h = session_identity(cfg, req.get("session"))
+    if not name:
+        return {"ok": False, "relogin": True, "error": "you're logged out"}
+    if action == "logout":
+        gate_delete("sessions", lambda hh, r: hh == h)
+        sb.log_event("gate_logout", name, session=h[:12])
+        return {"ok": True}
+    if action == "session-refresh":  # sliding expiry: a session in use keeps living
+        rec["expires"] = int(time.time()) + session_ttl(cfg)
+        rec["seen"] = int(time.time())
+        sb.write_json(sb.gate_path("sessions", h), rec, mode=0o640, owner=(0, gate_dirs()))
+        return {"ok": True, "expires": rec["expires"]}
+    return {"ok": False, "error": "unknown action"}
+
+
 # ---------- portal (web page actions for an existing account) ----------
 
 PORTAL_KEYS = ("claude", "codex", "gh")
@@ -306,14 +474,19 @@ def box_portal(pw, args, input_text=None):
 
 
 def handle_portal(cfg, rid, req):
-    ip = str(req.get("ip", ""))
-    who = sb.tailscale_whois(ip) if ip else None
-    # re-verify identity ourselves rather than trusting the web process
-    if not who or who["id"] != str(req.get("ts_id")) or ip == sb.tailscale_ip4():
-        return {"ok": False, "error": "could not verify your Tailscale identity"}
-    name = next((n for n, r in sb.friend_users().items() if r.get("ts_id") == who["id"]), None)
-    if not name:
-        return {"ok": False, "error": "no account for this Tailscale login yet"}
+    if req.get("session") is not None:  # public gateway: identity = a root-minted session token
+        name, _, _ = session_identity(cfg, req.get("session"))
+        if not name or not sb.public_url(cfg):
+            return {"ok": False, "relogin": True, "error": "you're logged out; open your login link again"}
+    else:
+        ip = str(req.get("ip", ""))
+        who = sb.tailscale_whois(ip) if ip else None
+        # re-verify identity ourselves rather than trusting the web process
+        if not who or who["id"] != str(req.get("ts_id")) or ip == sb.tailscale_ip4():
+            return {"ok": False, "error": "could not verify your Tailscale identity"}
+        name = next((n for n, r in sb.friend_users().items() if r.get("ts_id") == who["id"]), None)
+        if not name:
+            return {"ok": False, "error": "no account for this Tailscale login yet"}
     rec = sb.friend_users()[name]
     if rec.get("status", "active") != "active":
         return {"ok": False, "error": "your account is suspended; ask the owner"}
@@ -323,6 +496,11 @@ def handle_portal(cfg, rid, req):
         return box_portal(pw, ["status"])
     if action == "t3":
         return box_portal(pw, ["t3-pair"])
+    if action == "device-link":  # works for Tailscale friends too: their way off Tailscale
+        url = mint_login_link(cfg, name)
+        if not url:
+            return {"ok": False, "error": "the public link isn't set up on this box; ask the owner"}
+        return {"ok": True, "login_url": url, "minutes": sb.cfg_int(cfg, "LOGIN_LINK_MINUTES")}
     if action == "add-key":
         key, err = sb.validate_pubkey(str(req.get("sshkey", "")))
         return {"ok": False, "error": err} if err else box_portal(pw, ["add-key"], input_text=key + "\n")
@@ -339,6 +517,25 @@ def handle_portal(cfg, rid, req):
 
 def cmd_invite(cfg, a):
     """A message to paste to a friend. No terminal anywhere in it."""
+    pub = sb.public_url(cfg)
+    if a.list or a.revoke:
+        return invite_admin(a)
+    if pub and not a.tailscale:
+        days = a.days if a.days else sb.cfg_int(cfg, "INVITE_DAYS")
+        tok, h = gate_mint("invites", days * 86400, note=sb.printable(a.note or "")[:120])
+        sb.log_event("invite_created", None, invite=h[:12], note=a.note or "")
+        print(f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
+builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
+
+1. Open this link (it works once, for the next {days} days):
+   {pub}/i/{tok}
+2. Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
+
+Later, just open {pub}/ in the same browser. On a new device, open {pub}/_box/ on the old one and
+tap "Add a device". Stuck? Ask the agent, or text me.""")
+        print(f"\n(invite {h[:12]}, expires {time.strftime('%Y-%m-%d %H:%M', time.localtime(time.time() + days * 86400))};"
+              f" cancel it: sharedbox-admin invite --revoke {h[:12]})", file=sys.stderr)
+        return
     host = socket.gethostname()
     try:
         st = json.loads(run(["tailscale", "status", "--json", "--peers=false"], capture_output=True,
@@ -356,6 +553,124 @@ builds things for you in your browser and keeps running when you close your lapt
    Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
 
 Bookmark {url.replace('/join', '/me')} for later. Stuck? Ask the agent, or text me.""")
+
+
+def invite_admin(a):
+    if a.revoke:
+        n = gate_delete("invites", lambda h, r: h.startswith(a.revoke.lower()) and len(a.revoke) >= 6)
+        print(f"revoked {n} invite(s)")
+        return
+    rows = sorted(sb.gate_records("invites"), key=lambda x: x[1].get("created", 0))
+    if not rows:
+        print("no open invites")
+    for h, r in rows:
+        exp = float(r.get("expires", 0) or 0)
+        state = "expired" if exp < time.time() else "expires " + time.strftime("%Y-%m-%d %H:%M", time.localtime(exp))
+        print(f"{h[:12]}  {state:<24} {sb.printable(r.get('note', ''))}")
+
+
+def fmt_t(ts):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts or 0))) if ts else "-"
+
+
+def cmd_login_link(cfg, a):
+    require_friend(a.user)
+    if not sb.public_url(cfg):
+        die("PUBLIC_URL is not set; see: sharedbox-admin public status")
+    if not sb.active_friend(a.user):
+        die(f"{a.user} is suspended")
+    url = mint_login_link(cfg, a.user)
+    print(f"""Login link for {a.user} (works once, for {cfg['LOGIN_LINK_MINUTES']} minutes, on any device):
+
+  {url}
+
+Open it in the browser/phone that should be logged in. Afterwards {sb.public_url(cfg)}/ is their T3 Code.""")
+
+
+def cmd_sessions(cfg, a):
+    if a.revoke:
+        if a.revoke == "all":
+            if not a.user:
+                die("--revoke all needs a USER")
+            n = revoke_user_gate(a.user)
+        elif len(a.revoke) < 6:
+            die("give at least 6 characters of the session ID")
+        else:
+            n = gate_delete("sessions", lambda h, r: h.startswith(a.revoke.lower())
+                            and (not a.user or r.get("user") == a.user))
+        sb.log_event("gate_revoked", a.user, count=n)
+        print(f"revoked {n}")
+        return
+    rows = [(h, r) for h, r in sb.gate_records("sessions") if not a.user or r.get("user") == a.user]
+    rows.sort(key=lambda x: (str(x[1].get("user")), x[1].get("created", 0)))
+    if not rows:
+        print("no public sessions" + (f" for {a.user}" if a.user else ""))
+        return
+    print(f"{'ID':<14}{'USER':<16}{'VIA':<12}{'CREATED':<18}{'LAST REFRESH':<18}{'EXPIRES':<18}DEVICE")
+    for h, r in rows:
+        print(f"{h[:12]:<14}{sb.printable(r.get('user', '?')):<16}{sb.printable(r.get('via', '?')):<12}"
+              f"{fmt_t(r.get('created')):<18}{fmt_t(r.get('seen')):<18}{fmt_t(r.get('expires')):<18}"
+              f"{sb.printable(r.get('label', ''))[:60]}")
+    print("\nrevoke: sharedbox-admin sessions [USER] --revoke ID   (or USER --revoke all)")
+
+
+def cmd_public(cfg, a):
+    pub, port = sb.public_url(cfg), sb.cfg_int(cfg, "GATE_PORT")
+    ok = True
+
+    def line(good, text):
+        nonlocal ok
+        ok &= bool(good)
+        print(f"  [{'ok' if good else '!!'}] {text}")
+
+    print("public front door (friends need only a browser):")
+    raw = (cfg.get("PUBLIC_URL") or "").strip()
+    line(pub, f"PUBLIC_URL={raw or '(empty: gateway off)'}"
+         + ("" if pub or not raw else "  <- must be https://<host>.<tailnet>.ts.net"))
+    gate = run(["systemctl", "is-active", "sharedbox-gate.service"], check=False, capture_output=True, text=True)
+    line(gate.stdout.strip() == "active", f"sharedbox-gate.service: {gate.stdout.strip() or '?'} (127.0.0.1:{port})")
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
+            host = urllib.parse.urlsplit(pub).netloc if pub else "127.0.0.1"
+            c.sendall(f"GET /_box/healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+            first = c.recv(200).split(b"\r\n")[0].decode(errors="replace")
+        line(" 200 " in first + " ", f"gate answers on 127.0.0.1:{port}: {first}")
+    except OSError as e:
+        line(False, f"gate not reachable on 127.0.0.1:{port}: {e}")
+    fun = run(["tailscale", "funnel", "status", "--json"], check=False, capture_output=True, text=True, timeout=10)
+    target = f"http://127.0.0.1:{port}"
+    try:
+        fj = json.loads(fun.stdout or "{}")
+    except ValueError:
+        fj = {}
+    funnel_on = any(bool(v) for v in (fj.get("AllowFunnel") or {}).values())
+    proxies = json.dumps(fj.get("Web") or {})
+    line(funnel_on and target in proxies, "Tailscale Funnel on :443 -> " + target
+         + ("" if funnel_on else "  (not enabled)") + ("" if target in proxies else "  (not proxying to the gate)"))
+    try:
+        st = os.stat(sb.GATE_DIR)
+        line(stat.S_IMODE(st.st_mode) == 0o750 and st.st_uid == 0, f"{sb.GATE_DIR} root-owned, 0750")
+    except OSError:
+        line(False, f"{sb.GATE_DIR} missing (created by install.sh or the first invite)")
+    now = time.time()
+    for kind in sb.GATE_KINDS:
+        live = sum(1 for _, r in sb.gate_records(kind) if float(r.get("expires", 0) or 0) > now)
+        print(f"  {kind}: {live} live")
+    if not ok:
+        try:
+            dns = (json.loads(run(["tailscale", "status", "--json", "--peers=false"], check=False, capture_output=True,
+                                  text=True, timeout=10).stdout or "{}").get("Self", {}).get("DNSName") or "").rstrip(".")
+        except (ValueError, OSError, subprocess.SubprocessError):
+            dns = ""
+        print(f"""
+To turn it on (once, as root):
+  1. Tailnet policy (admin console > Access controls) must allow Funnel for this machine, e.g.
+       "nodeAttrs": [{{"target": ["<this machine or its tag>"], "attr": ["funnel"]}}]
+  2. sudo tailscale funnel --bg --https=443 {target}
+  3. Set PUBLIC_URL=https://{dns or '<this machine>.<tailnet>.ts.net'} in {sb.CONF_PATH}
+     (the name `tailscale funnel status` prints), then:  sudo ./install.sh --apply
+     (or: sudo systemctl enable --now sharedbox-gate && sudo systemctl restart sharedbox-web)
+  Undo: sudo tailscale funnel --https=443 off; empty PUBLIC_URL; sudo systemctl disable --now sharedbox-gate""")
 
 
 # ---------- commands ----------
@@ -449,6 +764,7 @@ def cmd_suspend(cfg, a):
     # an expired account fails PAM's account phase, so cron/at stop starting jobs for it too
     run(["usermod", "--expiredate", "1", a.user], check=False)
     stop_everything(a.user)
+    revoke_user_gate(a.user)  # public-gateway sessions and login links
     rec["status"] = "suspended"
     save_registry(reg)
     sb.log_event("user_suspended", a.user)
@@ -501,6 +817,7 @@ def cmd_remove(cfg, a):
             die(f"userdel failed ({r.returncode}): {r.stderr.strip()}; registry and limits left as they were")
     remove_dropins(pw.pw_uid)
     daemon_reload()
+    revoke_user_gate(a.user)
     del reg["users"][a.user]
     save_registry(reg)
     sb.log_event("user_removed", a.user)
@@ -589,7 +906,14 @@ def main():
     x = s.add_parser("requests"); x.add_argument("--done"); x.set_defaults(fn=cmd_requests)
     x = s.add_parser("issues"); x.add_argument("--days", type=int, default=7); x.add_argument("--user")
     x.add_argument("--raw", action="store_true"); x.set_defaults(fn=cmd_issues)
-    s.add_parser("invite").set_defaults(fn=cmd_invite)
+    x = s.add_parser("invite"); x.add_argument("--days", type=int); x.add_argument("--note")
+    x.add_argument("--tailscale", action="store_true", help="the Tailscale invite text even if PUBLIC_URL is set")
+    x.add_argument("--list", action="store_true"); x.add_argument("--revoke", metavar="ID")
+    x.set_defaults(fn=cmd_invite)
+    x = s.add_parser("login-link"); x.add_argument("user"); x.set_defaults(fn=cmd_login_link)
+    x = s.add_parser("sessions"); x.add_argument("user", nargs="?"); x.add_argument("--revoke", metavar="ID|all")
+    x.set_defaults(fn=cmd_sessions)
+    x = s.add_parser("public"); x.add_argument("what", choices=["status"]); x.set_defaults(fn=cmd_public)
     s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
     a = p.parse_args()
     a.fn(cfg, a)

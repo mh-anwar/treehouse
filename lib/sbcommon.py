@@ -3,6 +3,8 @@
 Everything here is stdlib-only and safe to import from unprivileged code.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import pwd
@@ -28,6 +30,10 @@ REQUESTS = os.path.join(STATE_DIR, "requests")
 TOOLS_JSON = os.path.join(STATE_DIR, "tools.json")
 ALERTS = os.path.join(STATE_DIR, "alerts")   # per-friend security alerts (tripwire), root-owned, group=friend
 ALERT_DAYS = 7
+# public front door (sharedbox-gate): invite, session and device-login records, keyed by sha256(token).
+# Root writes them (0640 root:sharedbox); the gate and sharedbox-web only read them.
+GATE_DIR = os.path.join(STATE_DIR, "gate")
+GATE_KINDS = ("invites", "sessions", "logins")
 
 DEFAULTS = {
     # who may join: open | approve | closed
@@ -111,6 +117,15 @@ DEFAULTS = {
     # tripwire decoy secrets
     "CANARY_DIR": "/srv/backups/prod",
     "CANARY_ACTION": "alert",
+    # public front door (sharedbox-gate behind Tailscale Funnel); empty PUBLIC_URL = off
+    "PUBLIC_URL": "",
+    "GATE_PORT": "8091",
+    # where friends' T3 Code listens, as seen from the gate: "tailscale" = this box's Tailscale IPv4
+    # (that's what `box t3` binds T3 to), or an explicit address
+    "GATE_BACKEND_HOST": "tailscale",
+    "SESSION_DAYS": "90",
+    "INVITE_DAYS": "7",
+    "LOGIN_LINK_MINUTES": "10",
 }
 
 
@@ -462,6 +477,70 @@ def tailscale_whois(ip):
             "node": (node.get("Name") or "").rstrip(".")}
 
 
+# ---------- public front door (sharedbox-gate) ----------
+
+TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
+SESSION_COOKIE = "__Host-sbgate"
+
+
+def public_url(cfg):
+    """PUBLIC_URL without a trailing slash, or "" if the gateway is off (or misconfigured)."""
+    u = (cfg.get("PUBLIC_URL") or "").strip().rstrip("/")
+    return u if re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?", u) else ""
+
+
+def token_hash(tok):
+    return hashlib.sha256(tok.encode()).hexdigest()
+
+
+def gate_path(kind, h):
+    assert kind in GATE_KINDS and re.fullmatch(r"[0-9a-f]{64}", h)
+    return os.path.join(GATE_DIR, kind, h + ".json")
+
+
+def gate_lookup(kind, tok):
+    """(record, hash) for a live (unexpired) token of `kind`, else (None, hash-or-None).
+
+    Records are stored under sha256(token), never the token itself. The lookup is by hash, so
+    timing reveals nothing useful about the secret; the stored hash is still compared in constant time.
+    """
+    if not isinstance(tok, str) or not TOKEN_RE.fullmatch(tok):
+        return None, None
+    h = token_hash(tok)
+    rec = read_json(gate_path(kind, h))
+    if not isinstance(rec, dict) or not hmac.compare_digest(str(rec.get("hash", "")), h):
+        return None, h
+    try:
+        if float(rec.get("expires", 0)) < time.time():
+            return None, h
+    except (TypeError, ValueError):
+        return None, h
+    return rec, h
+
+
+def gate_records(kind):
+    """[(hash, record)] for every stored record of `kind`, expired ones included."""
+    out = []
+    try:
+        names = os.listdir(os.path.join(GATE_DIR, kind))
+    except OSError:
+        return out
+    for n in names:
+        h = n[:-5]
+        if n.endswith(".json") and re.fullmatch(r"[0-9a-f]{64}", h):
+            rec = read_json(os.path.join(GATE_DIR, kind, n))
+            if isinstance(rec, dict):
+                out.append((h, rec))
+    return out
+
+
+def active_friend(name, users=None):
+    """The registry record of an existing, active friend account, else None."""
+    users = friend_users() if users is None else users
+    rec = users.get(name) if isinstance(name, str) else None
+    return rec if rec and rec.get("status", "active") == "active" else None
+
+
 # ---------- validation ----------
 
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9]{2,15}$")
@@ -490,6 +569,19 @@ def validate_username(name, cfg):
     except KeyError:
         pass
     return None
+
+
+EMAIL_RE = re.compile(r"[^@\s]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+
+
+def validate_email(email):
+    """Optional contact email (security alerts). Returns (normalized, error)."""
+    email = (email or "").strip()
+    if not email:
+        return "", None
+    if len(email) > 254 or not EMAIL_RE.fullmatch(email) or not email.isprintable():
+        return None, "that email address doesn't look right (or leave it empty)"
+    return email, None
 
 
 def validate_pubkey(key):
