@@ -152,6 +152,14 @@ async def cf_claims(token):
     return claims
 
 
+def welcome_pending(user):
+    """An account made at invite time that hasn't seen its portal yet: its first visit to / goes there
+    (to log in to an AI) instead of straight into an empty T3. Root clears the flag on the first portal visit."""
+    if not (users().get(user) or {}).get("welcome"):
+        return False
+    return bool((sb.registry().get("users", {}).get(user) or {}).get("welcome"))  # fresh, not the cache
+
+
 def cf_user(email):
     return sb.user_by_email(email, users())[0]
 
@@ -309,7 +317,7 @@ async def copy_to_eof(reader, writer):
 
 # ---------- responses made by the gate itself ----------
 
-REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+REASONS = {200: "OK", 303: "See Other", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
            421: "Misdirected Request",
            429: "Too Many Requests", 431: "Request Header Fields Too Large", 501: "Not Implemented",
            502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout"}
@@ -423,6 +431,9 @@ async def handle_request(reader, writer, head, peer):
         return False
     if kind:
         dest = ("unix", WEB_SOCK)
+    elif sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and welcome_pending(sess[0]):
+        await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
+        return False
     elif sess:
         host, port = backend_for(sess[0])
         if not host:
