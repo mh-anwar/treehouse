@@ -614,7 +614,9 @@ def sync_agents(cfg, dry, errors):
             errors.append(f"{name}: {e}")
     if dry:
         return
-    drop_legacy_global(names + [o for o, n in sb.AGENT_RENAMED.items() if n in names], dry)
+    # only once the replacement is installed, so a failed install never leaves people without the agent
+    ready = [n for n in names if current_version(n)]
+    drop_legacy_global(ready + [o for o, n in sb.AGENT_RENAMED.items() if n in ready], dry)
     for name in names:
         cur = current_version(name)
         for b in agent_bins(name, version_dir(name, cur)) if cur else []:
@@ -732,6 +734,12 @@ def android_install(cfg, dry):
 # ---------- status ----------
 
 def versions():
+    # a throwaway HOME: as root, `opencode --version` & co. create cache/config dirs in whatever HOME is
+    with tempfile.TemporaryDirectory(prefix="sharedbox-versions-") as home:
+        return _versions(home)
+
+
+def _versions(home):
     out = {}
     for binary, label in KNOWN:
         path = shutil.which(binary, path="/usr/local/bin:/usr/bin:/bin:"
@@ -743,7 +751,7 @@ def versions():
         flag = {"java": "-version", "go": "version", "tmux": "-V"}.get(binary, "--version")
         try:
             r = subprocess.run([path, flag], capture_output=True, text=True, timeout=20,
-                               env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/nonexistent",
+                               env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home,
                                     "DISABLE_AUTOUPDATER": "1", "NO_COLOR": "1"})
             text = (r.stdout or r.stderr).strip()
         except (OSError, subprocess.TimeoutExpired):
