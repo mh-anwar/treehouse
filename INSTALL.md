@@ -92,9 +92,11 @@ it instructs.
 Fix anything that's down (`journalctl -u <unit> -n 40`) before you report success.
 
 ## 7. Invite the first friend
-Run `sudo sharedbox-admin invite` and give the owner the message it prints, ready to paste to a friend.
+Run `box invite --note "<who>"` as the owner's account (no sudo; it works for every account in
+`--admins`) and give the owner the message it prints, ready to paste to a friend. Each link works once;
+`box invite --json` returns `link`, `id` and `expires` if you're sending invites yourself.
 Finish with a short summary:
 - what's running
 - the dashboard link (`http://<tailscale-name>:8090/`)
-- how to invite more friends (`sudo sharedbox-admin invite`, or ask you)
+- how to invite more friends (`box invite`, or just ask an agent to do it)
 - that `./uninstall.sh` reverses everything

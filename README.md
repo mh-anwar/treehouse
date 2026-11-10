@@ -24,7 +24,7 @@ sessions at once. Meanwhile there's an old desktop in your closet with 32 GB of 
 treehouse turns that machine into a box your friends can actually use, including the
 non-technical ones:
 
-1. You (or your agent) run `sharedbox-admin invite` and send them the link.
+1. You (or your agent) run `box invite` (no sudo) and send them the link.
 2. They open it on any laptop or phone, pick a username, click **Create**. They don't need Tailscale,
    an app, or an SSH key.
 3. They click **Log in with Claude** (or ChatGPT/Codex), click **Open T3 Code**, and they're chatting
@@ -82,7 +82,7 @@ The only things you do yourself are click "approve" on a login page and maybe ty
 git clone https://github.com/mh-anwar/treehouse && cd treehouse
 sudo ./install.sh                                    # dry run: prints every action, changes nothing
 sudo ./install.sh --apply --admins you --mail-to you@gmail.com
-sudo sharedbox-admin invite                          # a message to paste to your first friend
+box invite --note "Sam"                              # a one-time link to send your first friend
 ```
 </details>
 
@@ -140,7 +140,8 @@ Below 20% free disk all TTLs halve; below 10% caches are wiped.
 <summary><b>Admin cheat sheet</b></summary>
 
 ```
-sharedbox-admin list | invite | issues | requests
+box invite [--note WHO] [--json]        # owner accounts, no sudo: one-time invite link
+sharedbox-admin list | invite | sessions | issues | requests
 sharedbox-admin limits NAME MEMORY_MAX=10G CPU_QUOTA=400% DISK_BUDGET_GB=50
 sharedbox-admin suspend NAME | resume NAME | remove NAME --archive
 sharedbox-tools add pkg ffmpeg          # install for everyone, remembered across reinstalls
