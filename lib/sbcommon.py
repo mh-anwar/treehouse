@@ -36,6 +36,12 @@ GATE_DIR = os.path.join(STATE_DIR, "gate")
 ADMIN_DROP = os.path.join(STATE_DIR, "admin")          # 1733: admins drop requests (box invite), root acts
 ADMIN_REPLIES = os.path.join(STATE_DIR, "admin-replies")  # 0711: root's answer, readable only by the asker
 GATE_KINDS = ("invites", "sessions", "logins")
+# skills every account's agents see (symlinked into ~/.claude/skills and ~/.agents/skills):
+# the ones shipped with sharedbox, then the ones admins publish with `box skills share` (those win)
+SKILLS_BUILTIN = os.path.join(SHARE_DIR, "skills")
+SKILLS_SHARED = os.path.join(STATE_DIR, "skills")
+SKILL_NAME_RE = r"^[a-z0-9][a-z0-9-]{0,47}$"
+SKILL_MAX_FILES, SKILL_MAX_BYTES = 40, 256 << 10
 CF_CERTS_CACHE = os.path.join(GATE_DIR, "cf-certs.json")  # Cloudflare Access signing keys (root writes)
 
 DEFAULTS = {
