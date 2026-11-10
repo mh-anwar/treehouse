@@ -32,8 +32,10 @@ Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python
 2. **Email for alerts** (weekly health report, urgent problems, security alerts). Suggest skipping it
    for now if they don't have a Gmail address handy.
 3. **How friends connect:**
-   - **Public link (recommended):** friends need nothing but a browser, which also works on phones. It
-     uses Tailscale Funnel on this machine only.
+   - **Public link (recommended):** friends need nothing but a browser, which also works on phones. They
+     log in with their email (Cloudflare sends a code), and only emails the owner invited ever reach the
+     machine. Needs a domain on Cloudflare (free plan is fine) and a free Cloudflare Zero Trust team.
+     Ask which hostname to use, e.g. `box.theirdomain.com`.
    - **Tailscale only:** each friend installs Tailscale and the owner shares the machine with them.
      Free Tailscale has a limited number of share invites.
 
@@ -79,10 +81,39 @@ sharedbox-health test-email && echo "Sent. Check your inbox."
 Ask the owner to confirm the test email arrived.
 
 ## 5. Public link (if they chose it)
-Run `sudo sharedbox-admin public status` and follow what it prints. Turning the link on is a one-time
-`tailscale funnel` command plus allowing Funnel in the owner's Tailscale admin console. Send the owner the
-console link and the exact checkbox to tick. Then set `PUBLIC_URL` in `/etc/sharedbox/sharedbox.conf` as
-it instructs.
+This puts Cloudflare Access (email-code login) and Cloudflare Tunnel in front of the box. The tunnel only
+makes outbound connections, and the gate also checks Cloudflare's signed login token on every request.
+Everything is automated except an API token that only the owner can create. Send them these clicks in one
+message:
+
+1. Open https://one.dash.cloudflare.com/. If it asks you to pick a team name and a plan, pick any name and
+   the **Free** plan. (Skip this step if Zero Trust is already set up.)
+2. Open https://dash.cloudflare.com/profile/api-tokens and click **Create Token**. Next to
+   **Create Custom Token**, click **Get started**.
+3. Name it `treehouse` and add these permissions with **+ Add more**:
+   - Account · Cloudflare Tunnel · Edit
+   - Account · Access: Apps and Policies · Edit
+   - Account · Access: Organizations, Identity Providers, and Groups · Read
+   - Zone · DNS · Edit
+   - Zone · Zone · Read
+
+   Leave **Account Resources** and **Zone Resources** on your account and **All zones** (or pick the one
+   domain). Click **Continue to summary**, then **Create Token**, and keep the page open.
+4. In the server's terminal, type this one line and answer its three questions (paste the token, type the
+   hostname, type your email):
+   ```
+   sudo bash /usr/share/sharedbox/cloudflare-setup.sh
+   ```
+
+The token goes straight into a root-only file and is never shown. Never ask for it in the chat. The script
+creates the tunnel, DNS record and Access app, installs `cloudflared`, starts it with the gate, and prints
+a status check. It is safe to re-run. If it prints that the token is missing a permission, have the owner
+edit the token (the same page, **Edit**) and run the line again. Then check it yourself with
+`sudo sharedbox-admin cloudflare status`. The tunnel can take a minute to show `healthy`.
+
+*Other option:* Tailscale Funnel (`sudo sharedbox-admin public status` explains it) needs no domain, but
+it exposes the gate's pages to the whole internet. Use it only if the owner has no domain on Cloudflare and
+accepts that.
 
 ## 6. Check it works
 - `systemctl is-active sharedbox-web sharedbox-canary sharedbox-guard.timer sharedbox-janitor.timer`
@@ -93,7 +124,9 @@ Fix anything that's down (`journalctl -u <unit> -n 40`) before you report succes
 
 ## 7. Invite the first friend
 Run `box invite --note "<who>"` as the owner's account (no sudo; it works for every account in
-`--admins`) and give the owner the message it prints, ready to paste to a friend. Each link works once;
+`--admins`) and give the owner the message it prints, ready to paste to a friend. With the Cloudflare
+public link, add the friend's email: `box invite --email sam@example.com --note "Sam"`. That email is
+allowed in through Cloudflare Access, and the friend logs in with it from then on. Each link works once;
 `box invite --json` returns `link`, `id` and `expires` if you're sending invites yourself.
 Finish with a short summary:
 - what's running
