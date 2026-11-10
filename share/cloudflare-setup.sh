@@ -28,7 +28,7 @@ treehouse: Cloudflare login for your friends
 You need a Cloudflare API token with these permissions (custom token):
   Account  Cloudflare Tunnel                                      Edit
   Account  Access: Apps and Policies                              Edit
-  Account  Access: Organizations, Identity Providers, and Groups  Read
+  Account  Access: Organizations, Identity Providers, and Groups  Edit
   Zone     DNS                                                    Edit
   Zone     Zone                                                   Read
 Create it at https://dash.cloudflare.com/profile/api-tokens (Create Token > Custom token).

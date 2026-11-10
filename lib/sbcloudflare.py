@@ -6,7 +6,7 @@ mode 600, owned by root); it is never logged, never put in argv, an error messag
 The token needs (dash.cloudflare.com > My Profile > API Tokens > Create Token > Create Custom Token):
   Account  Cloudflare Tunnel                                    Edit
   Account  Access: Apps and Policies                            Edit
-  Account  Access: Organizations, Identity Providers, and Groups Read
+  Account  Access: Organizations, Identity Providers, and Groups Edit
   Zone     DNS                                                  Edit
   Zone     Zone                                                 Read
 A 403 names the missing one.
@@ -22,6 +22,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import stat
 import urllib.error
 import urllib.parse
@@ -38,7 +39,7 @@ PERM = {
     "account": "any Account permission (the token must be scoped to your account)",
     "tunnel": "Account > Cloudflare Tunnel > Edit",
     "access": "Account > Access: Apps and Policies > Edit",
-    "org": "Account > Access: Organizations, Identity Providers, and Groups > Read",
+    "org": "Account > Access: Organizations, Identity Providers, and Groups > Edit",
     "zone": "Zone > Zone > Read",
     "dns": "Zone > DNS > Edit",
 }
@@ -102,6 +103,8 @@ class Client:
             doc = {}
         errs = "; ".join(f"{x.get('code', '')} {x.get('message', '')}".strip()
                          for x in (doc.get("errors") or []) if isinstance(x, dict))[:400]
+        if "not_enabled" in errs:  # Zero Trust/Access not turned on yet (comes back as an error, sometimes 403)
+            raise CFError(f"not_enabled: {errs}", code)
         if code in (401, 403) or any(str(x.get("code")) in ("10000", "9109") for x in (doc.get("errors") or [])
                                      if isinstance(x, dict)):
             raise CFError(f"Cloudflare refused {method} {path.split('?')[0]} (HTTP {code}: {errs or 'forbidden'}).\n"
@@ -164,14 +167,42 @@ def find_account(c, cfg, host=None):
     raise CFError(f"the token sees {len(accts)} accounts: {names}. Set CF_ACCOUNT_ID=<id> in {sb.CONF_PATH}")
 
 
-def team_domain(c, acct):
+def team_names(host):
+    """Candidate Zero Trust team names, from the hostname's domain (example.org -> example, example-treehouse, ...)."""
+    base = re.sub(r"[^a-z0-9-]", "-", host.split(".")[-2] if host.count(".") >= 1 else host).strip("-")[:40] or "team"
+    return [base, f"{base}-treehouse", f"{base}-box"] + [f"{base}-treehouse-{secrets.token_hex(2)}" for _ in range(3)]
+
+
+def enable_zero_trust(c, acct, host, log):
+    """Turn on Cloudflare Zero Trust (Access) for the account, picking a free team name. Free plan, no card."""
+    last = ""
+    for team in team_names(host):
+        try:
+            org, _ = c.call("POST", f"/accounts/{acct}/access/organizations",
+                            {"name": "treehouse", "auth_domain": f"{team}.cloudflareaccess.com"}, need="org")
+            log(f"Zero Trust: turned on with team name {team}")
+            return org
+        except CFError as e:
+            if "refused" in str(e):
+                raise
+            last = str(e)
+            if "auth_domain_not_available" not in last:
+                break
+    raise CFError("couldn't turn on Cloudflare Zero Trust automatically (" + last[:200] + "). Open "
+                  "https://one.dash.cloudflare.com/ once, pick a team name and the Free plan, then run this again.")
+
+
+def team_domain(c, acct, host=None, log=print):
     try:
         org = c.get(f"/accounts/{acct}/access/organizations", need="org")
     except CFError as e:
         if "refused" in str(e):
             raise
-        raise CFError("Cloudflare Zero Trust isn't set up on this account yet. Open https://one.dash.cloudflare.com/ "
-                      "once, pick a team name and the Free plan, then run this again.") from None
+        if host and "not_enabled" in str(e):
+            org = enable_zero_trust(c, acct, host, log)
+        else:
+            raise CFError("Cloudflare Zero Trust isn't set up on this account yet. Open https://one.dash.cloudflare.com/ "
+                          "once, pick a team name and the Free plan, then run this again.") from None
     dom = (org or {}).get("auth_domain") or ""
     if not dom:
         raise CFError("Zero Trust has no team domain yet: open https://one.dash.cloudflare.com/ and pick a team name")
@@ -342,7 +373,7 @@ def setup(cfg, c, host, owners, log=print):
     hours = max(1, min(int(cfg.get("CF_SESSION_HOURS") or 720), 8760))
     acct = find_account(c, cfg, host)
     log(f"account: {acct}")
-    team = team_domain(c, acct)
+    team = team_domain(c, acct, host, log)
     log(f"Zero Trust team domain: {team}")
     zone, zname = find_zone(c, acct, host)
     log(f"zone: {zname}")
