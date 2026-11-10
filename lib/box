@@ -417,7 +417,12 @@ def render_rules(notices=()):
                       "against the disk budget). Use `xvfb-run` if something needs a display.")
     if android:
         extras.append(android.lstrip("\n"))
-    if ME.pw_name in sb.admin_users(CFG):
+    if ME.pw_name in sb.admin_users(CFG) and sb.public_mode(CFG) == "cloudflare":
+        extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --email <their email> "
+                      "--note \"<who>\"` (no sudo needed; ask the owner for the email if you don't have it) and give "
+                      "the owner the message it prints. The email is allowed in through Cloudflare Access and the "
+                      "link works once. `box invite --json` gives `link`, `id`, `expires`.")
+    elif ME.pw_name in sb.admin_users(CFG):
         extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
                       "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
                       "asked you to. Each link works once. `box invite --json` gives `link`, `id`, `expires`.")
@@ -741,6 +746,11 @@ def cmd_invite(a):
                  "Ask the owner, or `box request \"invite <name>\"`.")
     rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
     req = {"action": "invite", "note": (a.note or "")[:120], "days": a.days, "tailscale": a.tailscale}
+    if a.email:
+        req["email"] = a.email.strip()[:254]
+    elif sb.public_mode(CFG) == "cloudflare" and not a.tailscale:
+        sys.exit("this box uses Cloudflare Access: give the friend's email, e.g. "
+                 "box invite --email sam@example.com --note \"Sam\" (they log in with it)")
     path = os.path.join(sb.ADMIN_DROP, f"{rid}.json")
     tmp = os.path.join(sb.ADMIN_DROP, f".{rid}.tmp")
     try:
@@ -750,7 +760,8 @@ def cmd_invite(a):
     except OSError as e:
         sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
-    deadline = time.time() + 30
+    wait = 90 if a.email else 30  # cloudflare mode: root also updates the Access allow list
+    deadline = time.time() + wait
     while time.time() < deadline:
         try:
             with open(reply) as f:
@@ -759,7 +770,7 @@ def cmd_invite(a):
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
     else:
-        sys.exit("no answer from the provisioner after 30 s (is sharedbox-provision.path running?)")
+        sys.exit(f"no answer from the provisioner after {wait} s (is sharedbox-provision.path running?)")
     if a.json:
         print(json.dumps(res))
         return
@@ -1253,6 +1264,7 @@ def main():
     x = s.add_parser("invite", help="(owner) a one-time invite link for a friend, no sudo")
     x.add_argument("--note", help="who it's for, e.g. 'Sam from work'"); x.add_argument("--days", type=int)
     x.add_argument("--tailscale", action="store_true"); x.add_argument("--json", action="store_true")
+    x.add_argument("--email", help="the friend's email (required when the box uses Cloudflare Access)")
     x.set_defaults(fn=cmd_invite)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)

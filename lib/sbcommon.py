@@ -36,6 +36,7 @@ GATE_DIR = os.path.join(STATE_DIR, "gate")
 ADMIN_DROP = os.path.join(STATE_DIR, "admin")          # 1733: admins drop requests (box invite), root acts
 ADMIN_REPLIES = os.path.join(STATE_DIR, "admin-replies")  # 0711: root's answer, readable only by the asker
 GATE_KINDS = ("invites", "sessions", "logins")
+CF_CERTS_CACHE = os.path.join(GATE_DIR, "cf-certs.json")  # Cloudflare Access signing keys (root writes)
 
 DEFAULTS = {
     # who may join: open | approve | closed
@@ -128,6 +129,20 @@ DEFAULTS = {
     "SESSION_DAYS": "90",
     "INVITE_DAYS": "7",
     "LOGIN_LINK_MINUTES": "10",
+    # how the public front door is reached: "funnel" (Tailscale Funnel; the default when PUBLIC_URL is set)
+    # or "cloudflare" (Cloudflare Tunnel + Access: every request carries a Cloudflare-signed JWT the gate
+    # verifies). `sharedbox-admin cloudflare setup` fills in the CF_* values.
+    "PUBLIC_MODE": "",
+    "CF_ACCOUNT_ID": "",
+    "CF_TEAM_DOMAIN": "",
+    "CF_ACCESS_AUD": "",
+    "CF_TUNNEL_ID": "",
+    "CF_ACCESS_APP_ID": "",
+    "CF_ACCESS_POLICY_ID": "",
+    "CF_OWNER_EMAILS": "",
+    "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
+    "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
+    "CF_SESSION_HOURS": "720",
 }
 
 
@@ -489,6 +504,88 @@ def public_url(cfg):
     """PUBLIC_URL without a trailing slash, or "" if the gateway is off (or misconfigured)."""
     u = (cfg.get("PUBLIC_URL") or "").strip().rstrip("/")
     return u if re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?", u) else ""
+
+
+def public_mode(cfg):
+    """"" (front door off), "funnel" or "cloudflare". Anything but PUBLIC_MODE=cloudflare is funnel, so
+    configs from before PUBLIC_MODE existed keep working unchanged."""
+    if not public_url(cfg):
+        return ""
+    return "cloudflare" if (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare" else "funnel"
+
+
+def owner_emails(cfg):
+    return sorted({e.strip().lower() for e in (cfg.get("CF_OWNER_EMAILS") or "").split(",") if e.strip()})
+
+
+def user_by_email(email, users=None):
+    """(name, record) of the one active friend whose registry email is `email` (case-insensitive).
+    Two accounts claiming one email is ambiguous: nobody gets in with it."""
+    if not isinstance(email, str) or not email:
+        return None, None
+    email = email.strip().lower()
+    users = friend_users() if users is None else users
+    hits = [(n, r) for n, r in users.items() if str(r.get("email") or "").strip().lower() == email]
+    if len(hits) != 1 or hits[0][1].get("status", "active") != "active":
+        return None, None
+    return hits[0]
+
+
+def email_taken(email, reg=None):
+    """Name of any account (active or not) already using `email`, else None."""
+    email = (email or "").strip().lower()
+    for n, r in (reg or registry()).get("users", {}).items():
+        if email and str(r.get("email") or "").strip().lower() == email:
+            return n
+    return None
+
+
+CONF_VALUE_RE = re.compile(r"[A-Za-z0-9 ._:/@,+%=-]*")
+
+
+def set_config(updates, path=None):
+    """Set KEY=VALUE lines in sharedbox.conf in place: comments, order and other keys are kept. The first
+    KEY= line is rewritten (later duplicates dropped, since the last one would win); new keys are appended.
+    Atomic, and the file keeps its mode and owner."""
+    path = path or CONF_PATH
+    for k, v in updates.items():
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", k) or not CONF_VALUE_RE.fullmatch(str(v)):
+            raise ValueError(f"refusing to write {k}: unexpected characters in the value")
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+        st = os.stat(path)
+        mode, owner = st.st_mode & 0o7777, (st.st_uid, st.st_gid)
+    except FileNotFoundError:
+        lines, mode, owner = [], 0o644, None
+    done, out = set(), []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+        if key in updates:
+            if key in done:
+                continue
+            out.append(f"{key}={updates[key]}")
+            done.add(key)
+        else:
+            out.append(line)
+    missing = [k for k in updates if k not in done]
+    if missing:
+        out += ["", "# set by sharedbox-admin"] + [f"{k}={updates[k]}" for k in missing]
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".tmp-conf-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(out) + "\n")
+            f.flush()
+            os.fchmod(f.fileno(), mode)
+            if owner and os.geteuid() == 0:
+                os.fchown(f.fileno(), *owner)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def token_hash(tok):

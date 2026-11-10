@@ -11,12 +11,17 @@
   sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
   sharedbox-admin reapply                         rewrite every friend's limit drop-ins
-  sharedbox-admin invite [--days N] [--note TEXT] [--tailscale]   a message to paste to a new friend
-                                                  (with PUBLIC_URL set: includes a one-time signup link)
+  sharedbox-admin invite [--days N] [--note TEXT] [--tailscale] [--email ADDR]   a message to paste to a new
+                                                  friend (with PUBLIC_URL set: includes a one-time signup link;
+                                                  PUBLIC_MODE=cloudflare: --email is required and is allowed in)
   sharedbox-admin invite --list | --revoke ID      outstanding invite links
   sharedbox-admin login-link USER                 one-time public login link for USER (new device/phone)
   sharedbox-admin sessions [USER] [--revoke ID|all]   public-gateway logins (browsers/devices)
   sharedbox-admin public status                   is the public front door (sharedbox-gate + Funnel) set up?
+  sharedbox-admin cloudflare setup --hostname box.example.com --owner-email you@example.com [--no-enable]
+                                                  one-time Cloudflare Tunnel + Access setup (idempotent)
+  sharedbox-admin cloudflare enable | status      start cloudflared + the gate | check everything
+  sharedbox-admin access list | add EMAIL [--user NAME] | remove EMAIL   who Cloudflare Access lets in
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
@@ -227,6 +232,44 @@ def _secure_dir(path, mode, owner=0):
         os.chmod(path, mode)
 
 
+# ---------- Cloudflare Access (PUBLIC_MODE=cloudflare) ----------
+
+_verifier = None
+
+
+def cf_mode(cfg):
+    return sb.public_mode(cfg) == "cloudflare"
+
+
+def cf_email(cfg, jwt):
+    """The verified email in a Cloudflare Access token, else None. Root checks it itself: the web and gate
+    processes only pass the raw token along."""
+    global _verifier
+    import sbaccess
+    try:
+        if _verifier is None:
+            _verifier = sbaccess.Verifier(cfg.get("CF_TEAM_DOMAIN"), cfg.get("CF_ACCESS_AUD"),
+                                          cache_file=sb.CF_CERTS_CACHE)
+        return _verifier.verify(jwt if isinstance(jwt, str) else "")["email"]
+    except (sbaccess.InvalidToken, ValueError):
+        return None
+
+
+def cf_access(cfg, add=(), remove=(), quiet=False):
+    """Change the Access allow list. Returns None on success, else the error text (also printed)."""
+    if not cf_mode(cfg):
+        return None
+    import sbcloudflare
+    try:
+        sbcloudflare.update_policy(cfg, sbcloudflare.client(cfg), add=add, remove=remove)
+        sb.log_event("cf_access", None, added=sorted(add), removed=sorted(remove))
+        return None
+    except sbcloudflare.CFError as e:
+        if not quiet:
+            print(f"warning: Cloudflare Access not updated: {e}", file=sys.stderr)
+        return str(e)
+
+
 def process_admin_drop(cfg):
     """Requests from ADMIN_USERS accounts, without sudo (`box invite`).
 
@@ -261,9 +304,12 @@ def process_admin_drop(cfg):
             res = {"ok": False, "error": "unknown request"}
         elif sb.public_url(cfg) and not req.get("tailscale"):
             try:
-                text, h, exp = public_invite(cfg, req.get("days"), str(req.get("note") or ""), by=user)
+                text, h, exp = public_invite(cfg, req.get("days"), str(req.get("note") or ""), by=user,
+                                             email=str(req.get("email") or "")[:300] or None)
                 link = next((ln.strip() for ln in text.splitlines() if "/i/" in ln), "")
                 res = {"ok": True, "message": text, "link": link, "id": h[:12], "expires": exp}
+            except InviteError as e:
+                res = {"ok": False, "error": str(e)}
             except (ValueError, TypeError, OSError) as e:
                 res = {"ok": False, "error": f"could not create the invite: {e}"}
         else:
@@ -467,7 +513,7 @@ def session_identity(cfg, secret):
 def mint_login_link(cfg, name):
     """One-time public login link for an existing friend (10 minutes). At most 5 open per user."""
     pub = sb.public_url(cfg)
-    if not pub:
+    if not pub or cf_mode(cfg):  # cloudflare mode: any device is logged in by signing in with the email
         return None
     mine = sorted((r.get("created", 0), h) for h, r in sb.gate_records("logins") if r.get("user") == name)
     for _, h in mine[:max(0, len(mine) - 4)]:
@@ -490,16 +536,29 @@ def handle_invite_join(cfg, rid, req):
                 "error": "this invite link was already used or has expired; ask your friend for a new one"}
     name = str(req.get("username", ""))
     err = sb.validate_username(name, cfg)
-    email, eerr = sb.validate_email(str(req.get("email", ""))[:300])
+    if cf_mode(cfg):
+        # identity = the Access token's email, verified here; the invite must have been made for it
+        email, eerr = cf_email(cfg, req.get("cf_jwt")), None
+        if not email:
+            return {"ok": False, "error": "your Cloudflare login couldn't be verified; reload the page"}
+        if str(inv.get("email") or "").lower() != email:
+            return {"ok": False, "error": "this invite was made for a different email address"}
+        if sb.email_taken(email):
+            return {"ok": False, "error": "that email already has an account here; open the start page"}
+    else:
+        email, eerr = sb.validate_email(str(req.get("email", ""))[:300])
     if err or eerr:
         return {"ok": False, "error": err or eerr}
     # an invite is the owner's approval, so JOIN_MODE (open/approve/closed) doesn't apply; MAX_USERS does
-    rec, err = create_user(cfg, name, "", login="invite", email=email or None)
+    rec, err = create_user(cfg, name, "", login="cloudflare" if cf_mode(cfg) else "invite", email=email or None)
     if err:
         return {"ok": False, "error": err}
     # consumed only once the account exists, so a taken username can simply be retried
     gate_consume("invites", tok)
     sb.log_event("invite_used", name, invite=inv["hash"][:12], note=inv.get("note", ""))
+    if cf_mode(cfg):  # no session of ours: Cloudflare's login is the session
+        lo, hi = sb.port_range(cfg, rec["uid"])
+        return {"ok": True, "username": name, "ports": [lo, hi]}
     session = mint_session(cfg, name, "invite", str(req.get("ua", "")))
     lo, hi = sb.port_range(cfg, rec["uid"])
     return {"ok": True, "username": name, "ports": [lo, hi], "session": session}
@@ -509,6 +568,8 @@ def handle_gate(cfg, rid, req):
     action = req.get("action")
     if not sb.public_url(cfg):
         return {"ok": False, "error": "the public gateway is turned off"}
+    if cf_mode(cfg):
+        return {"ok": False, "error": "not used here: sign in through Cloudflare with your email"}
     if action == "redeem":
         rec = gate_consume("logins", str(req.get("login", "")))
         if not rec:
@@ -554,9 +615,14 @@ def box_portal(pw, args, input_text=None):
 
 
 def handle_portal(cfg, rid, req):
-    if req.get("session") is not None:  # public gateway: identity = a root-minted session token
+    if req.get("cf_jwt") is not None:  # cloudflare mode: identity = the Access token's email, verified here
+        email = cf_email(cfg, req.get("cf_jwt")) if cf_mode(cfg) else None
+        name, _ = sb.user_by_email(email) if email else (None, None)
+        if not name:
+            return {"ok": False, "relogin": True, "error": "your Cloudflare login couldn't be verified; reload"}
+    elif req.get("session") is not None:  # public gateway: identity = a root-minted session token
         name, _, _ = session_identity(cfg, req.get("session"))
-        if not name or not sb.public_url(cfg):
+        if not name or not sb.public_url(cfg) or cf_mode(cfg):
             return {"ok": False, "relogin": True, "error": "you're logged out; open your login link again"}
     else:
         ip = str(req.get("ip", ""))
@@ -601,7 +667,10 @@ def cmd_invite(cfg, a):
     if a.list or a.revoke:
         return invite_admin(a)
     if pub and not a.tailscale:
-        text, h, exp = public_invite(cfg, a.days, a.note)
+        try:
+            text, h, exp = public_invite(cfg, a.days, a.note, email=a.email)
+        except InviteError as e:
+            die(str(e))
         print(text)
         print(f"\n(invite {h[:12]}, expires {time.strftime('%Y-%m-%d %H:%M', time.localtime(exp))};"
               f" cancel it: sharedbox-admin invite --revoke {h[:12]})", file=sys.stderr)
@@ -609,12 +678,42 @@ def cmd_invite(cfg, a):
     print(tailscale_invite(cfg))
 
 
-def public_invite(cfg, days=None, note=None, by=None):
-    """Mint a one-time invite; returns (message to paste, hash, expiry)."""
+class InviteError(Exception):
+    pass
+
+
+def public_invite(cfg, days=None, note=None, by=None, email=None):
+    """Mint a one-time invite; returns (message to paste, hash, expiry). In cloudflare mode the invite is
+    bound to `email`, which is first added to the Access allow list."""
     pub = sb.public_url(cfg)
     days = max(1, min(int(days or sb.cfg_int(cfg, "INVITE_DAYS")), 30))
-    tok, h = gate_mint("invites", days * 86400, note=sb.printable(note or "")[:120], by=by or "root")
-    sb.log_event("invite_created", by, invite=h[:12], note=note or "")
+    fields = {}
+    if cf_mode(cfg):
+        email, err = sb.validate_email(email or "")
+        if err or not email:
+            raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
+                              "--email sam@example.com (they log in with it)")
+        email = email.lower()
+        taken = sb.email_taken(email)
+        if taken:
+            raise InviteError(f"{email} already belongs to the account {taken}")
+        err = cf_access(cfg, add=[email], quiet=True)
+        if err:
+            raise InviteError(f"couldn't allow {email} in Cloudflare Access: {err}")
+        fields["email"] = email
+    tok, h = gate_mint("invites", days * 86400, note=sb.printable(note or "")[:120], by=by or "root", **fields)
+    sb.log_event("invite_created", by, invite=h[:12], note=note or "", email=fields.get("email"))
+    if fields:
+        return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
+builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
+
+1. Open this link (it works once, for the next {days} days):
+   {pub}/i/{tok}
+2. It asks for your email: use {email}. You'll get a code by email; type it in.
+3. Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
+
+Later, on any device, just open {pub}/ and sign in with {email} again. Stuck? Ask the agent, or text me.""",
+                h, int(time.time()) + days * 86400)
     return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
 builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
 
@@ -648,8 +747,16 @@ Bookmark {url.replace('/join', '/me')} for later. Stuck? Ask the agent, or text 
 
 def invite_admin(a):
     if a.revoke:
+        gone = [r for h, r in sb.gate_records("invites") if h.startswith(a.revoke.lower()) and len(a.revoke) >= 6]
         n = gate_delete("invites", lambda h, r: h.startswith(a.revoke.lower()) and len(a.revoke) >= 6)
         print(f"revoked {n} invite(s)")
+        cfg = sb.load_config()
+        # the email leaves the Access list too, unless it has an account or another open invite
+        still = {str(r.get("email") or "").lower() for _, r in sb.gate_records("invites")}
+        drop = {str(r.get("email") or "").lower() for r in gone} - still - {""}
+        drop = {e for e in drop if not sb.email_taken(e)}
+        if drop and not cf_access(cfg, remove=drop):
+            print(f"removed from Cloudflare Access: {', '.join(sorted(drop))}")
         return
     rows = sorted(sb.gate_records("invites"), key=lambda x: x[1].get("created", 0))
     if not rows:
@@ -657,7 +764,8 @@ def invite_admin(a):
     for h, r in rows:
         exp = float(r.get("expires", 0) or 0)
         state = "expired" if exp < time.time() else "expires " + time.strftime("%Y-%m-%d %H:%M", time.localtime(exp))
-        print(f"{h[:12]}  {state:<24} {sb.printable(r.get('note', ''))}")
+        mail = f"{sb.printable(r['email'])}  " if r.get("email") else ""
+        print(f"{h[:12]}  {state:<24} {mail}{sb.printable(r.get('note', ''))}")
 
 
 def fmt_t(ts):
@@ -670,6 +778,10 @@ def cmd_login_link(cfg, a):
         die("PUBLIC_URL is not set; see: sharedbox-admin public status")
     if not sb.active_friend(a.user):
         die(f"{a.user} is suspended")
+    if cf_mode(cfg):
+        mail = sb.registry()["users"][a.user].get("email")
+        die(f"not needed with Cloudflare Access: {a.user} opens {sb.public_url(cfg)}/ on any device and signs in "
+            + (f"with {mail}" if mail else f"with their email (link it first: sharedbox-admin access add EMAIL --user {a.user})"))
     url = mint_login_link(cfg, a.user)
     print(f"""Login link for {a.user} (works once, for {cfg['LOGIN_LINK_MINUTES']} minutes, on any device):
 
@@ -706,6 +818,8 @@ def cmd_sessions(cfg, a):
 
 
 def cmd_public(cfg, a):
+    if cf_mode(cfg):
+        return cmd_cloudflare_status(cfg, a)
     pub, port = sb.public_url(cfg), sb.cfg_int(cfg, "GATE_PORT")
     ok = True
 
@@ -762,6 +876,175 @@ To turn it on (once, as root):
      (the name `tailscale funnel status` prints), then:  sudo ./install.sh --apply
      (or: sudo systemctl enable --now sharedbox-gate && sudo systemctl restart sharedbox-web)
   Undo: sudo tailscale funnel --https=443 off; empty PUBLIC_URL; sudo systemctl disable --now sharedbox-gate""")
+
+
+# ---------- Cloudflare Tunnel + Access: setup, status, allow list ----------
+
+GATE_DROPIN = os.path.join(SYSTEMD_DIR, "sharedbox-gate.service.d", "cloudflare.conf")
+
+
+def cloudflare_enable(cfg):
+    """Install cloudflared, run it as a hardened unit with the tunnel token, let the gate fetch Access keys,
+    (re)start the gate and web. Root; touches only sharedbox's own units."""
+    import sbdistro
+    if not os.path.exists(cfg["CF_TUNNEL_ENV"]):
+        die(f"{cfg['CF_TUNNEL_ENV']} is missing; run: sudo sharedbox-admin cloudflare setup ...")
+    print("installing cloudflared (if needed)...", flush=True)
+    sbdistro.install_cloudflared()
+    unit = os.path.join(SYSTEMD_DIR, "sharedbox-cloudflared.service")
+    if not os.path.exists(unit):  # install.sh puts it there (not enabled) with the other units
+        die(f"{unit} is missing; re-run install.sh --apply from the treehouse checkout")
+    os.makedirs(os.path.dirname(GATE_DROPIN), mode=0o755, exist_ok=True)
+    with open(GATE_DROPIN, "w") as f:
+        f.write("# managed by sharedbox (PUBLIC_MODE=cloudflare): the gate fetches Cloudflare Access's signing keys\n"
+                "# from https://<team>.cloudflareaccess.com/cdn-cgi/access/certs, so it needs outbound HTTPS.\n"
+                "[Service]\nIPAddressDeny=\n")
+    daemon_reload()
+    run(["systemctl", "enable", "sharedbox-cloudflared.service", "sharedbox-gate.service"])
+    run(["systemctl", "restart", "sharedbox-cloudflared.service", "sharedbox-gate.service"])
+    run(["systemctl", "restart", "sharedbox-web.service"], check=False)
+    print("cloudflared, sharedbox-gate and sharedbox-web (re)started")
+
+
+def cmd_cloudflare(cfg, a):
+    import sbcloudflare
+    if a.what == "status":
+        return cmd_cloudflare_status(cfg, a)
+    if a.what == "enable":
+        return cloudflare_enable(sb.load_config())
+    # setup
+    try:
+        host = sbcloudflare.normalize_host(a.hostname or sb.public_url(cfg))
+        owners = sorted(set((a.owner_email or []) + sb.owner_emails(cfg)))
+        c = sbcloudflare.client(cfg)
+        print(f"setting up Cloudflare Tunnel + Access for https://{host} ...", flush=True)
+        sbcloudflare.setup(cfg, c, host, owners, log=lambda m: print("  " + m, flush=True))
+    except sbcloudflare.CFError as e:
+        die(str(e))
+    sb.log_event("cloudflare_setup", None, host=host)
+    if not a.no_enable:
+        cloudflare_enable(sb.load_config())
+    print(f"\ndone. Friends will open https://{host}/ and sign in with the email you invite them with:\n"
+          "  box invite --email friend@example.com   (or: sudo sharedbox-admin invite --email ...)")
+
+
+def cmd_cloudflare_status(cfg, a):
+    import sbaccess
+    import sbcloudflare
+    ok = True
+
+    def line(good, text):
+        nonlocal ok
+        ok &= bool(good)
+        print(f"  [{'ok' if good else '!!'}] {text}")
+
+    pub, port = sb.public_url(cfg), sb.cfg_int(cfg, "GATE_PORT")
+    print("public front door via Cloudflare Tunnel + Access:")
+    line(cf_mode(cfg), f"PUBLIC_MODE={cfg.get('PUBLIC_MODE') or '(unset: funnel)'}  PUBLIC_URL={pub or '(empty)'}")
+    for k in ("CF_ACCOUNT_ID", "CF_TEAM_DOMAIN", "CF_ACCESS_AUD", "CF_TUNNEL_ID", "CF_ACCESS_APP_ID",
+              "CF_ACCESS_POLICY_ID", "CF_OWNER_EMAILS"):
+        line(cfg.get(k), f"{k}={cfg.get(k) or '(empty)'}")
+    try:
+        sbcloudflare.read_token(cfg["CF_TOKEN_FILE"])
+        line(True, f"API token: {cfg['CF_TOKEN_FILE']} (root, 600)")
+        token_ok = True
+    except sbcloudflare.CFError as e:
+        line(False, f"API token: {e}")
+        token_ok = False
+    try:
+        st = os.stat(cfg["CF_TUNNEL_ENV"])
+        line(stat.S_IMODE(st.st_mode) & 0o077 == 0, f"tunnel token: {cfg['CF_TUNNEL_ENV']} (mode {stat.S_IMODE(st.st_mode):o})")
+    except OSError:
+        line(False, f"tunnel token: {cfg['CF_TUNNEL_ENV']} missing (sharedbox-admin cloudflare setup writes it)")
+    for unit in ("sharedbox-cloudflared.service", "sharedbox-gate.service"):
+        r = run(["systemctl", "is-active", unit], check=False, capture_output=True, text=True)
+        line(r.stdout.strip() == "active", f"{unit}: {r.stdout.strip() or '?'}")
+    line(os.path.exists(GATE_DROPIN), f"gate may fetch Access keys ({GATE_DROPIN})")
+    try:  # without a token the gate must refuse everything, even from this machine
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as conn:
+            host = urllib.parse.urlsplit(pub).netloc if pub else "127.0.0.1"
+            conn.sendall(f"GET /_box/healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+            first = conn.recv(200).split(b"\r\n")[0].decode(errors="replace")
+        line(" 403 " in first + " ", f"gate on 127.0.0.1:{port} refuses requests without an Access token: {first}")
+    except OSError as e:
+        line(False, f"gate not reachable on 127.0.0.1:{port}: {e}")
+    if cfg.get("CF_TEAM_DOMAIN"):
+        ks = sbaccess.KeySet(sbaccess.certs_url(cfg["CF_TEAM_DOMAIN"]))
+        line(ks.refresh(), f"Access signing keys: {ks.count()} from {ks.url}" + (f" ({ks.last_error})" if ks.last_error else ""))
+    if token_ok and cfg.get("CF_ACCOUNT_ID"):
+        try:
+            c = sbcloudflare.client(cfg)
+            acct = cfg["CF_ACCOUNT_ID"]
+            if cfg.get("CF_TUNNEL_ID"):
+                t = c.get(f"/accounts/{acct}/cfd_tunnel/{cfg['CF_TUNNEL_ID']}", need="tunnel")
+                line(t.get("status") == "healthy", f"tunnel {t.get('name')}: {t.get('status')}")
+            if cfg.get("CF_ACCESS_APP_ID"):
+                app = c.get(f"/accounts/{acct}/access/apps/{cfg['CF_ACCESS_APP_ID']}", need="access")
+                line(app.get("aud") == cfg.get("CF_ACCESS_AUD"), f"Access app {app.get('domain')}: AUD "
+                     + ("matches" if app.get("aud") == cfg.get("CF_ACCESS_AUD") else "DIFFERS from CF_ACCESS_AUD"))
+            if cfg.get("CF_ACCESS_POLICY_ID"):
+                emails = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, c))
+                missing = [o for o in sb.owner_emails(cfg) if o not in emails]
+                line(not missing, f"Access allow list: {len(emails)} email(s)"
+                     + (f"; owner missing: {', '.join(missing)}" if missing else ""))
+        except sbcloudflare.CFError as e:
+            line(False, f"Cloudflare API: {e}")
+    now = time.time()
+    live = sum(1 for _, r in sb.gate_records("invites") if float(r.get("expires", 0) or 0) > now)
+    print(f"  invites: {live} open")
+    if not ok:
+        print(f"\nFix: sudo bash {sb.SHARE_DIR}/cloudflare-setup.sh   (safe to re-run)")
+    return ok
+
+
+def cmd_access(cfg, a):
+    import sbcloudflare
+    if not cf_mode(cfg):
+        die("PUBLIC_MODE isn't cloudflare; see: sharedbox-admin cloudflare setup")
+    try:
+        c = sbcloudflare.client(cfg)
+        if a.what == "list":
+            emails = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, c))
+            reg = sb.registry()
+            inv = {}
+            for _, r in sb.gate_records("invites"):
+                if r.get("email"):
+                    inv[str(r["email"]).lower()] = "invited" + (" (expired)" if float(r.get("expires", 0)) < time.time() else "")
+            owners = sb.owner_emails(cfg)
+            for e in emails:
+                who = ("owner" if e in owners else
+                       (f"account {sb.email_taken(e)} ({reg['users'][sb.email_taken(e)].get('status', 'active')})"
+                        if sb.email_taken(e) else inv.get(e, "no account, no open invite")))
+                print(f"{sb.printable(e):<40} {who}")
+            print(f"\n{len(emails)} allowed. remove: sharedbox-admin access remove EMAIL")
+            return
+        email, err = sb.validate_email(a.email or "")
+        if err or not email:
+            die(err or "give an email address")
+        email = email.lower()
+        if a.what == "remove":
+            if email in sb.owner_emails(cfg):
+                die(f"{email} is in CF_OWNER_EMAILS; the owner is never removed")
+            sbcloudflare.update_policy(cfg, c, remove=[email])
+            n = gate_delete("invites", lambda h, r: str(r.get("email") or "").lower() == email)
+            print(f"removed {email} from Cloudflare Access" + (f"; revoked {n} open invite(s)" if n else ""))
+            taken = sb.email_taken(email)
+            if taken:
+                print(f"note: the account {taken} still exists (sharedbox-admin suspend/remove {taken})")
+            return
+        # add
+        if a.user:
+            reg, rec = require_friend(a.user)
+            other = sb.email_taken(email, reg)
+            if other and other != a.user:
+                die(f"{email} already belongs to {other}")
+            rec["email"] = email
+            save_registry(reg)
+        sbcloudflare.update_policy(cfg, c, add=[email])
+        print(f"allowed {email} in Cloudflare Access" + (f"; it logs in as {a.user}" if a.user else ""))
+    except sbcloudflare.CFError as e:
+        die(str(e))
+    sb.log_event("cf_access", a.user, what=a.what, email=a.email)
 
 
 # ---------- commands ----------
@@ -858,6 +1141,8 @@ def cmd_suspend(cfg, a):
     revoke_user_gate(a.user)  # public-gateway sessions and login links
     rec["status"] = "suspended"
     save_registry(reg)
+    if rec.get("email"):
+        cf_access(cfg, remove=[rec["email"]])  # Cloudflare stops letting them in, too
     sb.log_event("user_suspended", a.user)
     print(f"suspended {a.user}: ssh access removed, processes stopped, files kept")
 
@@ -869,6 +1154,8 @@ def cmd_resume(cfg, a):
     run(["gpasswd", "-a", a.user, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
     rec["status"] = "active"
     save_registry(reg)
+    if rec.get("email"):
+        cf_access(cfg, add=[rec["email"]])
     sb.log_event("user_resumed", a.user)
     print(f"resumed {a.user}")
 
@@ -909,6 +1196,8 @@ def cmd_remove(cfg, a):
     remove_dropins(pw.pw_uid)
     daemon_reload()
     revoke_user_gate(a.user)
+    if rec.get("email"):
+        cf_access(cfg, remove=[rec["email"]])
     del reg["users"][a.user]
     save_registry(reg)
     sb.log_event("user_removed", a.user)
@@ -1000,11 +1289,19 @@ def main():
     x = s.add_parser("invite"); x.add_argument("--days", type=int); x.add_argument("--note")
     x.add_argument("--tailscale", action="store_true", help="the Tailscale invite text even if PUBLIC_URL is set")
     x.add_argument("--list", action="store_true"); x.add_argument("--revoke", metavar="ID")
+    x.add_argument("--email", help="the friend's email (required with PUBLIC_MODE=cloudflare)")
     x.set_defaults(fn=cmd_invite)
     x = s.add_parser("login-link"); x.add_argument("user"); x.set_defaults(fn=cmd_login_link)
     x = s.add_parser("sessions"); x.add_argument("user", nargs="?"); x.add_argument("--revoke", metavar="ID|all")
     x.set_defaults(fn=cmd_sessions)
     x = s.add_parser("public"); x.add_argument("what", choices=["status"]); x.set_defaults(fn=cmd_public)
+    x = s.add_parser("cloudflare"); x.add_argument("what", choices=["setup", "enable", "status"])
+    x.add_argument("--hostname"); x.add_argument("--owner-email", action="append")
+    x.add_argument("--no-enable", action="store_true", help="only the Cloudflare side + config; start nothing")
+    x.set_defaults(fn=cmd_cloudflare)
+    x = s.add_parser("access"); x.add_argument("what", choices=["list", "add", "remove"])
+    x.add_argument("email", nargs="?"); x.add_argument("--user", help="add: link EMAIL to this existing account")
+    x.set_defaults(fn=cmd_access)
     s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
     a = p.parse_args()
     a.fn(cfg, a)
