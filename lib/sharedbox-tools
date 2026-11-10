@@ -13,7 +13,8 @@
 
 Only installs packages. It never upgrades the whole system, restarts services, or touches the network config.
 
-Coding agents (TOOLS_NPM) are kept per version in /opt/sharedbox/agents/<pkg>/<version>, and /usr/local/bin
+Coding agents (TOOLS_NPM) are kept per version in /opt/sharedbox/agents/<pkg>/<version>, installed with pnpm
+(one hard-linked store, ~40% less disk than npm; npm is the fallback if pnpm can't be installed), and /usr/local/bin
 has a small shim per command. The shim runs the newest version, or the version the user is pinned to if
 they chose `box updates manual`. A new version is installed next to the old one and switched to atomically,
 so running sessions don't break mid-update. Pins are moved to the newest version when the pinned one has a
@@ -222,8 +223,29 @@ def resolve_version(name, wanted):
     return v
 
 
+PNPM_STORE = os.path.join(sb.AGENTS_DIR, ".pnpm-store")
+_pnpm = []
+
+
+def pnpm():
+    """pnpm for root (installed into /usr/local once), or None to fall back to npm. pnpm hard-links every
+    file from one store, so versions that share files share disk (~40% less than npm for the agents)."""
+    if not _pnpm:
+        path = shutil.which("pnpm", path=f"{NPM_PREFIX}/bin:/usr/bin:/bin")
+        if not path and shutil.which("npm"):
+            log("installing pnpm (agents are stored with it to save disk)")
+            subprocess.run(["npm", "install", "-g", "--prefix", NPM_PREFIX, "--no-fund", "--no-audit",
+                            "pnpm@10"], check=False)
+            path = shutil.which("pnpm", path=f"{NPM_PREFIX}/bin")
+        if not path:
+            print("    warning: pnpm unavailable; installing agents with npm (uses more disk)", file=sys.stderr)
+        _pnpm.append(path)
+    return _pnpm[0]
+
+
 def ensure_version(name, ver, dry):
-    """Install name@ver into its own directory (built under a temp name, renamed into place when done)."""
+    """Install name@ver into its own directory. It's only used once .sharedbox-complete exists, so a
+    half-finished install is never run (installed in place: pnpm's .bin wrappers hold absolute paths)."""
     if installed_ok(name, ver):
         return
     final = version_dir(name, ver)
@@ -231,18 +253,24 @@ def ensure_version(name, ver, dry):
         print(f"    would install {name}@{ver} into {final}")
         return
     os.makedirs(agent_root(name), mode=0o755, exist_ok=True)
-    tmp = f"{final}.tmp-{os.getpid()}"
-    shutil.rmtree(tmp, ignore_errors=True)
-    os.makedirs(tmp, mode=0o755)
-    r = subprocess.run(["npm", "install", "--prefix", tmp, "--no-fund", "--no-audit", "--omit=dev",
-                        f"{name}@{ver}"], check=False)
-    if r.returncode != 0 or not agent_bins(name, tmp):
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise RuntimeError(f"npm install {name}@{ver} failed (exit {r.returncode})")
-    open(os.path.join(tmp, ".sharedbox-complete"), "w").close()
-    subprocess.run(["chmod", "-R", "a+rX,go-w", tmp], check=False)
     shutil.rmtree(final, ignore_errors=True)   # an incomplete earlier attempt
-    os.rename(tmp, final)
+    os.makedirs(final, mode=0o755)
+    pn = pnpm()
+    if pn:
+        with open(os.path.join(final, "package.json"), "w") as f:
+            f.write("{}\n")
+        # build scripts allowed: these are owner-configured agents, and they need theirs (native binaries)
+        cmd = [pn, "add", "--store-dir", PNPM_STORE, "--config.dangerously-allow-all-builds=true",
+               "--config.update-notifier=false", "--prod", f"{name}@{ver}"]
+        r = subprocess.run(cmd, cwd=final, check=False)
+    else:
+        r = subprocess.run(["npm", "install", "--prefix", final, "--no-fund", "--no-audit", "--omit=dev",
+                            f"{name}@{ver}"], check=False)
+    if r.returncode != 0 or not agent_bins(name, final):
+        shutil.rmtree(final, ignore_errors=True)
+        raise RuntimeError(f"{'pnpm' if pn else 'npm'} install {name}@{ver} failed (exit {r.returncode})")
+    subprocess.run(["chmod", "-R", "a+rX,go-w", final], check=False)
+    open(os.path.join(final, ".sharedbox-complete"), "w").close()
 
 
 def agent_bins(name, d):
@@ -408,17 +436,22 @@ _audits = {}
 
 
 def audit(name, ver):
-    """{advisory id: severity} for an installed version (npm audit of its own lockfile), or None."""
+    """{advisory id: severity} for an installed version (npm/pnpm audit of its own lockfile), or None."""
     if (name, ver) not in _audits:
         d = version_dir(name, ver)
+        use_pnpm = os.path.exists(os.path.join(d, "pnpm-lock.yaml")) and pnpm()
+        cmd = ([pnpm(), "audit", "--json", "--prod"] if use_pnpm
+               else ["npm", "audit", "--json", "--omit=dev", "--prefix", d])
         try:
-            r = subprocess.run(["npm", "audit", "--json", "--omit=dev", "--prefix", d],
-                               capture_output=True, text=True, timeout=180)
+            r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=180)
             data = json.loads(r.stdout or "{}")
         except (OSError, ValueError, subprocess.TimeoutExpired):
             data = {}
-        if "vulnerabilities" not in data:
-            print(f"    warning: npm audit of {name}@{ver} failed; skipping its security check", file=sys.stderr)
+        if isinstance(data.get("advisories"), dict):   # pnpm's format
+            _audits[(name, ver)] = {str(k): a["severity"] for k, a in data["advisories"].items()
+                                    if isinstance(a, dict) and a.get("severity") in SEVERITIES}
+        elif "vulnerabilities" not in data:
+            print(f"    warning: audit of {name}@{ver} failed; skipping its security check", file=sys.stderr)
             _audits[(name, ver)] = None
         else:
             adv = {}
@@ -509,15 +542,23 @@ def gc_versions(names):
         for v in os.listdir(root):
             p = os.path.join(root, v)
             if ".tmp-" in v and time.time() - os.lstat(p).st_mtime > 6 * 3600:
-                candidates.append(p)  # a crashed install
+                candidates.append(p)  # a crashed install (old layout)
             elif VERSION_RE.fullmatch(v) and p not in keep:
-                candidates.append(p)
+                candidates.append(p)  # includes installs that never completed
+    slugs = {sb.agent_slug(n) for n in names}
+    for d in os.listdir(sb.AGENTS_DIR) if os.path.isdir(sb.AGENTS_DIR) else []:
+        if not d.startswith(".") and d not in slugs and os.path.isdir(os.path.join(sb.AGENTS_DIR, d)):
+            candidates.append(os.path.join(sb.AGENTS_DIR, d))  # no longer in TOOLS_NPM
     busy = in_use(candidates)
+    removed = False
     for p in candidates:
         if p in busy:
             continue
         log(f"removing unused {p}")
         shutil.rmtree(p, ignore_errors=True)
+        removed = True
+    if removed and os.path.isdir(PNPM_STORE) and pnpm():
+        subprocess.run([pnpm(), "store", "prune", "--store-dir", PNPM_STORE], check=False)
 
 
 def remove_stale_shims(names):
@@ -532,8 +573,23 @@ def remove_stale_shims(names):
                 os.unlink(path)
 
 
+def agents_lock():
+    """One agent sync at a time (the nightly timer vs. an owner's `install`/`force`)."""
+    import fcntl
+    os.makedirs(sb.AGENTS_DIR, mode=0o755, exist_ok=True)
+    f = open(os.path.join(sb.AGENTS_DIR, ".lock"), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another agent update is running; waiting for it")
+        fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
 def sync_agents(cfg, dry, errors):
     """Install the wanted version of each agent, switch to it, keep pins safe, write shims, clean up."""
+    if not dry:
+        lock = agents_lock()  # noqa: F841 (held until this function returns)
     specs = agent_specs(cfg)
     names = [n for n, _ in specs]
     if not specs:
