@@ -134,8 +134,11 @@ Fix anything that's down (`journalctl -u <unit> -n 40`) before you report succes
 Run `box invite --note "<who>"` as the owner's account (no sudo; it works for every account in
 `--admins`) and give the owner the message it prints, ready to paste to a friend. With the Cloudflare
 public link, add the friend's email: `box invite --email sam@example.com --note "Sam"`. That email is
-allowed in through Cloudflare Access, and the friend logs in with it from then on. Each link works once;
-`box invite --json` returns `link`, `id` and `expires` if you're sending invites yourself.
+allowed in through Cloudflare Access, and the friend logs in with it from then on. With a public link,
+`box invite` creates the friend's account right away (name from `--username`, else picked per
+`AUTO_USERNAMES`), so the friend never sees a signup form: in Funnel mode the message's link logs them
+straight in, once. `--no-create` gives the old signup link; `box invite --json` returns `username`, `link`,
+`email` and `expires` if you're sending invites yourself.
 Finish with a short summary:
 - what's running
 - the dashboard link (`http://<tailscale-name>:8090/`)
