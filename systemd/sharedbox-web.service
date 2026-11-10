@@ -13,6 +13,9 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sharedbox/spool
+# private socket for sharedbox-gate (created only when PUBLIC_URL is set)
+RuntimeDirectory=sharedbox-web
+RuntimeDirectoryMode=0700
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
