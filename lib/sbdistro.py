@@ -288,6 +288,46 @@ def remove(pkgs, fam=None):
     raise _unsupported(fam, "remove packages")
 
 
+CLOUDFLARE_KEY_URL = "https://pkg.cloudflare.com/cloudflare-main.gpg"
+CLOUDFLARE_KEYRING = "/usr/share/keyrings/cloudflare-main.gpg"
+CLOUDFLARE_LIST = "/etc/apt/sources.list.d/cloudflared.list"
+CLOUDFLARE_REPO = f"deb [signed-by={CLOUDFLARE_KEYRING}] https://pkg.cloudflare.com/cloudflared any main\n"
+
+
+def install_cloudflared(dry=False, fam=None):
+    """cloudflared (Cloudflare Tunnel's connector), from Cloudflare's own apt repo on Debian/Ubuntu (signed by
+    its key, pinned to that repo with signed-by) or the Arch repos (`pacman -S --needed`). No-op if present."""
+    fam = fam or current()
+    if shutil.which("cloudflared"):
+        return
+    if fam == "arch":
+        install(["cloudflared"], dry=dry, fam=fam)
+    elif fam == "debian":
+        if dry:
+            print(f"    would add the Cloudflare apt repo ({CLOUDFLARE_LIST}) and install cloudflared")
+            return
+        import urllib.request
+        with urllib.request.urlopen(CLOUDFLARE_KEY_URL, timeout=30) as r:
+            key = r.read(1 << 20)
+        if not key or len(key) >= 1 << 20:
+            raise RuntimeError(f"unexpected signing key from {CLOUDFLARE_KEY_URL}")
+        os.makedirs(os.path.dirname(CLOUDFLARE_KEYRING), mode=0o755, exist_ok=True)
+        for path, data, mode in ((CLOUDFLARE_KEYRING, key, "wb"), (CLOUDFLARE_LIST, CLOUDFLARE_REPO, "w")):
+            with open(path + ".tmp", mode) as f:
+                f.write(data)
+            os.chmod(path + ".tmp", 0o644)
+            os.replace(path + ".tmp", path)
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
+        # refresh only Cloudflare's list, not every repo on the box
+        _run(["apt-get", "update", "-o", f"Dir::Etc::sourcelist={CLOUDFLARE_LIST}",
+              "-o", "Dir::Etc::sourceparts=-", "-o", "APT::Get::List-Cleanup=0"], False, env=env)
+        install(["cloudflared"], fam=fam)
+    else:
+        raise _unsupported(fam, "install cloudflared")
+    if not dry and not shutil.which("cloudflared"):
+        raise RuntimeError("cloudflared didn't install; see the messages above")
+
+
 # ---------------------------------------------------------------- read-only checks (audit, health)
 
 def _capture(cmd, timeout=120, stderr=False):
