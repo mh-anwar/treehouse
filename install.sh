@@ -85,12 +85,13 @@ getent passwd sharedbox >/dev/null || do_ useradd --system --no-create-home --ho
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap \
          sharedbox-canary sharedbox-gate; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
 done
 do_ install -m 644 "$SRC/share/AGENTS.md" "$SHARE/AGENTS.md"
+do_ install -m 755 "$SRC/share/cloudflare-setup.sh" "$SHARE/cloudflare-setup.sh"
 do_ rm -rf "$SHARE/skel"
 do_ cp -r "$SRC/share/skel" "$SHARE/skel"
 do_ chmod -R u=rwX,go=rX "$SHARE/skel"
@@ -168,12 +169,31 @@ do_ systemctl enable sharedbox-web.service
 do_ systemctl restart sharedbox-web.service
 # public front door: its own unit, only on when PUBLIC_URL is set. Friends' T3 services are not touched.
 PUBLIC_URL=$(conf_get PUBLIC_URL); GATE_PORT=$(conf_get GATE_PORT); GATE_PORT=${GATE_PORT:-8091}
+PUBLIC_MODE=$(conf_get PUBLIC_MODE)
+GATE_DROPIN=/etc/systemd/system/sharedbox-gate.service.d/cloudflare.conf
+CF_ENV=/etc/sharedbox/cloudflared.env
+if [[ -n $PUBLIC_URL && $PUBLIC_MODE == cloudflare ]]; then
+    # Cloudflare Tunnel + Access: the gate verifies Access tokens, so it may fetch the signing keys (outbound HTTPS)
+    say "public front door: $PUBLIC_URL via Cloudflare Tunnel + Access -> sharedbox-gate on 127.0.0.1:$GATE_PORT"
+    do_ install -d -m 755 "$(dirname "$GATE_DROPIN")"
+    do_ sh -c "printf '# managed by sharedbox (PUBLIC_MODE=cloudflare): the gate fetches Cloudflare Access signing keys\n[Service]\nIPAddressDeny=\n' > $GATE_DROPIN"
+    do_ systemctl daemon-reload
+fi
 if [[ -n $PUBLIC_URL ]]; then
-    say "public front door: $PUBLIC_URL -> sharedbox-gate on 127.0.0.1:$GATE_PORT"
+    [[ $PUBLIC_MODE == cloudflare ]] || say "public front door: $PUBLIC_URL -> sharedbox-gate on 127.0.0.1:$GATE_PORT"
     do_ systemctl enable sharedbox-gate.service
     do_ systemctl restart sharedbox-gate.service
 elif systemctl is-enabled -q sharedbox-gate.service 2>/dev/null; then
     do_ systemctl disable --now sharedbox-gate.service
+fi
+if [[ -n $PUBLIC_URL && $PUBLIC_MODE == cloudflare && -e $CF_ENV ]] && command -v cloudflared >/dev/null; then
+    do_ systemctl enable sharedbox-cloudflared.service
+    do_ systemctl restart sharedbox-cloudflared.service
+elif [[ $PUBLIC_MODE != cloudflare || -z $PUBLIC_URL ]]; then
+    if systemctl is-enabled -q sharedbox-cloudflared.service 2>/dev/null; then
+        do_ systemctl disable --now sharedbox-cloudflared.service
+    fi
+    if [[ -e $GATE_DROPIN ]]; then do_ rm -f "$GATE_DROPIN"; do_ systemctl daemon-reload; fi
 fi
 
 # ---------- health email, trap, tripwire ----------
@@ -277,11 +297,16 @@ if [[ -z $PUBLIC_URL ]]; then
     TS_NAME=$(tailscale status --json --peers=false 2>/dev/null \
         | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)
     say "optional: let friends in with just a browser (no Tailscale for them, phones work):"
+    say "  recommended, Cloudflare Tunnel + Access (needs a domain on Cloudflare; only invited emails get in):"
+    say "    sudo bash $SHARE/cloudflare-setup.sh"
+    say "  or Tailscale Funnel (simpler, but the gate's pages face the whole internet):"
     say "  1. tailnet policy (admin console > Access controls) must allow Funnel for this machine:"
     say "       \"nodeAttrs\": [{\"target\": [\"<this machine or its tag>\"], \"attr\": [\"funnel\"]}]"
     say "  2. sudo tailscale funnel --bg --https=443 http://127.0.0.1:$GATE_PORT"
     say "  3. set PUBLIC_URL=https://${TS_NAME:-<machine>.<tailnet>.ts.net} in $ETC/sharedbox.conf, then re-run: sudo ./install.sh --apply"
     say "  check with: sudo sharedbox-admin public status"
+elif [[ $APPLY == 1 && $PUBLIC_MODE == cloudflare ]]; then
+    say "public invites: box invite --email friend@example.com   (check the setup: sudo sharedbox-admin cloudflare status)"
 elif [[ $APPLY == 1 ]]; then
     say "public invites: sudo sharedbox-admin invite   (check the setup: sudo sharedbox-admin public status)"
 fi

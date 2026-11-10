@@ -1,5 +1,5 @@
 [Unit]
-Description=sharedbox public front door (behind Tailscale Funnel; only runs with PUBLIC_URL set)
+Description=sharedbox public front door (behind Tailscale Funnel or Cloudflare Tunnel; only runs with PUBLIC_URL set)
 After=network-online.target tailscaled.service sharedbox-web.service
 Wants=network-online.target sharedbox-web.service
 
@@ -21,6 +21,7 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # it only ever talks to localhost and friends' T3 on this box's tailnet address
+# (PUBLIC_MODE=cloudflare adds sharedbox-gate.service.d/cloudflare.conf: outbound HTTPS for Access signing keys)
 IPAddressDeny=any
 IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48
 LockPersonality=yes

@@ -1,0 +1,43 @@
+[Unit]
+Description=sharedbox: Cloudflare Tunnel to sharedbox-gate (outbound only; PUBLIC_MODE=cloudflare)
+After=network-online.target sharedbox-gate.service
+Wants=network-online.target
+# written by `sharedbox-admin cloudflare setup` (TUNNEL_TOKEN=..., root only, 600)
+ConditionPathExists=/etc/sharedbox/cloudflared.env
+
+[Service]
+# systemd reads the token as root and hands it to cloudflared in its environment (not in argv, not in this file)
+EnvironmentFile=/etc/sharedbox/cloudflared.env
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=0
+# hardening: an unprivileged throwaway user that can only make network connections
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
