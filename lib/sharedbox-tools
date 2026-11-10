@@ -181,7 +181,9 @@ def android_install(cfg, dry):
     if dry:
         print("    would download cmdline-tools, then sdkmanager platform-tools, platforms, build-tools")
         return
-    xml = urllib.request.urlopen(ANDROID_REPO + "repository2-3.xml", timeout=60).read().decode()
+    ua = {"User-Agent": "sharedbox-tools"}  # some hosts refuse Python's default User-Agent
+    xml = urllib.request.urlopen(urllib.request.Request(ANDROID_REPO + "repository2-3.xml", headers=ua),
+                                 timeout=60).read().decode()
     blk = re.search(r'<remotePackage path="cmdline-tools;latest">(.*?)</remotePackage>', xml, re.S)
     if not blk:
         sys.exit("could not find cmdline-tools in the Android repository index")
@@ -198,7 +200,9 @@ def android_install(cfg, dry):
     if not os.path.exists(sdkm):
         with tempfile.TemporaryDirectory() as d:
             z = os.path.join(d, "tools.zip")
-            urllib.request.urlretrieve(ANDROID_REPO + url, z)
+            with urllib.request.urlopen(urllib.request.Request(ANDROID_REPO + url, headers=ua), timeout=600) as r, \
+                    open(z, "wb") as out:
+                shutil.copyfileobj(r, out)
             h = hashlib.sha1()
             with open(z, "rb") as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):

@@ -307,7 +307,9 @@ def install_cloudflared(dry=False, fam=None):
             print(f"    would add the Cloudflare apt repo ({CLOUDFLARE_LIST}) and install cloudflared")
             return
         import urllib.request
-        with urllib.request.urlopen(CLOUDFLARE_KEY_URL, timeout=30) as r:
+        # pkg.cloudflare.com answers Python's default "Python-urllib" User-Agent with 403
+        req = urllib.request.Request(CLOUDFLARE_KEY_URL, headers={"User-Agent": "sharedbox"})
+        with urllib.request.urlopen(req, timeout=30) as r:
             key = r.read(1 << 20)
         if not key or len(key) >= 1 << 20:
             raise RuntimeError(f"unexpected signing key from {CLOUDFLARE_KEY_URL}")
