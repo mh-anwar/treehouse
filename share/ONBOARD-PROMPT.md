@@ -35,6 +35,9 @@ Ground rules:
      `codex` or `opencode` are installed here).
    - Whether to log into GitHub on the machine (default yes), and any repos to clone there (optional).
    - My git name and email, but only if `git config --global user.name` / `user.email` aren't set here.
+   - Whether the coding agents on the machine should update to the newest version every night (default yes).
+     If not, they stay on the versions I get today until I ask for newer ones. Tell me that serious security
+     fixes are applied to everyone either way.
    Then carry out steps 1–9 without stopping, except for the browser steps.
 
 1. **Tailscale.** Let HOST be the host part of the join link.
@@ -83,9 +86,10 @@ Ground rules:
    `ssh devbox 'box t3' > /tmp/devbox-t3.log 2>&1 &` (or your tool's background mode). Carry on with steps 6–7
    while it runs.
 
-6. **Git on the machine.**
+6. **Git and updates on the machine.**
    `ssh devbox "git config --global user.name '<name>' && git config --global user.email '<email>' && git config --global init.defaultBranch main"`
-   using my local git identity (or what I told you in step 0).
+   using my local git identity (or what I told you in step 0). Then record my update choice:
+   `ssh devbox 'box updates auto'` (or `box updates manual` if I said no).
 
 7. **Logins on the machine.** For each one, use the tmux method above, open the URL for me, wait until the check
    passes, then move to the next. Kill the `login` tmux session when you're done.

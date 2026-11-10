@@ -103,6 +103,9 @@ keep going. Don't ask the user first, and don't stop to wait for a fix:
 - Never put secrets (API keys, tokens) in command-line arguments. Other users can see process lists. Use env vars or files.
 - Never mine crypto, port-scan, stress-test, fork-bomb, or touch other users' files or processes.
 - There is no sudo and no Docker. Install tools into your home (`~/.local`, nvm, uv, rustup, …).
+- The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed and updated by the owner. Don't install
+  your own copies or run their self-updaters. `box updates` shows whether this user's agents update nightly
+  (`auto`) or stay on their versions (`manual`, `box updates now` to move up). Change it only when the user asks.
 
 ## Reboots
 {updates}

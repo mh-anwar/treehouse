@@ -63,7 +63,7 @@ is a QR code on their page.
 - 🪤 **Tripwire + trap.** Decoy secrets on disk: if anything opens them (say, a malicious npm package
   snooping), both you *and* the affected friend are told, by email, terminal banner and their agent.
   Decoy ports and an AI-crawler maze catch outside scanners.
-- 🔁 **Self-updating.** Agents are updated daily. Optional weekly reboots clear leaks.
+- 🔁 **Self-updating.** Agents update nightly (each person can opt out with `box updates manual`; serious security fixes still reach everyone). Optional weekly reboots clear leaks.
 
 ## Quick start
 

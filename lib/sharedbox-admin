@@ -735,6 +735,10 @@ def handle_portal(cfg, rid, req):
     if action == "add-key":
         key, err = sb.validate_pubkey(str(req.get("sshkey", "")))
         return {"ok": False, "error": err} if err else box_portal(pw, ["add-key"], input_text=key + "\n")
+    if action == "updates":
+        if key not in ("auto", "manual"):
+            return {"ok": False, "error": "unknown choice"}
+        return box_portal(pw, ["updates-set", key])
     if key not in PORTAL_KEYS:
         return {"ok": False, "error": "unknown login"}
     if action == "login":

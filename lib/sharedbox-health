@@ -264,6 +264,11 @@ def problems(cfg, g, findings):
         p.append(("yellow", "failed services: " + ", ".join(g["failed_units"][:6])))
     if g["oom"]:
         p.append(("yellow", f"{len(g['oom'])} process(es) killed for running out of memory"))
+    lu = (sb.read_json(sb.TOOLS_JSON, {}) or {}).get("last_update") or {}
+    if lu and not lu.get("ok"):
+        p.append(("yellow", "coding agent update failed: " + "; ".join(lu.get("errors") or ["?"])[:300]))
+    elif lu and time.time() - lu.get("ts", 0) > 3 * 86400:
+        p.append(("yellow", "coding agents haven't updated in 3+ days (sharedbox-tools-update.timer)"))
     if g["disk_errors"]:
         p.append(("red", f"{len(g['disk_errors'])} disk/filesystem error(s) in the kernel log"))
     for dev, s in (g.get("smart") or {}).items():

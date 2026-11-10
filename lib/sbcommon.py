@@ -28,6 +28,11 @@ PENDING = os.path.join(STATE_DIR, "pending")
 SLOTS = os.path.join(STATE_DIR, "slots")
 REQUESTS = os.path.join(STATE_DIR, "requests")
 TOOLS_JSON = os.path.join(STATE_DIR, "tools.json")
+# versioned coding agents: AGENTS_DIR/<slug>/<version>/ (npm prefix) + <slug>/current -> newest
+AGENTS_DIR = os.environ.get("SHAREDBOX_AGENTS", "/opt/sharedbox/agents")
+AGENT_PINS = os.path.join(STATE_DIR, "agent-pins")    # <user>/<slug> -> pinned version dir (root writes)
+AGENT_PREF_REL = os.path.join(".sharedbox", "agent-updates")  # "auto" | "manual", written by the user
+AGENT_RENAMED = {"opencode-ai": "@opencode/cli"}   # npm packages that moved (opencode v2 = @opencode/cli)
 ALERTS = os.path.join(STATE_DIR, "alerts")   # per-friend security alerts (tripwire), root-owned, group=friend
 ALERT_DAYS = 7
 # public front door (sharedbox-gate): invite, session and device-login records, keyed by sha256(token).
@@ -96,6 +101,12 @@ DEFAULTS = {
     "REBOOT_TIME": "04:00",
     "SCHEDULED_REBOOT_DAYS": "Wed,Sun",
     "TOOLS_ANDROID": "0",
+    # coding agents (TOOLS_NPM): "auto" = everyone gets the newest version daily unless they opt out
+    # (`box updates manual`); "manual" = people stay on the version they had unless they opt in.
+    # Either way, a pinned version is moved to the newest one when it has a security advisory at or
+    # above AGENT_FORCE_SEVERITY (low|moderate|high|critical|off) that the newest version doesn't.
+    "AGENT_UPDATES_DEFAULT": "auto",
+    "AGENT_FORCE_SEVERITY": "high",
     "ANDROID_SDK_ROOT": "/opt/android-sdk",
     # email (weekly health report + urgent alerts)
     "MAIL_TO": "",
@@ -209,6 +220,27 @@ def write_json(path, data, mode=0o644, owner=None):
         except FileNotFoundError:
             pass
         raise
+
+
+def agent_slug(name):
+    """'@anthropic-ai/claude-code' -> 'anthropic-ai+claude-code' (a directory name)"""
+    return name.lstrip("@").replace("/", "+")
+
+
+def agent_pref(cfg, home=None):
+    """(mode, mtime) of a user's agent update choice; run as that user. mtime 0 = never chose."""
+    home = home or os.path.expanduser("~")
+    try:
+        path = os.path.join(home, AGENT_PREF_REL)
+        with open(path) as f:
+            mode = f.read(16).strip()
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        mode, mtime = "", 0
+    if mode not in ("auto", "manual"):
+        mode, mtime = (cfg.get("AGENT_UPDATES_DEFAULT") if cfg.get("AGENT_UPDATES_DEFAULT") in ("auto", "manual")
+                       else "auto"), 0
+    return mode, mtime
 
 
 def log_event(kind, user=None, **fields):
