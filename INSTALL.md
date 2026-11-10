@@ -31,13 +31,19 @@ Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python
    current user (`id -un`).
 2. **Email for alerts** (weekly health report, urgent problems, security alerts). Suggest skipping it
    for now if they don't have a Gmail address handy.
-3. **How friends connect:**
-   - **Public link (recommended):** friends need nothing but a browser, which also works on phones. They
-     log in with their email (Cloudflare sends a code), and only emails the owner invited ever reach the
-     machine. Needs a domain on Cloudflare (free plan is fine) and a free Cloudflare Zero Trust team.
-     Ask which hostname to use, e.g. `box.theirdomain.com`.
-   - **Tailscale only:** each friend installs Tailscale and the owner shares the machine with them.
-     Free Tailscale has a limited number of share invites.
+3. **How friends connect.** Don't make the owner choose from jargon. Ask one question, "Do you have a
+   domain on Cloudflare?" (check yourself first if you can), and recommend the route that fits:
+   - **Cloudflare login (most secure, recommended if they have a domain on Cloudflare):** friends open
+     `https://box.<their-domain>` on any device and log in with an email code. Only emails the owner
+     invited ever reach the machine. The owner clicks one pre-filled link and copies one token; you do
+     everything else, including turning on Cloudflare Zero Trust.
+   - **Public link (easiest, no domain needed):** Tailscale Funnel gives the box a public HTTPS address.
+     Friends need nothing installed. They join from a one-time invite link and stay logged in with a
+     cookie. The owner clicks one "allow Funnel" link. Trade-off: the box's login pages face the whole
+     internet (the friends' tools are still behind the login).
+   - **Private (Tailscale only):** nothing is exposed at all. Each friend installs Tailscale and the owner
+     shares the machine with them in the Tailscale admin console. Good for a few technical friends; free
+     Tailscale limits how many people you can add.
 
 ## 2. Prerequisites
 - `git`: install it with the system package manager if missing (`apt-get install -y git` or
@@ -80,40 +86,42 @@ sharedbox-health test-email && echo "Sent. Check your inbox."
 ```
 Ask the owner to confirm the test email arrived.
 
-## 5. Public link (if they chose it)
-This puts Cloudflare Access (email-code login) and Cloudflare Tunnel in front of the box. The tunnel only
-makes outbound connections, and the gate also checks Cloudflare's signed login token on every request.
-Everything is automated except an API token that only the owner can create. Send them these clicks in one
-message:
+## 5. Connect friends (the route from question 3)
 
-1. Open https://one.dash.cloudflare.com/. If it asks you to pick a team name and a plan, pick any name and
-   the **Free** plan. (Skip this step if Zero Trust is already set up.)
-2. Open https://dash.cloudflare.com/profile/api-tokens and click **Create Token**. Next to
-   **Create Custom Token**, click **Get started**.
-3. Name it `treehouse` and add these permissions with **+ Add more**:
-   - Account · Cloudflare Tunnel · Edit
-   - Account · Access: Apps and Policies · Edit
-   - Account · Access: Organizations, Identity Providers, and Groups · Read
-   - Zone · DNS · Edit
-   - Zone · Zone · Read
+### Cloudflare login
+The gate also checks Cloudflare's signed login token on every request, and the tunnel only makes outbound
+connections, so nothing on the box listens on the internet.
+1. Send the owner this pre-filled link. Tell them to check the summary, click **Continue to summary** and then
+   **Create Token**, and copy the token:
+   https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22argotunnel%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22access%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22access_acct%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=treehouse
+   If the list doesn't include **Cloudflare Tunnel · Edit**, they add it with **+ Add more** (Cloudflare
+   doesn't support pre-filling every permission). The full list is: Account · Cloudflare Tunnel · Edit;
+   Account · Access: Apps and Policies · Edit; Account · Access: Organizations, Identity Providers, and
+   Groups · Edit; Zone · DNS · Edit; Zone · Zone · Read.
+2. Get the token into `/etc/sharedbox/cloudflare-token` (root, mode 600) without it ever entering the chat:
+   - If your harness has a secure secret prompt that saves to a file, use it, then
+     `sudo install -m 600 -o root -g root <that file> /etc/sharedbox/cloudflare-token`.
+   - Otherwise have the owner type this one line; it asks for the token without showing it, then for the
+     hostname and their email: `sudo bash /usr/share/sharedbox/cloudflare-setup.sh`
+3. Pick the hostname yourself (e.g. `treehouse.<domain>`, a subdomain that has no DNS record yet, so no existing
+   site is touched), then run:
+   `sudo sharedbox-admin cloudflare setup --hostname <host> --owner-email <owner's email>`
+   It turns on Zero Trust if it isn't on yet (free plan, a team name picked for them). It also creates the
+   tunnel, DNS record, email-code login and Access app, installs `cloudflared`, and starts it with the gate.
+   It is safe to re-run. If it names a missing permission, the owner edits the token and you run it again.
+4. Check: `sudo sharedbox-admin cloudflare status`. Also `curl -sI https://<host>/` should redirect to
+   `<team>.cloudflareaccess.com`.
 
-   Leave **Account Resources** and **Zone Resources** on your account and **All zones** (or pick the one
-   domain). Click **Continue to summary**, then **Create Token**, and keep the page open.
-4. In the server's terminal, type this one line and answer its three questions (paste the token, type the
-   hostname, type your email):
-   ```
-   sudo bash /usr/share/sharedbox/cloudflare-setup.sh
-   ```
+### Public link (Tailscale Funnel)
+1. Set `PUBLIC_URL=https://<machine>.<tailnet>.ts.net` in `/etc/sharedbox/sharedbox.conf` (the name is
+   `tailscale status --json`, `.Self.DNSName`), then run `sudo ./install.sh --apply --no-tools`.
+2. Run `sudo tailscale funnel --bg --https=443 http://127.0.0.1:8091`. If Funnel isn't allowed on the
+   tailnet yet, it prints a link: send the owner only that link to click, then run the command again.
+3. Check: `sudo sharedbox-admin public status`.
 
-The token goes straight into a root-only file and is never shown. Never ask for it in the chat. The script
-creates the tunnel, DNS record and Access app, installs `cloudflared`, starts it with the gate, and prints
-a status check. It is safe to re-run. If it prints that the token is missing a permission, have the owner
-edit the token (the same page, **Edit**) and run the line again. Then check it yourself with
-`sudo sharedbox-admin cloudflare status`. The tunnel can take a minute to show `healthy`.
-
-*Other option:* Tailscale Funnel (`sudo sharedbox-admin public status` explains it) needs no domain, but
-it exposes the gate's pages to the whole internet. Use it only if the owner has no domain on Cloudflare and
-accepts that.
+### Private (Tailscale only)
+There's nothing to set up. For each friend, the owner opens the Tailscale admin console → **Machines** →
+this machine → **Share…**. `box invite` prints the matching message.
 
 ## 6. Check it works
 - `systemctl is-active sharedbox-web sharedbox-canary sharedbox-guard.timer sharedbox-janitor.timer`
