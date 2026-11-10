@@ -797,6 +797,169 @@ def cmd_invite(a):
         print(f"\n({res['note']})", file=sys.stderr)
 
 
+# ---------- shared skills (a catalog; nothing is installed until the owner says so) ----------
+
+SKILL_LINK_DIRS = [".claude/skills", ".agents/skills"]  # Claude Code + opencode, Codex + opencode
+
+
+def skill_catalog():
+    """name -> {"path", "description", "source"}; admin-shared skills override the built-in ones."""
+    out = {}
+    for src, root in (("built-in", sb.SKILLS_BUILTIN), ("shared", sb.SKILLS_SHARED)):
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for n in names:
+            d = os.path.join(root, n)
+            md = os.path.join(d, "SKILL.md")
+            if not re.match(sb.SKILL_NAME_RE, n) or not os.path.isfile(md):
+                continue
+            desc = ""
+            try:
+                with open(md) as f:
+                    head = f.read(4096)
+                m = re.search(r"^description:\s*(?:>-?\s*\n)?(.+?)(?:\n\S|\n---)", head, re.M | re.S)
+                desc = " ".join(m.group(1).split()) if m else ""
+            except OSError:
+                pass
+            by = (sb.read_json(os.path.join(d, ".sharedbox.json"), {}) or {}).get("by")
+            out[n] = {"path": d, "description": desc, "source": f"shared by {by}" if by else src}
+    return out
+
+
+def skill_state(name, path):
+    """'installed', 'yours' (a skill of your own with that name), or ''."""
+    states = set()
+    for rel in SKILL_LINK_DIRS:
+        p = os.path.join(HOME, rel, name)
+        if os.path.islink(p):
+            states.add("installed" if os.path.realpath(p) == os.path.realpath(path) else "yours")
+        elif os.path.exists(p):
+            states.add("yours")
+    return "yours" if "yours" in states else ("installed" if states else "")
+
+
+def need_skill(cat, name):
+    if name not in cat:
+        sys.exit(f"no shared skill called {name!r}. See `box skills`.")
+    return cat[name]
+
+
+def cmd_skills(a):
+    cat = skill_catalog()
+    if a.action == "ls":
+        if a.json:
+            print(json.dumps({n: dict(v, state=skill_state(n, v["path"])) for n, v in cat.items()}))
+            return
+        if not cat:
+            print("no shared skills on this box yet")
+            return
+        for n, v in cat.items():
+            st = skill_state(n, v["path"])
+            mark = {"installed": "[installed] ", "yours": "[you have your own] "}.get(st, "")
+            print(f"{n:22} {mark}{v['description'][:100]}  ({v['source']})")
+        print(f"\nCatalog: {sb.SKILLS_BUILTIN}/README.md. Agents: ask your owner before `box skills add NAME`.")
+    elif a.action == "show":
+        v = need_skill(cat, a.name)
+        print(f"# {v['path']}\n")
+        with open(os.path.join(v["path"], "SKILL.md")) as f:
+            print(f.read())
+        extra = [os.path.relpath(os.path.join(r, fn), v["path"]) for r, _, fs in os.walk(v["path"]) for fn in fs
+                 if fn not in ("SKILL.md", ".sharedbox.json")]
+        if extra:
+            print("other files: " + ", ".join(sorted(extra)))
+    elif a.action == "add":
+        v = need_skill(cat, a.name)
+        todo = []
+        for rel in SKILL_LINK_DIRS:  # check every location before touching any, so nothing is half-installed
+            p = os.path.join(HOME, rel, a.name)
+            if os.path.islink(p) and os.path.realpath(p) == os.path.realpath(v["path"]):
+                continue
+            if os.path.lexists(p):
+                sys.exit(f"~/{rel}/{a.name} already exists and isn't the shared one; "
+                         "rename or remove yours first (box never overwrites your own skills)")
+            todo.append(p)
+        for p in todo:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            os.symlink(v["path"], p)
+        print(f"installed {a.name} for Claude Code, Codex and opencode (new agent sessions pick it up)")
+    elif a.action == "rm":
+        removed = 0
+        roots = [os.path.realpath(r) for r in (sb.SKILLS_BUILTIN, sb.SKILLS_SHARED)]
+        for rel in SKILL_LINK_DIRS:
+            p = os.path.join(HOME, rel, a.name)
+            if os.path.islink(p) and os.path.dirname(os.path.realpath(p)) in roots:
+                os.unlink(p)
+                removed += 1
+        print(f"removed {a.name}" if removed else f"{a.name} isn't installed from the catalog (your own skills are left alone)")
+    elif a.action in ("share", "unshare"):
+        if ME.pw_name not in sb.admin_users(CFG):
+            sys.exit("only box admins (ADMIN_USERS) can publish skills. Ask the owner, "
+                     "or `box request \"share skill <name>\"`.")
+        if a.action == "unshare":
+            res = admin_request({"action": "unshare-skill", "name": a.name}, 30)
+        else:
+            res = admin_request(pack_skill(a.name), 30)
+        if not res.get("ok"):
+            sys.exit(res.get("error", "failed"))
+        print(res.get("message", "done"))
+
+
+def pack_skill(src):
+    """A skill directory as a JSON request (text files only, size-capped)."""
+    src = os.path.abspath(os.path.expanduser(src or ""))
+    name = os.path.basename(src.rstrip("/"))
+    if not re.match(sb.SKILL_NAME_RE, name):
+        sys.exit(f"skill directory name {name!r} must be lowercase letters, digits and dashes")
+    if not os.path.isfile(os.path.join(src, "SKILL.md")):
+        sys.exit(f"{src} has no SKILL.md")
+    files, total = {}, 0
+    for root, dirs, fns in os.walk(src):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for fn in fns:
+            if fn.startswith("."):
+                continue
+            p = os.path.join(root, fn)
+            rel = os.path.relpath(p, src)
+            if os.path.islink(p) or not os.path.isfile(p):
+                sys.exit(f"{rel}: only regular files can be shared (no symlinks)")
+            try:
+                with open(p, encoding="utf-8") as f:
+                    text = f.read()
+            except UnicodeDecodeError:
+                sys.exit(f"{rel}: only text files can be shared")
+            total += len(text.encode())
+            files[rel] = {"text": text, "exec": bool(os.stat(p).st_mode & 0o111)}
+    if len(files) > sb.SKILL_MAX_FILES or total > sb.SKILL_MAX_BYTES:
+        sys.exit(f"too big to share: {len(files)} files, {total} bytes "
+                 f"(limit {sb.SKILL_MAX_FILES} files, {sb.SKILL_MAX_BYTES} bytes)")
+    return {"action": "share-skill", "name": name, "files": files}
+
+
+def admin_request(req, wait):
+    """Drop a request for root (owner-only actions without sudo) and wait for its answer."""
+    rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
+    path = os.path.join(sb.ADMIN_DROP, f"{rid}.json")
+    tmp = os.path.join(sb.ADMIN_DROP, f".{rid}.tmp")
+    try:
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            json.dump(req, f)
+        os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
+    except OSError as e:
+        sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
+    reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            with open(reply) as f:
+                return json.load(f)
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.25)
+    sys.exit(f"no answer from the provisioner after {wait} s (is sharedbox-provision.path running, "
+             "and is sharedbox up to date? `box skills share` needs the latest install.sh)")
+
+
 # ---------- issues (agents log friction; the owner reads everyone's) ----------
 
 ISSUES_FILE = os.path.join(HOME, sb.ISSUES_REL)
@@ -1282,6 +1445,11 @@ def main():
     x.add_argument("--no-create", action="store_true",
                    help="old style: an invite link and the friend picks a username on a signup form")
     x.set_defaults(fn=cmd_invite)
+    x = s.add_parser("skills", help="shared skill catalog: ls, show NAME, add NAME, rm NAME, share DIR (admins)")
+    x.add_argument("action", nargs="?", default="ls", choices=["ls", "show", "add", "rm", "share", "unshare"])
+    x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=lambda a: (a.action != "ls" and not a.name and sys.exit(f"box skills {a.action}: which skill?"))
+                   or cmd_skills(a))
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks

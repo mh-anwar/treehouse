@@ -95,6 +95,9 @@ do_ install -m 755 "$SRC/share/cloudflare-setup.sh" "$SHARE/cloudflare-setup.sh"
 do_ rm -rf "$SHARE/skel"
 do_ cp -r "$SRC/share/skel" "$SHARE/skel"
 do_ chmod -R u=rwX,go=rX "$SHARE/skel"
+do_ rm -rf "$SHARE/skills"
+do_ cp -r "$SRC/share/skills" "$SHARE/skills"   # the shared skill catalog (`box skills`)
+do_ chmod -R u=rwX,go=rX "$SHARE/skills"
 do_ install -m 644 "$SRC/share/profile.sh" /etc/profile.d/sharedbox.sh
 if [[ ! -e $ETC/sharedbox.conf ]]; then
     do_ install -m 644 "$SRC/etc/sharedbox.conf" "$ETC/sharedbox.conf"
@@ -124,6 +127,7 @@ done
 [[ -e $STATE/users.json ]] || do_ sh -c "echo '{\"users\": {}}' > $STATE/users.json"
 [[ -e $STATE/events.jsonl ]] || do_ install -m 644 /dev/null "$STATE/events.jsonl"
 do_ install -d -m 755 "$STATE/health"
+do_ install -d -m 755 "$STATE/skills"   # skills admins publish with `box skills share`
 do_ install -d -m 700 "$STATE/audit"
 do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/trap"
 # public front door: invite/session/login records, written only by root, readable by sharedbox-gate/-web
