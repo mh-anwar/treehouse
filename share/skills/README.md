@@ -11,7 +11,7 @@ an agent may **suggest** one, but must ask its owner before installing it.
 
 | Skill | Say | What it does | Notes |
 |---|---|---|---|
-| `council` | "council" | Review from Claude Opus + GPT-6 Luna + Muse Spark + DeepSeek Flash, looping until they agree | Needs OpenCode with an OpenRouter key; ~2-3¢/round |
+| `council` | "council" | Review from Claude Opus + GPT-6 Luna + Muse Spark Open + DeepSeek Flash, looping until they agree | Needs OpenCode with an OpenRouter key; ~15-20¢/round |
 | `full-send` | "full send" | Proves, files, babysits and **merges** a PR with nobody watching | Uses `sol-loop`, `file-pr`, `babysit-pr`. Merges on its own |
 | `full-stop` | "full stop" | Same as `full-send`, stops when the PR is ready for you to merge | Uses `full-send` |
 | `sol-loop` | "sol loop" | Reviews a change with GPT Sol in a loop until both agents agree | GPT Sol is pricey via OpenRouter; fine on a ChatGPT/Codex plan |

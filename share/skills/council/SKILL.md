@@ -8,7 +8,7 @@ description: Trigger this if the user says 'council'.
 Adapted from Theo Browne's `council` skill (github.com/t3dotgg/tstack,
 commit 1085050, MIT). Same process; the members are fixed and cheap, because
 everything except Claude is paid per token through OpenRouter. Each account uses
-its own OpenRouter key (`opencode auth login`); a round costs about 2-3 cents.
+its own OpenRouter key (`opencode auth login`); a round costs about 15-20 cents.
 
 Before an audit, address outstanding PR comments, fix known issues, and run
 relevant checks. Give council the updated implementation; do not defer known
@@ -23,10 +23,10 @@ name council members, use those. Otherwise use exactly these:
 | --- | --- | --- |
 | Claude Opus | Claude (native, needs a Claude login) | `opus`, high effort |
 | GPT-6 Luna | Codex (ChatGPT login); else OpenCode → OpenRouter | `gpt-6-luna` on Codex; else `openrouter/openai/gpt-6-luna` |
-| Muse Spark Contributor | OpenCode → OpenRouter | `openrouter/meta/muse-spark-1.3-contributor` |
+| Muse Spark Open | OpenCode → OpenRouter | `openrouter/meta/muse-spark-open` |
 | DeepSeek Flash | OpenCode → DeepSeek platform; else OpenRouter | `deepseek/deepseek-flash`; else `openrouter/~deepseek/deepseek-flash-latest` |
 
-Never swap in a pricier model (GPT Terra/Sol, GPT-5.6 Luna, Muse Spark/Wonder, DeepSeek Pro, Gemini), and
+Never swap in a pricier model (GPT Terra/Sol, GPT-5.6 Luna, Muse Spark 1.3/Wonder, DeepSeek Pro, Gemini), and
 never run Claude through OpenRouter.
 
 In T3 Code, use `orchestrator_capabilities` to resolve the models, then
@@ -61,7 +61,7 @@ Rounds: 2
 | --- | --- | --- |
 | Claude Opus | 7/10 | 9/10 |
 | GPT-6 Luna | 8/10 | 10/10 |
-| Muse Spark Contributor | 7/10 | 9/10 |
+| Muse Spark Open | 7/10 | 9/10 |
 | DeepSeek Flash | 7/10 | 9/10 |
 ```
 
@@ -75,3 +75,7 @@ outcome.
 
 Do not let repeated reviews result in scope creep. It is your job to fight to
 keep scope limited.
+
+Muse Spark Open is the only Muse that works with OpenRouter accounts that
+forbid training on prompts and require zero data retention (Meta's own
+endpoints, including the cheap Contributor tier, train on prompts).
