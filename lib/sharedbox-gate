@@ -12,6 +12,13 @@ Tailscale Funnel terminates TLS for https://<box>.<tailnet>.ts.net and forwards 
 
 Runs unprivileged (the sharedbox user). It only reads session records (root writes them, hashed), so
 it can't create logins; every action is re-verified by root. Stdlib asyncio, no dependencies.
+
+PUBLIC_MODE=cloudflare: Cloudflare Access (login by email code) sits in front, and cloudflared forwards to this
+process instead of Funnel. Then every request must carry a valid Access JWT (Cf-Access-Jwt-Assertion, or the
+CF_Authorization cookie) for CF_ACCESS_AUD, checked here against the team's signing keys; anything else gets
+403, which also stops local accounts from skipping Access via 127.0.0.1. Identity is the token's email: the
+friend whose registry email it is gets their T3 and portal, with no cookies or device links of ours. A signed-in
+email without an account only sees invite signups bound to that email, or "ask your friend for an invite".
 """
 
 import asyncio
@@ -28,6 +35,9 @@ import sbcommon as sb  # noqa: E402
 
 CFG = sb.load_config()
 PUBLIC = sb.public_url(CFG)
+CF = sb.public_mode(CFG) == "cloudflare"
+VERIFIER = None             # sbaccess.Verifier, set in main() in cloudflare mode
+CF_CACHE_SECS = 30          # a verified token is re-checked (expiry, account) after this long
 PUBLIC_HOST = urllib.parse.urlsplit(PUBLIC).netloc.lower() if PUBLIC else ""
 WEB_SOCK = os.environ.get("SHAREDBOX_WEB_SOCK", "/run/sharedbox-web/gate.sock")
 COOKIE = sb.SESSION_COOKIE
@@ -64,6 +74,7 @@ _ts_ip = (0.0, None)
 _sessions = {}     # sha256 -> (checked_at, (user, record, hash) | None)
 _refreshing = {}   # sha256 -> monotonic time of the last refresh request
 _rate = {}         # bucket -> deque[timestamps]
+_cf_tokens = {}    # sha256(jwt) -> (checked_at, claims | None)
 
 
 def users():
@@ -116,6 +127,33 @@ def session_for(secret):
         _sessions.clear()
     _sessions[h] = (now, res)
     return res
+
+
+async def cf_claims(token):
+    """Verified Access claims for `token`, else None. Signature checks are cached briefly by token hash;
+    expiry is re-checked on every hit."""
+    if not token:
+        return None
+    h = sb.token_hash(token)
+    now = time.monotonic()
+    c = _cf_tokens.get(h)
+    if not (c and now - c[0] < CF_CACHE_SECS):
+        import sbaccess
+        try:
+            claims = await asyncio.to_thread(VERIFIER.verify, token)
+        except (sbaccess.InvalidToken, ValueError):
+            claims = None
+        if len(_cf_tokens) > 20000:
+            _cf_tokens.clear()
+        c = _cf_tokens[h] = (now, claims)
+    claims = c[1]
+    if claims and time.time() >= float(claims["exp"]) + 60:
+        return None
+    return claims
+
+
+def cf_user(email):
+    return sb.user_by_email(email, users())[0]
 
 
 def rate_limited(bucket, n, window=600):
@@ -271,7 +309,8 @@ async def copy_to_eof(reader, writer):
 
 # ---------- responses made by the gate itself ----------
 
-REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found", 421: "Misdirected Request",
+REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+           421: "Misdirected Request",
            429: "Too Many Requests", 431: "Request Header Fields Too Large", 501: "Not Implemented",
            502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout"}
 
@@ -352,15 +391,32 @@ async def handle_request(reader, writer, head, peer):
     xff = values(headers, "x-forwarded-for")
     # Funnel's proxy (tailscaled, on loopback) reports the visitor; only trust that hop's value
     client_ip = (xff[-1].split(",")[-1].strip() if xff else peer) if from_loopback else peer
+    if CF and from_loopback and len(values(headers, "cf-connecting-ip")) == 1:
+        client_ip = values(headers, "cf-connecting-ip")[0].strip()  # cloudflared's report of the visitor
     client_ip = client_ip[:64] or "?"
     path = urllib.parse.unquote(target.split("?", 1)[0])
     if ".." in path.split("/") or "\\" in path:
         raise HTTPError(400, "bad path")
     upgrade = "upgrade" in conn and {"websocket"} == tokens(headers, "upgrade") and method == "GET"
-    secret, other_cookies = split_cookies(headers)
-    sess = session_for(secret)
-    kind = reserved(target.split("?", 1)[0])
     set_cookie = []
+    cf_jwt = claims = None
+    if CF:
+        # the second lock: no valid Access token for this app, no entry (whatever the path, whoever asks)
+        import sbaccess
+        cf_jwt = sbaccess.token_from_headers(headers)
+        claims = await cf_claims(cf_jwt)
+        if not claims:
+            await respond(writer, 403, page("Not allowed", "Open this box through its Cloudflare login page: "
+                                            f"<a href='{PUBLIC}/'>{PUBLIC}/</a>."))
+            return False
+        user = cf_user(claims["email"])
+        secret, sess = None, ((user, None, None) if user else None)
+        other_cookies = "; ".join(p.strip() for v in values(headers, "cookie") for p in v.split(";")
+                                  if p.strip() and p.strip().partition("=")[0] not in (COOKIE, "CF_Authorization"))
+    else:
+        secret, other_cookies = split_cookies(headers)
+        sess = session_for(secret)
+    kind = reserved(target.split("?", 1)[0])
 
     if kind == "token" and (rate_limited("tok:" + client_ip, 30) or rate_limited("tok:*", 600)):
         await respond(writer, 429, page("Slow down", "Too many tries. Wait a few minutes and try again."))
@@ -374,7 +430,7 @@ async def handle_request(reader, writer, head, peer):
                                             "(Tailscale is down on it?). Try again in a minute."))
             return False
         dest = ("tcp", host, port)
-        if maybe_refresh(secret, sess):
+        if not CF and maybe_refresh(secret, sess):
             set_cookie.append(session_cookie(secret))
     elif method in ("GET", "HEAD") and not upgrade:
         dest = ("unix", WEB_SOCK)  # landing page
@@ -384,11 +440,14 @@ async def handle_request(reader, writer, head, peer):
     to_web = dest[0] == "unix"
 
     out = [(n, v) for n, v in headers
-           if n.lower() not in STRIP and not n.lower().startswith(STRIP_PREFIXES)]
+           if n.lower() not in STRIP and not n.lower().startswith(STRIP_PREFIXES)
+           and not (CF and n.lower().startswith(("cf-access-", "cf-connecting-")))]
     out.insert(0, ("Host", PUBLIC_HOST))
     if to_web:
         out.append(("X-Sharedbox-Client-IP", client_ip))
-        if sess:
+        if CF:  # verified above; root re-verifies the token itself before acting on it
+            out += [("X-Sharedbox-Cf-Email", claims["email"]), ("X-Sharedbox-Cf-Jwt", cf_jwt)]
+        elif sess:
             out.append(("X-Sharedbox-Session", secret))
     elif other_cookies:
         out.append(("Cookie", other_cookies))  # T3's own cookies; never ours
@@ -459,7 +518,15 @@ async def handle_request(reader, writer, head, peer):
             resp += ["Connection: Upgrade", "Upgrade: websocket"]
             writer.write(("\r\n".join(resp) + "\r\n\r\n").encode("latin-1"))
             await writer.drain()
-            await tunnel(reader, writer, br, bw, secret)
+            if CF:
+                exp, email, user = float(claims["exp"]), claims["email"], sess[0]
+
+                def still_ok():
+                    return time.time() < exp + 60 and cf_user(email) == user
+            else:
+                def still_ok():
+                    return session_for(secret)
+            await tunnel(reader, writer, br, bw, still_ok)
             return False
 
         no_body = method == "HEAD" or code in (204, 304)
@@ -475,7 +542,7 @@ async def handle_request(reader, writer, head, peer):
             if ln == "set-cookie" and v.strip().startswith(COOKIE + "="):
                 continue  # only the gate sets its own cookie
             resp.append(f"{n}: {v}")
-        if to_web:  # sharedbox-web's private instructions (root minted the session)
+        if to_web and not CF:  # sharedbox-web's private instructions (root minted the session)
             new = values(rheaders, "x-sharedbox-set-session")
             if new and sb.TOKEN_RE.fullmatch(new[0]):
                 set_cookie.append(session_cookie(new[0]))
@@ -502,9 +569,9 @@ async def handle_request(reader, writer, head, peer):
         bw.close()
 
 
-async def tunnel(cr, cw, br, bw, secret):
+async def tunnel(cr, cw, br, bw, still_ok):
     """WebSocket (or any upgraded protocol): bytes both ways until either side closes. Dropped if the
-    session is revoked or the account suspended meanwhile."""
+    session is revoked (cloudflare mode: the Access token expires) or the account suspended meanwhile."""
     async def pipe(r, w):
         while True:
             data = await r.read(65536)
@@ -516,7 +583,7 @@ async def tunnel(cr, cw, br, bw, secret):
     async def watchdog():
         while True:
             await asyncio.sleep(WS_RECHECK)
-            if not session_for(secret):
+            if not still_ok():
                 return
 
     tasks = [asyncio.ensure_future(pipe(cr, bw)), asyncio.ensure_future(pipe(br, cw)),
@@ -570,9 +637,22 @@ async def main():
         print("sharedbox-gate: PUBLIC_URL is not set (or not https://...) in " + sb.CONF_PATH
               + "; nothing to do", file=sys.stderr)
         return
+    global VERIFIER
+    if CF:  # fail closed: without the Access settings nothing could be verified, so don't listen at all
+        import sbaccess
+        try:
+            VERIFIER = sbaccess.Verifier(CFG.get("CF_TEAM_DOMAIN"), CFG.get("CF_ACCESS_AUD"),
+                                         cache_file=sb.CF_CERTS_CACHE)
+        except ValueError as e:
+            sys.exit(f"sharedbox-gate: PUBLIC_MODE=cloudflare but {e}. Run: sudo sharedbox-admin cloudflare setup")
+        if not await asyncio.to_thread(VERIFIER.keys.refresh) and not VERIFIER.keys.count():
+            print(f"sharedbox-gate: can't fetch Cloudflare's signing keys yet ({VERIFIER.keys.last_error}); "
+                  "retrying on the first request", file=sys.stderr, flush=True)
     port = int(os.environ.get("SHAREDBOX_GATE_PORT") or sb.cfg_int(CFG, "GATE_PORT"))
     srv = await asyncio.start_server(client, "127.0.0.1", port, limit=MAX_HEAD, backlog=512)
-    print(f"sharedbox-gate on http://127.0.0.1:{port} for {PUBLIC}", flush=True)
+    print(f"sharedbox-gate on http://127.0.0.1:{port} for {PUBLIC}"
+          + (f" (Cloudflare Access: {CFG['CF_TEAM_DOMAIN']}, {VERIFIER.keys.count()} signing keys)" if CF else ""),
+          flush=True)
     async with srv:
         await srv.serve_forever()
 

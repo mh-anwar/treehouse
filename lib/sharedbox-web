@@ -7,6 +7,8 @@ Identity comes from `tailscale whois <peer ip>`; account creation is done by roo
 With PUBLIC_URL set it also serves the public front door's pages (invite signup, device login, the
 portal under /_box/) on a private unix socket that only sharedbox-gate talks to. There, identity is a
 root-minted session token that the gate passes along; root re-verifies it for every action.
+With PUBLIC_MODE=cloudflare it is instead the email in the Cloudflare Access token the gate verified; the gate
+passes both, and root re-verifies the token itself before any signup or portal action.
 """
 
 import hashlib
@@ -36,6 +38,7 @@ HOST = socket.gethostname()
 SELF_IP = None
 ALLOWED_HOSTS = set()  # Host header values we answer to (DNS rebinding guard), filled in main()
 PUBLIC = sb.public_url(CFG)  # "" = public front door off: everything below behaves as before
+CF = sb.public_mode(CFG) == "cloudflare"  # identity = Cloudflare Access email, no sessions/device links
 GATE_SOCK = os.environ.get("SHAREDBOX_WEB_SOCK", "/run/sharedbox-web/gate.sock")
 SAMPLE_EVERY = 5
 HISTORY_EVERY = 60
@@ -171,6 +174,8 @@ def submit_join(ip, who, username, key):
 def portal_call(ip, who, action, **kw):
     # logins wait ~25 s for a code; T3's very first start downloads it
     wait = {"status": 30, "t3": 240}.get(action, 90)
+    if who.get("cf_jwt"):  # cloudflare mode: root re-verifies the Access token itself
+        return spool_call(dict({"action": action, "cf_jwt": who["cf_jwt"]}, **kw), wait=wait)
     if who.get("session"):  # public gateway: root checks the session token itself
         return spool_call(dict({"action": action, "session": who["session"]}, **kw), wait=wait)
     return spool_call(dict({"action": action, "ip": ip, "ts_id": who["id"]}, **kw), wait=wait)
@@ -345,7 +350,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
     """The friend's home page: open T3, log in to an AI and GitHub. No terminal anywhere."""
     e = html.escape
     tok = token_for(ip, who["id"])
-    gate = bool(who.get("session"))
+    gate = bool(who.get("session") or who.get("cf_jwt"))
     base = "/_box" if gate else ""
     st = portal_call(ip, who, "status")
     logins, t3 = st.get("logins") or {}, st.get("t3")
@@ -403,7 +408,22 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
         else:
             out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
                        "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
-    if PUBLIC:  # one-time login links: a new device for gateway users, the way off Tailscale for the rest
+    if CF:  # Cloudflare Access: any device where they sign in with their email is them
+        mail = (rec or {}).get("email") or ""
+        if gate:
+            out.append(f"<h2>Add a device</h2><p>On your phone or another computer, open <b>{e(PUBLIC)}</b> and "
+                       f"sign in with <b>{e(who.get('login', ''))}</b> (Cloudflare emails you a code). "
+                       f"That's all.</p>")
+        elif mail:
+            out.append(f"<h2>Use it without Tailscale</h2><p>On your phone or any computer, open <b>{e(PUBLIC)}</b> "
+                       f"and sign in with <b>{e(mail)}</b>. Same account, same projects. If it says you're not "
+                       f"allowed, ask the owner to run <code>sudo sharedbox-admin access add {e(mail)} --user "
+                       f"{e(name)}</code>.</p>")
+        else:
+            out.append(f"<h2>Use it without Tailscale</h2><p>Ask the owner to link your email to this account "
+                       f"(<code>sudo sharedbox-admin access add YOUR-EMAIL --user {e(name)}</code>). Then open "
+                       f"<b>{e(PUBLIC)}</b> on any device and sign in with that email.</p>")
+    elif PUBLIC:  # one-time login links: a new device for gateway users, the way off Tailscale for the rest
         if gate:
             out.append("<h2>Add a device</h2><p>Use T3 Code on your phone or another computer: get a one-time "
                        "link here, then open it there (or scan the QR code with the phone's camera).</p>")
@@ -428,7 +448,10 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
 <li>Stuck? Ask your agent in T3 Code. It knows how this machine works.</li></ul>""")
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
-    if gate:
+    if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
+        out.append('<p><a href="/cdn-cgi/access/logout"><button style="background:#252b35;color:var(--fg)">'
+                   'Log out of this browser</button></a></p>')
+    elif gate:
         out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
 <button style="background:#252b35;color:var(--fg)">Log out of this browser</button></form>""")
     return page("you", "<div class='box'>" + "".join(out) + "</div>", gate=gate)
@@ -607,7 +630,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, portal_page(ip, who, name, rec, welcome=True))
 
     def portal_post(self, ip, who, form):
-        name, rec = (who["name"], who["rec"]) if who.get("session") else existing_account(who["id"])
+        name, rec = (who["name"], who["rec"]) if who.get("session") or who.get("cf_jwt") else existing_account(who["id"])
         if not name:
             return self.send(200, join_page(ip, who))
         action, key = form.get("action", ""), form.get("key", "")
@@ -624,7 +647,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(429, portal_page(ip, who, name, rec,
                                                   {"ok": False, "error": "too many tries; wait a few minutes"}))
             q.append(now)
-        actions = ("t3", "login", "code", "check", "add-key") + (("device-link",) if PUBLIC else ())
+        actions = ("t3", "login", "code", "check", "add-key") + (("device-link",) if PUBLIC and not CF else ())
         if action not in actions or key not in ("", "claude", "codex", "gh"):
             return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
         if action == "add-key":
@@ -638,7 +661,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "code":
             kw["code"] = form.get("code", "")[:1000]
         res = portal_call(ip, who, action, **kw)
-        if who.get("session") and res.get("pair_url"):
+        if (who.get("session") or who.get("cf_jwt")) and res.get("pair_url"):
             res = public_pair(res)
         if as_json:
             return self.send(200, json.dumps({"ok": bool(res.get("ok")), "done": bool(res.get("done"))}),
@@ -660,7 +683,27 @@ def session_who(secret):
             "session": secret, "name": rec["user"], "rec": frec}
 
 
-def landing():
+def cf_who(email, jwt):
+    """Portal identity in cloudflare mode: the friend whose registry email the gate-verified token carries."""
+    name, frec = sb.user_by_email(email or "")
+    if not name or not jwt:
+        return None
+    return {"id": "cf:" + sb.token_hash(email)[:32], "display": name, "login": email, "node": "",
+            "cf_jwt": jwt, "name": name, "rec": frec}
+
+
+def landing(email=None):
+    if CF:
+        e = html.escape
+        owner = email and email in sb.owner_emails(CFG)
+        return page(HOST, f"""<div class="box"><h2>{e(HOST)}</h2>
+<p>This is a private coding machine shared between friends.</p>
+<p>You're signed in as <b>{e(email or '?')}</b>, but there's no account for that email here.</p>
+{"<p>You're the owner. Your own accounts aren't served through this page; invite friends with "
+ "<code>box invite --email THEIR-EMAIL</code>.</p>" if owner else
+ "<p>To get in, <b>ask your friend for an invite link</b> for this email address.</p>"}
+<p class="mut">Wrong email? <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the one your friend
+invited.</p></div>""", gate=True)
     return page(HOST, f"""<div class="box"><h2>{html.escape(HOST)}</h2>
 <p>This is a private coding machine shared between friends.</p>
 <p>To get in, <b>ask your friend for an invite link</b>.</p>
@@ -668,13 +711,22 @@ def landing():
 (on the page you use there: "Add a device"), or ask your friend for one.</p></div>""", gate=True)
 
 
-def invite_page(tok, err=None, form=None):
+def invite_page(tok, err=None, form=None, email=None):
     e = html.escape
     form = form or {}
-    if not sb.gate_lookup("invites", tok)[0]:
+    inv = sb.gate_lookup("invites", tok)[0]
+    if not inv:
         return page("invite", """<div class="box"><h2>This invite link doesn't work</h2>
 <p>It was already used or it has expired. Ask your friend for a new one.</p></div>""", gate=True)
+    if CF and str(inv.get("email") or "").lower() != (email or ""):
+        return page("invite", f"""<div class="box"><h2>This invite is for a different email</h2>
+<p>You're signed in as <b>{e(email or '?')}</b>, but this invite was made for another address.
+<a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the email your friend invited, or ask them for an
+invite for this one.</p></div>""", gate=True)
     ftok = token_for("gate", "invite:" + sb.token_hash(tok))
+    email_field = (f"<p class='mut'>Signed in as <b>{e(email)}</b>. That's your login from now on.</p>" if CF else
+                   f"""<label>Email (optional; only used to warn you if something on your account looks unsafe)</label>
+<input name="email" type="email" value="{e(form.get('email', ''))}" autocomplete="email">""")
     return page("join", f"""<div class="box"><h2>Join {e(HOST)}</h2>
 <p>Your friend invited you. Pick a username and you're in. No app to install, this works on a phone too.</p>
 {f'<p class="err">{e(err)}</p>' if err else ''}
@@ -682,8 +734,7 @@ def invite_page(tok, err=None, form=None):
 <label>Username (3–16 lowercase letters/digits)</label>
 <input name="username" value="{e(form.get('username', ''))}" pattern="[a-z][a-z0-9]{{2,15}}" required
  autocomplete="off" autocapitalize="none" spellcheck="false">
-<label>Email (optional; only used to warn you if something on your account looks unsafe)</label>
-<input name="email" type="email" value="{e(form.get('email', ''))}" autocomplete="email">
+{email_field}
 <button type="submit">Create my account</button></form>
 <h2>What you get</h2><ul>
 <li>Your own T3 Code: a web app where you chat with Claude or Codex and it builds things for you. Use your own subscription.</li>
@@ -736,7 +787,12 @@ class GateHandler(Handler):
     def client_ip(self):
         return self.headers.get("X-Sharedbox-Client-IP") or "?"
 
+    def cf_email(self):
+        return (self.headers.get("X-Sharedbox-Cf-Email") or "").lower() if CF else None
+
     def who(self):
+        if CF:  # the gate verified the token and strips any client-sent X-Sharedbox-* header
+            return cf_who(self.cf_email(), self.headers.get("X-Sharedbox-Cf-Jwt"))
         return session_who(self.headers.get("X-Sharedbox-Session"))
 
     def route(self):
@@ -755,16 +811,18 @@ class GateHandler(Handler):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         if kind == "healthz":
             return self.send(200, "ok", "text/plain")
+        if CF and kind in ("invite", "login") and self.who():
+            return self.redirect("/_box/me")  # already has an account: nothing to sign up or log in to
         if kind == "invite":
-            return self.send(200, invite_page(arg))
+            return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
-            return self.send(200, login_page(arg))
+            return self.redirect("/") if CF else self.send(200, login_page(arg))
         who = self.who()
         if kind == "me" and who:
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q))
         if kind == "landing" and arg not in ("/", "/_box/me", "/_box/", "/_box"):
-            return self.send(404, landing())
-        return self.send(200, landing())
+            return self.send(404, landing(self.cf_email()))
+        return self.send(200, landing(self.cf_email()))
 
     def limited(self, bucket, n=10, window=600):
         q = rate.setdefault(bucket, deque(maxlen=n + 1))
@@ -788,20 +846,29 @@ class GateHandler(Handler):
             return self.send(403, "bad origin", "text/plain")
         ua = (self.headers.get("User-Agent") or "")[:200]
         if kind == "invite":
+            cfm = self.cf_email()
+            if CF and self.who():
+                return self.redirect("/_box/me")
             if not hmac.compare_digest(form.get("token", ""), token_for("gate", "invite:" + sb.token_hash(arg))):
-                return self.send(400, invite_page(arg, "form expired, please submit again", form))
+                return self.send(400, invite_page(arg, "form expired, please submit again", form, cfm))
             if self.limited("gate-join:" + self.client_ip(), 5):
-                return self.send(429, invite_page(arg, "too many attempts, wait 10 minutes", form))
+                return self.send(429, invite_page(arg, "too many attempts, wait 10 minutes", form, cfm))
             username = form.get("username", "").strip().lower()
-            email, eerr = sb.validate_email(form.get("email", ""))
+            email, eerr = (cfm, None) if CF else sb.validate_email(form.get("email", ""))
             err = sb.validate_username(username, CFG) or eerr
             if err:
-                return self.send(400, invite_page(arg, err, form))
-            res = spool_call({"action": "join", "invite": arg, "username": username, "email": email, "ua": ua},
-                             wait=60)
+                return self.send(400, invite_page(arg, err, form, cfm))
+            req = {"action": "join", "invite": arg, "username": username, "email": email, "ua": ua}
+            if CF:  # root verifies the token itself and takes the email from it, not from us
+                req["cf_jwt"] = self.headers.get("X-Sharedbox-Cf-Jwt") or ""
+            res = spool_call(req, wait=60)
+            if CF and res.get("ok"):
+                return self.redirect("/_box/me?welcome=1")
             if not res.get("ok") or not res.get("session"):
-                return self.send(400, invite_page(arg, res.get("error") or "something went wrong", form))
+                return self.send(400, invite_page(arg, res.get("error") or "something went wrong", form, cfm))
             return self.redirect("/_box/me?welcome=1", [("X-Sharedbox-Set-Session", res["session"])])
+        if CF and kind in ("login", "logout"):
+            return self.redirect("/")
         if kind == "login":
             if not hmac.compare_digest(form.get("token", ""), token_for("gate", "login:" + sb.token_hash(arg))):
                 return self.send(400, login_page(arg, "form expired, please try again"))
