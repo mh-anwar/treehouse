@@ -129,6 +129,8 @@ DEFAULTS = {
     "SESSION_DAYS": "90",
     "INVITE_DAYS": "7",
     "LOGIN_LINK_MINUTES": "10",
+    # how `invite` picks a username when none is given: "email" (from the email or note) or "lotr"
+    "AUTO_USERNAMES": "email",
     # how the public front door is reached: "funnel" (Tailscale Funnel; the default when PUBLIC_URL is set)
     # or "cloudflare" (Cloudflare Tunnel + Access: every request carries a Cloudflare-signed JWT the gate
     # verifies). `sharedbox-admin cloudflare setup` fills in the CF_* values.

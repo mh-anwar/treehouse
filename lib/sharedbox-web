@@ -749,7 +749,7 @@ def login_page(tok, err=None):
     rec = sb.gate_lookup("logins", tok)[0]
     if not rec:
         return page("log in", f"""<div class="box"><h2>This login link doesn't work</h2>
-<p>{e(err or "It was already used or it has expired (links last 10 minutes).")}
+<p>{e(err or "It was already used or it has expired.")}
 Get a new one on your other device ("Add a device"), or ask your friend.</p></div>""", gate=True)
     ftok = token_for("gate", "login:" + sb.token_hash(tok))
     # a button, not an automatic login: link previews in chat apps must not use up the link

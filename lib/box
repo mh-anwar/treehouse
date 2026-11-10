@@ -420,12 +420,14 @@ def render_rules(notices=()):
     if ME.pw_name in sb.admin_users(CFG) and sb.public_mode(CFG) == "cloudflare":
         extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --email <their email> "
                       "--note \"<who>\"` (no sudo needed; ask the owner for the email if you don't have it) and give "
-                      "the owner the message it prints. The email is allowed in through Cloudflare Access and the "
-                      "link works once. `box invite --json` gives `link`, `id`, `expires`.")
+                      "the owner the message it prints. It creates their account right away and allows the email "
+                      "through Cloudflare Access, so the friend just signs in with it: no signup form. "
+                      "`--username NAME` picks the name; `box invite --json` gives `username`, `link`, `email`.")
     elif ME.pw_name in sb.admin_users(CFG):
         extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
                       "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
-                      "asked you to. Each link works once. `box invite --json` gives `link`, `id`, `expires`.")
+                      "asked you to. With a public link it creates their account right away and the link logs them "
+                      "straight in (once). `box invite --json` gives `username`, `link`, `expires`.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
                       "with the device-code steps above. Don't send them to `box setup` or a terminal, "
@@ -745,7 +747,12 @@ def cmd_invite(a):
         sys.exit("only the box owner's accounts (ADMIN_USERS) can invite people. "
                  "Ask the owner, or `box request \"invite <name>\"`.")
     rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
-    req = {"action": "invite", "note": (a.note or "")[:120], "days": a.days, "tailscale": a.tailscale}
+    req = {"action": "invite", "note": (a.note or "")[:120], "days": a.days, "tailscale": a.tailscale,
+           "create": not a.no_create}
+    if a.username:
+        if a.no_create:
+            sys.exit("--username needs the account to be created now; drop --no-create")
+        req["username"] = a.username.strip()[:32]
     if a.email:
         req["email"] = a.email.strip()[:254]
     elif sb.public_mode(CFG) == "cloudflare" and not a.tailscale:
@@ -760,7 +767,8 @@ def cmd_invite(a):
     except OSError as e:
         sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
-    wait = 90 if a.email else 30  # cloudflare mode: root also updates the Access allow list
+    # creating the account (and, in cloudflare mode, updating the Access allow list) takes a while
+    wait = 30 if a.no_create and not a.email else 120
     deadline = time.time() + wait
     while time.time() < deadline:
         try:
@@ -777,7 +785,12 @@ def cmd_invite(a):
     if not res.get("ok"):
         sys.exit(res.get("error", "invite failed"))
     print(res["message"])
-    if res.get("id"):
+    if res.get("username"):
+        what = (f"login link {res['id']} works once until "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(res['expires']))}; " if res.get("id") else "")
+        print(f"\n(account {res['username']} created; {what}undo: sudo sharedbox-admin remove {res['username']})",
+              file=sys.stderr)
+    elif res.get("id"):
         exp = time.strftime("%Y-%m-%d %H:%M", time.localtime(res["expires"]))
         print(f"\n(invite {res['id']}, single use, expires {exp})", file=sys.stderr)
     elif res.get("note"):
@@ -1261,10 +1274,13 @@ def main():
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
-    x = s.add_parser("invite", help="(owner) a one-time invite link for a friend, no sudo")
+    x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them, no sudo")
     x.add_argument("--note", help="who it's for, e.g. 'Sam from work'"); x.add_argument("--days", type=int)
     x.add_argument("--tailscale", action="store_true"); x.add_argument("--json", action="store_true")
     x.add_argument("--email", help="the friend's email (required when the box uses Cloudflare Access)")
+    x.add_argument("--username", help="the new account's name (default: picked for you)")
+    x.add_argument("--no-create", action="store_true",
+                   help="old style: an invite link and the friend picks a username on a signup form")
     x.set_defaults(fn=cmd_invite)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)

@@ -33,6 +33,7 @@ import grp
 import json
 import os
 import pwd
+import re
 import secrets
 import socket
 import stat
@@ -302,19 +303,32 @@ def process_admin_drop(cfg):
         user = admins[owner]
         if not isinstance(req, dict) or req.get("action") != "invite":
             res = {"ok": False, "error": "unknown request"}
+        elif sb.public_url(cfg) and not req.get("tailscale") and req.get("create", True):
+            try:
+                res = invite_account(cfg, req.get("days"), str(req.get("note") or ""), by=user,
+                                     email=str(req.get("email") or "")[:300] or None,
+                                     username=str(req.get("username") or "")[:32] or None)
+            except InviteError as e:
+                res = {"ok": False, "error": str(e)}
+            except (ValueError, TypeError, OSError) as e:
+                res = {"ok": False, "error": f"could not create the invite: {e}"}
         elif sb.public_url(cfg) and not req.get("tailscale"):
             try:
                 text, h, exp = public_invite(cfg, req.get("days"), str(req.get("note") or ""), by=user,
                                              email=str(req.get("email") or "")[:300] or None)
                 link = next((ln.strip() for ln in text.splitlines() if "/i/" in ln), "")
-                res = {"ok": True, "message": text, "link": link, "id": h[:12], "expires": exp}
+                res = {"ok": True, "message": text, "username": None, "link": link, "id": h[:12],
+                       "email": str(req.get("email") or "").strip().lower() or None, "expires": exp}
             except InviteError as e:
                 res = {"ok": False, "error": str(e)}
             except (ValueError, TypeError, OSError) as e:
                 res = {"ok": False, "error": f"could not create the invite: {e}"}
         else:
-            res = {"ok": True, "message": tailscale_invite(cfg), "link": "", "id": "", "expires": None,
-                   "note": "PUBLIC_URL is not set, so this is the Tailscale invite (each friend needs a share)."}
+            res = {"ok": True, "message": tailscale_invite(cfg), "username": None, "link": "", "id": "",
+                   "email": None, "expires": None,
+                   "note": "PUBLIC_URL is not set, so this is the Tailscale invite (each friend needs a share)"
+                           + ("; " + TAILSCALE_NOTE if req.get("create", True) and not sb.public_url(cfg) else "")
+                           + "."}
         sb.write_json(os.path.join(sb.ADMIN_REPLIES, f"{rid}.json"), res, mode=0o600, owner=(owner, 0))
     for path in glob.glob(os.path.join(sb.ADMIN_REPLIES, "*.json")):
         try:
@@ -636,6 +650,10 @@ def handle_portal(cfg, rid, req):
     rec = sb.friend_users()[name]
     if rec.get("status", "active") != "active":
         return {"ok": False, "error": "your account is suspended; ask the owner"}
+    if rec.get("welcome"):  # made at invite time: the gate stops sending / to the portal now it's been seen
+        reg = sb.registry()
+        if (reg["users"].get(name) or {}).pop("welcome", None):
+            save_registry(reg)
     pw = pwd.getpwnam(name)
     action, key = req.get("action"), req.get("key")
     if action == "status":
@@ -662,20 +680,166 @@ def handle_portal(cfg, rid, req):
 
 
 def cmd_invite(cfg, a):
-    """A message to paste to a friend. No terminal anywhere in it."""
+    """A message to paste to a friend. No terminal anywhere in it. By default the account exists already."""
     pub = sb.public_url(cfg)
     if a.list or a.revoke:
         return invite_admin(a)
+    if a.username and a.no_create:
+        die("--username needs the account to be created now; drop --no-create")
+    if pub and not a.tailscale and not a.no_create:
+        try:
+            res = invite_account(cfg, a.days, a.note, email=a.email, username=a.username)
+        except InviteError as e:
+            die(str(e))
+        if a.json:
+            print(json.dumps(res))
+            return
+        print(res["message"])
+        print(f"\n({res['summary']})", file=sys.stderr)
+        return
     if pub and not a.tailscale:
         try:
             text, h, exp = public_invite(cfg, a.days, a.note, email=a.email)
         except InviteError as e:
             die(str(e))
+        if a.json:
+            link = next((ln.strip() for ln in text.splitlines() if "/i/" in ln), "")
+            print(json.dumps({"ok": True, "message": text, "username": None, "link": link, "id": h[:12],
+                              "email": (a.email or "").strip().lower() or None, "expires": exp}))
+            return
         print(text)
         print(f"\n(invite {h[:12]}, expires {time.strftime('%Y-%m-%d %H:%M', time.localtime(exp))};"
               f" cancel it: sharedbox-admin invite --revoke {h[:12]})", file=sys.stderr)
         return
-    print(tailscale_invite(cfg))
+    text = tailscale_invite(cfg)
+    if a.json:
+        print(json.dumps({"ok": True, "message": text, "username": None, "link": "", "id": "",
+                          "email": None, "expires": None, "note": TAILSCALE_NOTE}))
+        return
+    print(text)
+    if not a.no_create:
+        print(f"\n({TAILSCALE_NOTE})", file=sys.stderr)
+
+
+TAILSCALE_NOTE = ("no account was created: on a Tailscale-only box it needs the friend's Tailscale login, so "
+                  "they pick a username on the join page")
+
+# Auto-picked usernames with AUTO_USERNAMES=lotr. Well known first; no villains.
+LOTR_NAMES = (
+    "frodo", "samwise", "merry", "aragorn", "legolas", "gimli", "boromir", "faramir", "eowyn", "eomer",
+    "theoden", "galadriel", "elrond", "arwen", "bilbo", "treebeard", "radagast", "glorfindel", "haldir",
+    "celeborn", "bombadil", "goldberry", "beregond", "imrahil", "thranduil", "gloin", "balin", "dwalin",
+    "thorin", "bard", "beorn", "rosie", "fili", "kili", "quickbeam", "elladan", "elrohir", "cirdan", "gildor",
+    "barliman", "fredegar", "hamfast", "erkenbrand", "gamling", "hama", "elfhelm", "halbarad", "ioreth",
+    "bergil", "bombur", "bofur", "bifur", "dori", "nori", "dain", "elendil", "isildur", "earendil", "luthien",
+    "beren", "idril", "finrod", "hurin", "ghanburibghan",
+)
+
+
+def username_free(cfg, name, reg):
+    """Free for a new account: valid, not a system user/group, not reserved, not in the registry."""
+    return not sb.validate_username(name, cfg) and name not in reg.get("users", {})
+
+
+def _name_base(text):
+    s = re.sub(r"[^a-z0-9]", "", (text or "").lower())
+    s = re.sub(r"^[^a-z]+", "", s)[:16]
+    return s if len(s) >= 3 else ""
+
+
+def auto_username(cfg, email=None, note=None):
+    """A free username for a new friend (AUTO_USERNAMES): never an existing account or system user."""
+    reg = sb.registry()
+    if (cfg.get("AUTO_USERNAMES") or "email").strip().lower() == "lotr":
+        bases = [n for n in LOTR_NAMES if _name_base(n) == n]
+    else:
+        words = (note or "").split()
+        cands = [(email or "").split("@")[0], words[0] if words else "", note or "", "friend"]
+        bases = [b for b in map(_name_base, cands) if b][:1]
+    for b in bases:
+        if username_free(cfg, b, reg):
+            return b
+    for i in range(2, 10000):  # every base taken: append digits (frodo2, sam2, ...)
+        for b in bases:
+            cand = b[:16 - len(str(i))] + str(i)
+            if username_free(cfg, cand, reg):
+                return cand
+    raise InviteError("couldn't find a free username; give one with --username")
+
+
+def invite_account(cfg, days=None, note=None, by=None, email=None, username=None):
+    """Create the friend's account now (public front door on) and return what to send them: a dict with
+    message, username, link, id, email, expires, summary.
+
+    cloudflare: the account is bound to `email`, which goes on the Access allow list; signing in with it is
+    the whole login. funnel: a one-time login link, valid for the invite's lifetime, logs them in."""
+    pub, cf = sb.public_url(cfg), cf_mode(cfg)
+    days = max(1, min(int(days or sb.cfg_int(cfg, "INVITE_DAYS")), 30))
+    note = sb.printable(note or "")[:120]
+    email, err = sb.validate_email(email or "")
+    if err:
+        raise InviteError(err)
+    email = (email or "").lower()
+    if cf and not email:
+        raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
+                          "--email sam@example.com (they log in with it)")
+    taken = sb.email_taken(email) if email else None
+    if taken:
+        raise InviteError(f"{email} already belongs to the account {taken}")
+    if username:
+        username = username.strip().lower()
+        if username in sb.registry().get("users", {}):
+            raise InviteError("that username is taken")
+        err = sb.validate_username(username, cfg)
+        if err:
+            raise InviteError(err)
+    else:
+        username = auto_username(cfg, email, note)
+    if cf:
+        err = cf_access(cfg, add=[email], quiet=True)
+        if err:
+            raise InviteError(f"couldn't allow {email} in Cloudflare Access: {err}")
+    # an invite is the owner's approval, so JOIN_MODE doesn't apply; MAX_USERS does (inside create_user)
+    rec, err = create_user(cfg, username, "", login="cloudflare" if cf else "invite", email=email or None)
+    if err:
+        if cf:
+            cf_access(cfg, remove=[email], quiet=True)
+        raise InviteError(f"couldn't create the account {username}: {err}")
+    reg = sb.registry()
+    if username in reg["users"]:  # first visit to / goes to the portal (log in to an AI) instead of T3
+        reg["users"][username].update(welcome=True, invited_by=by or "root", **({"note": note} if note else {}))
+        save_registry(reg)
+    hello = ("Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) "
+             "that\nbuilds things for you in your browser and keeps running when you close your laptop. "
+             "Works on your phone too.")
+    if cf:
+        sb.log_event("invite_created", by, account=username, email=email, note=note)
+        message = f"""{hello}
+
+Open {pub}/ on any device, enter {email}, and type the code Cloudflare emails you. That's it.
+The first time, it walks you through logging in to your AI, then "Open my T3 Code". Your username is {username}.
+Stuck? Ask the agent, or text me."""
+        return {"ok": True, "message": message, "username": username, "link": f"{pub}/", "id": "",
+                "email": email, "expires": None,
+                "summary": f"account {username} created for {email} and allowed in Cloudflare Access; "
+                           f"undo: sharedbox-admin remove {username}"}
+    tok, h = gate_mint("logins", days * 86400, user=username, invite=True, note=note, by=by or "root")
+    exp = int(time.time()) + days * 86400
+    sb.log_event("invite_created", by, invite=h[:12], account=username, email=email or None, note=note)
+    link = f"{pub}/login/{tok}"
+    message = f"""{hello}
+
+1. Open this link. It logs you straight in (it works once, for the next {days} days):
+   {link}
+2. Tap "Log in", then click through: log in to your AI, then "Open my T3 Code". That's it.
+
+Later, just open {pub}/ in the same browser. On a new device, open {pub}/_box/ on the old one and
+tap "Add a device". Stuck? Ask the agent, or text me."""
+    return {"ok": True, "message": message, "username": username, "link": link, "id": h[:12],
+            "email": email or None, "expires": exp,
+            "summary": f"account {username} created; login link {h[:12]} works once until "
+                       f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(exp))}; "
+                       f"undo: sharedbox-admin remove {username}"}
 
 
 class InviteError(Exception):
@@ -749,7 +913,14 @@ def invite_admin(a):
     if a.revoke:
         gone = [r for h, r in sb.gate_records("invites") if h.startswith(a.revoke.lower()) and len(a.revoke) >= 6]
         n = gate_delete("invites", lambda h, r: h.startswith(a.revoke.lower()) and len(a.revoke) >= 6)
+        links = [r for h, r in sb.gate_records("logins") if r.get("invite") and h.startswith(a.revoke.lower())
+                 and len(a.revoke) >= 6]
+        n += gate_delete("logins", lambda h, r: r.get("invite") and h.startswith(a.revoke.lower())
+                         and len(a.revoke) >= 6)
         print(f"revoked {n} invite(s)")
+        for r in links:
+            print(f"note: the account {sb.printable(r.get('user', '?'))} still exists "
+                  f"(sharedbox-admin remove {sb.printable(r.get('user', '?'))})")
         cfg = sb.load_config()
         # the email leaves the Access list too, unless it has an account or another open invite
         still = {str(r.get("email") or "").lower() for _, r in sb.gate_records("invites")}
@@ -758,14 +929,16 @@ def invite_admin(a):
         if drop and not cf_access(cfg, remove=drop):
             print(f"removed from Cloudflare Access: {', '.join(sorted(drop))}")
         return
-    rows = sorted(sb.gate_records("invites"), key=lambda x: x[1].get("created", 0))
+    rows = sorted(sb.gate_records("invites") + [(h, r) for h, r in sb.gate_records("logins") if r.get("invite")],
+                  key=lambda x: x[1].get("created", 0))
     if not rows:
         print("no open invites")
     for h, r in rows:
         exp = float(r.get("expires", 0) or 0)
         state = "expired" if exp < time.time() else "expires " + time.strftime("%Y-%m-%d %H:%M", time.localtime(exp))
         mail = f"{sb.printable(r['email'])}  " if r.get("email") else ""
-        print(f"{h[:12]}  {state:<24} {mail}{sb.printable(r.get('note', ''))}")
+        acct = f"login link for {sb.printable(r.get('user', '?'))}  " if r.get("invite") else ""
+        print(f"{h[:12]}  {state:<24} {acct}{mail}{sb.printable(r.get('note', ''))}")
 
 
 def fmt_t(ts):
@@ -1290,6 +1463,10 @@ def main():
     x.add_argument("--tailscale", action="store_true", help="the Tailscale invite text even if PUBLIC_URL is set")
     x.add_argument("--list", action="store_true"); x.add_argument("--revoke", metavar="ID")
     x.add_argument("--email", help="the friend's email (required with PUBLIC_MODE=cloudflare)")
+    x.add_argument("--username", help="the new account's name (default: picked per AUTO_USERNAMES)")
+    x.add_argument("--no-create", action="store_true",
+                   help="old style: an invite link and the friend picks a username on a signup form")
+    x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_invite)
     x = s.add_parser("login-link"); x.add_argument("user"); x.set_defaults(fn=cmd_login_link)
     x = s.add_parser("sessions"); x.add_argument("user", nargs="?"); x.add_argument("--revoke", metavar="ID|all")
