@@ -142,13 +142,21 @@ def normalize_host(h):
     return h
 
 
-def find_account(c, cfg):
+def find_account(c, cfg, host=None):
     acct = (cfg.get("CF_ACCOUNT_ID") or "").strip()
     if acct:
         return acct
     accts = c.all("/accounts", need="account")
     if len(accts) == 1:
         return accts[0]["id"]
+    if not accts and host:
+        # tokens without "Account Settings: Read" list no accounts; the zone tells us its account
+        labels = host.split(".")
+        for i in range(len(labels) - 1):
+            zones = c.all("/zones", params={"name": ".".join(labels[i:])}, need="zone")
+            ids = {(z.get("account") or {}).get("id") for z in zones} - {None}
+            if len(ids) == 1:
+                return ids.pop()
     if not accts:
         raise CFError("the API token can't see any Cloudflare account. Scope it to your account "
                       f"(it needs: {PERM['tunnel']}, ...)")
@@ -332,7 +340,7 @@ def setup(cfg, c, host, owners, log=print):
         raise CFError("give the owner's email (--owner-email you@example.com): it's always allowed in")
     port = sb.cfg_int(cfg, "GATE_PORT")
     hours = max(1, min(int(cfg.get("CF_SESSION_HOURS") or 720), 8760))
-    acct = find_account(c, cfg)
+    acct = find_account(c, cfg, host)
     log(f"account: {acct}")
     team = team_domain(c, acct)
     log(f"Zero Trust team domain: {team}")
