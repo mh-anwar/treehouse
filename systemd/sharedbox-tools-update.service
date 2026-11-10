@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# npm and the uv installer expect a HOME; systemd doesn't set one for root services
+Environment=HOME=/root
 ExecStart=/usr/lib/sharedbox/sharedbox-tools update
 Nice=15
 IOSchedulingClass=idle

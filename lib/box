@@ -11,6 +11,7 @@
   box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
   box setup [--check]              guided setup: git identity, GitHub, agent logins
   box agents                       installed coding agents + whether you're logged in
+  box updates [auto|manual|now]    whether your coding agents update daily (status without an argument)
   box request "TEXT"               ask the owner for something (e.g. a system package)
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
@@ -127,6 +128,9 @@ def advice(g):
                    "malicious package or script. Offer to check recently installed npm/pip packages, "
                    "autostarts (~/.config/autostart, systemd --user units, shell rc files) and running "
                    "processes. Never open files under the decoy directory yourself.")
+    for n in agent_notices():
+        out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
+                   f"({n['why']}). Mention it to the user if they ask why a tool changed.")
     rb = scheduled_reboot()
     wk = next_weekly_reboot()
     if wk and wk - time.time() < 12 * 3600 and not (rb and abs(rb - wk) < 3600):
@@ -625,14 +629,93 @@ def git_ident():
     return g("user.name"), g("user.email")
 
 
+# ---------- agent updates ----------
+
+SECURITY_NOTE = ("Serious security fixes are applied to everyone, even on manual: if your version has a "
+                 "serious security advisory that the newest version fixes, you're moved to the newest.")
+
+
+def agent_info():
+    """(mode, pending, {npm name: {current, mine, bins}}): which agent versions this user runs."""
+    st = sb.read_json(sb.TOOLS_JSON, {}) or {}
+    mode, chose = sb.agent_pref(CFG, HOME)
+    pdir = os.path.join(sb.AGENT_PINS, ME.pw_name)
+    try:
+        applied = os.stat(os.path.join(pdir, ".applied")).st_mtime
+    except OSError:
+        applied = 0
+    pending = mode == "manual" and (chose > applied or not applied)  # pinned at the next nightly run
+    out = {}
+    for name, ag in (st.get("agents") or {}).items():
+        mine = ag.get("current")
+        if mode == "manual" and not pending:
+            try:
+                mine = os.path.basename(os.readlink(os.path.join(pdir, sb.agent_slug(name))))
+            except OSError:
+                pass
+        out[name] = dict(ag, mine=mine)
+    return mode, pending, out
+
+
+def agent_notices(days=7):
+    path = os.path.join(sb.AGENT_PINS, ME.pw_name, "notices.json")
+    return [n for n in (sb.read_json(path, []) or []) if isinstance(n, dict)
+            and time.time() - n.get("ts", 0) < days * 86400]
+
+
+def set_agent_pref(mode):
+    path = os.path.join(HOME, sb.AGENT_PREF_REL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(mode + "\n")
+    os.replace(tmp, path)   # a fresh mtime: the shims switch right away, the nightly job pins it
+
+
+def cmd_updates(a):
+    act = a.action or "status"
+    mode, pending, info = agent_info()
+    if act == "auto":
+        set_agent_pref("auto")
+        print("Agent updates: auto. Your coding agents now run the newest version, updated every night "
+              f"(about 5 AM).")
+        return
+    if act == "manual":
+        set_agent_pref("manual")
+        print("Agent updates: manual. You stay on the versions you have now. Run `box updates now` whenever "
+              "you want the newest ones (you'll stay on those).\n" + SECURITY_NOTE)
+        return
+    if act == "now":
+        if mode != "manual":
+            print("You're on auto updates, so you already run the newest versions.")
+            return
+        set_agent_pref("manual")
+        print("Done: you now run the newest versions and stay on them until you run this again.")
+        return
+    print(f"Agent updates: {mode}" + (" (your current versions get pinned at the next nightly run)"
+                                      if pending else ""))
+    print(f"  auto   = newest version every night (about 5 AM)\n"
+          f"  manual = stay on your versions; `box updates now` to move to the newest\n  {SECURITY_NOTE}\n")
+    if info:
+        print(f"{'agent':<28}{'yours':<14}newest")
+        for name, ag in sorted(info.items()):
+            label = f"{', '.join(ag.get('bins') or []) or name}"
+            print(f"{label:<28}{ag.get('mine') or '-':<14}{ag.get('current') or '-'}")
+    for n in agent_notices(30):
+        print(f"! {fmt_ts(n['ts'])}: {n['name']} moved {n['from']} -> {n['to']} ({n['why']})")
+    print("\nChange it: box updates auto | box updates manual")
+
+
 def cmd_agents(a):
     tv = tools()
+    _, _, info = agent_info()
+    mine = {b: ag.get("mine") for ag in info.values() for b in ag.get("bins") or [] if ag.get("mine")}
     print(f"{'agent':<14}{'version':<12}{'logged in':<11}how to log in")
     for name, label, _, files, envs, how in AGENTS:
         if not shutil.which(name):
             print(f"{label:<14}{'-':<12}{'':<11}not installed (ask the owner: box request \"install {name}\")")
             continue
-        ver = tv.get(name, {}).get("version", "?")
+        ver = mine.get(name) or tv.get(name, {}).get("version", "?")
         print(f"{label:<14}{ver:<12}{'yes' if logged_in(files, envs) else 'NO':<11}{how}")
     print(f"{'GitHub (gh)':<14}{tv.get('gh', {}).get('version', '-'):<12}{'yes' if gh_ok() else 'NO':<11}"
           "run `gh auth login --web` then `gh auth setup-git`")
@@ -692,12 +775,20 @@ def cmd_setup(a):
             n, label, cmd, _, _, how = avail[int(tok) - 1]
             print(f"\n--- {label}: {how}")
             subprocess.run(cmd)
+    # 4. updates
+    mode, _ = sb.agent_pref(CFG, HOME)
+    print("\n4) Agent updates")
+    auto = ask("   Update your coding agents to the newest version every night? (No = stay on today's "
+               "versions; serious security fixes are applied either way)", default=mode == "auto")
+    set_agent_pref("auto" if auto else "manual")
+    print(f"   {'auto' if auto else 'manual'} ✓  (change any time: box updates auto|manual)")
     print(f"""
 All set. Tips:
   • Start agents inside tmux so they keep running when you disconnect:  tmux new -A -s main
     (detach: Ctrl-b d · come back later: tmux attach)
   • Work in ~/projects/<name>. Projects idle for {CFG['PROJECT_TTL_DAYS']} days are deleted, so push to git.
   • `box` shows your usage · `box agents` shows agent logins · `box rules` shows what your agents are told
+  • `box updates` shows whether your agents update nightly
 """)
     os.makedirs(os.path.join(HOME, ".sharedbox"), exist_ok=True)
     open(os.path.join(HOME, ".sharedbox", "setup-done"), "w").close()
@@ -1184,6 +1275,7 @@ def portal_status():
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
     out["ssh"] = bool(ssh_keys())
+    out["updates"] = sb.agent_pref(CFG, HOME)[0]
     return out
 
 
@@ -1341,6 +1433,9 @@ def cmd_portal(a):
             out = portal_add_key(sys.stdin.read(8192))
         elif a.action == "login-check" and a.key in PORTAL_LOGINS:
             out = portal_login_wait(a.key, 5)
+        elif a.action == "updates-set" and a.key in ("auto", "manual"):
+            set_agent_pref(a.key)
+            out = {"ok": True, "updates": a.key}
         else:
             out = {"ok": False, "error": "unknown action"}
     except (OSError, subprocess.SubprocessError) as e:
@@ -1425,6 +1520,8 @@ def main():
     x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
     x.set_defaults(fn=cmd_setup)
     s.add_parser("agents").set_defaults(fn=cmd_agents)
+    x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status", "auto", "manual", "now"])
+    x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
                                            choices=["start", "pair", "status", "stop", "logs"])
     x.set_defaults(fn=cmd_t3)

@@ -408,6 +408,14 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
         else:
             out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
                        "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
+    if st.get("updates") in ("auto", "manual"):
+        auto = st["updates"] == "auto"
+        out.append("<h2>Agent updates</h2><p>"
+                   + ("Your coding agents update to the newest version every night."
+                      if auto else "Your coding agents stay on the versions you have. Switch to auto any time.")
+                   + "</p>" + btn("updates", "Keep my current versions" if auto else "Update automatically",
+                                  "manual" if auto else "auto", primary=False)
+                   + "<p class='sub'>Serious security fixes are applied to everyone either way.</p>")
     if CF:  # Cloudflare Access: any device where they sign in with their email is them
         mail = (rec or {}).get("email") or ""
         if gate:
@@ -485,6 +493,10 @@ def portal_result(res, btn, base=""):
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
         return "<div class='card'><p><span class='pill ok'>✓</span> SSH key added.</p></div>"
+    if res.get("updates") in ("auto", "manual"):
+        return ("<div class='card'><p><span class='pill ok'>✓</span> "
+                + ("Agents will update automatically." if res["updates"] == "auto"
+                   else "Agents will stay on the versions you have now.") + "</p></div>")
     if res.get("done"):
         return "<div class='card'><p><span class='pill ok'>✓</span> Logged in.</p></div>"
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
@@ -647,8 +659,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(429, portal_page(ip, who, name, rec,
                                                   {"ok": False, "error": "too many tries; wait a few minutes"}))
             q.append(now)
-        actions = ("t3", "login", "code", "check", "add-key") + (("device-link",) if PUBLIC and not CF else ())
-        if action not in actions or key not in ("", "claude", "codex", "gh"):
+        actions = ("t3", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
+        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh")
+        if action not in actions or key not in keys:
             return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
         if action == "add-key":
             key_txt = form.get("sshkey", "")
