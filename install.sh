@@ -85,9 +85,9 @@ getent passwd sharedbox >/dev/null || do_ useradd --system --no-create-home --ho
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap \
-         sharedbox-canary; do
+         sharedbox-canary sharedbox-gate; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
 done
 do_ install -m 644 "$SRC/share/AGENTS.md" "$SHARE/AGENTS.md"
@@ -125,6 +125,8 @@ done
 do_ install -d -m 755 "$STATE/health"
 do_ install -d -m 700 "$STATE/audit"
 do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/trap"
+# public front door: invite/session/login records, written only by root, readable by sharedbox-gate/-web
+do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites" "$STATE/gate/sessions" "$STATE/gate/logins"
 
 # ---------- cron/at ----------
 # cron/at sessions skip pam_systemd, so friends' jobs would run outside their slice limits.
@@ -160,6 +162,15 @@ do_ systemctl enable --now sharedbox-provision.path sharedbox-janitor.timer shar
 do_ systemctl restart sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl enable sharedbox-web.service
 do_ systemctl restart sharedbox-web.service
+# public front door: its own unit, only on when PUBLIC_URL is set. Friends' T3 services are not touched.
+PUBLIC_URL=$(conf_get PUBLIC_URL); GATE_PORT=$(conf_get GATE_PORT); GATE_PORT=${GATE_PORT:-8091}
+if [[ -n $PUBLIC_URL ]]; then
+    say "public front door: $PUBLIC_URL -> sharedbox-gate on 127.0.0.1:$GATE_PORT"
+    do_ systemctl enable sharedbox-gate.service
+    do_ systemctl restart sharedbox-gate.service
+elif systemctl is-enabled -q sharedbox-gate.service 2>/dev/null; then
+    do_ systemctl disable --now sharedbox-gate.service
+fi
 
 # ---------- health email, trap, tripwire ----------
 REPORT_AT=$(conf_get HEALTH_REPORT_TIME); REPORT_AT=${REPORT_AT:-Mon 09:00}
@@ -256,6 +267,18 @@ if [[ $APPLY == 1 ]]; then
     say "refreshing every user's agent rules (janitor run started)"
     say "next: share this machine with friends in the Tailscale admin console, then send them the text from:"
     say "  sudo sharedbox-admin invite"
-else
-    say "dry run only. Re-run with --apply to install."
 fi
+# Funnel touches tailscaled, which this installer never does: print the one-time steps instead
+if [[ -z $PUBLIC_URL ]]; then
+    TS_NAME=$(tailscale status --json --peers=false 2>/dev/null \
+        | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)
+    say "optional: let friends in with just a browser (no Tailscale for them, phones work):"
+    say "  1. tailnet policy (admin console > Access controls) must allow Funnel for this machine:"
+    say "       \"nodeAttrs\": [{\"target\": [\"<this machine or its tag>\"], \"attr\": [\"funnel\"]}]"
+    say "  2. sudo tailscale funnel --bg --https=443 http://127.0.0.1:$GATE_PORT"
+    say "  3. set PUBLIC_URL=https://${TS_NAME:-<machine>.<tailnet>.ts.net} in $ETC/sharedbox.conf, then re-run: sudo ./install.sh --apply"
+    say "  check with: sudo sharedbox-admin public status"
+elif [[ $APPLY == 1 ]]; then
+    say "public invites: sudo sharedbox-admin invite   (check the setup: sudo sharedbox-admin public status)"
+fi
+[[ $APPLY == 1 ]] || say "dry run only. Re-run with --apply to install."

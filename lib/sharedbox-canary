@@ -493,8 +493,9 @@ def notify_friend(cfg, user, uid, rec):
                         "_sync-rules"], env=env, cwd=pw.pw_dir, capture_output=True, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError) as e:
         print(f"rule sync for {user} failed: {e}", file=sys.stderr)
-    # 4. email, if their Tailscale login is an email address
-    login = (sb.registry().get("users", {}).get(user) or {}).get("login", "")
+    # 4. email: the address they gave at an invite signup, else their Tailscale login if it is one
+    urec = sb.registry().get("users", {}).get(user) or {}
+    login = urec.get("email") or urec.get("login", "")
     if _email_like(login) and mail_ok(cfg):
         try:
             sbmail.send(cfg, "Security alert on your sharedbox account",
