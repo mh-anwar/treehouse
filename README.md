@@ -24,12 +24,14 @@ sessions at once. Meanwhile there's an old desktop in your closet with 32 GB of 
 treehouse turns that machine into a box your friends can actually use, including the
 non-technical ones:
 
-1. You share the machine with them on Tailscale.
-2. They open `http://<box>:8090/join`, pick a username, click **Create**.
+1. You (or your agent) run `sharedbox-admin invite` and send them the link.
+2. They open it on any laptop or phone, pick a username, click **Create**. They don't need Tailscale,
+   an app, or an SSH key.
 3. They click **Log in with Claude** (or ChatGPT/Codex), click **Open T3 Code**, and they're chatting
    with an agent that runs on your box, with everything installed and the house rules already explained.
 
-No SSH keys, no terminal, no "can you run this command for me".
+No SSH keys, no terminal, no VPN invites, no "can you run this command for me". Adding their phone
+is a QR code on their page.
 
 ## What you get
 
