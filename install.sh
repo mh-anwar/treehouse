@@ -127,6 +127,9 @@ do_ install -d -m 700 "$STATE/audit"
 do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/trap"
 # public front door: invite/session/login records, written only by root, readable by sharedbox-gate/-web
 do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites" "$STATE/gate/sessions" "$STATE/gate/logins"
+# `box invite` without sudo: anyone can drop a file, root only acts on files owned by ADMIN_USERS
+do_ install -d -m 1733 "$STATE/admin"
+do_ install -d -m 711 "$STATE/admin-replies"
 
 # ---------- cron/at ----------
 # cron/at sessions skip pam_systemd, so friends' jobs would run outside their slice limits.
@@ -160,6 +163,7 @@ do_ systemctl daemon-reload
 do_ systemctl enable --now sharedbox-provision.path sharedbox-janitor.timer sharedbox-guard.timer \
     sharedbox-tools-update.timer
 do_ systemctl restart sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer   # pick up schedule changes
+do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
 do_ systemctl enable sharedbox-web.service
 do_ systemctl restart sharedbox-web.service
 # public front door: its own unit, only on when PUBLIC_URL is set. Friends' T3 services are not touched.

@@ -33,6 +33,8 @@ ALERT_DAYS = 7
 # public front door (sharedbox-gate): invite, session and device-login records, keyed by sha256(token).
 # Root writes them (0640 root:sharedbox); the gate and sharedbox-web only read them.
 GATE_DIR = os.path.join(STATE_DIR, "gate")
+ADMIN_DROP = os.path.join(STATE_DIR, "admin")          # 1733: admins drop requests (box invite), root acts
+ADMIN_REPLIES = os.path.join(STATE_DIR, "admin-replies")  # 0711: root's answer, readable only by the asker
 GATE_KINDS = ("invites", "sessions", "logins")
 
 DEFAULTS = {

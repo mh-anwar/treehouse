@@ -417,6 +417,10 @@ def render_rules(notices=()):
                       "against the disk budget). Use `xvfb-run` if something needs a display.")
     if android:
         extras.append(android.lstrip("\n"))
+    if ME.pw_name in sb.admin_users(CFG):
+        extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
+                      "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
+                      "asked you to. Each link works once. `box invite --json` gives `link`, `id`, `expires`.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
                       "with the device-code steps above. Don't send them to `box setup` or a terminal, "
@@ -726,6 +730,47 @@ def cmd_request(a):
         sys.exit(f"could not file the request: {e}")
     print("request sent to the box owner. Meanwhile, most tools install without sudo: "
           "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
+
+
+# ---------- invite (box owner/admins, no sudo) ----------
+
+def cmd_invite(a):
+    """Ask root for a one-time invite link. Only accounts in ADMIN_USERS get an answer."""
+    if ME.pw_name not in sb.admin_users(CFG):
+        sys.exit("only the box owner's accounts (ADMIN_USERS) can invite people. "
+                 "Ask the owner, or `box request \"invite <name>\"`.")
+    rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
+    req = {"action": "invite", "note": (a.note or "")[:120], "days": a.days, "tailscale": a.tailscale}
+    path = os.path.join(sb.ADMIN_DROP, f"{rid}.json")
+    tmp = os.path.join(sb.ADMIN_DROP, f".{rid}.tmp")
+    try:
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            json.dump(req, f)
+        os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
+    except OSError as e:
+        sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
+    reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            with open(reply) as f:
+                res = json.load(f)
+            break
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.25)
+    else:
+        sys.exit("no answer from the provisioner after 30 s (is sharedbox-provision.path running?)")
+    if a.json:
+        print(json.dumps(res))
+        return
+    if not res.get("ok"):
+        sys.exit(res.get("error", "invite failed"))
+    print(res["message"])
+    if res.get("id"):
+        exp = time.strftime("%Y-%m-%d %H:%M", time.localtime(res["expires"]))
+        print(f"\n(invite {res['id']}, single use, expires {exp})", file=sys.stderr)
+    elif res.get("note"):
+        print(f"\n({res['note']})", file=sys.stderr)
 
 
 # ---------- issues (agents log friction; the owner reads everyone's) ----------
@@ -1205,6 +1250,10 @@ def main():
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
+    x = s.add_parser("invite", help="(owner) a one-time invite link for a friend, no sudo")
+    x.add_argument("--note", help="who it's for, e.g. 'Sam from work'"); x.add_argument("--days", type=int)
+    x.add_argument("--tailscale", action="store_true"); x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=cmd_invite)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks

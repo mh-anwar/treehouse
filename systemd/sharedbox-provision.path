@@ -1,8 +1,10 @@
 [Unit]
-Description=sharedbox: watch for join requests
+Description=sharedbox: watch for join requests and admin requests
 
 [Path]
 PathExistsGlob=/var/lib/sharedbox/spool/req-*.json
+# `box invite` from ADMIN_USERS accounts (no sudo)
+PathExistsGlob=/var/lib/sharedbox/admin/*.json
 
 [Install]
 WantedBy=multi-user.target
