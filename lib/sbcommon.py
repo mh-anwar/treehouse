@@ -578,6 +578,16 @@ def owner_emails(cfg):
     return sorted({e.strip().lower() for e in (cfg.get("CF_OWNER_EMAILS") or "").split(",") if e.strip()})
 
 
+def owner_account(cfg):
+    """The owner's own Linux account (OWNER_T3_USER, default the first ADMIN_USERS) as a pwd entry, else None.
+    CF_OWNER_EMAILS act as this account on the public site (their T3 Code and their /_box/me page)."""
+    name = (cfg.get("OWNER_T3_USER") or "").strip() or next(iter(admin_users(cfg)), "")
+    try:
+        return pwd.getpwnam(name) if name else None
+    except KeyError:
+        return None
+
+
 def user_by_email(email, users=None):
     """(name, record) of the one active friend whose registry email is `email` (case-insensitive).
     Two accounts claiming one email is ambiguous: nobody gets in with it."""
