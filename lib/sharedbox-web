@@ -17,6 +17,7 @@ import html
 import json
 import os
 import pwd
+import re
 import secrets
 import socket
 import socketserver
@@ -196,7 +197,11 @@ def page(title, body, gate=False):
 
 CSS = """
 :root{--bg:#0d0f12;--panel:#151920;--line:#252b35;--fg:#e6e9ef;--mut:#8a93a3;--acc:#5aa9ff;
---ok:#3ecf8e;--warn:#f5b041;--bad:#ff6b6b;color-scheme:dark}
+--ok:#3ecf8e;--warn:#f5b041;--bad:#ff6b6b;--inset:#0a0c0f;--track:#222833;--btn2:#252b35;--on-acc:#04111f;
+--okb:#1f5f45;--warnb:#6b5420;--badb:#6b2a2a;--c2:#c084fc;--grid:#1d222b;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--panel:#fff;--line:#dfe3ea;--fg:#151a22;--mut:#5d6675;
+--acc:#1f6fd1;--ok:#17905c;--warn:#a86a00;--bad:#d03434;--inset:#f1f3f6;--track:#e6e9ef;--btn2:#e6e9ef;
+--on-acc:#fff;--okb:#9fd8bd;--warnb:#e8cf98;--badb:#efb3b3;--c2:#8b3fd9;--grid:#eef0f4;color-scheme:light}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;
@@ -207,25 +212,60 @@ main{max-width:1200px;margin:0 auto;padding:24px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
 .card h3{margin:0 0 6px;font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
 .big{font-size:24px;font-weight:650}.sub{color:var(--mut);font-size:12px}
-.bar{height:6px;background:#222833;border-radius:3px;overflow:hidden;margin-top:8px}
+.bar{height:6px;background:var(--track);border-radius:3px;overflow:hidden;margin-top:8px}
 .bar>i{display:block;height:100%;background:var(--acc)}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
 th{font-size:12px;color:var(--mut);font-weight:600}tr:last-child td{border-bottom:0}
 td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
-.pill.ok{color:var(--ok);border-color:#1f5f45}.pill.warn{color:var(--warn);border-color:#6b5420}
-.pill.bad{color:var(--bad);border-color:#6b2a2a}
+.pill.ok{color:var(--ok);border-color:var(--okb)}.pill.warn{color:var(--warn);border-color:var(--warnb)}
+.pill.bad{color:var(--bad);border-color:var(--badb)}
 .mini{width:100%;min-width:90px}.mini .bar{margin-top:3px}
 h2{font-size:15px;margin:26px 0 10px}ul.ev{list-style:none;padding:0;margin:0;background:var(--panel);
 border:1px solid var(--line);border-radius:10px}ul.ev li{padding:7px 12px;border-bottom:1px solid var(--line);font-size:13px}
 ul.ev li:last-child{border:0}.mut{color:var(--mut)}code,pre{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace}
-pre{background:#0a0c0f;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
-form label{display:block;margin:14px 0 6px;color:var(--mut)}input,textarea{width:100%;background:#0a0c0f;
+pre{background:var(--inset);border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
+form label{display:block;margin:14px 0 6px;color:var(--mut)}input,textarea{width:100%;background:var(--inset);
 color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
 textarea{font-family:ui-monospace,monospace;font-size:12px;height:90px}
-button{margin-top:16px;background:var(--acc);color:#04111f;border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer}
+button{margin-top:16px;background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer}
 .box{max-width:680px}.err{color:var(--bad)}svg.spark{display:block}
+.box.me{max-width:980px}.me>p,.me>ul,.me>details,.me>form{max-width:680px}
+a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-radius:6px}
+.secondary{background:var(--btn2)!important;color:var(--fg)!important}
+.dash-h{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin:26px 0 10px}
+.dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
+.seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
+.tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.tile .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}.tile .v small{font-size:12px;color:var(--mut);font-weight:500}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:12px}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px 8px;min-width:0}
+.chart-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin-bottom:8px}
+.chart-h b{font-size:13px}.chart-h .now{font-size:18px;font-weight:650;font-variant-numeric:tabular-nums}
+.plot{position:relative;height:130px}.plot svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.plot .yl{position:absolute;right:0;transform:translateY(-100%);font-size:10.5px;color:var(--mut);
+background:var(--panel);padding:0 3px;border-radius:3px;line-height:1.3}.plot .yl.lim{color:var(--warn)}
+.xl{display:flex;justify-content:space-between;font-size:10.5px;color:var(--mut);margin-top:4px}
+.ln{fill:none;stroke-width:1.8;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.ln.a{stroke:var(--acc)}.ln.b{stroke:var(--c2)}.ar{stroke:none;opacity:.16}.ar.a{fill:var(--acc)}.ar.b{fill:var(--c2)}
+.gl{stroke:var(--grid);stroke-width:1;vector-effect:non-scaling-stroke}
+.lim{stroke:var(--warn);stroke-width:1.3;stroke-dasharray:5 4;vector-effect:non-scaling-stroke}
+.key{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);margin-right:6px}
+.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
+.srv{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+.srv .tile{display:flex;flex-direction:column;gap:6px}.srv .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.people{list-style:none;padding:0;margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.people li{display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);font-size:13px}
+.people li:last-child{border:0}.people .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.people svg{width:90px;height:22px;flex:none}.people .c{min-width:70px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
+pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:11.5px}
+@media (max-width:560px){main{padding:16px}header{padding:12px 16px}.charts{grid-template-columns:1fr}
+.people .c{min-width:56px;font-size:12px}.people svg{width:56px}}
 """
 
 DASH_JS = r"""
@@ -291,7 +331,7 @@ def dashboard():
 <p class="sub" id="foot"></p><script>{DASH_JS}</script>""")
 
 
-def join_page(ip, who, msg=None, err=None, form=None):
+def join_page(ip, who, msg=None, err=None, form=None, rng="24h"):
     e = html.escape
     if not who:
         return page("join", """<div class="box"><h2>Can't identify you</h2>
@@ -299,7 +339,7 @@ def join_page(ip, who, msg=None, err=None, form=None):
 invite, then open this page using the machine's Tailscale name.</p></div>""")
     name, rec = existing_account(who["id"])
     if name:
-        return portal_page(ip, who, name, rec)
+        return portal_page(ip, who, name, rec, rng=rng)
     if CFG["JOIN_MODE"] == "closed":
         return page("join", "<div class='box'><h2>Signups are closed</h2><p>Ask the owner.</p></div>")
     if msg:
@@ -346,22 +386,440 @@ def safe_url(u, schemes=("https://", "http://")):
     return u if u.startswith(schemes) and len(u) < 4096 else ""
 
 
-def portal_page(ip, who, name, rec, result=None, welcome=False):
+# ---------- the friend's dashboard (server-side SVG from root's world-readable health files) ----------
+
+METRICS = os.path.join(sb.STATE_DIR, "health", "metrics.jsonl")
+BALANCE = os.path.join(sb.STATE_DIR, "balance.json")
+RANGES = {"24h": 86400, "7d": 7 * 86400}
+SERVER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")  # same rule as `box _portal` and sharedbox-admin
+SERVER_OPS = ("start", "stop", "restart")
+_metrics_cache = {}  # seconds -> ((mtime_ns, size), rows)
+
+
+def metrics_tail(seconds):
+    """Samples from the last `seconds`, oldest first. Reads the file backwards, so only the tail is parsed."""
+    try:
+        st = os.stat(METRICS)
+    except OSError:
+        return []
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _metrics_cache.get(seconds)
+    if hit and hit[0] == sig:
+        return hit[1]
+    cutoff = time.time() - seconds
+    buf, pos = b"", st.st_size
+    try:
+        with open(METRICS, "rb") as f:
+            while pos > 0 and st.st_size - pos < 16 << 20:
+                step = min(1 << 16, pos)
+                pos -= step
+                f.seek(pos)
+                buf = f.read(step) + buf
+                lines = buf.split(b"\n")
+                first = lines[0] if pos == 0 else (lines[1] if len(lines) > 2 else b"")
+                try:
+                    if first and json.loads(first)["ts"] < cutoff:
+                        break
+                except (ValueError, KeyError, TypeError):
+                    pass
+    except OSError:
+        return []
+    rows = []
+    for line in buf.split(b"\n")[0 if pos == 0 else 1:]:
+        try:
+            r = json.loads(line)
+            if isinstance(r, dict) and float(r["ts"]) >= cutoff:
+                rows.append(r)
+        except (ValueError, KeyError, TypeError):
+            continue
+    rows.sort(key=lambda r: r["ts"])
+    _metrics_cache[seconds] = (sig, rows)
+    return rows
+
+
+def sample_step(rows):
+    gaps = sorted(b["ts"] - a["ts"] for a, b in zip(rows, rows[1:]) if b["ts"] > a["ts"])
+    return gaps[len(gaps) // 2] if gaps else 300
+
+
+def user_series(rows, name, step):
+    """[(ts, cores)], [(ts, mem bytes)] for one user; None where there's no data."""
+    cpu, mem, prev = [], [], None
+    for r in rows:
+        u = (r.get("users") or {}).get(name)
+        ts = r["ts"]
+        if not (isinstance(u, list) and len(u) >= 2):
+            cpu.append((ts, None))
+            mem.append((ts, None))
+            prev = None
+            continue
+        mem.append((ts, u[1]))
+        if prev and 0 < ts - prev[0] <= 3 * step and u[0] >= prev[1]:
+            cpu.append((ts, (u[0] - prev[1]) / 1e6 / (ts - prev[0])))
+        else:
+            cpu.append((ts, None))
+        prev = (ts, u[0])
+    return cpu, mem
+
+
+def bucket(pts, t0, t1, n=240, how=max):
+    """At most n points: one per time bucket (how=max or avg); None for empty buckets."""
+    if len(pts) <= n:
+        return pts
+    width = (t1 - t0) / n or 1
+    groups = {}
+    for ts, v in pts:
+        if v is not None:
+            groups.setdefault(min(n - 1, int((ts - t0) / width)), []).append(v)
+    return [(t0 + (i + .5) * width, how(groups[i]) if i in groups else None) for i in range(n)]
+
+
+def avg(xs):
+    return sum(xs) / len(xs)
+
+
+def last_val(pts):
+    return next((v for _, v in reversed(pts) if v is not None), None)
+
+
+def peak(pts):
+    return max((v for _, v in pts if v is not None), default=0)
+
+
+def svg_paths(pts, t0, t1, ymax, gap, cls, W=1000, H=200):
+    segs, cur, last = [], [], None
+    for ts, v in pts:
+        if v is None or (last is not None and ts - last > gap):
+            if cur:
+                segs.append(cur)
+            cur = []
+        if v is None:
+            continue
+        x = (ts - t0) / ((t1 - t0) or 1) * W
+        y = H - min(max(v, 0), ymax) / (ymax or 1) * H
+        cur.append((x, y))
+        last = ts
+    if cur:
+        segs.append(cur)
+    out = []
+    for s in segs:
+        if len(s) == 1:
+            s = [(s[0][0] - 2, s[0][1]), (s[0][0] + 2, s[0][1])]
+        line = " L".join(f"{x:.1f},{y:.1f}" for x, y in s)
+        out.append(f'<path class="ar {cls}" d="M{s[0][0]:.1f},{H} L{line} L{s[-1][0]:.1f},{H} Z"/>'
+                   f'<path class="ln {cls}" d="M{line}"/>')
+    return "".join(out)
+
+
+def svg_chart(series, t0, t1, ymax, gap, fmt, limits=(), rng="24h", head=""):
+    """A line chart: series = [(points, "a"|"b")], limits = [(value, label)] drawn dashed.
+    Text lives in HTML around the SVG, so it stays readable when the SVG stretches to a phone's width."""
+    e = html.escape
+    H = 200
+    grid = "".join(f'<line class="gl" x1="0" x2="1000" y1="{H * f}" y2="{H * f}"/>' for f in (0, .25, .5, .75))
+    lims, labels = "", []
+    for v, label in limits:
+        if v and v <= ymax:
+            y = H - v / ymax * H
+            lims += f'<line class="lim" x1="0" x2="1000" y1="{y:.1f}" y2="{y:.1f}"/>'
+            labels.append(f'<span class="yl lim" style="top:{y / H * 100:.1f}%">{e(label)}</span>')
+    if not any(abs(v / ymax - 1) < .12 for v, _ in limits if v):
+        labels.append(f'<span class="yl" style="top:9%">{e(fmt(ymax))}</span>')
+    body = "".join(svg_paths(p, t0, t1, ymax, gap, c) for p, c in series)
+    ago = {"24h": ("24h ago", "12h ago"), "7d": ("7 days ago", "3½ days ago")}[rng]
+    return f"""<div class="chart">{head}<div class="plot">
+<svg viewBox="0 0 1000 {H}" preserveAspectRatio="none" aria-hidden="true">{grid}{body}{lims}
+<line class="gl" x1="0" x2="1000" y1="{H}" y2="{H}"/></svg>{"".join(labels)}</div>
+<div class="xl"><span>{ago[0]}</span><span>{ago[1]}</span><span>now</span></div></div>"""
+
+
+def spark(pts, t0, t1, gap):
+    m = max(peak(pts), 0.05)
+    return (f'<svg viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true">'
+            f'{svg_paths(pts, t0, t1, m * 1.1, gap, "a")}</svg>')
+
+
+def fmt_cores(v):
+    return f"{v:.2f} cores" if v < 10 else f"{v:.0f} cores"
+
+
+def nice_max(peak_v, limit, floor):
+    """Chart top: show the limit line when it's in sight, else zoom in on the actual usage."""
+    top = max(peak_v * 1.25, floor)
+    if limit and limit <= 4 * top:
+        top = max(top, limit * 1.08)
+    return top
+
+
+def friend_limits(rec):
+    """Live cgroup limits (they move with the box's busy/quiet balance), falling back to the config."""
+    c = sb.read_cgroup(sb.slice_path(rec["uid"])) if rec and rec.get("uid") is not None else None
+    lim = sb.user_limits(CFG, rec)
+    cfg_mem = sb.parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
+    try:
+        cfg_cpu = float(str(lim["CPU_QUOTA"]).rstrip("%")) / 100
+    except (KeyError, ValueError):
+        cfg_cpu = None
+    return {"cpu": (c or {}).get("cpu_quota_cores") or cfg_cpu,
+            "mem_high": (c or {}).get("mem_high") or cfg_mem, "mem_max": (c or {}).get("mem_max"),
+            "lim": lim}
+
+
+SAFE_EVENTS = ("user_created", "tools_updated", "skill_shared", "balance")
+
+
+def box_feed(n=6):
+    """Recent box-wide happenings, worded for friends. Never shows emails or logins."""
+    out = []
+    for ev in reversed(sb.recent_events(80)):
+        k, user = ev.get("kind"), str(ev.get("user") or "")
+        if k not in SAFE_EVENTS:
+            continue
+        if k == "user_created":
+            txt = f"<b>{html.escape(user)}</b> joined the box"
+        elif k == "tools_updated":
+            txt = "Coding agents were updated to their newest versions"
+        elif k == "skill_shared":
+            txt = (f"<b>{html.escape(user)}</b> shared the skill <code>{html.escape(str(ev.get('skill', '')))}</code>"
+                   " (<code>box skills</code>)")
+        else:
+            txt = ("The box got busy: everyone's limits went down for a while" if ev.get("cpu_busy") or
+                   ev.get("mem_tight") else "The box is quiet again: limits went back up")
+        out.append(f"<li><span class='mut'>{html.escape(ago_text(ev.get('ts', 0)))}</span> · {txt}</li>")
+        if len(out) >= n:
+            break
+    return out
+
+
+def ago_text(ts):
+    try:
+        d = max(0, time.time() - float(ts))
+    except (TypeError, ValueError):
+        return "?"
+    for unit, s in (("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= s:
+            return f"{int(d // s)}{unit} ago"
+    return "just now"
+
+
+def friend_dashboard(name, rec, rng="24h", base=""):
+    """Their CPU/memory against their limits, disk vs budget, box health, who's around. All server-side."""
+    e = html.escape
+    rng = rng if rng in RANGES else "24h"
+    now = time.time()
+    rows = metrics_tail(RANGES[rng])
+    t0, t1 = now - RANGES[rng], now
+    step = sample_step(rows)
+    gap = max(3 * step, 2.5 * RANGES[rng] / 240)  # bridge bucket-sized steps; break on real outages
+    lim = friend_limits(rec)
+    out = [f"""<div class="dash-h" id="dash"><h2>Your corner of {e(HOST)}</h2><span class="seg">"""
+           + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
+           + "</span></div>"]
+    # -- box health tiles
+    last = rows[-1] if rows else {}
+    bal = sb.read_json(BALANCE, {}) or {}
+    busy = bool(bal.get("cpu_busy") or bal.get("mem_tight"))
+    l = lim["lim"]
+    quiet_txt = (f"{cores(l.get('BURST_CPU_QUOTA') or l['CPU_QUOTA'])} cores, "
+                 f"{l.get('BURST_MEMORY_HIGH') or l['MEMORY_HIGH']} RAM")
+    busy_txt = f"{cores(l['CPU_QUOTA'])} cores, {l['MEMORY_HIGH']} RAM"
+    ncpu = os.cpu_count() or 1
+    tiles = [
+        ("Box right now", f'<span class="dot {"warn" if busy else "ok"}"></span>{"Busy" if busy else "Quiet"}',
+         (f"Limits are lower while it's busy: {busy_txt}." if busy else f"You get the roomy limits: {quiet_txt}.")),
+    ]
+    if last:
+        tiles += [
+            ("Box CPU", f"{float(last.get('cpu') or 0):.0f}<small>%</small>",
+             f"load {float(last.get('load1') or 0):.2f} on {ncpu} cores"),
+            ("Box memory", f"{float(last.get('mem') or 0):.0f}<small>% used</small>", ""),
+            ("Disk free", f"{float(last.get('disk_free') or 0):.0f}<small>%</small>",
+             sb.human(last["disk_free_b"]) + " free" if last.get("disk_free_b") else ""),
+        ]
+        if last.get("temp") is not None:
+            t = float(last["temp"])
+            tiles.append(("Temperature", f"{t:.0f}<small>°C</small>",
+                          "running hot" if t >= 80 else "warm" if t >= 65 else "cool"))
+    out.append('<div class="tiles">' + "".join(
+        f'<div class="tile"><h3>{e(h)}</h3><div class="v">{v}</div>'
+        f'{f"<div class=sub>{e(s)}</div>" if s else ""}</div>' for h, v, s in tiles) + "</div>")
+    # -- their CPU and memory
+    cpu, mem = user_series(rows, name, step)
+    cpu_b, mem_b = bucket(cpu, t0, t1, how=avg), bucket(mem, t0, t1)
+    cpu_now, mem_now = last_val(cpu), last_val(mem)
+    charts = []
+    if any(v is not None for _, v in mem):
+        top = nice_max(peak(cpu_b), lim["cpu"], 0.2)
+        cl = [(lim["cpu"], f"your limit {fmt_cores(lim['cpu'])}")] if lim["cpu"] else []
+        head = (f'<div class="chart-h"><b>Your CPU</b><span class="now">{fmt_cores(cpu_now or 0)}</span>'
+                f'<span class="sub">peak {fmt_cores(peak(cpu))}'
+                + (f' · limit {fmt_cores(lim["cpu"])}' if lim["cpu"] else "") + "</span></div>")
+        charts.append(svg_chart([(cpu_b, "a")], t0, t1, top, gap, fmt_cores, cl, rng, head))
+        mh, mm = lim["mem_high"], lim["mem_max"]
+        top = nice_max(peak(mem_b), mh, 256 << 20)
+        ml = ([(mh, f"slows down past {sb.human(mh)}")] if mh else []) + \
+             ([(mm, f"hard stop {sb.human(mm)}")] if mm and mm != mh else [])
+        head = (f'<div class="chart-h"><b>Your memory</b><span class="now">{sb.human(mem_now or 0)}</span>'
+                f'<span class="sub">peak {sb.human(peak(mem))}'
+                + (f" · limit {sb.human(mh)}" if mh else "") + "</span></div>")
+        charts.append(svg_chart([(mem_b, "b")], t0, t1, top, gap, sb.human, ml, rng, head))
+    if rows:
+        bc = bucket([(r["ts"], r.get("cpu")) for r in rows], t0, t1, how=avg)
+        bm = bucket([(r["ts"], r.get("mem")) for r in rows], t0, t1)
+        head = ('<div class="chart-h"><b>The whole box</b><span class="sub">'
+                '<span class="key" style="background:var(--acc)"></span>CPU '
+                '<span class="key" style="background:var(--c2)"></span>memory, % used</span></div>')
+        charts.append(svg_chart([(bm, "b"), (bc, "a")], t0, t1, 100, gap, lambda v: f"{v:.0f}%", (), rng, head))
+    if charts:
+        out.append('<div class="charts">' + "".join(charts) + "</div>")
+    else:
+        out.append("<p class='mut'>No usage history yet. Check back in a few minutes.</p>")
+    # -- disk and ports
+    u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
+    budget = u.get("budget") or sb.cfg_int(CFG, "DISK_BUDGET_GB") << 30
+    disk = u.get("disk")
+    pct = min(100, 100 * (disk or 0) / budget) if budget else 0
+    pend = [str(p) for p in (u.get("pending_deletions") or [])]
+    color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
+    lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None else None
+    out.append('<div class="tiles">'
+               f'<div class="tile" style="grid-column:span 2"><h3>Your disk</h3><div class="v">'
+               f'{e(sb.human(disk)) if disk is not None else "–"}<small> of {e(sb.human(budget))}</small></div>'
+               f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>'
+               + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be deleted soon (untouched '
+                  f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Touch them or push to GitHub.</div>'
+                  if pend else f'<div class="sub" style="margin-top:6px">{int(u.get("projects") or 0)} project(s). '
+                  f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are cleaned up.</div>')
+               + "</div>"
+               + (f'<div class="tile"><h3>Your ports</h3><div class="v" style="font-size:17px">{lo_hi[0]}–{lo_hi[1]}'
+                  f'</div><div class="sub">for your servers</div></div>' if lo_hi else "")
+               + "</div>")
+    # -- who's around: names, a sparkline, CPU now. No emails, no details.
+    people = []
+    users = sorted((last.get("users") or {}).keys())
+    for n in users:
+        c, m = user_series(rows, n, step)
+        cb = bucket(c, t0, t1, n=120, how=avg)
+        cn = last_val(c[-3:]) or 0
+        people.append((cn, n, cb, last_val(m) or 0))
+    people.sort(key=lambda p: (-p[0], p[1]))
+    if people:
+        out.append("<h2>Who's on the box</h2><ul class='people'>" + "".join(
+            f'<li><span class="dot {"ok" if cn >= 0.05 else ""}"></span><span class="n">'
+            f'<b>{e(n)}</b>{" <span class=mut>(you)</span>" if n == name else ""}</span>{spark(cb, t0, t1, 2 * gap)}'
+            f'<span class="c">{fmt_cores(cn) if cn >= 0.01 else "idle"}</span></li>'
+            for cn, n, cb, _ in people) + "</ul>")
+    feed = box_feed()
+    if feed:
+        out.append("<h2>Recently on the box</h2><ul class='ev'>" + "".join(feed) + "</ul>")
+    return "".join(out)
+
+
+def servers_section(st, shared, btn, base=""):
+    """Your own `box serve` servers and the group's shared ones, with start/stop/restart and logs."""
+    e = html.escape
+
+    def acts(kind, s, group=False):
+        n, running = s["name"], s.get("state") == "running"
+        conf = (f' onsubmit="return confirm({e(json.dumps("Stop " + n + " for everyone?"))})"' if group else "")
+        b = []
+        for op, label in (("restart", "Restart"), ("stop", "Stop")) if running else (("start", "Start"),):
+            b.append(btn(f"{kind}-ctl", label, n, f'<input type="hidden" name="op" value="{op}">',
+                         primary=op == "start", small=True, attrs=conf if op == "stop" else ""))
+        b.append(btn(f"{kind}-logs", "Logs", n, primary=False, small=True))
+        return '<div class="acts">' + "".join(b) + "</div>"
+
+    def state(s):
+        stt = str(s.get("state") or "?")
+        cls = "ok" if stt == "running" else "bad" if stt == "failed" else "warn" if stt in (
+            "activating", "deactivating", "reloading") else ""
+        return f'<span class="dot {cls}"></span>{e(stt)}'
+
+    def link(port):
+        port = str(port or "")
+        if not port.isdigit():
+            return ""
+        u = f"http://{HOST}:{port}/"
+        return f'<a href="{e(u)}" target="_blank" rel="noopener">{e(u)}</a>'
+
+    out = ["<h2>Your servers</h2>"]
+    mine = st.get("servers")
+    if mine is None:
+        out.append("<p class='mut'>Couldn't load your servers just now.</p>")
+    elif not mine:
+        out.append("<p class='mut'>None yet. Ask your agent to \"run this as a server\": it uses "
+                   "<code>box serve</code>, which keeps it running after you close everything.</p>")
+    else:
+        out.append('<div class="srv">' + "".join(
+            f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
+            f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
+            f'<div class="sub">{link(s.get("port"))}</div>{acts("serve", s)}</div>'
+            for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
+        out.append("<p class='sub'>Links work from devices on Tailscale.</p>")
+    if shared.get("unavailable"):
+        return "".join(out)
+    out.append("<h2>Group servers</h2>")
+    if not shared.get("ok"):
+        out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
+        return "".join(out)
+    group = [s for s in shared.get("servers") or []
+             if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))]
+    if not group:
+        out.append("<p class='mut'>Nothing yet. Servers the whole group owns show up here; anyone can restart "
+                   "them. Ask your agent to make one with <code>box shared</code>.</p>")
+        return "".join(out)
+
+    def who_when(by, ts):
+        return (f"{e(str(by))} · {e(ago_text(ts))}" if by and ts else e(str(by or "?")))
+
+    out.append('<div class="srv">' + "".join(
+        f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
+        f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
+        f'<div class="sub">{link(s.get("port"))}</div>'
+        f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
+        + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
+        + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'
+        f'</div>{acts("shared", s, group=True)}</div>' for s in group) + "</div>")
+    out.append("<p class='sub'>Everyone in the group can start, stop and restart these. "
+               "Links work from devices on Tailscale.</p>")
+    return "".join(out)
+
+
+def logs_card(res, btn):
+    e = html.escape
+    kind = "shared" if str(res.get("_view", "")).startswith("shared") else "serve"
+    name = str(res.get("name") or res.get("key") or "")
+    lines = [sb.printable(str(x).replace("\t", "    ")) for x in (res.get("lines") or [])][-200:]
+    text = "\n".join(lines) or "(no log lines yet)"
+    return f"""<div class="card" id="logs"><h3>Logs: {e(name)}{" (group)" if kind == "shared" else ""}</h3>
+<pre class="logs" id="logpre">{e(text)}</pre>
+<p style="display:flex;gap:6px;flex-wrap:wrap">{btn(kind + "-logs", "Refresh", name, primary=False, small=True)}
+<a href="me" style="align-self:center;font-size:13px">Close</a></p></div>
+<script>(function(){{var p=document.getElementById("logpre");if(p)p.scrollTop=p.scrollHeight}})();</script>"""
+
+
+def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     """The friend's home page: open T3, log in to an AI and GitHub. No terminal anywhere."""
     e = html.escape
     tok = token_for(ip, who["id"])
     gate = bool(who.get("session") or who.get("cf_jwt"))
     base = "/_box" if gate else ""
+    shared = {}  # the group's servers come from a second (slower) call; fetch both at once
+    th = threading.Thread(target=lambda: shared.update(portal_call(ip, who, "shared-ls")), daemon=True)
+    th.start()
     st = portal_call(ip, who, "status")
+    th.join(35)
+    shared = dict(shared) or {"ok": False, "error": "no answer in time"}
     logins, t3 = st.get("logins") or {}, st.get("t3")
     if gate and t3:
         t3 = dict(t3, url=PUBLIC + "/")
 
-    def btn(action, label, key="", extra="", primary=True):
-        style = "" if primary else ' style="background:#252b35;color:var(--fg)"'
-        return f"""<form method="post" action="{base}/me" style="display:inline">
-<input type="hidden" name="token" value="{tok}"><input type="hidden" name="action" value="{action}">
-<input type="hidden" name="key" value="{e(key)}">{extra}<button{style}>{e(label)}</button></form>"""
+    def btn(action, label, key="", extra="", primary=True, small=False, attrs=""):
+        cls = ' class="sm' + ('' if primary else ' secondary') + '"' if small else ""
+        style = "" if primary or small else ' style="background:var(--btn2);color:var(--fg)"'
+        return f"""<form method="post" action="{base}/me" style="display:inline"{attrs}>
+<input type="hidden" name="token" value="{tok}"><input type="hidden" name="action" value="{e(action)}">
+<input type="hidden" name="key" value="{e(key)}">{extra}<button{cls}{style}>{e(label)}</button></form>"""
 
     def done(ok):
         return '<span class="pill ok">done ✓</span>' if ok else '<span class="pill warn">to do</span>'
@@ -376,6 +834,18 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
         out.append(portal_result(result, btn, base))
     ai = [k for k in ("claude", "codex") if k in logins]
     ai_ok = any(logins[k]["ok"] for k in ai)
+    try:
+        dash = friend_dashboard(name, rec, rng, base)
+    except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
+        print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
+        dash = ""
+    dash += servers_section(st, shared, btn, base)
+    if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
+        if t3:
+            out.append("<p>" + btn("t3", "Open my T3 Code") + "</p>")
+        out.append(dash)
+        out.append("<h2 style='margin-top:34px'>Setup</h2>")
+        dash = ""
     out.append(f"<h2>1. Connect your AI {done(ai_ok)}</h2>")
     if not ai:
         out.append("<p class='mut'>No coding agents are installed on the box yet. Ask the owner.</p>")
@@ -408,6 +878,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
         else:
             out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
                        "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
+    if dash:
+        out.append(dash)
     if st.get("updates") in ("auto", "manual"):
         auto = st["updates"] == "auto"
         out.append("<h2>Agent updates</h2><p>"
@@ -448,7 +920,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
 <form method="post" action="{base}/me"><input type="hidden" name="token" value="{tok}">
 <input type="hidden" name="action" value="add-key">
 <textarea name="sshkey" required placeholder="ssh-ed25519 AAAA... you@laptop"></textarea>
-<button style="background:#252b35;color:var(--fg)">Add SSH key</button></form>
+<button style="background:var(--btn2);color:var(--fg)">Add SSH key</button></form>
 <p class="sub">Then: <code>{e(ssh_cmd)}</code>, and <code>box</code> shows your usage, ports and limits.</p></details>""")
     out.append(f"""<h2>Good to know</h2><ul>
 <li>Projects untouched for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted. Ask your agent to put them on GitHub.</li>
@@ -457,12 +929,12 @@ def portal_page(ip, who, name, rec, result=None, welcome=False):
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
-        out.append('<p><a href="/cdn-cgi/access/logout"><button style="background:#252b35;color:var(--fg)">'
+        out.append('<p><a href="/cdn-cgi/access/logout"><button style="background:var(--btn2);color:var(--fg)">'
                    'Log out of this browser</button></a></p>')
     elif gate:
         out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
-<button style="background:#252b35;color:var(--fg)">Log out of this browser</button></form>""")
-    return page("you", "<div class='box'>" + "".join(out) + "</div>", gate=gate)
+<button style="background:var(--btn2);color:var(--fg)">Log out of this browser</button></form>""")
+    return page("you", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
 
 
 def public_pair(res):
@@ -478,6 +950,12 @@ def portal_result(res, btn, base=""):
     e = html.escape
     if not res.get("ok"):
         return f"<div class='card'><p class='err'>{e(res.get('error') or 'something went wrong')}</p></div>"
+    view = str(res.get("_view") or "")
+    if view.endswith("-logs"):
+        return logs_card(res, btn)
+    if view.endswith("-ctl"):
+        msg = res.get("message") or f"{res.get('key', '')}: done"
+        return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
     if res.get("login_url"):
         url = safe_url(res["login_url"], ("https://",))
         return f"""<div class="card"><h3>Your login link</h3>
@@ -587,7 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, json.dumps(api_state()), "application/json")
         elif path in ("/join", "/me"):
             ip, who = self.ident()
-            self.send(200, join_page(ip, who))
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            self.send(200, join_page(ip, who, rng=(q.get("range") or ["24h"])[0]))
         elif path == "/healthz":
             self.send(200, "ok", "text/plain")
         else:
@@ -659,6 +1138,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(429, portal_page(ip, who, name, rec,
                                                   {"ok": False, "error": "too many tries; wait a few minutes"}))
             q.append(now)
+        if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
+            op = form.get("op", "")
+            if not SERVER_RE.fullmatch(key) or (action.startswith("serve-") and key == "t3") \
+                    or (action.endswith("-ctl") and op not in SERVER_OPS):
+                return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown server"}))
+            res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
+            return self.send(200, portal_page(ip, who, name, rec, dict(res, _view=action, key=key)))
         actions = ("t3", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
         keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh")
         if action not in actions or key not in keys:
@@ -832,7 +1318,8 @@ class GateHandler(Handler):
             return self.redirect("/") if CF else self.send(200, login_page(arg))
         who = self.who()
         if kind == "me" and who:
-            return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q))
+            return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q,
+                                              rng=(q.get("range") or ["24h"])[0]))
         if kind == "landing" and arg not in ("/", "/_box/me", "/_box/", "/_box"):
             return self.send(404, landing(self.cf_email()))
         return self.send(200, landing(self.cf_email()))
