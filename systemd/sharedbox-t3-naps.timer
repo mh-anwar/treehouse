@@ -2,7 +2,7 @@
 Description=Nap friends' unused T3 Code servers every 10 minutes
 
 [Timer]
-OnBootSec=10min
+OnBootSec=1min
 OnUnitActiveSec=10min
 AccuracySec=1min
 

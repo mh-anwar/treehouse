@@ -136,6 +136,8 @@ def valid_reply(rep):
 # now, or something started from T3 that listens on a port (a dev server, a bot). Agents that merely sit there
 # waiting don't count. Last word goes to the friend's own `box _t3-nap`, which reads T3's database: an agent
 # turn still running (even a quiet one, waiting on a download or CI) or scheduled tasks turned on keep T3 up.
+# And a T3 that isn't running (napping, or after a reboot) is started again if it has scheduled tasks on
+# (`box _t3-wake`): T3 skips a fixed-time run it was down for, so it must be up within minutes of boot.
 
 def t3_cgroup(uid):
     """(cgroup dir, PIDs) of the friend's sb-t3.service (T3 and every agent it started); (None, []) if not running."""
@@ -284,6 +286,17 @@ def cmd_t3_naps(cfg, a):
         try:
             pw = pwd.getpwnam(name)
             st = state.setdefault(name, {})
+            if not t3_cgroup(rec["uid"])[1]:
+                # not running (napping, or the box just rebooted): scheduled tasks need it up, or they're skipped
+                if a.dry_run:
+                    continue
+                if os.path.exists(os.path.join(pw.pw_dir, ".config", "systemd", "user", "sb-t3.socket")):
+                    rep = user_pass(pw, {}, "_t3-wake",
+                                    check=lambda r: isinstance(r, dict) and isinstance(r.get("woke"), bool))
+                    if rep["woke"]:
+                        st["t3_busy"] = now
+                        print(f"{name}: woke T3 Code for scheduled tasks")
+                continue
             if not t3_should_sleep(cfg, name, rec, st, now, home=pw.pw_dir):
                 continue
             if a.dry_run:
