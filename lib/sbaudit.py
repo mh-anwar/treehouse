@@ -20,6 +20,7 @@ import pwd
 import re
 import stat
 import subprocess
+import sys
 import time
 
 import sbcommon as sb
@@ -329,6 +330,9 @@ class Audit:
                        "-path", "/home/*/.local/share/docker", "-o", "-path", "/var/lib/docker", "-o",
                        "-path", "/snap", ")", "-prune", "-o", "-type", "f", "(", "-perm", "-4000", "-o",
                        "-perm", "-2000", ")", "-printf", "%U %m %p\\n"], timeout=600)
+        if rc == -1:  # timed out: keep the old baseline rather than flag every setuid file as new next time
+            self.new_baseline["setuid"] = self.baseline.get("setuid") or {}
+            return
         found = {}
         for line in out.splitlines():
             uid, mode, path = line.split(" ", 2)
@@ -367,8 +371,23 @@ class Audit:
                      "Any user can modify it; if root ever runs or reads it, that is root for everyone.",
                      f"chmod o-w {p}")
 
+    # packages a rootkit replaces to hide or to keep root: logins, auth, sudo, ssh, the core tools and libc.
+    # Verifying all ~1,300 packages re-hashes every file on disk (many minutes); these take about a second.
+    CRITICAL_DPKG = ("coreutils", "bash", "dash", "login", "passwd", "sudo", "openssh-server", "openssh-client",
+                     "util-linux", "procps", "systemd", "libc6", "libc-bin", "libpam-modules", "libpam-runtime",
+                     "libpam0g", "findutils", "grep", "sed", "iproute2", "net-tools", "cron", "polkitd", "tailscale",
+                     "cloudflared", "shadow", "mount", "kmod", "init-system-helpers", "apt", "dpkg")
+
     def check_dpkg(self):
-        rc, out = run(["dpkg", "--verify"], timeout=900)
+        rc, inst = run(["dpkg-query", "-W", "-f", "${Package}\n"], timeout=60)
+        have = set(inst.split())
+        pkgs = [p for p in self.CRITICAL_DPKG if p in have]
+        # plus whatever owns a setuid/setgid binary (found by check_setuid in the same run)
+        for path in (self.new_baseline.get("setuid") or {}):
+            rc2, owner = run(["dpkg", "-S", path], timeout=30)
+            if rc2 == 0 and ":" in owner:
+                pkgs += [o.strip() for o in owner.split(":", 1)[0].split(",") if o.strip() in have]
+        rc, out = run(["dpkg", "--verify", *dict.fromkeys(pkgs)], timeout=300)
         bad = distro.parse_dpkg_verify(out)
         for p in bad[:25]:
             sev = "high" if re.match(r"/(usr/)?s?bin/|/usr/lib/x86_64-linux-gnu/security/|/lib/", p) else "low"
@@ -529,12 +548,19 @@ class Audit:
         if deep:
             checks += [self.check_setuid, self.check_writable,
                        self.check_pacman if distro.current() == "arch" else self.check_dpkg]
+        tty = sys.stderr.isatty()
         for c in checks:
+            name = getattr(c, "__name__", "check").replace("check_", "")
+            t0 = time.time()
+            if tty:
+                print(f"  checking {name}...", end="", file=sys.stderr, flush=True)
             try:
                 c()
             except Exception as e:  # one broken check must not kill the report
                 self.add(f"auditerr:{getattr(c, '__name__', 'check')}", "low",
                          f"audit check {getattr(c, '__name__', '?')} failed: {e}")
+            if tty:
+                print(f" {time.time() - t0:.1f}s", file=sys.stderr, flush=True)
         self.findings.sort(key=lambda f: (SEV_ORDER[f["sev"]], f["id"]))
         return self.findings
 
