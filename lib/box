@@ -65,7 +65,8 @@ def ports():
 
 
 def fmt_ts(ts):
-    return time.strftime("%a %b %d %H:%M", time.localtime(ts))
+    # with the zone: agents otherwise guess UTC (the box's own clock is local time)
+    return time.strftime("%a %b %d %H:%M %Z", time.localtime(ts))
 
 
 # ---------- status ----------
@@ -498,7 +499,7 @@ def render_rules(notices=()):
                       "fixes into treehouse so every box gets them.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
-                      "(`box help logins`).")
+                      "(`box help logins`). Clones and CI: `box help git` (blobless clones, faster workflows).")
     nt = ""
     if notices:
         nt = "## Current notices (updated by the janitor)\n" + "\n".join(f"- {n}" for n in notices)
@@ -2674,6 +2675,7 @@ def rule_notices(box=None, janitor=None):
 def cmd_sync_rules(a):
     sync_agent_files(rule_notices())
     sync_hooks()
+    print(json.dumps({"synced": True}))
 
 
 def cmd_pass(a):

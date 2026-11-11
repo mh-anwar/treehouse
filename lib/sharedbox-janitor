@@ -313,11 +313,44 @@ def cmd_t3_naps(cfg, a):
                 st["napped"] = now
         except Exception as e:  # one friend's trouble must not stop the others
             print(f"{name}: t3 nap error: {str(e)[-500:]!r}", file=sys.stderr)
-    for gone in set(state) - set(users):
+    for gone in set(state) - set(users) - {"_rules"}:
         state.pop(gone)
     if not a.dry_run:
+        refresh_rules(cfg, users, state)
         sb.write_json(NAP_STATE, state, mode=0o600)
     docker_naps(cfg, users, a.dry_run)
+
+
+def boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def refresh_rules(cfg, users, state):
+    """Agents read the reboot notice from their rule files, which the 6-hourly janitor pass rewrites. Rewrite them
+    as soon as the reboot picture changes instead: a reboot got scheduled (updates at 03:00 for 04:00), was
+    postponed, or just happened (new boot id). Otherwise a session after a reboot is told the box 'will reboot'
+    at a time already past. Cheap: nothing runs unless the picture changed."""
+    rb = sb.reboot_info(cfg)
+    soon = bool(rb["at"]) and rb["at"] - time.time() < 12 * 3600  # `box` bakes a scheduled reboot in 12 h ahead
+    key = [boot_id(), rb["at"] if rb["why"] == "updates" or rb["postponed"] else None, rb["postponed"], soon]
+    meta = state.setdefault("_rules", {})
+    if meta.get("key") == key:
+        return
+    names = set(users) | set(sb.admin_users(cfg))
+    owner = sb.owner_account(cfg)
+    if owner:
+        names.add(owner.pw_name)
+    for name in sorted(names):
+        try:
+            user_pass(pwd.getpwnam(name), {}, "_sync-rules",
+                      check=lambda r: isinstance(r, dict) and r.get("synced") is True)
+        except Exception as e:  # one account's trouble must not stop the others
+            print(f"{name}: rule refresh error: {str(e)[-300:]!r}", file=sys.stderr)
+    meta["key"] = key
 
 
 def docker_naps(cfg, users, dry_run):
