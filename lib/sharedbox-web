@@ -999,17 +999,16 @@ def features_page(owner=False):
         "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
-            "Auto-updated, and set up to know the box they're running on."
+            "Auto-updated, with environment awareness."
             + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
         row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
-            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. Checked every minute. "
+            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. "
             f"Right now it's {'busy' if busy else 'quiet'}."),
         row("Your servers", "Servers that run 24/7.", "Back after reboots, with controls and a private link."),
         row("Group servers", "One shared copy of a bot for the whole group."),
-        row("Skills", "A shared shelf of agent skills, like council and full-send.",
-            "Starts with Theo's tstack set, and anyone can add their own."),
+        row("Skills", "A shared shelf of agent skills, like council and full-send."),
         row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
-        row("Docker", "Docker works, no admin needed.", "Everyone gets their own, inside their own limits."),
+        row("Docker", "Docker works, no admin needed."),
         row("Reboots", "Your servers and T3 come back on their own.",
             "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
             "to finish."),
