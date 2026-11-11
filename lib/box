@@ -1820,7 +1820,7 @@ def portal_login_start(key, console=False):
     # keep the pane around after the login exits so its last words can be read
     # gh asks extra y/n questions when it has a terminal; with no terminal it just prints the code
     run = '"$@" </dev/null 2>&1 | cat' if key == "gh" else '"$@"'
-    wrapped = ["sh", "-c", run + '; echo "[login exited $?]"; sleep 1200', "sh", *cmd]
+    wrapped = ["sh", "-c", run + '; echo "[login exited $?]"; sleep 300', "sh", *cmd]
     tm = ["tmux", "-L", LOGIN_SOCK, "new-session", "-d", "-s", key, "-x", "250", "-y", "60", "--", *wrapped]
     # a scope under the user's own systemd keeps it alive after the (root-run) caller exits
     r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *tm],
@@ -1840,7 +1840,9 @@ def portal_login_start(key, console=False):
                 mark_setup_done(key)
                 return {"ok": True, "done": True}
             break
-    return {"ok": False, "error": f"{label} login didn't start: " + tail(login_screen(key))}
+    err = f"{label} login didn't start: " + tail(login_screen(key))
+    tmux("kill-session", "-t", key)  # don't leave a half-started login running
+    return {"ok": False, "error": err}
 
 
 def portal_login_code(key, code):
@@ -1873,7 +1875,10 @@ def portal_login_wait(key, seconds):
     if portal_logged_in(key):
         mark_setup_done(key)
         return {"ok": True, "done": True}
-    return {"ok": False, "error": f"{label} login hasn't finished: " + tail(login_screen(key))}
+    screen = login_screen(key)
+    if "[login exited" in screen:  # it's over (failed or cancelled): clean it up; a pending one keeps waiting
+        tmux("kill-session", "-t", key)
+    return {"ok": False, "error": f"{label} login hasn't finished: " + tail(screen)}
 
 
 def tail(screen, n=4):
