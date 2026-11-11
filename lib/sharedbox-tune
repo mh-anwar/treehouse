@@ -144,6 +144,10 @@ DESKTOP_LEFTOVERS = {
 }
 
 
+# what `box tune disable|enable` (owner only) may switch; nothing else
+SWITCHABLE = set(DESKTOP_LEFTOVERS) | {"wpa_supplicant.service"}
+
+
 def wireless_in_use():
     for d in glob.glob("/sys/class/net/*"):
         if os.path.isdir(os.path.join(d, "wireless")) and read(os.path.join(d, "operstate")) == "up":
@@ -159,8 +163,8 @@ def check_services():
     why = "; ".join(f"{u.removesuffix('.service')}: {DESKTOP_LEFTOVERS.get(u, 'Wi-Fi, but no Wi-Fi link is up')}"
                     for u in running)
     out.append(finding("desktop services running on a server", not running, ", ".join(running) or "none", "none",
-                       (why + ". Turn off only what the owner confirms nobody uses "
-                        "(sudo systemctl disable --now NAME)") if running else "", "owner"))
+                       (why + ". Turn off only what the owner confirms nobody uses: `box tune disable NAME` "
+                        "(owner's account, no sudo; `box tune enable NAME` undoes it)") if running else "", "owner"))
     return out
 
 
@@ -192,7 +196,22 @@ def check_network():
     return out
 
 
-CHECKS = [check_sysctls, check_memory, check_disk, check_cpu, check_services, check_network]
+def check_account():
+    """This account's own setup (the agent may fix these itself; they're the user's files, kept with a backup)."""
+    if os.geteuid() == 0:
+        return []
+    import time
+    times = []
+    for _ in range(3):
+        t = time.monotonic()
+        subprocess.run(["bash", "-lc", "true"], capture_output=True, timeout=30)
+        times.append((time.monotonic() - t) * 1000)
+    ms = sorted(times)[1]
+    return [finding("your shell start (every agent command pays it)", ms < 60, f"{ms:.0f} ms", "under 30 ms",
+                    "`box tune shell` fixes slow nvm loading; for anything else see `box help lean`", "account")]
+
+
+CHECKS = [check_sysctls, check_memory, check_disk, check_cpu, check_services, check_network, check_account]
 
 
 def run_checks():
@@ -212,6 +231,7 @@ def cmd_check(a):
         return
     todo_t = [r for r in res if not r["ok"] and r["kind"] == "treehouse"]
     todo_o = [r for r in res if not r["ok"] and r["kind"] == "owner"]
+    todo_a = [r for r in res if not r["ok"] and r["kind"] == "account"]
     print(f"Box tuning: {sum(r['ok'] for r in res)}/{len(res)} as recommended.")
     if todo_t:
         print("\nShould already be set by treehouse (update treehouse; if it stays, something overrides it):")
@@ -221,7 +241,11 @@ def cmd_check(a):
         print("\nFor the owner to decide (suggest; never change these yourself):")
         for r in todo_o:
             print(f"  - {r['name']}: {r['now']} (suggested {r['want']}). {r['why']}")
-    if not todo_t and not todo_o:
+    if todo_a:
+        print("\nThis account (fix it, then tell the user in a line):")
+        for r in todo_a:
+            print(f"  - {r['name']}: {r['now']} (want {r['want']}). {r['why']}")
+    if not todo_t and not todo_o and not todo_a:
         print("Nothing to do. Look further: `box help tune`.")
 
 

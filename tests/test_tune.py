@@ -39,7 +39,7 @@ class Tune(unittest.TestCase):
         self.assertTrue(res)
         for r in res:
             self.assertEqual(set(r), {"name", "ok", "now", "want", "why", "kind"})
-            self.assertIn(r["kind"], ("treehouse", "owner"))
+            self.assertIn(r["kind"], ("treehouse", "owner", "account"))
             self.assertNotIn("check failed", r["now"], r)
 
     def test_missing_install_is_reported(self):

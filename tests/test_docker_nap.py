@@ -155,3 +155,39 @@ class DockerNap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FastShell(unittest.TestCase):
+    """`box tune shell`: slow nvm lines become one fast block; everything else in the file stays."""
+    RC = ('export PATH="$HOME/.local/bin:$PATH"\n'
+          'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" --no-use && nvm use --silent default\n'
+          'alias ll="ls -l"\n'
+          '# a comment mentioning nvm.sh stays\n'
+          'export NVM_DIR="$HOME/.nvm"\n'
+          '[ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"  # This loads nvm\n'
+          '[ -s "$NVM_DIR/bash_completion" ] && \\. "$NVM_DIR/bash_completion"\n'
+          '. "$HOME/.local/bin/env"\n')
+
+    def test_rewrite(self):
+        new, changed = box.fast_nvm_rewrite(self.RC)
+        self.assertTrue(changed)
+        self.assertEqual(new.count(box.FAST_NVM_BEGIN), 1)
+        body = new.replace(box.FAST_NVM, "")
+        self.assertNotIn('. "$NVM_DIR/nvm.sh"', body)
+        for keep in ('alias ll="ls -l"', "# a comment mentioning nvm.sh stays", '. "$HOME/.local/bin/env"',
+                     'export PATH="$HOME/.local/bin:$PATH"'):
+            self.assertIn(keep, new)
+        self.assertLess(new.index('export PATH="$HOME/.local/bin'), new.index(box.FAST_NVM_BEGIN))  # same place
+
+    def test_idempotent_and_detection(self):
+        new, _ = box.fast_nvm_rewrite(self.RC)
+        again, _ = box.fast_nvm_rewrite(new)
+        self.assertEqual(again.count(box.FAST_NVM_BEGIN), 1)
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, ".bashrc"), "w") as f:
+            f.write(self.RC)
+        self.assertEqual(box.eager_nvm_files(d), [".bashrc"])
+        with open(os.path.join(d, ".bashrc"), "w") as f:
+            f.write(new)
+        self.assertEqual(box.eager_nvm_files(d), [])
+        shutil.rmtree(d)
