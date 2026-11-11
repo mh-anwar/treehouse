@@ -22,6 +22,10 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
 - `lib/box`: the CLI friends' agents use. `share/AGENTS.md` + `share/HELP.md`: the rules every agent on the
   box gets (keep AGENTS.md lean, ~1k tokens; details go in HELP.md).
 - `install.sh`: must stay additive and idempotent. Never restart sshd/tailscale/network/firewall, never reboot.
+- Friends' T3 Code naps: `sb-t3.socket` holds their T3 port (first of their block) and wakes T3, which listens
+  on the block's last port on the same Tailscale IP (never loopback: T3 then revokes pairings and Connect).
+  `sharedbox-janitor t3-naps` (every 10 min) decides; the friend-side checks are `box _t3-nap` / `_t3-wake`.
+  T3 must stay up for a running agent turn or enabled scheduled tasks (T3 skips fixed-time runs it missed).
 
 ## Checking a change
 - Quick, inline: `python3 -c "import ast; ast.parse(open('lib/sharedbox-web').read())"`, the ruff line and
@@ -39,5 +43,7 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
 
 ## Shipping
 - Commit with an area prefix (`web:`, `box:`, `admin:`, ...). Push only when asked.
-- The agent account has no sudo. Deploying is the owner's admin running one line from
-  `/tmp/sharedbox-install`; prepare that, never ask for root yourself.
+- The agent account has no sudo; never ask for root. To deploy: push to main, `git pull` the checkout in
+  `UPDATE_SOURCE` (see /etc/sharedbox/sharedbox.conf), then `box friends update` (or the owner's "Update
+  treehouse" button). It installs that checkout's committed main; check `/var/lib/sharedbox/update.json`.
+  Changes to the installer itself that need root beyond that still go through the owner.
