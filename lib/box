@@ -1156,7 +1156,7 @@ def cmd_friends(a):
         fail(FRIENDS_USAGE)
     if act == "requests" and args and (args[0] not in ("approve", "done", "decline") or len(args) != 2):
         fail(FRIENDS_USAGE)
-    if act in ("list", "access", "issues") and args:
+    if act in ("list", "access", "issues", "update") and args:
         fail(FRIENDS_USAGE)
     req, wait = {"action": "friends-" + act}, 60
     if act in ("remove", "suspend", "resume"):
@@ -2217,7 +2217,7 @@ def main():
     x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues, signups")
     x.add_argument("action", nargs="?", default="list",
                    choices=["list", "remove", "suspend", "resume", "email", "access", "requests", "issues",
-                            "approve", "deny"])
+                            "approve", "deny", "update"])
     x.add_argument("args", nargs="*"); x.add_argument("--archive", action="store_true")
     x.add_argument("--days", type=int, default=7); x.add_argument("--json", action="store_true")
     x.add_argument("--all", action="store_true"); x.add_argument("--why", help="decline: the reason they see")

@@ -1,0 +1,71 @@
+#!/usr/bin/python3 -I
+"""sharedbox-update: install the latest committed treehouse from UPDATE_SOURCE (a git checkout) as root.
+
+Started detached by sharedbox-admin (the owner's dashboard button / `box friends update`), so it may restart the
+web and gate services that asked for it. Writes /var/lib/sharedbox/update.json for the dashboard.
+"""
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
+import sbcommon as sb  # noqa: E402
+
+STATUS = os.path.join(sb.STATE_DIR, "update.json")
+
+
+def status(**kw):
+    cur = sb.read_json(STATUS, {}) or {}
+    cur.update(kw)
+    sb.write_json(STATUS, cur, mode=0o644)
+
+
+def main():
+    cfg = sb.load_config()
+    src, branch = (cfg.get("UPDATE_SOURCE") or "").strip(), (cfg.get("UPDATE_BRANCH") or "main").strip()
+    by = sys.argv[1] if len(sys.argv) > 1 else "?"
+    status(state="running", started=int(time.time()), by=by, error="")
+    git = ["git", "-c", "safe.directory=*", "-C", src]
+    try:
+        if not src or not os.path.isdir(os.path.join(src, ".git")) and not os.path.isfile(os.path.join(src, ".git")):
+            raise RuntimeError("UPDATE_SOURCE isn't a git checkout")
+        commit = subprocess.run(git + ["rev-parse", "--short", branch], capture_output=True, text=True,
+                                check=True).stdout.strip()
+        subject = subprocess.run(git + ["log", "-1", "--format=%s", branch], capture_output=True, text=True,
+                                 check=True).stdout.strip()
+        with tempfile.TemporaryDirectory(prefix="treehouse-update-") as tmp:
+            arch = subprocess.run(git + ["archive", branch], capture_output=True, check=True).stdout
+            subprocess.run(["tar", "-x", "-C", tmp], input=arch, check=True)
+            log = os.path.join(sb.STATE_DIR, "update.log")
+            with open(log, "w") as f:
+                r = subprocess.run([os.path.join(tmp, "install.sh"), "--apply", "--no-tools"], cwd=tmp, stdout=f,
+                                   stderr=subprocess.STDOUT, timeout=1800)
+            if r.returncode != 0:
+                with open(log) as f:
+                    raise RuntimeError("install failed: " + re.sub(r"\x1b\[[0-9;]*m", "", " / ".join(
+                        f.read().strip().splitlines()[-4:]))[-400:])
+        # every account's agents get the new rules now, not at the next janitor pass
+        users = list((sb.registry().get("users") or {}).keys()) + sorted(sb.admin_users(cfg))
+        for u in dict.fromkeys(users):
+            try:
+                import pwd
+                pw = pwd.getpwnam(u)
+            except KeyError:
+                continue
+            env = {"HOME": pw.pw_dir, "USER": u, "LOGNAME": u, "PATH": "/usr/local/bin:/usr/bin:/bin"}
+            subprocess.run(["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups", "--reset-env",
+                            "--", "/usr/local/bin/box", "_sync-rules"], env=env, cwd=pw.pw_dir, capture_output=True,
+                           timeout=120, check=False)
+        status(state="done", finished=int(time.time()), commit=commit, subject=subject[:120])
+        sb.log_event("treehouse_updated", by, commit=commit)
+    except Exception as e:  # noqa: BLE001 - always leave a readable status for the dashboard
+        status(state="failed", finished=int(time.time()), error=str(e)[:400])
+        sb.log_event("treehouse_update_failed", by, error=str(e)[:200])
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
