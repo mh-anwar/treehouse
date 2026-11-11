@@ -654,7 +654,7 @@ def reboot_tile():
     if rb["why"] == "updates":
         return ("Next reboot", html.escape(when), "for security updates")
     sched = rb["schedule"] or "scheduled"
-    return ("Next reboot", html.escape(when), sched[:1].upper() + sched[1:] + ". Servers and T3 come back by themselves.")
+    return ("Next reboot", html.escape(when), sched[:1].upper() + sched[1:] + ".")
 
 
 def friend_dashboard(name, rec, rng="24h", base=""):
@@ -829,7 +829,7 @@ def servers_section(st, shared, btn, base="", own_public=True):
         out.append("<p class='mut'>Couldn't load your servers just now.</p>")
     elif not mine:
         out.append("<p class='mut'>None yet. Ask your agent to \"run this as a server\": it uses "
-                   "<code>box serve</code>, which keeps it running after you close everything.</p>")
+                   "<code>box serve</code>.</p>")
     else:
         out.append('<div class="srv">' + "".join(
             f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
@@ -1024,12 +1024,13 @@ def features_page(owner=False):
         "</a></li><li>" + ("In the app, add your own T3 on this box (over Tailscale)." if owner else
         "<a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my T3 account</a>")
         + "</li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
-        "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
+        "<p class='fm'>On your phone, the T3 Code app (iOS and Android) works the same way. Or use "
+        "<a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<h3 class='fg'>Agents</h3><div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
             "Environment-aware: they know about group servers, restarts, limits and where files go."
             + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
-        row("Skills", "A shared shelf of agent skills, like council and full-send.", "Pull any of them into your agent."),
+        row("Skills", "Shared agent skills you can pull, like council and full-send."),
         row("Failure reporting", "Agents report what slowed them down.", "The owner sees it and fixes the box."),
         "</div><h3 class='fg'>Servers</h3><div class='flist'>",
         row("Your servers", "Servers that run 24/7.", "Self-healing, with controls + a private link."),
@@ -1039,9 +1040,10 @@ def features_page(owner=False):
         row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
             f"Dynamic resource allocation: {e(small_c)} cores and {e(small_m)} each when it's busy. "
             f"Right now it's {'busy' if busy else 'quiet'}."),
-        row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
+        row("System tools", "Your agent can install what it needs through an auto-approver.",
+            "Unusual installs get checked by the owner first."),
         "</div><h3 class='fg'>Upkeep and safety</h3><div class='flist'>",
-        row("Auto updates", "Security fixes for the box and your agents, installed for you."),
+        row("Auto updates", "Security fixes for the box and your agents."),
         row("Reboots", "Your servers and T3 come back on their own.",
             "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
             "to finish."),
@@ -1083,8 +1085,7 @@ def requests_section(btn=None):
     reqs = [r for r in (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") or [] if isinstance(r, dict)]
     out = ['<h2 id="requests">Requests</h2>']
     if not reqs:
-        out.append("<p class='mut'>No open requests. Package requests that pass the checks install "
-                   "automatically; the rest show up here.</p>")
+        out.append("<p class='mut'>No open requests.</p>")
         return "".join(out)
     trs = []
     for r in reqs:
@@ -1205,9 +1206,8 @@ def box_section(n_events=30, btn=None):
                    + btn("invite", "Invite", attrs=" class='inv'",
                          extra="<input type='email' name='email' placeholder='their email' required>"
                                "<input name='note' placeholder='name (optional)' maxlength='120' class='short'>")
-                   + "<p class='sub'>They get an account right away and sign in with that email. You'll get a "
-                     "message to send them.</p>")
-    out.append('<p class="sub">To remove, suspend or link an email, ask your agent (<code>box friends</code>).</p>')
+                   + "<p class='sub'>They get an account right away and sign in with that email.</p>")
+    out.append('<p class="sub">To remove, suspend or link an email, ask your agent.</p>')
     try:
         out.append(requests_section(btn))
     except Exception as ex:  # noqa: BLE001
@@ -1239,7 +1239,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
     btn = portal_btn(token_for(ip, who["id"]), base)
     st, shared = status_and_shared(ip, who)
     out = [f"<h2>Hi {e(name)}</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
-           f"You're the owner of {e(HOST)}: your own account first, then the whole box.</p>"]
+           f"You're the owner of {e(HOST)}.</p>"]
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
         out.append('<p><a class="btn" href="/_box/app">Open T3 in browser</a></p>')
     if result:
