@@ -148,6 +148,8 @@ Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` t
   installs a package request (even a REQUEST_DENY one); `done ID` once it's handled (e.g. a setting the owner
   changed for them); `decline ID --why "..."`. Free-text requests are emailed to the owner too.
   The friend's agent is told either way.
+- `box limits disk N`: the owner's own disk budget (whole GB). Not enforced on owner accounts, only what their
+  agents are told to stay within; friends' limits stay root's (`sharedbox-admin limits`).
 - `box friends issues [--days N]`: what everyone's agents logged with `box issue`, most widespread first.
 
 @@ lean

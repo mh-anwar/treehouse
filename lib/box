@@ -55,9 +55,34 @@ def is_friend():
     return sb.cfg_int(CFG, "FRIEND_UID_MIN") <= ME.pw_uid <= sb.cfg_int(CFG, "FRIEND_UID_MAX")
 
 
+OWNER_LIMITS = os.path.join(HOME, ".sharedbox", "limits.json")
+
+
 def my_limits():
     rec = sb.registry().get("users", {}).get(ME.pw_name)
-    return sb.user_limits(CFG, rec)
+    lim = sb.user_limits(CFG, rec)
+    if not rec and ME.pw_name in sb.admin_users(CFG):
+        # the janitor never enforces a disk budget on the owner's accounts: theirs is only what their agents are
+        # told to stay within, so they set it themselves (`box limits disk N`)
+        own = sb.read_json(OWNER_LIMITS, {}) or {}
+        if str(own.get("DISK_BUDGET_GB", "")).isdigit():
+            lim["DISK_BUDGET_GB"] = own["DISK_BUDGET_GB"]
+    return lim
+
+
+def cmd_limits(a):
+    if ME.pw_name not in sb.admin_users(CFG) or sb.registry().get("users", {}).get(ME.pw_name):
+        sys.exit("box limits: only the owner's own accounts set their limits here. A friend's limits are set by the "
+                 "owner (`sudo sharedbox-admin limits NAME DISK_BUDGET_GB=N`); ask with `box request`.")
+    if a.what == "disk" and a.value:
+        if not a.value.isdigit() or not 1 <= int(a.value) <= 100000:
+            sys.exit("box limits disk N: N is whole gigabytes, e.g. 50")
+        own = sb.read_json(OWNER_LIMITS, {}) or {}
+        own["DISK_BUDGET_GB"] = a.value
+        os.makedirs(os.path.dirname(OWNER_LIMITS), exist_ok=True)
+        sb.write_json(OWNER_LIMITS, own, mode=0o600)
+        sync_agent_files(rule_notices())
+    print(f"disk budget: {my_limits()['DISK_BUDGET_GB']}G (your agents are told to stay within it)")
 
 
 def ports():
@@ -2703,6 +2728,9 @@ def main():
     p = argparse.ArgumentParser(prog="box", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest="sub")
+    x = s.add_parser("limits", help="owner: the disk budget your agents see (`box limits disk 50`)")
+    x.add_argument("what", nargs="?", choices=["disk"], default="disk"); x.add_argument("value", nargs="?")
+    x.set_defaults(fn=cmd_limits)
     x = s.add_parser("status"); x.add_argument("--agent", action="store_true")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_status)
     s.add_parser("ports").set_defaults(fn=cmd_ports)
