@@ -839,7 +839,7 @@ def start_update(cfg, by):
         return {"ok": False, "error": "updates from the dashboard aren't set up (UPDATE_SOURCE in sharedbox.conf)"}
     st = sb.read_json(os.path.join(sb.STATE_DIR, "update.json"), {}) or {}
     if st.get("state") == "running" and time.time() - float(st.get("started") or 0) < 1800:
-        return {"ok": True, "message": "an update is already running"}
+        return {"ok": True, "message": "An update is already running. Refresh in a minute."}
     r = run(["systemd-run", f"--unit=sharedbox-update-{int(time.time())}", "--collect", "--quiet",
              os.path.join(sb.LIB_DIR, "sharedbox-update"), str(by)], check=False, capture_output=True, text=True)
     if r.returncode != 0:
