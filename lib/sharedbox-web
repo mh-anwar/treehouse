@@ -1301,7 +1301,7 @@ class GateHandler(Handler):
                 return kind, path[len(prefix):]
         if path in ("/_box", "/_box/", "/_box/me"):
             return "me", None
-        if path in ("/_box/logout", "/_box/healthz"):
+        if path in ("/_box/logout", "/_box/healthz", "/_box/open"):
             return path[6:], None
         return "landing", path
 
@@ -1317,6 +1317,15 @@ class GateHandler(Handler):
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
         who = self.who()
+        if kind == "open" and who:
+            # the gate sends a browser here when it has no T3 session yet: pair it and go straight in,
+            # instead of leaving them on T3's "paste a pairing token" screen
+            if self.limited("open:" + who["id"], 10):
+                return self.redirect("/_box/me")
+            res = public_pair(portal_call("gate", who, "t3"))
+            if res.get("ok") and res.get("pair_url"):
+                return self.redirect(res["pair_url"])
+            return self.send(200, portal_page("gate", who, who["name"], who["rec"], res))
         if kind == "me" and who:
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q,
                                               rng=(q.get("range") or ["24h"])[0]))

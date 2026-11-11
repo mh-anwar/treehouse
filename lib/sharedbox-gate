@@ -172,6 +172,11 @@ def owner_t3(email):
             and str(email or "").strip().lower() in sb.owner_emails(CFG))
 
 
+def has_t3_session(headers):
+    """Does the browser carry a T3 Code session cookie (t3_session_<id>)? Without one T3 asks for a pairing token."""
+    return any(p.strip().startswith("t3_session_") for v in values(headers, "cookie") for p in v.split(";"))
+
+
 def cf_user(email):
     return sb.user_by_email(email, users())[0]
 
@@ -450,6 +455,11 @@ async def handle_request(reader, writer, head, peer):
         dest = ("unix", WEB_SOCK)
     elif sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and welcome_pending(sess[0]):
         await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
+        return False
+    elif (CF and sess and sess[0] != OWNER and method == "GET" and not upgrade
+          and target.split("?", 1)[0] == "/" and not has_t3_session(headers)):
+        # this browser isn't paired with their T3 yet: pair it for them (sharedbox-web /_box/open)
+        await respond(writer, 303, "", headers=[("Location", "/_box/open")])
         return False
     elif sess:
         host, port = backend_for(sess[0])
