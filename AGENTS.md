@@ -28,11 +28,12 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
   T3 must stay up for a running agent turn or enabled scheduled tasks (T3 skips fixed-time runs it missed).
 
 ## Checking a change
-- Quick, inline: `python3 -c "import ast; ast.parse(open('lib/sharedbox-web').read())"`, the ruff line and
-  unit tests from CONTRIBUTING.md.
-- UI changes: render the piece you changed and look at a screenshot (dark and light, 1280 and 390 wide)
-  before saying it's fixed. Chromium is at `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`, needs `--no-sandbox`.
-- Full e2e (`tests/e2e_browser.py`, several minutes): background only, before a deploy, not after every edit.
+Run only what the change needs:
+- Every change (~15 s): the ruff line and unit tests from CONTRIBUTING.md, plus `python3 tests/e2e_gate.py .`.
+- Look-only changes (layout, CSS, copy), ~15 s: `tests/e2e_browser.py . --shots DIR --shots-only`, then
+  actually look at the screenshots that changed (dark and light, 1280 and 390 wide) before saying it's fixed.
+- Links, buttons, forms or flows changed: the full `tests/e2e_browser.py` (~8 min), in the background only,
+  once before the deploy, not after every edit. Chromium: `~/.cache/ms-playwright/chromium-*/`, `--no-sandbox`.
 - Say plainly what you did not check.
 
 ## UI taste (the owner notices)

@@ -301,6 +301,7 @@ background:var(--panel);padding:0 3px;border-radius:3px;line-height:1.3}.plot .y
 .key{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);margin-right:6px}
 .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
+.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 28px}.duo>section{min-width:0}.duo>section:only-child{grid-column:1/-1}
 .srv{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 .srv .tile{display:flex;flex-direction:column;gap:6px}.srv .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .people{list-style:none;padding:0;margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px}
@@ -841,7 +842,7 @@ def servers_section(st, shared, btn, base="", own_public=True):
         return (f'<a href="{e(pu)}" target="_blank" rel="noopener">{e(pu)}</a>'
                 f'<br><span class="mut">on Tailscale: {tail}</span>')
 
-    out = ["<h2>Your servers</h2>"]
+    out = ["<div class='duo'><section><h2>Your servers</h2>"]  # side by side when there's room
     mine = st.get("servers")
     if mine is None:
         out.append("<p class='mut'>Couldn't load your servers just now.</p>")
@@ -858,18 +859,19 @@ def servers_section(st, shared, btn, base="", own_public=True):
                    "expect to live at <code>/</code> may need a base-path setting (Vite <code>base</code>, Next "
                    "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC and own_public else
                    "Links work from devices on Tailscale.") + "</p>")
+    end = "</section></div>"
     if shared.get("unavailable"):
-        return "".join(out)
-    out.append("<h2>Group servers</h2>")
+        return "".join(out) + end
+    out.append("</section><section><h2>Group servers</h2>")
     if not shared.get("ok"):
         out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
-        return "".join(out)
+        return "".join(out) + end
     group = [s for s in shared.get("servers") or []
              if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))]
     if not group:
         out.append("<p class='mut'>Nothing yet. Servers the whole group owns show up here; anyone can restart "
                    "them. Ask your agent to make one with <code>box shared</code>.</p>")
-        return "".join(out)
+        return "".join(out) + end
 
     def who_when(by, ts):
         return (f"{e(str(by))} · {e(ago_text(ts))}" if by and ts else e(str(by or "?")))
@@ -887,7 +889,7 @@ def servers_section(st, shared, btn, base="", own_public=True):
                   if PUBLIC and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else
                   "Their links work from devices on Tailscale (anyone can change their code, so they stay off the "
                   "public site).") + "</p>")
-    return "".join(out)
+    return "".join(out) + end
 
 
 def logs_card(res, btn):

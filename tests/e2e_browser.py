@@ -1,6 +1,11 @@
 """Browser QA for the public site: a real Chromium drives the REAL sharedbox-gate and sharedbox-web through TLS.
 
-    uv run --no-project --with playwright python tests/e2e_browser.py [REPO] [--shots DIR] [--quick]
+    uv run --no-project --with playwright python tests/e2e_browser.py [REPO] [--shots DIR] [--quick | --shots-only]
+
+How much to run: a look-only change (layout, CSS, copy) needs just `--shots DIR --shots-only` (every page as
+each persona, 1280 and 390 wide, dark and light, plus the page checks below; about a minute). `--quick` clicks
+one level deep. The full run (several minutes) is for changes to links, buttons, forms or flows, before a
+deploy, in the background.
 
 Only the root boundary is faked: sharedbox-web's spool_call (what root's provisioner would answer: status, logins,
 servers, pairing, requests, invites) and Cloudflare's token check (fake tokens per persona). Everything between the
@@ -40,6 +45,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 args = [a for a in sys.argv[1:]]
 QUICK = "--quick" in args
+SHOTS_ONLY = "--shots-only" in args
 SHOTS = None
 if "--shots" in args:
     SHOTS = args[args.index("--shots") + 1]
@@ -900,6 +906,10 @@ def main():
             reg["users"]["bob"]["welcome"] = True
             save_registry(reg)
             g._users = (0.0, {})
+        if SHOTS_ONLY:
+            browser.close()
+            print(f"\nscreenshots in {SHOTS}; {len(FAILS)} problem(s)")
+            sys.exit(1 if FAILS else 0)
         flow_login(browser)  # bob's first visit must still see the welcome page
         flow_open_t3(browser, "alice", "tok-alice", PORT_OF["alice"])
         flow_open_t3(browser, "alice (cookie)", "tok-alice", PORT_OF["alice"], cookie=True)
