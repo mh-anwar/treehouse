@@ -840,9 +840,12 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
         dash = ""
     dash += servers_section(st, shared, btn, base)
+    # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
+    t3_btn = ("<a href='/_box/app'><button type='button'>Open my T3 Code</button></a>" if CF and gate
+              else btn("t3", "Open my T3 Code"))
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
-            out.append("<p>" + btn("t3", "Open my T3 Code") + "</p>")
+            out.append("<p>" + t3_btn + "</p>")
         out.append(dash)
         out.append("<h2 style='margin-top:34px'>Setup</h2>")
         dash = ""
@@ -868,9 +871,11 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
     else:
         out.append("<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
-                   "It keeps running when you close the tab.</p>" + btn("t3", "Open my T3 Code")
-                   + f"<p class='sub'>Already opened it on this device? Just go to "
-                     f"<a href='{e(safe_url(t3['url']))}'>{e(t3['url'])}</a> (bookmark it).</p>")
+                   "It keeps running when you close the tab.</p>" + t3_btn
+                   + (f"<p class='sub'>Bookmark <b>{e(PUBLIC)}</b>: it opens this page, and T3 is one click away.</p>"
+                      if CF and gate else
+                      f"<p class='sub'>Already opened it on this device? Just go to "
+                      f"<a href='{e(safe_url(t3['url']))}'>{e(t3['url'])}</a> (bookmark it).</p>"))
     if "gh" in logins:
         out.append(f"<h2>Optional: GitHub {done(logins['gh']['ok'])}</h2>")
         if logins["gh"]["ok"]:
@@ -1301,7 +1306,7 @@ class GateHandler(Handler):
                 return kind, path[len(prefix):]
         if path in ("/_box", "/_box/", "/_box/me"):
             return "me", None
-        if path in ("/_box/logout", "/_box/healthz", "/_box/open"):
+        if path in ("/_box/logout", "/_box/healthz", "/_box/open", "/_box/app"):
             return path[6:], None
         return "landing", path
 
@@ -1316,6 +1321,8 @@ class GateHandler(Handler):
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
+        if kind == "app":  # "Open my T3 Code": a same-site hop to "/", which the gate sends to T3 (pairing first if needed)
+            return self.redirect("/")
         who = self.who()
         if kind == "open" and not who and CF and self.cf_email() in sb.owner_emails(CFG):
             # the owner's own T3: root checks the Access token itself and mints the pairing token

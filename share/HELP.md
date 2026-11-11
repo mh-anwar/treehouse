@@ -60,6 +60,9 @@ Group servers belong to everyone: one shared copy of a bot/tool instead of each 
   create one when the user wants it shared, and don't stop or change other people's unless the user asked.
 - It runs as a separate account that writes only its own folder, with `HOME` = that folder and no access to anyone's
   home. **Secrets (`.env`, tokens) there are readable by everyone on the box.** Tell the user before adding a key.
+- "Permission denied" writing in `{shared_dir}/NAME` right after the group was set up: this login session started
+  before the account joined the group. `box shared` commands still work; for file edits use
+  `sg sbshared -c '<command>'`, or it fixes itself after the next login/reboot.
 - After copying files in: `chmod -R g+w {shared_dir}/NAME`. Git "dubious ownership":
   `git config --global --add safe.directory {shared_dir}/NAME`.
 - Never cleaned by the janitor; doesn't count toward your disk budget.
