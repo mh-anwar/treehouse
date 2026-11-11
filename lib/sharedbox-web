@@ -1044,9 +1044,8 @@ def features_page(owner=False):
             "Unusual installs get checked by the owner first."),
         "</div><h3 class='fg'>Upkeep and safety</h3><div class='flist'>",
         row("Auto updates", "Security fixes for the box and your agents."),
-        row("Reboots", "Your servers and T3 come back on their own.",
-            "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
-            "to finish."),
+        row("Reboots", f"Security updates every {e(days)} night{'s' if ' and ' in days else ''}." if days
+            else "Security updates at night.", "A busy agent gets up to 2 hours to finish."),
         row("Janitor", "Cleans up caches and leftovers so the disk never fills.",
             f"Projects untouched for {e(ttl)} days get archived, not deleted."),
         row("Tripwire", "You get an email if an agent goes rogue.",
