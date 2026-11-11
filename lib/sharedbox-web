@@ -1245,7 +1245,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
                 if t3 and t3.get("sleeping") else "")
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
-            out.append("<p>" + t3_btn + " " + sleeping + "</p>")
+            out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
+                       "<a href='#t3app'>set it up</a>.</p>")
         out.append(dash)
         out.append("<h2 style='margin-top:34px'>Setup</h2>")
         dash = ""
@@ -1287,7 +1288,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         tail = urllib.parse.urlsplit(str((st.get("t3") or {}).get("url") or ""))  # the tailnet address, not PUBLIC
         app_url = f"http://{HOST}:{tail.port}" if tail.port else ""
         on_tailnet = bool((rec or {}).get("ts_id")) or not CF
-        out.append("<h2>Use the T3 app on your laptop</h2><p>The T3 Code app is the best way to use the box. Get it at "
+        out.append("<h2 id='t3app'>Use the T3 app on your laptop</h2><p>The T3 Code app is the best way to use the box. Get it at "
                    "<a href='https://t3.codes' target='_blank' rel='noopener'>t3.codes</a>, then connect it:</p>")
         if app_url and on_tailnet:
             out.append(f"<h3>On Tailscale</h3><p>In the app, add an environment with <code>{e(app_url)}</code>, "
