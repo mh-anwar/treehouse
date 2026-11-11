@@ -164,6 +164,8 @@ DEFAULTS = {
     "CF_ACCESS_APP_ID": "",
     "CF_ACCESS_POLICY_ID": "",
     "CF_OWNER_EMAILS": "",
+    # most emails allowed through Cloudflare Access (Zero Trust Free = 50 users; stay well under, never pay)
+    "CF_SEAT_LIMIT": "40",
     # port of the owner's own T3 Code on GATE_BACKEND_HOST; set it to let CF_OWNER_EMAILS open it on the public site
     "OWNER_T3_PORT": "",
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
