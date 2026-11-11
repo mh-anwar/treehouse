@@ -1283,6 +1283,26 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         else:
             out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
                        "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
+    if t3 or "t3connect" in logins:
+        tail = urllib.parse.urlsplit(str((st.get("t3") or {}).get("url") or ""))  # the tailnet address, not PUBLIC
+        app_url = f"http://{HOST}:{tail.port}" if tail.port else ""
+        on_tailnet = bool((rec or {}).get("ts_id")) or not CF
+        out.append("<h2>Use the T3 app on your laptop</h2><p>The T3 Code app is the best way to use the box. Get it at "
+                   "<a href='https://t3.codes' target='_blank' rel='noopener'>t3.codes</a>, then connect it:</p>")
+        if app_url and on_tailnet:
+            out.append(f"<h3>On Tailscale</h3><p>In the app, add an environment with <code>{e(app_url)}</code>, "
+                       "then paste a pairing link from here (it works once, for 30 minutes).</p>"
+                       + btn("t3app", "Get a pairing link for the app", primary=False))
+        if "t3connect" in logins:
+            linked = logins["t3connect"]["ok"]
+            out.append(f"<h3>From anywhere {done(linked)}</h3>")
+            if linked:
+                out.append(f"<p>Linked. Sign in to the app with the same T3 account and <b>{e(HOST)}</b> shows up, "
+                           "no Tailscale needed.</p>")
+            else:
+                out.append("<p>Link this box to your T3 account once (you approve a code), then sign in to the app "
+                           "with the same account. No Tailscale needed. It restarts your T3 Code here, so do it when "
+                           "no agent is mid-task.</p>" + btn("login", "Link my T3 account", "t3connect", primary=False))
     if dash:
         out.append(dash)
     if st.get("updates") in ("auto", "manual"):
@@ -1364,6 +1384,11 @@ def portal_result(res, btn, base=""):
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
         return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
+    if res.get("app_pair"):
+        u = str(res["app_pair"])
+        return (f"<div class='card'><h3>Pairing link for the T3 app</h3><p>In the app: add the environment, then paste "
+                f"this when it asks (works once, for 30 minutes):</p><p><code style='word-break:break-all'>{e(u)}</code>"
+                "</p></div>")
     if res.get("login_url"):
         url = safe_url(res["login_url"], ("https://",))
         return f"""<div class="card"><h3>Your login link</h3>
@@ -1563,8 +1588,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown server"}))
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.send(200, portal_page(ip, who, name, rec, dict(res, _view=action, key=key)))
-        actions = ("t3", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
-        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh")
+        actions = ("t3", "t3app", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
+        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
             return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
         if action == "add-key":
@@ -1577,6 +1602,10 @@ class Handler(BaseHTTPRequestHandler):
             kw["console"] = True
         if action == "code":
             kw["code"] = form.get("code", "")[:1000]
+        if action == "t3app":  # a pairing link for the laptop app over Tailscale: keep the tailnet address
+            res = portal_call(ip, who, "t3")
+            res = ({"ok": True, "app_pair": res["pair_url"]} if res.get("ok") and res.get("pair_url") else res)
+            return self.send(200, portal_page(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"]))))
         res = portal_call(ip, who, action, **kw)
         if (who.get("session") or who.get("cf_jwt")) and res.get("pair_url"):
             res = public_pair(res)
