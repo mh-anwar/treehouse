@@ -86,3 +86,14 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed and updated by the owner. `box updates` shows
 whether this user's agents update nightly (`auto`) or stay put (`manual`; `box updates now` moves up). Change it
 only when the user asks. Serious security fixes are applied to everyone.
+
+@@ connect
+The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this
+account, with no VPN: SSH goes through Cloudflare. {connect}
+- Their agent does everything itself: installs `cloudflared`, makes a key `~/.ssh/treehouse`, runs
+  `cloudflared access login <site>` (the user types one emailed code in the browser), registers the key with
+  `POST <site>/_box/api/ssh-key`, and adds a `Host treehouse` block to `~/.ssh/config`.
+- Afterwards, on their computer: `ssh treehouse 'box status'`, `ssh -t treehouse claude`, VS Code / Cursor
+  Remote-SSH to host `treehouse`, or just tell their local agent "run X on my treehouse box".
+- If they ask how: point them to that page and its Copy button. Don't walk them through it in a terminal, and
+  don't add keys for them by hand.
