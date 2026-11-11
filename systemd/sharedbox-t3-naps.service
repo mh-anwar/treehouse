@@ -1,0 +1,6 @@
+[Unit]
+Description=sharedbox: nap friends' unused T3 Code servers (their port stays open and wakes them)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-janitor t3-naps

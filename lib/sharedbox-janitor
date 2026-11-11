@@ -2,6 +2,8 @@
 """sharedbox-janitor: periodic housekeeping (root).
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
+  sharedbox-janitor t3-naps [--dry-run]              stop friends' T3 Code servers nobody is using (every few
+                                                     minutes; the T3 port stays open and wakes T3 on use)
   sharedbox-janitor guard                            make friend processes first in line for the OOM killer
   sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
@@ -24,11 +26,15 @@ sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 
 STATE = os.path.join(sb.STATE_DIR, "janitor-state.json")
+NAP_STATE = os.path.join(sb.STATE_DIR, "t3-naps.json")
 PASS_TIMEOUT = 900          # per user; a friend must not stall the whole run
 PASS_MAX_OUT = 4 << 20      # reply cap; root never buffers more than this from a friend
 REBOOT_WAIT_MAX = 2 * 3600  # a scheduled reboot waits at most this long for agents to finish their turn
 CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
-T3_BUSY_USEC = 60_000_000   # CPU used under a T3 (besides T3 itself) between two runs that counts as "in use"
+T3_BUSY_USEC = 20_000_000   # CPU used under a T3 (besides T3 itself) between two nap checks that counts as "in use"
+# T3's own processes: the launcher (node .../t3.mjs or /usr/local/bin/t3), the server it runs from ~/.t3/runtime,
+# and its resource monitor. Anything else in its cgroup was started from T3 (agents, their tools, dev servers).
+T3_OWN_RE = re.compile(r"(^|/)(t3|t3\.mjs|t3-resource-monitor)$")
 
 
 def du(path):
@@ -42,14 +48,14 @@ def du(path):
         return None
 
 
-def user_pass(pw, plan):
+def user_pass(pw, plan, cmd="_pass", check=None):
     env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name,
            "PATH": "/usr/local/bin:/usr/bin:/bin", "XDG_RUNTIME_DIR": f"/run/user/{pw.pw_uid}",
            "SHAREDBOX_LIB": sb.LIB_DIR, "SHAREDBOX_SHARE": sb.SHARE_DIR,
            "SHAREDBOX_CONF": sb.CONF_PATH, "SHAREDBOX_STATE": sb.STATE_DIR}
     p = subprocess.Popen(
         ["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
-         "--reset-env", "--", sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), "_pass"],
+         "--reset-env", "--", sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), cmd],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=env, cwd=pw.pw_dir)
     out, err = bytearray(), bytearray()
@@ -88,7 +94,7 @@ def user_pass(pw, plan):
     if rc != 0:
         raise RuntimeError(err.decode(errors="replace"))
     rep = json.loads(out)
-    if not valid_reply(rep):
+    if not (check or valid_reply)(rep):
         raise RuntimeError("malformed reply")
     return rep
 
@@ -119,12 +125,16 @@ def valid_reply(rep):
 
 
 # ---------- idle T3 Code servers ----------
-# A friend's T3 (sb-t3.service in their systemd --user, ~450 MB) nobody used for T3_IDLE_DAYS is stopped by
-# the friend's own `box _pass`; the gate's /_box/open (and `box t3`, and the T3 button on /me) start it again.
+# A friend's T3 (sb-t3.service in their systemd --user, ~0.4 GB) naps when nobody uses it: `t3-naps` (every few
+# minutes) asks the friend's own `box _t3-nap` to stop it. Their T3 port stays open (sb-t3.socket), so the next
+# connection from the T3 app, a browser or the gate starts it again in a few seconds; nothing else to click.
+# Accounts linked to T3 Connect reach T3 through T3's relay, which only exists while T3 runs, so those nap
+# only after T3_IDLE_DAYS. Everyone else after T3_NAP_MINUTES.
 # "Used" = opened through the public gate (it touches T3_SEEN/<user>), an open TCP connection to its port
-# (Tailscale and desktop users, or a T3 tab still open), or agents working under it: CPU used by anything in
-# its cgroup besides the T3 server itself since the last run (agent turns and their tools, even ones that
-# already ended), or an agent using CPU right now. Agents that merely sit there waiting don't count.
+# (T3 app, a T3 tab), or agents working under it: CPU used by anything in its cgroup besides T3's own processes
+# since the last check (agent turns and their tools, even ones that already ended), an agent using CPU right
+# now, or something started from T3 that listens on a port (a dev server, a bot). Agents that merely sit there
+# waiting don't count.
 
 def t3_cgroup(uid):
     """(cgroup dir, PIDs) of the friend's sb-t3.service (T3 and every agent it started); (None, []) if not running."""
@@ -189,46 +199,106 @@ def proc_started(pid):
         return 0
 
 
-def listening_pids():
-    """PIDs with a listening TCP socket (needs root to see other users' sockets; the janitor is root)."""
+def t3_own(pid):
+    """Is `pid` one of T3's own processes (launcher, server, resource monitor)?"""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv = f.read().split(b"\0")[:2]
+    except OSError:
+        return False
+    return any(T3_OWN_RE.search(x.decode(errors="replace")) for x in argv if x)
+
+
+def listening_ports_by_pid():
+    """{pid: {ports}} for listening TCP sockets (root sees everyone's)."""
     try:
         out = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
-        return set()
-    return {int(p) for p in re.findall(r"pid=(\d+)", out)}
+        return {}
+    res = {}
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) < 4:
+            continue
+        try:
+            port = int(cols[3].rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        for pid in re.findall(r"pid=(\d+)", line):
+            res.setdefault(int(pid), set()).add(port)
+    return res
 
 
-def t3_should_sleep(cfg, name, rec, st, now):
-    """True if this friend's running T3 has been unused for T3_IDLE_DAYS. Remembers the last busy moment in `st`."""
-    try:
-        days = float(cfg.get("T3_IDLE_DAYS") or 0)
-    except ValueError:
-        days = 0
+def t3_linked(home):
+    """Is this account's T3 linked to T3 Connect (reached through T3's relay, which needs T3 running)?"""
+    return os.path.exists(os.path.join(home, ".t3", "userdata", "secrets", "cloud-linked-user-id.bin"))
+
+
+def t3_should_sleep(cfg, name, rec, st, now, home=""):
+    """True if this friend's running T3 is unused for long enough to nap. Remembers the last busy moment in `st`."""
     owner = sb.owner_account(cfg)
-    if days <= 0 or name in sb.admin_users(cfg) or (owner and owner.pw_name == name):
+    if name in sb.admin_users(cfg) or (owner and owner.pw_name == name):
+        return False
+    if home and t3_linked(home):
+        idle = float(cfg.get("T3_IDLE_DAYS") or 0) * 86400
+    else:
+        idle = float(cfg.get("T3_NAP_MINUTES") or 0) * 60
+    if idle <= 0:
         return False
     cg, pids = t3_cgroup(rec["uid"])
     if not pids:
         st.pop("t3_other_cpu", None)
         return False
-    started = {p: proc_started(p) for p in pids}
-    main = min(pids, key=lambda p: started[p] or now)
-    other = max(0, cgroup_cpu_usec(cg) - proc_cpu_usec(main))  # agents + their tools, exited ones included
+    own = {p for p in pids if t3_own(p)}
+    if not own:
+        return False  # can't tell T3 from the rest: leave it alone
+    started = min((proc_started(p) for p in own), default=0) or now
+    other = max(0, cgroup_cpu_usec(cg) - sum(proc_cpu_usec(p) for p in own))  # agents + tools, exited ones too
     prev = st.get("t3_other_cpu")
-    working = ((isinstance(prev, int) and (other < prev or other - prev >= T3_BUSY_USEC))
-               or bool(sb.busy_agents(pids=pids, seconds=2)))
+    # a drop means T3 restarted (counts as use); a few ms either way is just rounding (cgroup µs vs /proc ticks)
+    working = ((isinstance(prev, int) and (other < prev - 1_000_000 or other - prev >= T3_BUSY_USEC))
+               or bool(sb.busy_agents(pids=[p for p in pids if p not in own], seconds=2)))
     st["t3_other_cpu"] = other
+    public, inner = sb.port_range(cfg, rec["uid"])
     # something started from T3 is serving (a dev server, a bot): stopping T3 would kill it
-    working = working or bool(listening_pids() & (set(pids) - {main}))
-    connected = port_connections(sb.port_range(cfg, rec["uid"])[0]) > 0
+    lp = listening_ports_by_pid()
+    working = working or any(lp.get(p, set()) - {public, inner} for p in pids if p not in own)
+    connected = port_connections(public) + port_connections(inner) > 0
     if working or connected:
         st["t3_busy"] = now
     try:
         seen = os.lstat(os.path.join(sb.T3_SEEN, name)).st_mtime
     except OSError:
         seen = 0
-    last = max(seen, started[main], st.get("t3_busy", 0))
-    return not working and not connected and now - last > days * 86400
+    last = max(seen, started, st.get("t3_busy", 0))
+    return not working and not connected and now - last > idle
+
+
+def cmd_t3_naps(cfg, a):
+    """Nap every friend's T3 nobody is using. Light (no du), so it can run every few minutes."""
+    state = sb.read_json(NAP_STATE, {}) or {}
+    now = int(time.time())
+    users = sb.friend_users()
+    for name, rec in sorted(users.items()):
+        try:
+            pw = pwd.getpwnam(name)
+            st = state.setdefault(name, {})
+            if not t3_should_sleep(cfg, name, rec, st, now, home=pw.pw_dir):
+                continue
+            if a.dry_run:
+                print(f"{name}: would nap T3 Code")
+                continue
+            rep = user_pass(pw, {}, "_t3-nap",
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("t3_stopped"), bool))
+            if rep["t3_stopped"]:
+                st.pop("t3_other_cpu", None)
+                st["napped"] = now
+        except Exception as e:  # one friend's trouble must not stop the others
+            print(f"{name}: t3 nap error: {str(e)[-500:]!r}", file=sys.stderr)
+    for gone in set(state) - set(users):
+        state.pop(gone)
+    if not a.dry_run:
+        sb.write_json(NAP_STATE, state, mode=0o600)
 
 
 # ---------- archive warnings ----------
@@ -310,16 +380,10 @@ def cmd_run(cfg, a):
                 "tmp_ttl_days": sb.cfg_int(cfg, "TMP_TTL_DAYS"),
                 "warn_days": sb.cfg_int(cfg, "WARN_DAYS"),
                 "archive_days": sb.cfg_int(cfg, "ARCHIVE_DAYS"),
-                "t3_sleep": t3_should_sleep(cfg, name, rec, st, now),
+                "t3_sleep": False,  # T3 naps are `t3-naps`, every few minutes
                 "dry_run": a.dry_run, "box": box,
             }
             rep = user_pass(pw, plan)
-            if plan["t3_sleep"]:
-                if a.dry_run:
-                    print(f"{name}: would stop T3 Code (unused for {cfg['T3_IDLE_DAYS']} days)")
-                elif rep.get("t3_stopped"):
-                    sb.log_event("t3_idle_stopped", name, idle_days=sb.cfg_int(cfg, "T3_IDLE_DAYS"))
-                    st.pop("t3_other_cpu", None)
             for d in rep.get("archived", []):
                 if a.dry_run:
                     print(f"{name}: would archive {sb.human(d['bytes']):>8} ~/projects/{sb.printable(d['name'])}")
@@ -489,6 +553,7 @@ def main():
     x = s.add_parser("run"); x.add_argument("--dry-run", action="store_true")
     x.add_argument("--user"); x.set_defaults(fn=cmd_run)
     s.add_parser("guard").set_defaults(fn=cmd_guard)
+    x = s.add_parser("t3-naps"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_t3_naps)
     x = s.add_parser("reboot"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_reboot)
     a = p.parse_args()
     a.fn(cfg, a)

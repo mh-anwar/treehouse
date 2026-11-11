@@ -106,7 +106,10 @@ DEFAULTS = {
     # an expired project is moved to ~/.sharedbox/archive/ (restorable: `box restore NAME`) and deleted this
     # many days later; archives still count toward the disk budget and go first when someone is over it
     "ARCHIVE_DAYS": "14",
-    # a friend's T3 Code server (~450 MB RAM) unused this long is stopped; their next visit starts it again
+    # a friend's T3 Code server (~0.4 GB RAM) naps after this many minutes unused; its port stays open and the
+    # next connection (T3 app, browser) wakes it in a few seconds. Accounts linked to T3 Connect use T3_IDLE_DAYS
+    # instead (T3's relay only runs while T3 does, so a napping T3 is unreachable that way until a visit wakes it)
+    "T3_NAP_MINUTES": "60",
     "T3_IDLE_DAYS": "3",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
