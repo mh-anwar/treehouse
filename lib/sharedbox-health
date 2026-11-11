@@ -357,7 +357,7 @@ def build_report(cfg, g, findings, new_ids, resolved):
     if iss:
         groups = sb.group_issues(iss)
         il = [f"{len(iss)} logged by {len({r['user'] for r in iss})} user(s)' agents, {len(groups)} distinct "
-              "(details: sudo sharedbox-admin issues)"]
+              "(details: ask your agent to run `box friends issues`)"]
         for n, users, _, _, r in groups[:12]:
             il.append(f"{n}x [{r['kind']}] {sb.printable(r['text'])[:220]} ({', '.join(users)})")
         S.append(("What slowed agents down", il))

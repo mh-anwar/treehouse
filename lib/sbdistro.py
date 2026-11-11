@@ -245,7 +245,7 @@ def install(pkgs, dry=False, fam=None):
         if not pkgs:
             return
         env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
-        _run(["apt-get", "install", "-y", "--no-install-recommends",
+        _run(["apt-get", "install", "-y", "--no-install-recommends", "-o", "DPkg::Lock::Timeout=300",
               "-o", "Dpkg::Options::=--force-confold"] + pkgs, dry, env=env)
         return
     if fam != "arch":
@@ -276,6 +276,49 @@ def install(pkgs, dry=False, fam=None):
         print(f"    warning: pacman could not install: {' '.join(failed)}. A conflict (answer it by "
               f"hand: sudo pacman -S {' '.join(failed)}) or a stale sync database (run a full "
               "`sudo pacman -Syu` first) are the usual causes", file=sys.stderr)
+
+
+# package names a friend may ask for (`box request install`): Debian and Arch rules, never starting with "-"
+PKG_NAME_RE = re.compile(r"[a-z0-9][a-z0-9@._+-]{0,99}")
+
+
+def installed(pkg, fam=None):
+    """Is this package (native name; on Arch also a group) installed now?"""
+    fam = fam or current()
+    if fam == "debian":
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg], capture_output=True, text=True)
+        return r.returncode == 0 and r.stdout.strip().endswith(" installed")
+    if fam == "arch":
+        return any(subprocess.run(q, capture_output=True).returncode == 0
+                   for q in (["pacman", "-Q", "--", pkg], ["pacman", "-Qg", "--", pkg]))
+    raise _unsupported(fam, "look up packages")
+
+
+def parse_apt_simulation(out):
+    """Package names `apt-get -s install` would install or upgrade ("Inst NAME ..." lines)."""
+    return [m.group(1) for m in re.finditer(r"^Inst (\S+)", out, re.M)]
+
+
+def simulate_install(pkgs, fam=None, timeout=180):
+    """(ok, packages it would install incl. dependencies, error text). Changes nothing; no -Sy on Arch."""
+    fam = fam or current()
+    if fam == "debian":
+        cmd = ["apt-get", "-s", "install", "--no-install-recommends"] + list(pkgs)
+        parse = parse_apt_simulation
+    elif fam == "arch":
+        cmd = ["pacman", "-Sp", "--needed", "--print-format", "%n", "--"] + list(pkgs)
+        parse = lambda out: [ln.strip() for ln in out.splitlines() if ln.strip() and " " not in ln.strip()]  # noqa: E731
+    else:
+        raise _unsupported(fam, "look up packages")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, [], str(e)
+    if r.returncode != 0:
+        err = [ln for ln in (r.stderr or r.stdout).splitlines() if ln.strip()]
+        return False, [], (err[-1] if err else f"exit {r.returncode}")[:300]
+    return True, parse(r.stdout), ""
 
 
 def remove(pkgs, fam=None):

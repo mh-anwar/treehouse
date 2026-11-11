@@ -12,7 +12,7 @@ if [[ ${1:-} == --remove-users ]]; then
     done
 fi
 
-systemctl disable --now sharedbox-cloudflared.service sharedbox-gate.service sharedbox-web.service sharedbox-provision.path \
+systemctl disable --now sharedbox-cloudflared.service sharedbox-gate.service sharedbox-web.service sharedbox-provision.path sharedbox-requests.path \
     sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer sharedbox-reboot.timer 2>/dev/null || true
 # shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
 for u in /etc/systemd/system/sb-shared-*.service; do
