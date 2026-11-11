@@ -39,6 +39,25 @@ Never ask for passwords or tokens in chat.
 - If the box is `busy` in `box status`, avoid heavy work unless the user insists.
 - Docker works, rootless, under your own account (`box help docker`). Other tools install into your home (`~/.local`, nvm, uv, rustup, …).
 
+@@ git
+Faster clones and CI. Measured on this box (ruff, a medium repo): full clone 17 s / 245 MB, blobless 9 s / 68 MB,
+shallow 5 s / 18 MB.
+- Clone with `git clone --filter=blob:none <url>` (blobless): full history for `git log`/`blame`/rebase/push,
+  file contents fetched only when checked out. Half the time, a quarter of the disk.
+- `--depth=1` (shallow) only for a throwaway read or a one-off build: it breaks `log`/`blame`, merges and rebases,
+  and later fetches can be slow. Never on a repo the user will work in.
+- Several branches at once: `git worktree add ../<name> <branch>` (instant, shares objects) instead of a second clone.
+- Waiting on GitHub Actions: never block the chat on it. Use your host's PR/CI watch tool if it has one, otherwise
+  `gh run watch <id> --exit-status` as a background task.
+- Writing or fixing a workflow, include what speeds every later run:
+  - `concurrency: {{group: ${{{{ github.workflow }}}}-${{{{ github.ref }}}}, cancel-in-progress: true}}` (an agent's
+    rapid pushes cancel the stale runs instead of queueing them);
+  - `actions/checkout` keeps its default `fetch-depth: 1`; set `0` only for a step that needs history (changelogs, versioning);
+  - independent jobs run in parallel; `needs: [build]` only where a job really uses another's output, passed
+    with `actions/upload-artifact`/`download-artifact` instead of rebuilding it;
+  - dependency caches (`actions/setup-node` `cache: pnpm`, `astral-sh/setup-uv` `enable-cache: true`, `Swatinem/rust-cache`);
+  - `paths:`/`paths-ignore:` so a docs-only change doesn't run the test suite.
+
 @@ reboots
 {updates}
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
