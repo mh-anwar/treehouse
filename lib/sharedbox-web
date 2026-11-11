@@ -193,7 +193,7 @@ def page(title, body, gate=False):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title><style>{CSS}</style></head>
 <body><header>{nav}</header>
-<main>{body}</main></body></html>"""
+<main><!--email_off-->{body}<!--/email_off--></main></body></html>"""
 
 
 CSS = """
@@ -231,6 +231,8 @@ form label{display:block;margin:14px 0 6px;color:var(--mut)}input,textarea{width
 color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
 textarea{font-family:ui-monospace,monospace;font-size:12px;height:90px}
 button{margin-top:16px;background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer}
+a.btn{display:inline-block;margin-top:16px;background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer;text-decoration:none}
+a.btn:hover{filter:brightness(1.08)}
 .box{max-width:680px}.err{color:var(--bad)}svg.spark{display:block}
 .box.me{max-width:980px}.me>p,.me>ul,.me>details,.me>form{max-width:680px}
 a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-radius:6px}
@@ -718,6 +720,9 @@ def friend_dashboard(name, rec, rng="24h", base=""):
             f'<span class="c">{fmt_cores(cn) if cn >= 0.01 else "idle"}</span></li>'
             for cn, n, cb, _ in people) + "</ul>")
     feed = [] if owner else box_feed()  # the owner's Box section has the full event log instead
+    mine = [] if owner else own_events(name)
+    if mine:
+        out.append("<h2>Your activity</h2><ul class='ev'>" + "".join(mine) + "</ul>")
     if feed:
         out.append("<h2>Recently on the box</h2><ul class='ev'>" + "".join(feed) + "</ul>")
     return "".join(out)
@@ -799,8 +804,10 @@ def servers_section(st, shared, btn, base=""):
         + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'
         f'</div>{acts("shared", s, group=True)}</div>' for s in group) + "</div>")
     out.append("<p class='sub'>Everyone in the group can start, stop and restart these. "
-               + ("Public links open for anyone with an account here, behind the usual login." if PUBLIC else
-                  "Links work from devices on Tailscale.") + "</p>")
+               + ("Public links open for anyone with an account here, behind the usual login."
+                  if PUBLIC and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else
+                  "Their links work from devices on Tailscale (anyone can change their code, so they stay off the "
+                  "public site).") + "</p>")
     return "".join(out)
 
 
@@ -859,20 +866,89 @@ def allowed_emails():
     return out
 
 
-def event_text(ev):
-    """One events.jsonl line for the owner: kind, who, and its other fields."""
+EVENT_TEXT = {
+    # kind -> sentence; {user} is the actor (bold), other {fields} come from the event
+    "user_created": "{user} joined the box",
+    "user_removed": "{user}'s account was removed",
+    "user_suspended": "{user} was suspended",
+    "user_resumed": "{user} was resumed",
+    "user_killed": "{user}'s processes were stopped",
+    "invite_created": "{user} invited {email}",
+    "invite_used": "{user} used an invite",
+    "join_pending": "{user} asked to join (waiting for approval)",
+    "cf_access": "{email} can now sign in as {user}",
+    "gate_login": "{user} signed in on a new device",
+    "gate_logout": "{user} signed out",
+    "gate_revoked": "{user}'s sessions were revoked",
+    "owner_paired": "{user} opened T3 Code in a new browser",
+    "canary": "TRIPWIRE: {user} opened a decoy secrets file ({file}) with `{cmd}`",
+    "tools_updated": "coding agents were updated",
+    "tools_added": "installed {packages}",
+    "tools_removed": "removed {packages}",
+    "agent_forced_update": "a security update was forced for {agent}",
+    "agent_updates_auto": "{user} turned on automatic agent updates",
+    "agent_updates_manual": "{user} turned off automatic agent updates",
+    "skill_shared": "{user} shared the skill {skill}",
+    "skill_unshared": "{user} removed the skill {skill}",
+    "shared_created": "{user} created the group server {server}",
+    "shared_set": "{user} set the group server {server} to run `{cmd}`",
+    "shared_start": "{user} started the group server {server}",
+    "shared_stop": "{user} stopped the group server {server}",
+    "shared_restart": "{user} restarted the group server {server}",
+    "shared_removed": "{user} removed the group server {server} (code kept in the trash)",
+    "limits_changed": "{user}'s limits were changed",
+    "over_budget": "{user} went over their disk budget",
+    "deleted": "the janitor cleaned up {user}'s {path}",
+    "disk_pressure": "the disk is getting full",
+    "janitor_error": "the cleanup job hit an error",
+    "cloudflare_setup": "the public site was set up ({host})",
+    "cloudflare_ssh": "SSH through Cloudflare was turned on",
+    "admin_drop_refused": "a non-admin tried to send an admin request",
+    "shared_drop_refused": "a non-member tried to control a group server",
+}
+
+
+def event_text(ev, show_email=True):
+    """One events.jsonl line as a plain sentence (owner's log, and each friend's own activity)."""
     e = html.escape
-    bits = []
-    for k, v in ev.items():
-        if k in ("ts", "kind", "user") or v in (None, "", [], {}):
-            continue
-        if isinstance(v, list):
-            v = " ".join(map(str, v))
-        elif isinstance(v, dict):
-            v = json.dumps(v, separators=(",", ":"))
-        bits.append(f"<span class='mut'>{e(str(k))}</span> {e(sb.printable(str(v))[:120])}")
-    return (f"<b>{e(str(ev.get('user') or 'box'))}</b> · {e(str(ev.get('kind') or '?')).replace('_', ' ')}"
-            + (" · " + " · ".join(bits) if bits else ""))
+    kind = str(ev.get("kind") or "?")
+    if kind == "balance":
+        return ("the box got busy: everyone's limits went down for a while" if ev.get("cpu_busy") or ev.get("mem_tight")
+                else "the box is quiet again: limits went back up")
+    tpl = EVENT_TEXT.get(kind)
+    fields = {k: (" ".join(map(str, v)) if isinstance(v, list) else str(v)) for k, v in ev.items()
+              if k not in ("ts", "kind") and v not in (None, "", [], {})}
+    if not show_email:
+        fields.pop("email", None)
+        fields.pop("login", None)
+    fields["user"] = str(ev.get("user") or "the box")
+    if tpl:
+        def sub(m):
+            k = m.group(1)
+            v = sb.printable(fields.get(k, "?"))[:120]
+            return f"<b>{e(v)}</b>" if k == "user" else f"<code>{e(v)}</code>" if k in ("cmd", "file", "path") \
+                else e(v)
+        tpl_txt = tpl.replace("`", "")
+        txt = re.sub(r"\{(\w+)\}", sub, e(tpl_txt))
+        return txt[:1].upper() + txt[1:] if not tpl_txt.startswith("{") else txt
+    bits = [f"{e(k)} {e(sb.printable(v)[:80])}" for k, v in fields.items() if k != "user"]
+    return f"<b>{e(fields['user'])}</b> · {e(kind.replace('_', ' '))}" + (" · " + ", ".join(bits) if bits else "")
+
+
+def own_events(name, n=8):
+    """This person's own activity (their account, their servers, their sign-ins), newest first."""
+    out, last_sig = [], None
+    for ev in reversed(sb.recent_events(300)):
+        if isinstance(ev, dict) and ev.get("user") == name and ev.get("kind") not in ("admin_drop_refused",):
+            sig = {k: v for k, v in ev.items() if k != "ts"}
+            if out and sig == last_sig:
+                continue
+            last_sig = sig
+            out.append(f"<li><span class='mut'>{html.escape(ago_text(ev.get('ts', 0)))}</span> · "
+                       f"{event_text(ev, show_email=True)}</li>")
+            if len(out) >= n:
+                break
+    return out
 
 
 def box_section(n_events=30):
@@ -971,7 +1047,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
     out = [f"<h2>Hi, owner</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
            f"This page shows your account <b>{e(name)}</b> on {e(HOST)}.</p>"]
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
-        out.append('<p><a href="/_box/app"><button>Open my T3 Code</button></a></p>')
+        out.append('<p><a class="btn" href="/_box/app">Open my T3 Code</a></p>')
     if result:
         out.append(portal_result(result, btn, base))
     try:
@@ -986,8 +1062,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
         out.append("<p class='err'>Couldn't load the box section.</p>")
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
-    out.append('<p style="margin-top:30px"><a href="/cdn-cgi/access/logout"><button style="background:var(--btn2);'
-               'color:var(--fg)">Log out of this browser</button></a></p>')
+    out.append('<p style="margin-top:30px"><a class="btn" href="/cdn-cgi/access/logout" style="background:var(--btn2);color:var(--fg)">Log out of this browser</a></p>')
     return page("you", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
@@ -1026,7 +1101,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         dash = ""
     dash += servers_section(st, shared, btn, base)
     # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
-    t3_btn = ("<a href='/_box/app'><button type='button'>Open my T3 Code</button></a>" if CF and gate
+    t3_btn = ("<a class='btn' href='/_box/app'>Open my T3 Code</a>" if CF and gate
               else btn("t3", "Open my T3 Code"))
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
@@ -1121,8 +1196,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
-        out.append('<p><a href="/cdn-cgi/access/logout"><button style="background:var(--btn2);color:var(--fg)">'
-                   'Log out of this browser</button></a></p>')
+        out.append('<p><a class="btn" href="/cdn-cgi/access/logout" style="background:var(--btn2);color:var(--fg)">'
+                   'Log out of this browser</a></p>')
     elif gate:
         out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
 <button style="background:var(--btn2);color:var(--fg)">Log out of this browser</button></form>""")
@@ -1158,7 +1233,7 @@ def portal_result(res, btn, base=""):
 <p class="sub">Anyone who has this link can log in as you until it's used, so don't share it.</p></div>"""
     if res.get("pair_url"):
         return f"""<div class="card"><h3>Your T3 Code is ready</h3>
-<p><a href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener"><button>Open T3 Code →</button></a></p>
+<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 Code →</a></p>
 <p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
@@ -1170,7 +1245,7 @@ or come back here for a new link on another device.</p></div>"""
     if res.get("done"):
         return "<div class='card'><p><span class='pill ok'>✓</span> Logged in.</p></div>"
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
-    open_btn = f'<a href="{e(url)}" target="_blank" rel="noopener"><button>Open the login page →</button></a>'
+    open_btn = f'<a class="btn" href="{e(url)}" target="_blank" rel="noopener">Open the login page →</a>'
     if res.get("paste"):
         return f"""<div class="card"><h3>Finish logging in</h3>
 <p>1. {open_btn}</p><p>2. Sign in. The page then shows a code. Copy it and paste it here:</p>
@@ -1481,8 +1556,7 @@ def connect_section(name):
     ssh_host = live_ssh_host()
     text = sbconnect.connect_text(name, PUBLIC, ssh_host)
     if not ssh_host:
-        return ("<h2>Use the box from your own computer's agent</h2><p class='mut'>Not turned on yet: ask the "
-                "owner to run <code>sudo sharedbox-admin cloudflare ssh</code>.</p>")
+        return ""  # not switched on for this box yet: show nothing rather than a dead end
     return f"""<h2>Use the box from your own computer's agent</h2>
 <p>Have Claude Code or Codex on your laptop? Paste this into it and it sets everything up by itself
 (you only type one emailed code). Afterwards you can say "run X on my treehouse box", use

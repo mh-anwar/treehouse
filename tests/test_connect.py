@@ -470,7 +470,7 @@ class Web(unittest.TestCase):
             out = self.web.connect_section("sam")
         finally:
             self.web.live_ssh_host = orig
-        self.assertIn("sharedbox-admin cloudflare ssh", out)
+        self.assertEqual(out, "")  # hidden until the owner switches it on
         self.assertNotIn("connect-copy", out)
 
     def test_portal_page_has_it(self):
