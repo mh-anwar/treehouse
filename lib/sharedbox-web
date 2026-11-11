@@ -242,6 +242,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
+.fstrip{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 22px}.fchip{display:flex;gap:7px;align-items:center;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--fg);text-decoration:none;font-size:13px}.fchip:hover{border-color:var(--acc)}.fchip.more{color:var(--acc)}
 .feat{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px}.feat .tile{padding:16px 18px}.feat .fi{font-size:26px}.feat .ft{font-size:15px;text-transform:none;letter-spacing:0;color:var(--fg);margin:8px 0 6px}.feat p{margin:0;font-size:14px;line-height:1.55}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
@@ -619,7 +620,8 @@ def friend_dashboard(name, rec, rng="24h", base=""):
     gap = max(3 * step, 2.5 * RANGES[rng] / 240)  # bridge bucket-sized steps; break on real outages
     lim = friend_limits(rec)
     owner = bool((rec or {}).get("owner"))
-    out = [f"""<div class="dash-h" id="dash"><h2>{"Your account" if owner else "Your corner of"} {e(HOST)}</h2><span class="seg">"""
+    out = [features_strip() if base == "/_box" else ""]
+    out += [f"""<div class="dash-h" id="dash"><h2>{"Your account" if owner else "Your corner of"} {e(HOST)}</h2><span class="seg">"""
            + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
            + "</span></div>"]
     # -- box health tiles
@@ -939,6 +941,44 @@ def event_text(ev, show_email=True):
     return f"<b>{e(fields['user'])}</b> · {e(kind.replace('_', ' '))}" + (" · " + ", ".join(bits) if bits else "")
 
 
+def feature_cards():
+    """(icon, title, one line). Short on purpose: people skim."""
+    cpu = CFG.get("BURST_CPU_QUOTA", "500%")
+    try:
+        cpu = f"{float(str(cpu).rstrip('%')) / 100:g}"
+    except ValueError:
+        pass
+    mem = CFG.get("BURST_MEMORY_HIGH", "15G").replace("G", " GB")
+    cards = [
+        ("🤖", "Agents that know the box", "Claude, Codex and opencode come set up and already know how everything here works."),
+        ("⚡", "Burst mode", f"Dynamic CPU and memory: burst to {cpu} cores and {mem} when the box is quiet, "
+                           "scaled back fairly when it's busy. Rebalances every minute."),
+        ("🫂", "Group servers", "One shared copy of a bot for the whole group. Anyone can restart it or fix it."),
+        ("🌐", "Always on", "Your stuff keeps running after you close your laptop and comes back after restarts."),
+        ("💻", "T3 from anywhere", "Best on the T3 Code app on your laptop. For your phone or someone else's "
+                                  "computer, the same T3 runs in any browser as a backup."),
+    ]
+    if live_ssh_host():
+        cards.append(("🧑‍💻", "Your laptop's agent too", "Paste one prompt into Claude Code on your laptop and it connects itself."))
+    cards += [
+        ("📦", "Ask for any tool", "Most system tools install in under a minute. Your agent asks for you."),
+        ("🔐", "Tripwire", "If anything goes snooping for passwords, you get an email in seconds."),
+        ("🧹", "Never loses your work", f"Old projects get packed away, not deleted. {CFG.get('ARCHIVE_DAYS', '14')} days to grab them back."),
+        ("🔁", "Painless restarts", "Restarts wait for your agent to finish, and everything comes back on its own."),
+    ]
+    return cards
+
+
+def features_strip():
+    """A compact row at the top of the dashboard so people actually notice what the box does."""
+    e = html.escape
+    pick = [c for c in feature_cards() if c[1] in ("Burst mode", "Group servers", "Always on",
+                                                    "Agents that know the box")]
+    return ("<div class='fstrip'>" + "".join(
+        f"<a href='/_box/features' class='fchip'><span>{i}</span><b>{e(t)}</b></a>" for i, t, _ in pick)
+        + "<a href='/_box/features' class='fchip more'><b>See everything →</b></a></div>")
+
+
 def features_page():
     """What the box does for you, in plain words, with this box's real numbers."""
     e = html.escape
@@ -952,66 +992,15 @@ def features_page():
     busy = bal.get("cpu_busy") or bal.get("mem_tight")
     big = f"{cores(CFG['BURST_CPU_QUOTA'])} cores and {CFG['BURST_MEMORY_HIGH']} of memory"
     small = f"{cores(CFG['CPU_QUOTA'])} cores and {CFG['MEMORY_HIGH']}"
-    now = (f"Right now the box is <b>busy</b>, so everyone is on {e(small)}." if busy else
-           f"Right now the box is <b>quiet</b>, so everyone gets the big version: {e(big)}.")
-    reboot = " and ".join(d for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split()) or ""
-    ttl, arch = CFG.get("PROJECT_TTL_DAYS", "7"), CFG.get("ARCHIVE_DAYS", "14")
-    idle = CFG.get("T3_IDLE_DAYS", "3")
-    ssh_on = bool(live_ssh_host())
-    auto_pkgs = sb.cfg_bool(CFG, "REQUEST_AUTO_INSTALL") if "REQUEST_AUTO_INSTALL" in CFG else True
-    cards = [
-        ("🤖", "Agents that already know the place",
-         "Claude Code, Codex and opencode are installed and kept up to date for you. Every agent you start already "
-         "knows how this box works: where to put things, how to keep a server running, how to share one with the "
-         "group, what to do before a restart. It gets a quick status check every time it starts, so it knows if the "
-         "box is busy or a restart is coming. You just tell it what you want."),
-        ("⚡", "Power that stretches when it's quiet",
-         f"Nobody gets a tiny fixed slice. When the box is quiet you get up to {e(big)}; when lots of people are busy, "
-         f"everyone drops to {e(small)} so it stays fair. It rebalances every minute, automatically. {now}"),
-        ("🫂", "Group servers: one copy for everyone",
-         "Running the same bot three times is silly. A group server is one shared copy that belongs to the whole group: "
-         "anyone can start it, stop it, restart it or read its logs right from their dashboard, and anyone's agent "
-         "can fix its code. Ask your agent: \"make this a group server\"."),
-        ("🌐", "Your servers, one click away",
-         "Anything you or your agent runs keeps running after you close the laptop, and comes back by itself after "
-         "a restart. Your dashboard shows each one with Start, Stop, Restart and Logs buttons, plus a private link "
-         "that only you can open, from anywhere."),
-        ("💻", "Work from any browser",
-         "T3 Code runs right in your browser, phone included, with nothing to install. Close the tab and your agents "
-         f"keep working. If you don't use it for {e(idle)} days it naps to free up memory, and wakes up the moment "
-         "you open it again."),
-    ]
-    if ssh_on:
-        cards.append(("🧑‍💻", "Bring your own agent",
-                      "Prefer the Claude Code or Codex on your own laptop? Copy one prompt from your dashboard into it and "
-                      "it connects itself to the box: no VPN, nothing to configure, you just type one emailed code. Then "
-                      "say \"run this on my treehouse box\", or open the box in VS Code or Cursor."))
-    cards += [
-        ("📦", "Need a tool? Just ask",
-         ("Your agent installs most things into your own space by itself. For system-level tools (like ffmpeg or "
-          "a database driver), it just asks the box: normal ones install automatically within a minute, and anything "
-          "unusual goes to the owner for a one-click OK.") if auto_pkgs else
-         "Your agent installs most things into your own space by itself. For the rare system-level tool, it asks the "
-         "owner for you."),
-        ("🔐", "Built-in tripwire",
-         "The box is full of fake passwords and keys that nothing legit ever touches. If a sketchy package or a "
-         "confused agent goes snooping, you and the owner get an email within seconds."),
-        ("🧹", "Tidies up, but never loses your work",
-         f"Caches and leftovers get cleaned automatically, so the disk never fills up. Projects nobody has touched for "
-         f"{e(ttl)} days get packed away (you get an email first) and stay restorable for {e(arch)} more days; your "
-         "agent can bring one back with one command. Keep important stuff on GitHub too."),
-        ("🔁", "Restarts that don't hurt",
-         "The box restarts itself for security updates" + (f" and on {e(reboot)} nights" if reboot else "")
-         + ". If an agent is in the middle of something, it waits for it to finish. Your servers and T3 Code come back "
-           "on their own."),
-    ]
-    body = (f"<div class='box'><h2>What {e(HOST)} does for you</h2>"
-            "<p class='mut'>A shared computer for you and your friends' AI agents. The short version: tell your agent "
-            "what you want, and the box handles the rest.</p><div class='feat'>"
-            + "".join(f"<div class='tile'><div class='fi'>{i}</div><h3 class='ft'>{e(t)}</h3><p>{d}</p></div>"
-                      for i, t, d in cards)
+    now = (f"The box is busy right now, so everyone's on {e(small)}." if busy else
+           f"The box is quiet right now, so you've got the full {e(big)}.")
+    body_cards = feature_cards()
+    body = (f"<div class='box'><h2>What you get on {e(HOST)}</h2>"
+            f"<p class='mut'>{now}</p><div class='feat'>"
+            + "".join(f"<div class='tile'><div class='fi'>{i}</div><h3 class='ft'>{e(t)}</h3><p>{e(d)}</p></div>"
+                      for i, t, d in body_cards)
             + "</div><p style='margin-top:24px'><a class='btn' href='/_box/app'>Open T3 Code</a> "
-              "<a class='btn' href='/_box/me' style='background:var(--btn2);color:var(--fg)'>Back to your dashboard</a></p></div>")
+              "<a class='btn' href='/_box/me' style='background:var(--btn2);color:var(--fg)'>Dashboard</a></p></div>")
     return page("Features", body, gate=True)
 
 
