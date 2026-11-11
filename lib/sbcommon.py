@@ -698,16 +698,44 @@ def agent_processes(uids=None, pids=None):
     return out
 
 
+def _tree_ticks(root_pids):
+    """CPU ticks of each root pid plus all its descendants (builds, tests, dev servers it started)."""
+    kids, ticks = {}, {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                st = f.read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        kids.setdefault(int(st[1]), []).append(int(pid))
+        ticks[int(pid)] = int(st[11]) + int(st[12])
+    out = {}
+    for r in root_pids:
+        total, todo, seen = 0, [r], set()
+        while todo:
+            p = todo.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            total += ticks.get(p, 0)
+            todo += kids.get(p, [])
+        out[r] = total
+    return out
+
+
 def busy_agents(uids=None, pids=None, seconds=3.0, min_cpu_pct=1.0):
-    """{pid: (uid, agent)} of agent processes that used CPU during a short sample: an agent mid-turn (streaming,
-    running tools). One waiting for its user's next message uses ~none."""
+    """{pid: (uid, agent)} of agent processes that, with everything they started, used CPU during a short sample:
+    an agent mid-turn (streaming, running a build or tests). One waiting for its user's next message uses ~none."""
     a = agent_processes(uids, pids)
     if not a:
         return {}
+    t0 = _tree_ticks(list(a))
     time.sleep(seconds)
-    b = agent_processes(uids, list(a))
+    t1 = _tree_ticks(list(a))
     need = min_cpu_pct / 100 * seconds * _CLK_TCK
-    return {p: (v[0], v[1]) for p, v in b.items() if p in a and v[2] - a[p][2] >= need}
+    return {p: (v[0], v[1]) for p, v in a.items() if p in t1 and t1[p] - t0.get(p, 0) >= need}
 
 
 # ---------- tailscale ----------

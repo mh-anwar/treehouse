@@ -391,6 +391,8 @@ def run_pass(plan):
         except OSError:
             continue
         for e in entries:
+            if _inside(e.path, cwds):  # a running build/daemon (e.g. ~/.gradle/daemon) is using it
+                continue
             if over or plan.get("force_caches") or now - last_used(e.path) > cache_ttl:
                 rm(e.path, "cache" + (" (over budget)" if over else ""))
 
@@ -476,7 +478,8 @@ def run_pass(plan):
         for p in sorted(projects, key=lambda p: -p["idle_days"]):
             if est <= budget:
                 break
-            if p.get("deleted") or p["active"] or p["idle_days"] < 1:
+            # only projects already past the TTL (they'd be archived anyway): over budget never takes recent work
+            if p.get("deleted") or p["active"] or p["idle_days"] * DAY < ttl:
                 continue
             p["deleted"] = True
             est -= rm(p["path"], "over disk budget, oldest idle project")
