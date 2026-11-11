@@ -36,6 +36,17 @@ Run only what the change needs:
   once before the deploy, not after every edit. Chromium: `~/.cache/ms-playwright/chromium-*/`, `--no-sandbox`.
 - Say plainly what you did not check.
 
+## Making boxes efficient
+Every treehouse box should feel fast even when everyone is busy, and what one box learns, every box gets:
+- Measure first and after (numbers in the commit message): `box tune`, `/proc/pressure/*`, the e2e benches.
+- A setting that helps every box ships in the repo, never only on one machine: kernel settings in
+  `etc/sysctl-*.conf` (one comment per setting saying why; install.sh installs every file there), runtime steps
+  in `sharedbox-tune apply` (runs at install and every boot), and a matching check in `sharedbox-tune` CHECKS so
+  `box tune` reports it. Must be safe live: no network restart, no reboot, nothing that drops security.
+- Machine-specific findings (desktop services, swap size, CPU power mode) are "owner" checks: suggestions only.
+- Agents never turn off things people may use to save resources; automatic idle stops (T3 naps, Docker database
+  naps) live in timers that wait while an agent is working.
+
 ## UI taste (the owner notices)
 - No emojis, no "AI-sounding" copy, no decorative highlight strips. Sentences start with a capital letter.
 - Icons must not depend on fonts: draw small marks as inline SVG, not ✓/✗ characters.

@@ -484,6 +484,10 @@ def render_rules(notices=()):
                       "asked you to. With a public link it creates their account right away and the link logs them "
                       "straight in (once). `box invite --json` gives `username`, `link`, `expires`. "
                       "Manage friends, their requests and signups with `box friends` (no sudo; `box help friends`).")
+    if ME.pw_name in sb.admin_users(CFG):
+        extras.append("- The box's own efficiency (kernel, memory, disk, network): `box tune` (read-only). Run it at setup, "
+                      "after updates, and when the box itself feels slow; `box help tune` for finding more and getting "
+                      "fixes into treehouse so every box gets them.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
                       "(`box help logins`).")
@@ -821,6 +825,12 @@ def cmd_docker_nap(a):
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
         res = {"stopped": [], "kept": [], "error": str(e)[-300:]}
     print(json.dumps(res))
+
+
+def cmd_tune(a):
+    """The box's own efficiency (kernel, memory, disk, network): read-only report from sharedbox-tune."""
+    os.execv(sys.executable, [sys.executable, "-I", os.path.join(sb.LIB_DIR, "sharedbox-tune"), "check"]
+             + (["--json"] if a.json else []))
 
 
 def cmd_rules(a):
@@ -2532,6 +2542,9 @@ def main():
     x = s.add_parser("restore", help="put an archived project back in ~/projects (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
+    x = s.add_parser("tune", help="how efficient the box itself is (kernel, memory, disk, network); read-only")
+    x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=cmd_tune)
     x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
     x.set_defaults(fn=cmd_setup)
     s.add_parser("agents").set_defaults(fn=cmd_agents)

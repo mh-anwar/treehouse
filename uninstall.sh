@@ -28,6 +28,8 @@ systemctl daemon-reload
 if systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
     systemctl restart apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true   # back to Ubuntu's schedule
 fi
+# box tuning: back to the kernel's defaults at the next reboot (nothing is changed on the running system)
+rm -f /etc/sysctl.d/60-sharedbox-*.conf /etc/modules-load.d/sharedbox-bbr.conf
 rm -rf /usr/lib/sharedbox /usr/share/sharedbox
 rm -f /usr/local/bin/box /usr/local/sbin/sharedbox-admin /usr/local/sbin/sharedbox-janitor /usr/local/sbin/sharedbox-tools \
     /etc/profile.d/sharedbox.sh

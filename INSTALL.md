@@ -147,6 +147,13 @@ this machine → **Share…**. `box invite` prints the matching message.
 
 Fix anything that's down (`journalctl -u <unit> -n 40`) before you report success.
 
+Then make the machine itself efficient: run `box tune`. Everything under "should already be set by treehouse"
+must be fixed now (re-run the installer; if a setting won't stick, find what overrides it). Read the
+"for the owner" items and `box help tune`, look for more on this particular machine (it may be a laptop or a
+desktop with leftovers a server doesn't need), and tell the owner in plain words what you'd change and what it
+would cost them. Never turn off a service yourself. Anything that would help every treehouse box goes back
+into treehouse (see "Making boxes efficient" in CLAUDE.md).
+
 ## 7. Invite the first friend
 Run `box invite --note "<who>"` as the owner's account (no sudo; it works for every account in
 `--admins`) and give the owner the message it prints, ready to paste to a friend. With the Cloudflare
