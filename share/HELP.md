@@ -131,6 +131,28 @@ Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` t
   The friend's agent is told either way.
 - `box friends issues [--days N]`: what everyone's agents logged with `box issue`, most widespread first.
 
+@@ lean
+Memory and CPU are shared and fill up fast once several people are busy, so waste counts even on a quiet day.
+Whatever you set up or work on (databases, dev servers, containers, bots, build tools, test runners), look for what
+uses resources without earning them, and fix it. Tell the user in one line what you changed.
+- Only what nothing uses: check the code and config before turning a feature or service off. Anything a person might
+  use directly (an admin panel, a database UI, a dashboard, a preview server) is theirs to decide: suggest, don't switch.
+- Change config, not running things: apply it at the next natural restart. Never stop or restart something the user
+  may be using just to save resources.
+- Measure, don't guess: `box status` (your usage), `ps -u $USER -o rss,args --sort=-rss | head`,
+  `docker stats --no-stream`. Look at the biggest first.
+Typical waste:
+- Services switched on in config that the code never calls. Supabase (`supabase/config.toml`) is the classic: realtime
+  (hundreds of MB; the code uses it only if it calls `.channel(`), storage, edge_runtime, analytics. Same idea for
+  compose files with extra services, queues, search engines or caches nothing talks to.
+- A second copy: a new database or dev server when one for the project is already running (`docker ps`,
+  `box serve ls`, `ss -ltnp`). Point new work at the existing one.
+- Dev modes left as servers: `next dev`, watchers (`--watch`, nodemon, `tsc -w`) for something long-running; a
+  production build (`next build && next start`) uses far less.
+- No limits: compose `mem_limit:`, `org.gradle.jvmargs=-Xmx2g`, `--max-workers` from `box help heavy`, slim images.
+- Leaks: test browsers (Playwright, Puppeteer) not closed in teardown, 300+ MB each; background jobs your own runs
+  started and forgot.
+
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
 - First time only: `dockerd-rootless-setuptool.sh install` (sets up a user service), then
