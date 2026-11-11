@@ -99,9 +99,12 @@ def advice(g):
     out = []
     al = sb.security_alert(ME.pw_name)
     if al:
+        # only a cleaned program name: the command line is chosen by whatever tripped the wire, and this text
+        # lands in every agent's instructions (no room for injected "instructions")
+        prog = re.sub(r"[^A-Za-z0-9._+-]", "", os.path.basename(str(al.get("exe") or str(al.get("cmd") or "?").split()[0])))[:40] or "?"
         out.append(f"SECURITY: on {fmt_ts(al['ts'])} a program running as this user "
-                   f"(`{al.get('cmd') or al.get('exe') or '?'}`) opened the box's decoy secrets "
-                   f"({al['file']}). Tell the user at the start of your next reply, in plain words: nothing "
+                   f"(`{prog}`) opened the box's decoy secrets "
+                   f"({sb.printable(str(al.get('file') or '?'))[:120]}). Tell the user at the start of your next reply, in plain words: nothing "
                    "real leaked, but something on their account looked for passwords/keys, usually a "
                    "malicious package or script. Offer to check recently installed npm/pip packages, "
                    "autostarts (~/.config/autostart, systemd --user units, shell rc files) and running "

@@ -15,6 +15,7 @@ import json
 import os
 import pwd
 import selectors
+import re
 import subprocess
 import sys
 import time
@@ -188,6 +189,15 @@ def proc_started(pid):
         return 0
 
 
+def listening_pids():
+    """PIDs with a listening TCP socket (needs root to see other users' sockets; the janitor is root)."""
+    try:
+        out = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {int(p) for p in re.findall(r"pid=(\d+)", out)}
+
+
 def t3_should_sleep(cfg, name, rec, st, now):
     """True if this friend's running T3 has been unused for T3_IDLE_DAYS. Remembers the last busy moment in `st`."""
     try:
@@ -208,6 +218,8 @@ def t3_should_sleep(cfg, name, rec, st, now):
     working = ((isinstance(prev, int) and (other < prev or other - prev >= T3_BUSY_USEC))
                or bool(sb.busy_agents(pids=pids, seconds=2)))
     st["t3_other_cpu"] = other
+    # something started from T3 is serving (a dev server, a bot): stopping T3 would kill it
+    working = working or bool(listening_pids() & (set(pids) - {main}))
     connected = port_connections(sb.port_range(cfg, rec["uid"])[0]) > 0
     if working or connected:
         st["t3_busy"] = now
