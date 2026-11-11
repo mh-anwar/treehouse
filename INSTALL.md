@@ -112,6 +112,12 @@ connections, so nothing on the box listens on the internet.
    It is safe to re-run. If it names a missing permission, the owner edits the token and you run it again.
 4. Check: `sudo sharedbox-admin cloudflare status`. Also `curl -sI https://<host>/` should redirect to
    `<team>.cloudflareaccess.com`.
+5. Setup also turns on **SSH through Cloudflare** for friends' laptops: a second hostname (`SSH_HOST`; default
+   `<first label>-ssh.<rest>`, e.g. `treehouse-ssh.example.com`, which Cloudflare's free certificate covers) is
+   routed by the tunnel to sshd on `localhost:22`, behind an Access app on the same allow list. Nothing about
+   sshd changes. On a box set up before this existed: `sudo sharedbox-admin cloudflare ssh`. Friends then paste
+   the prompt from their page (`/_box/me`, "Use the box from your own computer's agent") into their own
+   Claude Code / Codex, which sets up `ssh treehouse` by itself. `SSH_HOST=off` in the config skips it.
 
 ### Public link (Tailscale Funnel)
 1. Set `PUBLIC_URL=https://<machine>.<tailnet>.ts.net` in `/etc/sharedbox/sharedbox.conf` (the name is

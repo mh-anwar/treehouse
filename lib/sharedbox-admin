@@ -23,6 +23,7 @@
   sharedbox-admin cloudflare setup --hostname box.example.com --owner-email you@example.com [--no-enable]
                                                   one-time Cloudflare Tunnel + Access setup (idempotent)
   sharedbox-admin cloudflare enable | status      start cloudflared + the gate | check everything
+  sharedbox-admin cloudflare ssh                  SSH through Cloudflare for friends' laptops (SSH_HOST; idempotent)
   sharedbox-admin access list | add EMAIL [--user NAME] | remove EMAIL   who Cloudflare Access lets in
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
 
@@ -1284,6 +1285,8 @@ def cmd_cloudflare(cfg, a):
         return cmd_cloudflare_status(cfg, a)
     if a.what == "enable":
         return cloudflare_enable(sb.load_config())
+    if a.what == "ssh":
+        return cloudflare_ssh(cfg)
     # setup
     try:
         host = sbcloudflare.normalize_host(a.hostname or sb.public_url(cfg))
@@ -1298,6 +1301,23 @@ def cmd_cloudflare(cfg, a):
         cloudflare_enable(sb.load_config())
     print(f"\ndone. Friends will open https://{host}/ and sign in with the email you invite them with:\n"
           "  box invite --email friend@example.com   (or: sudo sharedbox-admin invite --email ...)")
+
+
+def cloudflare_ssh(cfg):
+    """SSH through Cloudflare on a box already in cloudflare mode: SSH_HOST -> tunnel -> sshd on localhost:22,
+    behind an Access app on the website's allow-list policy. Only Cloudflare's side and the config change:
+    sshd, its config and the firewall are not touched (friends are in SSH_GROUP already). Idempotent."""
+    import sbcloudflare
+    try:
+        c = sbcloudflare.client(cfg)
+        print("turning on SSH through Cloudflare ...", flush=True)
+        up = sbcloudflare.setup_ssh(cfg, c, log=lambda m: print("  " + m, flush=True))
+    except sbcloudflare.CFError as e:
+        die(str(e))
+    sb.log_event("cloudflare_ssh", None, host=up["SSH_HOST"])
+    print(f"\ndone. Friends' own agents can now connect their laptops: the prompt is on their page "
+          f"({sb.public_url(cfg)}/_box/me) and at {sb.public_url(cfg)}/_box/connect.md.\n"
+          f"By hand: cloudflared access ssh --hostname {up['SSH_HOST']} as the ssh ProxyCommand.")
 
 
 def cmd_cloudflare_status(cfg, a):
@@ -1316,6 +1336,8 @@ def cmd_cloudflare_status(cfg, a):
     for k in ("CF_ACCOUNT_ID", "CF_TEAM_DOMAIN", "CF_ACCESS_AUD", "CF_TUNNEL_ID", "CF_ACCESS_APP_ID",
               "CF_ACCESS_POLICY_ID", "CF_OWNER_EMAILS"):
         line(cfg.get(k), f"{k}={cfg.get(k) or '(empty)'}")
+    print("  [--] SSH through Cloudflare: " + (f"ssh {sb.ssh_host(cfg)} (SSH_HOST)" if sb.ssh_host(cfg) else
+                                              "off (sudo sharedbox-admin cloudflare ssh turns it on)"))
     try:
         sbcloudflare.read_token(cfg["CF_TOKEN_FILE"])
         line(True, f"API token: {cfg['CF_TOKEN_FILE']} (root, 600)")
@@ -1354,6 +1376,8 @@ def cmd_cloudflare_status(cfg, a):
                 app = c.get(f"/accounts/{acct}/access/apps/{cfg['CF_ACCESS_APP_ID']}", need="access")
                 line(app.get("aud") == cfg.get("CF_ACCESS_AUD"), f"Access app {app.get('domain')}: AUD "
                      + ("matches" if app.get("aud") == cfg.get("CF_ACCESS_AUD") else "DIFFERS from CF_ACCESS_AUD"))
+            for good, text in sbcloudflare.ssh_status(cfg, c):
+                line(good, text)
             if cfg.get("CF_ACCESS_POLICY_ID"):
                 emails = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, c))
                 missing = [o for o in sb.owner_emails(cfg) if o not in emails]
@@ -1714,7 +1738,7 @@ def main():
     x = s.add_parser("sessions"); x.add_argument("user", nargs="?"); x.add_argument("--revoke", metavar="ID|all")
     x.set_defaults(fn=cmd_sessions)
     x = s.add_parser("public"); x.add_argument("what", choices=["status"]); x.set_defaults(fn=cmd_public)
-    x = s.add_parser("cloudflare"); x.add_argument("what", choices=["setup", "enable", "status"])
+    x = s.add_parser("cloudflare"); x.add_argument("what", choices=["setup", "enable", "status", "ssh"])
     x.add_argument("--hostname"); x.add_argument("--owner-email", action="append")
     x.add_argument("--no-enable", action="store_true", help="only the Cloudflare side + config; start nothing")
     x.set_defaults(fn=cmd_cloudflare)

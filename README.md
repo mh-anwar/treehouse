@@ -45,7 +45,9 @@ No terminal, no VPN invites, no "can you run this command for me".
 - 🏕️ **Shared servers the whole group owns.** A group chat bot or game server lives in `/srv/shared/NAME`:
   any friend (or their agent) can edit its code, start/stop/restart it and read its logs with `box shared`.
   It runs as its own locked-down account, in one slice with a shared CPU/RAM cap, and survives reboots.
-- 💻 **Terminal still works.** Technical users can add an SSH key and use the `box` CLI.
+- 💻 **Terminal still works.** Technical users can add an SSH key and use the `box` CLI. With the
+  Cloudflare login, a friend pastes one prompt into their laptop's own Claude Code / Codex and it sets up
+  `ssh treehouse` (through Cloudflare, no VPN), VS Code Remote-SSH included.
 
 **For you (the owner)**
 - ⚖️ **Dynamic fair-share limits.** Per-friend cgroups: up to **15 GB / 5 cores while the box is quiet**,

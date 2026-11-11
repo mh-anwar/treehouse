@@ -463,8 +463,21 @@ def rule_fields(tl="", extras=(), nt=""):
                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
         shared_public=(f"\n- Public link (behind the box's login, for every member): `{sb.public_url(CFG)}/s/NAME/`."
                        f" {BASE_PATH_NOTE}" if sb.public_url(CFG) and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else ""),
+        connect=connect_text(),
         shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
                                     sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
+
+
+def connect_text():
+    """`box help connect`: how this user's laptop agent connects (SSH through Cloudflare), or why it can't yet."""
+    pub, ssh_host = sb.public_url(CFG), sb.ssh_host(CFG)
+    if not ssh_host:
+        return ("SSH through Cloudflare isn't turned on for this box"
+                + (f" (the owner turns it on with `sudo sharedbox-admin cloudflare ssh`; the site is {pub})" if pub
+                   else " (it needs the Cloudflare login; until then they connect over Tailscale)") + ".")
+    return (f"It's on: their laptop reaches this account with `ssh {ME.pw_name}@{ssh_host}` through "
+            f"`cloudflared access ssh`. The ready prompt for their agent is on {pub}/_box/me (\"Use the box from "
+            f"your own computer's agent\", a Copy button) and at {pub}/_box/connect.md (behind their login).")
 
 
 def help_topics():
