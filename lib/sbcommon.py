@@ -159,6 +159,8 @@ DEFAULTS = {
     "CF_ACCESS_APP_ID": "",
     "CF_ACCESS_POLICY_ID": "",
     "CF_OWNER_EMAILS": "",
+    # port of the owner's own T3 Code on GATE_BACKEND_HOST; set it to let CF_OWNER_EMAILS open it on the public site
+    "OWNER_T3_PORT": "",
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
     "CF_SESSION_HOURS": "720",
