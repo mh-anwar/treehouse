@@ -2,11 +2,10 @@
 
 # treehouse
 
-### Build your friends an AI treehouse.
+### One spare computer, shared by your friends' AI coding agents.
 
-Turn a spare computer into a shared home for your friends' AI coding agents.
-They join from a link, log in to Claude Code / Codex / opencode with a click,
-and get a fair slice of the machine. You never touch a terminal for them.
+Friends sign in from a browser. Their Claude Code, Codex and opencode sessions run on your machine,
+each with a fair, enforced share of it. No VPN, no SSH keys, no per-friend setup.
 
 `stdlib Python` · `systemd` · `cgroup v2` · no containers, no database
 
@@ -24,14 +23,13 @@ sessions at once. Meanwhile there's an old desktop in your closet with 32 GB of 
 treehouse turns that machine into a box your friends can actually use, including the
 non-technical ones:
 
-1. You (or your agent) run `box invite` (no sudo) and send them the link.
-2. They open it on any laptop or phone, pick a username, click **Create**. They don't need Tailscale,
-   an app, or an SSH key.
-3. They click **Log in with Claude** (or ChatGPT/Codex), click **Open T3 Code**, and they're chatting
-   with an agent that runs on your box, with everything installed and the house rules already explained.
+1. You (or your agent) run `box invite --email friend@example.com`. Their account exists right away.
+2. They open your site on any laptop or phone and type the code that gets emailed to them.
+   No Tailscale, no app, no SSH key.
+3. They land on their dashboard, log in to Claude or ChatGPT with a click, and open T3 Code: an agent
+   running on your box, with everything installed and the rules of the machine already explained.
 
-No SSH keys, no terminal, no VPN invites, no "can you run this command for me". Adding their phone
-is a QR code on their page.
+No terminal, no VPN invites, no "can you run this command for me".
 
 ## What you get
 
