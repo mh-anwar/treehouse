@@ -106,10 +106,10 @@ def advice(g):
                    "malicious package or script. Offer to check recently installed npm/pip packages, "
                    "autostarts (~/.config/autostart, systemd --user units, shell rc files) and running "
                    "processes. Never open files under the decoy directory yourself.")
-    for n in agent_notices():
+    for n in agent_notices()[-3:]:
         out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
                    f"({n['why']}). Mention it to the user if they ask why a tool changed.")
-    for n in other_notices(3):
+    for n in other_notices(3)[-5:]:
         out.append(f"{fmt_ts(n['ts'])}: {sb.printable(n['text'])} Tell the user if it's what they were waiting for.")
     rb = sb.reboot_info(CFG)
     if rb["postponed"]:
@@ -580,12 +580,14 @@ def sync_agent_files(notices=()):
                 cur = f.read()
         except FileNotFoundError:
             cur = ""
-        if BEGIN in cur and END in cur:
-            pre, rest = cur.split(BEGIN, 1)
-            post = rest.split(END, 1)[1]
-            new = pre + block + post
+        b, e_ = cur.find(BEGIN), cur.find(END)
+        if b != -1 and e_ > b:
+            new = cur[:b] + block + cur[e_ + len(END):]
         else:
-            new = block + "\n" + ("\n" + cur if cur else "")
+            # no block yet, or a damaged one (a marker missing or out of order): drop any stray markers' lines and
+            # put a fresh block on top, so the file never grows a second copy
+            kept = "\n".join(ln for ln in cur.splitlines() if BEGIN not in ln and END not in ln).strip()
+            new = block + ("\n\n" + kept + "\n" if kept else "\n")
         if new != cur:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w") as f:
@@ -1513,14 +1515,21 @@ def which_agent():
     return "human" if sys.stdin.isatty() else "unknown"
 
 
+ISSUES_PER_DAY = 25
+
+
 def log_issue(text, kind="other", auto=False, dedupe_s=600):
     """Append one issue; skip exact repeats from the last `dedupe_s` seconds. True if written."""
     text = " ".join(text.split())[:2000]
     if not text:
         return False
     now = time.time()
-    recent = [r for r in read_my_issues() if now - r.get("ts", 0) < dedupe_s]
-    if any(r.get("text") == text for r in recent):
+    mine = read_my_issues()
+    norm = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    recent = [r for r in mine if now - r.get("ts", 0) < dedupe_s]
+    if any(re.sub(r"[^a-z0-9]+", " ", str(r.get("text", "")).lower()).strip() == norm for r in recent):
+        return False
+    if sum(1 for r in mine if now - r.get("ts", 0) < 86400) >= ISSUES_PER_DAY:  # an agent stuck in a loop
         return False
     cwd = os.getcwd() if os.path.exists(".") else ""
     rec = {"ts": round(now), "kind": kind if kind in sb.ISSUE_KINDS else "other", "text": text,
@@ -2131,8 +2140,10 @@ def rule_notices(box=None, janitor=None):
     """Notices worth baking into agent rule files (the long-lived ones)."""
     if janitor is None:
         janitor = sb.read_json(STATUS_FILE, {}) or {}
-    return [n for n in advice({"box": box or sb.box_load(), "live": {}, "janitor": janitor})
-            if any(k in n for k in NOTICE_KEYS)]
+    out = [n for n in advice({"box": box or sb.box_load(), "live": {}, "janitor": janitor})
+           if any(k in n for k in NOTICE_KEYS)]
+    # baked into every agent's instructions: keep it short (the full list is in `box status`)
+    return out[:5] + ([f"...and {len(out) - 5} more: run `box status`."] if len(out) > 5 else [])
 
 
 def cmd_sync_rules(a):

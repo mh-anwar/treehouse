@@ -31,7 +31,7 @@ days), servers' code in `~/services/<name>/`, must-keep files in `~/keep/`. Noth
 to GitHub. `box help files` for the rest.
 
 ## Running things
-- Run `box status` at session start and before heavy work (usage, box load, **projects about to be archived**, reboots).
+- Run `box status` before heavy work: usage, box load, projects about to be archived, reboots (it also shows when a session starts).
 - Docker works without sudo (rootless, your own daemon): `box help docker` before using it.
 - Heavy builds/tests: `box heavy -- <cmd>`, one at a time, {jobs} parallel jobs max (`box help heavy`).
 - Anything long-running: `box serve add <name> -- <cmd>` (survives logout and reboots; `box help servers`).
@@ -42,8 +42,8 @@ to GitHub. `box help files` for the rest.
 - Shared agent skills: suggest one from `box skills` only when it clearly helps, and install only after the user says yes.
 
 ## Report what slows you down (without being asked)
-When something about **this machine** costs you time or fails (missing tool, permission denied, throttled, bad rule),
-log one line and keep going: `box issue --kind <slow|broken|missing|limit|confusing|other> "<what> | <workaround> | <cost>"`.
+When something about **this machine** blocks you or costs you more than ~5 minutes (missing tool, permission denied,
+throttled, bad rule), log one line, once per problem, and keep going: `box issue --kind <slow|broken|missing|limit|confusing|other> "<what> | <workaround> | <cost>"`.
 Not for bugs in the user's code. No secrets.
 
 {notices}
