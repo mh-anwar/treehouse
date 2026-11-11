@@ -742,12 +742,19 @@ def servers_section(st, shared, btn, base=""):
             "activating", "deactivating", "reloading") else ""
         return f'<span class="dot {cls}"></span>{e(stt)}'
 
-    def link(port):
+    def link(port, public_path=None):
+        """The public link (behind the same login as this page) when there's a public site, with the
+        Tailscale address as secondary text; else just the Tailscale link."""
         port = str(port or "")
         if not port.isdigit():
             return ""
         u = f"http://{HOST}:{port}/"
-        return f'<a href="{e(u)}" target="_blank" rel="noopener">{e(u)}</a>'
+        tail = f'<a href="{e(u)}" target="_blank" rel="noopener">{e(u)}</a>'
+        if not PUBLIC:
+            return tail
+        pu = f"{PUBLIC}{public_path or '/p/' + port}/"
+        return (f'<a href="{e(pu)}" target="_blank" rel="noopener">{e(pu)}</a>'
+                f'<br><span class="mut">on Tailscale: {tail}</span>')
 
     out = ["<h2>Your servers</h2>"]
     mine = st.get("servers")
@@ -762,7 +769,10 @@ def servers_section(st, shared, btn, base=""):
             f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
             f'<div class="sub">{link(s.get("port"))}</div>{acts("serve", s)}</div>'
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
-        out.append("<p class='sub'>Links work from devices on Tailscale.</p>")
+        out.append("<p class='sub'>" + ("Public links open only for you, behind your usual login. Apps that "
+                   "expect to live at <code>/</code> may need a base-path setting (Vite <code>base</code>, Next "
+                   "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC else
+                   "Links work from devices on Tailscale.") + "</p>")
     if shared.get("unavailable"):
         return "".join(out)
     out.append("<h2>Group servers</h2>")
@@ -782,13 +792,14 @@ def servers_section(st, shared, btn, base=""):
     out.append('<div class="srv">' + "".join(
         f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
         f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
-        f'<div class="sub">{link(s.get("port"))}</div>'
+        f'<div class="sub">{link(s.get("port"), "/s/" + s["name"])}</div>'
         f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
         + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
         + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'
         f'</div>{acts("shared", s, group=True)}</div>' for s in group) + "</div>")
     out.append("<p class='sub'>Everyone in the group can start, stop and restart these. "
-               "Links work from devices on Tailscale.</p>")
+               + ("Public links open for anyone with an account here, behind the usual login." if PUBLIC else
+                  "Links work from devices on Tailscale.") + "</p>")
     return "".join(out)
 
 
