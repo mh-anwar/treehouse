@@ -35,7 +35,7 @@ Never ask for passwords or tokens in chat.
 - Parallelism **{jobs} jobs**: `make -j{jobs}`, `cargo build -j {jobs}`, Gradle `--max-workers={jobs}` (preset).
 - One heavy build at a time. Stop dev servers, watchers, emulators and Gradle daemons (`./gradlew --stop`) after.
 - If the box is `busy` in `box status`, avoid heavy work unless the user insists.
-- No Docker. Install tools into your home (`~/.local`, nvm, uv, rustup, …).
+- Docker works, rootless, under your own account (`box help docker`). Other tools install into your home (`~/.local`, nvm, uv, rustup, …).
 
 @@ reboots
 {updates}
@@ -128,3 +128,14 @@ Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` t
   changed for them); `decline ID --why "..."`. Free-text requests are emailed to the owner too.
   The friend's agent is told either way.
 - `box friends issues [--days N]`: what everyone's agents logged with `box issue`, most widespread first.
+
+@@ docker
+Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
+- First time only: `dockerd-rootless-setuptool.sh install` (sets up a user service), then
+  `systemctl --user enable --now docker`. Check with `docker info` (it should say `rootless`).
+- Every shell/agent session: `export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock` (put it in `~/.bashrc`).
+- Published ports must be in your range ({ports}); bind them on `0.0.0.0` like any server. Ports under 1024 don't work.
+- Images live in `~/.local/share/docker` and count toward your disk budget: `docker system prune` when done.
+- Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
+- `docker compose` works the same way.
+
