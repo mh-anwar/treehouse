@@ -30,3 +30,16 @@ join page with a second Tailscale account.
 - One logical change per commit, with the subject prefixed by area: `web:`, `box:`, `admin:`,
   `janitor:`, `tools:`, `install:`, `tripwire:`, `rules:`, `docs:`.
 - Say in the PR what you tested and on which distro.
+
+## The design rule: agents do the work
+
+People using treehouse (owners and friends) should never set things up by hand. Their AI agent, on the box or
+on their own laptop, does ~all of it; the human only clicks a link or types a code they were emailed.
+
+- Design the agent path first: a copyable prompt plus non-interactive commands with `--json` output.
+  Then the smallest possible human step.
+- No screens that ask people to paste tokens, open a terminal, run sudo, or know what SSH is.
+- The website is a dashboard first. Every page needs an obvious next step; no dead ends, no jargon.
+- Agent rules stay lean (`share/AGENTS.md`, ~1k tokens, loaded every session); details go in
+  `share/HELP.md` (`box help <topic>`), read on demand.
+- Before shipping, walk the flow as a non-technical friend and as their agent.
