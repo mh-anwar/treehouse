@@ -837,7 +837,7 @@ def owner_requests(browser):
         b.first.click()
         page.wait_for_load_state("load")
         inspect(s, f"request {label}")
-        if "✓" not in page.inner_text("body"):
+        if not page.locator(".note.ok").count():
             fail("owner", f"request {label}", page.inner_text("body")[:200])
     s.drain("owner requests")
     s.close()
