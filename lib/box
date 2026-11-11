@@ -21,6 +21,7 @@
 """
 
 import argparse
+import calendar
 import fcntl
 import json
 import os
@@ -133,8 +134,8 @@ def advice(g):
         out.append("The box is moderately loaded. Use `box heavy --` for builds.")
     live = g["live"] or {}
     if live.get("mem_high") and live["mem"] > 0.85 * live["mem_high"]:
-        out.append("You are close to your RAM limit. Stop unused servers, daemons, or watchers "
-                   "(e.g. `./gradlew --stop`) before starting anything else.")
+        out.append("You are close to your RAM limit. Don't start more; stop build helpers you started yourself "
+                   "(e.g. `./gradlew --stop`). Ask the user before stopping any of their servers or databases.")
     if live.get("throttled"):
         out.append("Your CPU is being throttled at your quota. Lower parallelism.")
     j = g["janitor"]
@@ -159,6 +160,11 @@ def advice(g):
                    + ", ".join(f"{a['name']} (until {fmt_ts(a['until'])})" for a in arch[:8]) + ".")
     if b["disk_free"] < b["disk_total"] * 0.1:
         out.append("The machine's disk is almost full. Avoid large downloads.")
+    naps = recent_docker_naps()
+    if naps:
+        out.append("Idle Docker databases were stopped to free memory: " + ", ".join(
+            f"{sb.printable(n)[:40]} ({fmt_ts(t)})" for n, t in naps[-5:]) + ". Start one again only when the "
+            "work needs it (`supabase start`, `docker compose up -d`, `docker start NAME`); data is kept.")
     return out
 
 
@@ -481,6 +487,13 @@ BASE_PATH_NOTE = ("It's served under that path (prefix stripped, `X-Forwarded-Pr
                   "`--server.baseUrlPath`).")
 
 
+def docker_nap_text():
+    m = sb.cfg_int(CFG, "DOCKER_NAP_MINUTES")
+    if m <= 0:
+        return "never stopped automatically"
+    return "stopped automatically after " + ("an hour" if m == 60 else f"{m} minutes" if m % 60 else f"{m // 60} hours") + " unused"
+
+
 def rule_fields(tl="", extras=(), nt=""):
     """Values for the {placeholders} in AGENTS.md (always loaded) and HELP.md (`box help`, on demand)."""
     lim = my_limits()
@@ -494,7 +507,7 @@ def rule_fields(tl="", extras=(), nt=""):
                     "Ports: no fixed range for this account; check `ss -ltn` and pick a free one."),
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
         cache_ttl=CFG["CACHE_TTL_DAYS"], artifact_ttl=CFG["ARTIFACT_TTL_DAYS"],
-        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], updates=updates_text(),
+        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], docker_nap=docker_nap_text(), updates=updates_text(),
         reboot_days=(f"It also reboots {sb.reboot_schedule_text(CFG)}, whether or not there are updates; that "
                      "reboot waits up to 2 hours while an agent is mid-turn.") if reboot_days() else "",
         archive_days=CFG["ARCHIVE_DAYS"], t3_idle=CFG["T3_IDLE_DAYS"], brand=BRAND, slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
@@ -617,6 +630,186 @@ def cmd_t3_wake(a):
             t3_ensure(host, port, env, quiet=True)
             woke = True
     print(json.dumps({"woke": woke}))
+
+
+# ---------- idle Docker databases ----------
+# A local database stack (Supabase is ~0.6 GB and ~5 CPU-seconds a minute even when nobody uses it) is stopped
+# after DOCKER_NAP_MINUTES unused, for everyone, the owner included. The janitor runs `box _docker-nap` as each
+# account every few minutes; this decides and stops only that account's own containers. Volumes are kept, so
+# `supabase start` / `docker compose up -d` / `docker start NAME` brings it back with its data.
+# "Used" = an open TCP connection to one of the stack's published ports (an app's connection pool, psql, a
+# Studio tab) or the database container itself working (queries from short-lived connections between checks).
+# A stack started recently, or seen for the first time, gets the full quiet period first. Nothing is stopped while one of the account's agents
+# is working (a T3 turn running, or an agent process using CPU): the quiet period starts over after it.
+# Agents never stop databases themselves (the rules say so): only this timer does, and only after real quiet. Opt out: label `treehouse.keep=true`, or the stack's
+# name on a line of ~/.sharedbox/docker-keep.
+
+DOCKER_NAP_STATE = os.path.join(HOME, ".sharedbox", "docker-naps.json")
+DOCKER_KEEP = os.path.join(HOME, ".sharedbox", "docker-keep")
+DB_IMAGE_RE = re.compile(r"(?i)(^|[/_-])(postgres|postgis|timescale|mysql|mariadb|mongo|redis|valkey|keydb|"
+                         r"clickhouse|cockroach|elasticsearch|opensearch|neo4j|cassandra|scylla|couchdb|couchbase|"
+                         r"influxdb|surrealdb|meilisearch|typesense|qdrant|weaviate|milvus|chroma|minio|mssql|"
+                         r"memcached|rabbitmq|nats|kafka|redpanda)([:/_.-]|$)")
+# helpers that sit next to a database and poll it all day; their CPU says nothing about anyone using it
+DB_HELPER_RE = re.compile(r"(?i)(meta|exporter|admin|studio|commander|insight|-ui\b|dashboard|backup)")
+DOCKER_BUSY_CPU = 0.03  # cores the database container used since the last check (idle: Postgres ~0.004, Redis ~0.01)
+
+
+def docker_env():
+    sock = f"/run/user/{os.getuid()}/docker.sock"
+    if not os.path.exists(sock):
+        return None
+    return dict(os.environ, DOCKER_HOST=f"unix://{sock}")
+
+
+def docker_stacks(env):
+    """{stack: [container dict]} for running containers: grouped by Supabase/compose project, else alone."""
+    ids = subprocess.run(["docker", "ps", "-q", "--no-trunc"], env=env, capture_output=True, text=True,
+                         timeout=60).stdout.split()
+    if not ids:
+        return {}
+    info = json.loads(subprocess.run(["docker", "inspect", *ids], env=env, capture_output=True, text=True,
+                                     timeout=60).stdout or "[]")
+    stacks = {}
+    for c in info:
+        labels = (c.get("Config") or {}).get("Labels") or {}
+        name = c.get("Name", "").lstrip("/")
+        img = (c.get("Config") or {}).get("Image", "")
+        stack = labels.get("com.supabase.cli.project") or labels.get("com.docker.compose.project") or name
+        ports = set()
+        for binds in ((c.get("NetworkSettings") or {}).get("Ports") or {}).values():
+            for b in binds or []:
+                if str(b.get("HostPort", "")).isdigit():
+                    ports.add(int(b["HostPort"]))
+        try:  # docker reports UTC
+            started = calendar.timegm(time.strptime((c.get("State") or {}).get("StartedAt", "")[:19],
+                                                    "%Y-%m-%dT%H:%M:%S"))
+        except (ValueError, OverflowError):
+            started = 0
+        stacks.setdefault(stack, []).append({
+            "id": c["Id"], "name": name, "image": (c.get("Config") or {}).get("Image", ""), "ports": ports,
+            "keep": labels.get("treehouse.keep", "").lower() in ("1", "true", "yes"), "started": started,
+            "db": bool(DB_IMAGE_RE.search(img)) and not DB_HELPER_RE.search(img)})
+    return stacks
+
+
+def established_local_ports():
+    """Local ports with an ESTABLISHED TCP connection (this network namespace: where rootless Docker publishes)."""
+    out = set()
+    for fn in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(fn) as f:
+                next(f, None)
+                for line in f:
+                    parts = line.split()
+                    if len(parts) > 3 and parts[3] == "01":
+                        out.add(int(parts[1].rsplit(":", 1)[1], 16))
+        except OSError:
+            pass
+    return out
+
+
+def container_cpu_usec(cid):
+    base = f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service"
+    for cg in (f"{base}/user.slice/docker-{cid}.scope", f"{base}/docker-{cid}.scope"):
+        try:
+            with open(os.path.join(cg, "cpu.stat")) as f:
+                for line in f:
+                    if line.startswith("usage_usec "):
+                        return int(line.split()[1])
+        except OSError:
+            continue
+    return None
+
+
+def docker_nap(idle_minutes, dry_run=False):
+    env = docker_env()
+    if not env or not shutil.which("docker") or idle_minutes <= 0:
+        return {"stopped": [], "kept": []}
+    stacks = docker_stacks(env)
+    state = sb.read_json(DOCKER_NAP_STATE, {}) or {}
+    try:
+        with open(DOCKER_KEEP) as f:
+            keep = {ln.strip() for ln in f if ln.strip() and not ln.startswith("#")}
+    except OSError:
+        keep = set()
+    now = time.time()
+    conns = established_local_ports()
+    stopped, kept, due = [], [], []
+    for stack, cs in sorted(stacks.items()):
+        dbs = [c for c in cs if c["db"]]
+        if not dbs:
+            continue  # not a database: apps and bots are the user's business
+        if stack in keep or any(c["keep"] for c in cs):
+            kept.append(stack)
+            continue
+        st = state.setdefault(stack, {})
+        busy = bool(conns & set().union(*(c["ports"] for c in cs)))
+        cpu = {c["id"]: container_cpu_usec(c["id"]) for c in dbs}
+        prev, prev_t = st.get("cpu") or {}, st.get("t")
+        if prev_t and now > prev_t:
+            used = sum(v - prev[k] for k, v in cpu.items() if v is not None and isinstance(prev.get(k), int)
+                       and v >= prev[k])
+            busy = busy or used / 1e6 / (now - prev_t) > DOCKER_BUSY_CPU
+        st.update(cpu={k: v for k, v in cpu.items() if v is not None}, t=now)
+        if busy:
+            st["busy"] = now
+        st.setdefault("seen", now)  # only quiet this timer watched counts: never stop on the first look
+        last = max(st["busy"] if "busy" in st else 0, st["seen"], max(c["started"] for c in cs))
+        if now - last >= idle_minutes * 60:
+            due.append((stack, cs))
+    working = ""
+    if due:  # last word: an agent still working may need the database any second (its next query, the user's reply)
+        working = "agent turn running" if t3_db_state()[0] else ""
+        if not working and sb.busy_agents(uids=[os.getuid()]):
+            working = "agent working"
+    for stack, cs in due:
+        if working:
+            state[stack]["busy"] = now
+            continue
+        if not dry_run:
+            subprocess.run(["docker", "stop", *[c["id"] for c in cs]], env=env, capture_output=True, timeout=180)
+            state.pop(stack, None)
+        stopped.append(stack)
+    for gone in set(state) - set(stacks):
+        state.pop(gone)
+    if not dry_run:
+        os.makedirs(os.path.dirname(DOCKER_NAP_STATE), exist_ok=True)
+        sb.write_json(DOCKER_NAP_STATE, state, mode=0o600)
+        if stopped:
+            log_docker_naps(stopped)
+    return {"stopped": stopped, "kept": kept, "waited": working}
+
+
+def log_docker_naps(stopped):
+    """One line per stop, so `box status` (and the agent at session start) can say what was turned off."""
+    try:
+        with open(os.path.join(HOME, ".sharedbox", "docker-napped.log"), "a") as f:
+            for s in stopped:
+                f.write(f"{int(time.time())} {s}\n")
+    except OSError:
+        pass
+
+
+def recent_docker_naps(days=2):
+    try:
+        with open(os.path.join(HOME, ".sharedbox", "docker-napped.log")) as f:
+            rows = [ln.split(None, 1) for ln in f.read().splitlines()[-200:]]
+    except OSError:
+        return []
+    cut, out = time.time() - days * 86400, {}
+    for ts, name in (r for r in rows if len(r) == 2 and r[0].isdigit()):
+        if int(ts) >= cut:
+            out[name.strip()] = int(ts)
+    return sorted(out.items(), key=lambda kv: kv[1])
+
+
+def cmd_docker_nap(a):
+    try:
+        res = docker_nap(sb.cfg_int(CFG, "DOCKER_NAP_MINUTES"), dry_run=a.dry_run)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        res = {"stopped": [], "kept": [], "error": str(e)[-300:]}
+    print(json.dumps(res))
 
 
 def cmd_rules(a):
@@ -2375,6 +2568,9 @@ def main():
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_t3-nap").set_defaults(fn=cmd_t3_nap)  # the janitor's nap check, run as the friend
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
+    x = s.add_parser("_docker-nap")  # the janitor: stop this account's idle Docker databases
+    x.add_argument("--dry-run", action="store_true")
+    x.set_defaults(fn=cmd_docker_nap)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     a = p.parse_args()
