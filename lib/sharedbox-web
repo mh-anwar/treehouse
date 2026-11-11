@@ -212,7 +212,7 @@ def portal_call(ip, who, action, **kw):
 
 def page(title, body, gate=False, member=True):
     # "treehouse · sietchtabr": the product first, this machine second
-    mark = f'▣ {html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
+    mark = f'<img src="{FAVICON}" width="18" height="18" alt="" class="logo">{html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
     nav = (f'<a href="/_box/me" class="brand">{mark}</a>' + (
            '<nav><a href="/_box/me">Dashboard</a><a href="/_box/features">Features</a>'
            '<a href="/_box/app">T3 in browser</a></nav>' if member else "")
@@ -240,7 +240,7 @@ CSS = """
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;
-border-bottom:1px solid var(--line)}.brand{font-weight:700;color:var(--fg);text-decoration:none}.brand .host{font-weight:400;color:var(--mut)}
+border-bottom:1px solid var(--line)}.brand{font-weight:700;color:var(--fg);text-decoration:none;display:inline-flex;align-items:center;gap:8px}.brand .host{font-weight:400;color:var(--mut)}
 nav a{color:var(--mut);margin-left:18px;text-decoration:none}nav a:hover{color:var(--fg)}
 main{max-width:1200px;margin:0 auto;padding:24px}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:22px}
@@ -309,7 +309,7 @@ background:var(--panel);padding:0 3px;border-radius:3px;line-height:1.3}.plot .y
 .people svg{width:90px;height:22px;flex:none}.people .c{min-width:70px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
 pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:11.5px}
 nav a{white-space:nowrap}
-@media (max-width:560px){main{padding:16px}header{padding:12px 16px;gap:6px 12px;flex-wrap:wrap}.brand .host{display:none}nav a{margin:0 14px 0 0}.charts{grid-template-columns:1fr}
+@media (max-width:560px){main{padding:16px}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}td.num,td .pill{white-space:nowrap}header{padding:12px 16px;gap:6px 12px;flex-wrap:wrap}.brand .host{display:none}nav a{margin:0 14px 0 0}.charts{grid-template-columns:1fr}
 .people .c{min-width:56px;font-size:12px}.people svg{width:56px}}
 """
 
@@ -333,7 +333,7 @@ async function tick(){
  <div class="card"><h3>Memory</h3><div class="big">${H(memUsed)} <span class="sub">/ ${H(b.mem_total)}</span></div>${bar(pct(memUsed,b.mem_total))}</div>
  <div class="card"><h3>Disk</h3><div class="big">${H(diskUsed)} <span class="sub">/ ${H(b.disk_total)}</span></div>${bar(pct(diskUsed,b.disk_total))}</div>
  <div class="card"><h3>People</h3><div class="big">${s.rows.filter(r=>r.kind=='friend').length}</div>
-  <div class="sub">join mode: ${esc(s.join_mode)}${s.pending_signups?` · <b style="color:var(--warn)">${s.pending_signups} pending</b>`:''}${s.open_requests?` · <b style="color:var(--warn)">${s.open_requests} request(s)</b>`:''}</div></div>
+  <div class="sub">join mode: ${esc(s.join_mode)}${s.pending_signups?` · <b style="color:var(--warn)">${s.pending_signups} pending</b>`:''}${s.open_requests?` · <b style="color:var(--warn)">${s.open_requests} request${s.open_requests>1?'s':''}</b>`:''}</div></div>
  <div class="card"><h3>Agents installed</h3><div class="sub" style="font-size:13px;color:var(--fg)">${s.agents.map(esc).join('<br>')||'–'}</div></div>`;
  const order={admin:0,friend:1,system:2};
  const rows=s.rows.sort((a,b)=>order[a.kind]-order[b.kind]||(b.cpu_pct||0)-(a.cpu_pct||0));
@@ -346,7 +346,7 @@ async function tick(){
   if(r.throttled)flags.push('<span class="pill warn">cpu capped</span>');
   if(r.mem_high&&r.mem>0.9*r.mem_high)flags.push('<span class="pill warn">mem near limit</span>');
   if(r.over)flags.push('<span class="pill bad">over disk budget</span>');
-  if((r.pending_deletions||[]).length)flags.push(`<span class="pill warn">${r.pending_deletions.length} project(s) expiring</span>`);
+  if((r.pending_deletions||[]).length)flags.push(`<span class="pill warn">${r.pending_deletions.length} project${r.pending_deletions.length>1?'s':''} expiring</span>`);
   if(r.kind=='friend'&&!r.online)flags.push('<span class="pill">offline</span>');
   const svcs=(r.services||[]).map(x=>`<span class="pill ${x.state=='running'?'ok':x.state=='failed'?'bad':''}">${esc(x.name)}</span>`).join(' ');
   return `<tr><td><b>${esc(r.label)}</b> ${flags.join(' ')}</td>
@@ -765,7 +765,7 @@ def friend_dashboard(name, rec, rng="24h", base=""):
                    + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be archived soon (untouched '
                       f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Open them in T3 or push to GitHub '
                       f'to keep them where they are.</div>'
-                      if pend else f'<div class="sub" style="margin-top:6px">{int(u.get("projects") or 0)} project(s). '
+                      if pend else f'<div class="sub" style="margin-top:6px">{plural(int(u.get("projects") or 0), "project")}. '
                       f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are archived.</div>')
                    + (f'<div class="sub" style="margin-top:6px">Archived, restorable for {e(CFG["ARCHIVE_DAYS"])} days: '
                       f'{e(", ".join(arch))}. Ask your agent to restore one (<code>box restore NAME</code>).</div>'
@@ -1286,7 +1286,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     btn = portal_btn(tok, base)
 
     def done(ok):
-        return '<span class="pill ok">done ✓</span>' if ok else '<span class="pill warn">to do</span>'
+        return '<span class="pill ok">done</span>' if ok else '<span class="pill warn">to do</span>'
 
     out = []
     if welcome:
@@ -1366,7 +1366,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             linked = logins["t3connect"]["ok"]
             out.append(f"<h3>From anywhere {done(linked)}</h3><ol class='steps'>" + dl)
             if linked:
-                out.append("<li>Linked. ✓</li>")
+                out.append("<li>Linked.</li>")
             else:
                 out.append("<li>" + btn("login", "Link my T3 account", "t3connect", primary=False)
                            + " and approve the code it shows you.</li>")
@@ -1454,6 +1454,10 @@ def public_pair(res):
                 url=PUBLIC + "/")
 
 
+def plural(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
 def notice(text, kind="ok"):
     """One-line result banner: icon + message, vertically centred. kind: ok | bad | busy (in progress)."""
     icon = {"ok": "<svg viewBox='0 0 12 12' width='11' height='11'><path d='M2.5 6.3l2.3 2.3 4.7-5' fill='none' "
@@ -1504,7 +1508,7 @@ or come back here for a new link on another device.</p></div>"""
     if res.get("done"):
         return notice("Logged in.")
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
-    open_btn = f'<a class="btn" href="{e(url)}" target="_blank" rel="noopener">Open the login page →</a>'
+    open_btn = f'<a class="btn" style="margin-top:0" href="{e(url)}" target="_blank" rel="noopener">Open the login page →</a>'
     if res.get("paste"):
         return f"""<div class="card"><h3>Finish logging in</h3>
 <p>1. {open_btn}</p><p>2. Sign in. The page then shows a code. Copy it and paste it here:</p>
@@ -1515,7 +1519,7 @@ or come back here for a new link on another device.</p></div>"""
 <p>1. {open_btn}</p><p>2. Sign in and type this code:</p>
 <p class="big" style="letter-spacing:.08em">{e(res.get('code') or '')}</p>
 <p id="wait" class="mut">3. That's it. This page moves on by itself once you're in.</p>
-<p class="sub">Not moving? {btn("check", "Check now", key, primary=False)}</p></div>
+<p class="sub">Not moving? {btn("check", "Check now", key, primary=False, small=True)}</p></div>
 <script>
 (function(){{const body=new URLSearchParams({{token:{json.dumps(res['_tok'])},action:"check",
 key:{json.dumps(key)},format:"json"}});const t0=Date.now();
@@ -1859,7 +1863,7 @@ def connect_section(name):
 <span class="sub">Same text: <a href="/_box/connect.md">{e(PUBLIC)}/_box/connect.md</a></span></p>
 <script>document.getElementById("connect-copy").addEventListener("click",async function(){{
 const t=document.getElementById("connect-prompt");try{{await navigator.clipboard.writeText(t.value)}}
-catch(x){{t.select();document.execCommand("copy")}}this.textContent="Copied ✓"}});</script>"""
+catch(x){{t.select();document.execCommand("copy")}}this.textContent="Copied"}});</script>"""
 
 
 AGENT_GET = ("/_box/api/whoami", "/_box/connect.md")
