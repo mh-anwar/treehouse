@@ -1959,6 +1959,12 @@ def req_check(cfg, rec, db, owner_ok=False):
             limit = sb.cfg_int(cfg, "REQUEST_DAILY_LIMIT")
             if limit and auto_installed_today(db, rec["user"]) + len(missing) > limit:
                 return "waiting", [], f"over {limit} automatic installs today for {rec['user']}"
+        for p in missing:  # a vetted third-party package (e.g. Google Chrome): set up its vendor repo first
+            if p in getattr(d, "VETTED", {}) and (owner_ok or sb.cfg_bool(cfg, "REQUEST_VETTED_SOURCES")):
+                try:
+                    d.ensure_vetted_source(p)
+                except (OSError, RuntimeError, subprocess.SubprocessError) as ex:
+                    return "waiting", [], f"couldn't add the official source for {p}: {str(ex)[:150]}"
         ok, new, err = d.simulate_install(missing)
         if not ok:
             return "waiting", [], f"not installable from the distro's repos: {err}"

@@ -132,6 +132,8 @@ DEFAULTS = {
     # package it would pull in) and pulls in at most REQUEST_MAX_DEPS new packages; at most REQUEST_DAILY_LIMIT
     # auto-installed packages per friend per day. Everything else waits for the owner (email + dashboard).
     "REQUEST_AUTO_INSTALL": "yes",
+    # vetted third-party packages (sbdistro.VETTED: Google Chrome) may add their vendor repo by themselves
+    "REQUEST_VETTED_SOURCES": "yes",
     "REQUEST_DENY": ("sudo doas polkit* pkexec openssh-server *-server *server *-server-* *-daemon nginx* apache2* "
                      "httpd* postgresql postgresql-[0-9]* mysql-server* mysql-[0-9]* mariadb mariadb-server* redis "
                      "valkey memcached mongodb* docker* containerd* podman* runc lxc* lxd* incus* qemu-system* "
