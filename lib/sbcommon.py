@@ -168,6 +168,9 @@ DEFAULTS = {
     "CF_SEAT_LIMIT": "40",
     # port of the owner's own T3 Code on GATE_BACKEND_HOST; set it to let CF_OWNER_EMAILS open it on the public site
     "OWNER_T3_PORT": "",
+    # serve group servers on the public site (/s/NAME/)? Off: any member can edit a group server's code, and on the
+    # same site as everyone's T3 Code a malicious script there could act as whoever opens it. Tailnet links only.
+    "SHARED_PUBLIC_LINKS": "no",
     "OWNER_T3_USER": "",   # account that runs that T3 (default: the first ADMIN_USERS)
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
@@ -198,6 +201,10 @@ def load_config(path=CONF_PATH):
     except FileNotFoundError:
         pass
     return cfg
+
+
+def cfg_bool(cfg, key):
+    return str(cfg.get(key, "")).strip().lower() in ("1", "yes", "true", "on")
 
 
 def cfg_int(cfg, key):

@@ -462,7 +462,7 @@ def rule_fields(tl="", extras=(), nt=""):
         serve_public=(f"\n- Public link (behind the box's login, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
         shared_public=(f"\n- Public link (behind the box's login, for every member): `{sb.public_url(CFG)}/s/NAME/`."
-                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
+                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else ""),
         shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
                                     sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
 

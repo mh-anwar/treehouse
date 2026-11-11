@@ -742,7 +742,7 @@ def servers_section(st, shared, btn, base=""):
             "activating", "deactivating", "reloading") else ""
         return f'<span class="dot {cls}"></span>{e(stt)}'
 
-    def link(port, public_path=None):
+    def link(port, public_path=None, public=True):
         """The public link (behind the same login as this page) when there's a public site, with the
         Tailscale address as secondary text; else just the Tailscale link."""
         port = str(port or "")
@@ -750,8 +750,8 @@ def servers_section(st, shared, btn, base=""):
             return ""
         u = f"http://{HOST}:{port}/"
         tail = f'<a href="{e(u)}" target="_blank" rel="noopener">{e(u)}</a>'
-        if not PUBLIC:
-            return tail
+        if not PUBLIC or not public:
+            return tail + (" <span class='mut'>(Tailscale)</span>" if PUBLIC else "")
         pu = f"{PUBLIC}{public_path or '/p/' + port}/"
         return (f'<a href="{e(pu)}" target="_blank" rel="noopener">{e(pu)}</a>'
                 f'<br><span class="mut">on Tailscale: {tail}</span>')
@@ -792,7 +792,7 @@ def servers_section(st, shared, btn, base=""):
     out.append('<div class="srv">' + "".join(
         f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
         f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
-        f'<div class="sub">{link(s.get("port"), "/s/" + s["name"])}</div>'
+        f'<div class="sub">{link(s.get("port"), "/s/" + s["name"], sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"))}</div>'
         f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
         + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
         + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'

@@ -161,6 +161,11 @@ def app_port(kind, key, user, owner):
     (their T3 Code, which has its own front door at /), or any group server's port."""
     e = key  # keys are [a-z0-9-] only (checked by app_route): safe in HTML as is
     group = shared_servers()
+    if not sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"):
+        group_off = (403, "Open it over Tailscale", "Group servers aren't on the public site: anyone in the group "
+                     "can change their code, so they only open over Tailscale (see <a href='/_box/me'>your page</a>).")
+        if kind == "s":
+            return None, group_off
     if kind == "s":
         if key not in group:
             return None, (404, "No such server", f"There's no group server called <b>{e}</b>. "
@@ -170,8 +175,10 @@ def app_port(kind, key, user, owner):
                           "Ask your friend for an invite link.")
         return group[key], None
     port = int(key)
-    if port in group.values() and (user or owner):
-        return port, None
+    if port in group.values():
+        if (user or owner) and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"):
+            return port, None
+        return None, (403, "Open it over Tailscale", "That's a group server; group servers only open over Tailscale.")
     if user and user != OWNER:
         rec = users().get(user)
         if rec:
