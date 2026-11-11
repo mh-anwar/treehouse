@@ -30,6 +30,7 @@ if systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
 fi
 # box tuning: back to the kernel's defaults at the next reboot (nothing is changed on the running system)
 rm -f /etc/sysctl.d/60-sharedbox-*.conf /etc/modules-load.d/sharedbox-bbr.conf
+if [[ -e /swap.treehouse ]]; then swapoff /swap.treehouse 2>/dev/null && rm -f /swap.treehouse; fi
 rm -rf /usr/lib/sharedbox /usr/share/sharedbox
 rm -f /usr/local/bin/box /usr/local/sbin/sharedbox-admin /usr/local/sbin/sharedbox-janitor /usr/local/sbin/sharedbox-tools \
     /etc/profile.d/sharedbox.sh

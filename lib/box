@@ -2585,7 +2585,47 @@ def sync_claude_hook():
     open(CLAUDE_HOOK_MARK, "a").close()
 
 
+LEGACY_HOOK = "box _auto-issues"  # an early session-start hook; `box status --agent` does the same work now
+
+
+def drop_legacy_hook():
+    """Remove the old `box _auto-issues` SessionStart hook where `box status --agent` is also there: it ran the
+    same checks a second time at every session start (~0.1 s)."""
+    path = os.path.join(HOME, ".claude", "settings.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+        start = cfg["hooks"]["SessionStart"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(start, list):
+        return
+
+    def cmds(g):
+        hs = g.get("hooks") if isinstance(g, dict) else None
+        return [str(h.get("command", "")) for h in hs if isinstance(h, dict)] if isinstance(hs, list) else []
+    if not any(c.startswith(CLAUDE_HOOK) for g in start for c in cmds(g)):
+        return
+    keep = [g for g in start if not (cmds(g) and all(c.startswith(LEGACY_HOOK) for c in cmds(g)))]
+    if len(keep) == len(start):
+        return
+    cfg["hooks"]["SessionStart"] = keep
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    try:
+        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
 def sync_hooks():
+    try:
+        drop_legacy_hook()
+    except OSError:
+        pass
     try:
         sync_claude_hook()
     except OSError:

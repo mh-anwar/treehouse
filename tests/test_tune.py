@@ -53,5 +53,54 @@ class Tune(unittest.TestCase):
         self.assertFalse(res[0]["ok"])
 
 
+class Swap(unittest.TestCase):
+    def setUp(self):
+        self.cmds, self.files = [], {"/proc/swaps": "Filename Type Size Used Priority\n",
+                                     "/proc/meminfo": "MemTotal: 32000000 kB\n"}
+        self.free = 150 << 30
+        saved = (tune.read, tune.subprocess.run, tune.os.statvfs, tune.os.chmod, tune.tune_swap_setting,
+                 tune.os.path.exists)
+        self.addCleanup(self.restore, saved)
+        tune.read = lambda p, d="": self.files.get(p, d)
+        tune.tune_swap_setting = lambda: "auto"
+        tune.os.chmod = lambda *a: None
+        tune.os.path.exists = lambda p: False
+
+        class V:
+            f_bavail, f_frsize, f_blocks = self.free, 1, 217 << 30
+        tune.os.statvfs = lambda p: V
+
+        def run(cmd, **kw):
+            self.cmds.append(cmd)
+            out = "ext4\n" if cmd[:2] == ["stat", "-fc"] else ""
+            return tune.subprocess.CompletedProcess(cmd, 0, out, "")
+        tune.subprocess.run = run
+
+    def restore(self, saved):
+        (tune.read, tune.subprocess.run, tune.os.statvfs, tune.os.chmod, tune.tune_swap_setting,
+         tune.os.path.exists) = saved
+
+    def test_makes_one_when_none(self):
+        msg = tune.apply_swap()
+        self.assertIn("made /swap.treehouse (8 GB)", msg)
+        self.assertEqual([c[0] for c in self.cmds], ["stat", "fallocate", "mkswap", "swapon"])
+
+    def test_leaves_existing_swap_alone(self):
+        self.files["/proc/swaps"] += "/swap.img file 8388604 0 -2\n"
+        self.assertIn("/swap.img", tune.apply_swap())
+        self.assertEqual(self.cmds, [])
+
+    def test_off_switch_and_small_disk(self):
+        tune.tune_swap_setting = lambda: "0"
+        self.assertIn("off", tune.apply_swap())
+        tune.tune_swap_setting = lambda: "auto"
+
+        class Small:
+            f_bavail, f_frsize, f_blocks = 10 << 30, 1, 100 << 30
+        tune.os.statvfs = lambda p: Small
+        self.assertIn("not enough free disk", tune.apply_swap())
+        self.assertEqual(self.cmds, [])
+
+
 if __name__ == "__main__":
     unittest.main()

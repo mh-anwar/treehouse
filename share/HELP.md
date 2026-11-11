@@ -152,6 +152,11 @@ Typical waste:
 - No limits: compose `mem_limit:`, `org.gradle.jvmargs=-Xmx2g`, `--max-workers` from `box help heavy`, slim images.
 - Leaks: test browsers (Playwright, Puppeteer) not closed in teardown, 300+ MB each; background jobs your own runs
   started and forgot.
+- Waiting on the disk: every save that must reach the disk (database commits, `git commit`, package installs) waits
+  for it, and some boxes have slow disks (measure: a few ms per sync is slow). For throwaway local test databases
+  the wait isn't needed: Postgres `ALTER SYSTEM SET synchronous_commit = off;` then `SELECT pg_reload_conf();` (a
+  crash loses the last second of writes, never corrupts). Only on databases the user treats as scratch; ask first
+  otherwise. Scratch files for builds and tests go in /tmp when `df /tmp` says tmpfs (memory).
 - Slow shell start: agents start a shell for every command, so `time bash -lc true` should stay under ~30 ms.
   After installing anything that hooks into the shell (nvm, conda, pyenv, rbenv, prompt tools) check it; for nvm run
   `box tune shell`, for the others use their lazy or minimal init instead of the eager one their installer adds.
