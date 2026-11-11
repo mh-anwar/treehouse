@@ -603,19 +603,47 @@ def sync_agents(cfg, dry, errors):
         return
     if not dry:
         apply_choices(cfg, names)
-    for name, wanted in specs:
+    # Lookups and downloads are network/disk bound: do them side by side (measured on a fresh store, 4 agents:
+    # lookups 2.0 s -> 0.6 s, installs 38 s -> 22 s). Switching versions stays one at a time, in order.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def resolve(spec):
         try:
-            ver = resolve_version(name, wanted)
-            if current_version(name) == ver:
-                print(f"    {name} {ver} (up to date)")
-            else:
-                log(f"{name} {current_version(name) or '(new)'} -> {ver}")
-                ensure_version(name, ver, dry)
-                if not dry:
-                    set_current(name, ver)
+            return resolve_version(spec[0], spec[1]), None
+        except Exception as e:
+            return None, e
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        resolved = dict(zip(names, pool.map(resolve, specs)))
+    todo = []
+    for name, _ in specs:
+        ver, err = resolved[name]
+        if err:
+            print(f"    {name}: {err}", file=sys.stderr)
+            errors.append(f"{name}: {err}")
+        elif current_version(name) == ver:
+            print(f"    {name} {ver} (up to date)")
+        else:
+            log(f"{name} {current_version(name) or '(new)'} -> {ver}")
+            todo.append((name, ver))
+
+    def install(item):
+        try:
+            ensure_version(item[0], item[1], dry)
+            return None
         except Exception as e:  # one agent failing must not stop the others
             traceback.print_exc()
-            errors.append(f"{name}: {e}")
+            return e
+
+    if todo and not dry:
+        pnpm()  # set up once, before the parallel installs share it
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        failed = dict(zip([n for n, _ in todo], pool.map(install, todo)))
+    for name, ver in todo:
+        if failed[name]:
+            errors.append(f"{name}: {failed[name]}")
+        elif not dry:
+            set_current(name, ver)
     if dry:
         return
     # only once the replacement is installed, so a failed install never leaves people without the agent

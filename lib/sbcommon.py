@@ -114,6 +114,8 @@ DEFAULTS = {
     # a Docker database stack (Postgres, Supabase, Redis, ...) is stopped after this many minutes with no connection
     # and no queries; everyone's, the owner's too. Volumes are kept: `supabase start` / `docker compose up -d`
     "DOCKER_NAP_MINUTES": "60",
+    # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
+    "TUNE_SWAP": "auto",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
     "DISK_CRITICAL_FREE_PCT": "10",

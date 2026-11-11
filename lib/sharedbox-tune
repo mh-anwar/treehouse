@@ -101,7 +101,8 @@ def check_memory():
     mem_kb = next((int(ln.split()[1]) for ln in read("/proc/meminfo").splitlines() if ln.startswith("MemTotal:")), 0)
     out.append(finding("swap", bool(swaps), ", ".join(swaps) or "none", f"a swap file (~{min(8, max(2, mem_kb // 2 // 2**20))} GB)",
                        "without swap, a memory spike kills programs instead of slowing them; with zswap on, "
-                       "swap is mostly compressed RAM and rarely touches the disk", "owner"))
+                       "swap is mostly compressed RAM and rarely touches the disk. Treehouse makes one when there's "
+                       "none and the disk has room (TUNE_SWAP=0 turns that off)", "treehouse"))
     if os.path.isdir(ZSWAP):
         en = read(f"{ZSWAP}/enabled")
         comp = read(f"{ZSWAP}/compressor")
@@ -141,6 +142,9 @@ DESKTOP_LEFTOVERS = {
     "whoopsie.service": "crash reports to Canonical",
     "kerneloops.service": "kernel crash reports",
     "colord.service": "screen color profiles",
+    "upower.service": "battery and power info for laptops",
+    "rsyslog.service": "writes every log line a second time (journald already keeps them); keep it if something "
+                       "reads /var/log/syslog",
 }
 
 
@@ -162,7 +166,7 @@ def check_services():
         running.append("wpa_supplicant.service")
     why = "; ".join(f"{u.removesuffix('.service')}: {DESKTOP_LEFTOVERS.get(u, 'Wi-Fi, but no Wi-Fi link is up')}"
                     for u in running)
-    out.append(finding("desktop services running on a server", not running, ", ".join(running) or "none", "none",
+    out.append(finding("services a server rarely needs", not running, ", ".join(running) or "none", "none",
                        (why + ". Turn off only what the owner confirms nobody uses: `box tune disable NAME` "
                         "(owner's account, no sudo; `box tune enable NAME` undoes it)") if running else "", "owner"))
     return out
@@ -266,10 +270,61 @@ def apply_zswap():
     return f"zswap: on ({read(f'{ZSWAP}/compressor')})"
 
 
+SWAPFILE = "/swap.treehouse"
+
+
+def tune_swap_setting():
+    try:
+        sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", HERE))
+        import sbcommon as sb
+        return str(sb.load_config().get("TUNE_SWAP", "auto")).strip().lower()
+    except Exception:
+        return "auto"
+
+
+def apply_swap():
+    """No swap at all: make one (zswap needs it, and without any a memory spike kills programs). Sized
+    min(8 GB, max(2 GB, RAM/2)); only with plenty of free disk; TUNE_SWAP=0 in sharedbox.conf turns it off.
+    Our own file is switched on again at every boot (no /etc/fstab edit)."""
+    setting = tune_swap_setting()
+    active = [ln.split()[0] for ln in read("/proc/swaps").splitlines()[1:] if ln.split()]
+    if os.path.exists(SWAPFILE) and SWAPFILE not in active and setting != "0":
+        subprocess.run(["swapon", SWAPFILE], check=False)
+        return f"swap: {SWAPFILE} on"
+    if active or setting in ("0", "no", "off"):
+        return "swap: " + (", ".join(active) if active else "off (TUNE_SWAP=0)")
+    mem = next((int(ln.split()[1]) * 1024 for ln in read("/proc/meminfo").splitlines()
+                if ln.startswith("MemTotal:")), 0)
+    size = min(8 << 30, max(2 << 30, mem // 2))
+    st = os.statvfs("/")
+    free, total = st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+    if free < 4 * size or free - size < 0.2 * total:
+        return f"swap: none, and not enough free disk to add {size >> 30} GB safely"
+    fs = subprocess.run(["stat", "-fc", "%T", "/"], capture_output=True, text=True).stdout.strip()
+    if fs == "btrfs":
+        r = subprocess.run(["btrfs", "filesystem", "mkswapfile", "--size", f"{size >> 20}m", SWAPFILE],
+                           capture_output=True, text=True)
+    elif fs in ("ext2/ext3", "ext4", "xfs"):
+        r = subprocess.run(["fallocate", "-l", str(size), SWAPFILE], capture_output=True, text=True)
+        if r.returncode == 0:
+            os.chmod(SWAPFILE, 0o600)
+            r = subprocess.run(["mkswap", SWAPFILE], capture_output=True, text=True)
+    else:
+        return f"swap: none; {fs} isn't a filesystem treehouse makes swap files on"
+    if r.returncode != 0:
+        try:
+            os.unlink(SWAPFILE)
+        except OSError:
+            pass
+        return f"swap: couldn't make {SWAPFILE}: {(r.stderr or '').strip()[-200:]}"
+    subprocess.run(["swapon", SWAPFILE], check=False)
+    return f"swap: made {SWAPFILE} ({size >> 30} GB)"
+
+
 def cmd_apply(a):
     if os.geteuid() != 0:
         sys.exit("sharedbox-tune apply: needs root (install.sh and sharedbox-tune.service run it)")
-    for step in (apply_zswap,):
+    for step in (apply_swap, apply_zswap):  # swap first: zswap only does anything with swap
         try:
             print(step())
         except OSError as e:
