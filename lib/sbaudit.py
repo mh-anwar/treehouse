@@ -139,12 +139,19 @@ class Audit:
                 continue
             exposed.append((proto, port, proc, where))
         self.facts["exposed_ports"] = [f"{p}/{port} {proc} on {w}" for p, port, proc, w in exposed]
+        groups = {}
         for proto, port, proc, where in exposed:
             if proc in ("sshd", "sshd-session") or (port == "22" and proc == "?"):
                 continue
+            if proc.startswith("sharedbox-trap") or (proc == "cloudflared" and proto == "udp"):
+                continue  # the trap's decoys belong on the LAN; cloudflared's UDP sockets are its outbound tunnel
+            groups.setdefault((proc, where), []).append(f"{proto}/{port}")
+        for (proc, where), ports in groups.items():
+            proto, port = ports[0].split("/")
             sev = "info" if fw else "medium"
-            self.add(f"exposed:{proto}/{port}", sev,
-                     f"{proc} listens on {proto}/{port} on {where} (not just Tailscale)",
+            self.add(f"exposed:{proc}:{','.join(sorted(ports))}", sev,
+                     f"{proc} listens on {', '.join(sorted(ports)[:6])}{' …' if len(ports) > 6 else ''} on {where} "
+                     "(not just Tailscale)",
                      "Anyone on the LAN can reach it now; anyone on the internet could if a router port "
                      "is ever forwarded." + (f" Firewall ({fw}) is on, so check it blocks this port."
                                              if fw else " The firewall is OFF."),
@@ -304,6 +311,10 @@ class Audit:
 
     # ------------------------------------------------------------------ persistence / tampering
     def check_watched(self):
+        def ours(p):
+            n = os.path.basename(p)
+            return (n.startswith(("sharedbox-", "sharedbox.")) or n in (
+                "cloudflared.list", "google-chrome.list", "google-chrome.sources", "google-chrome", "docker.sources"))
         hashes = {}
         for pat in WATCHED + (WATCHED_ARCH if distro.current() == "arch" else []):
             for p in glob.glob(pat):
@@ -314,6 +325,8 @@ class Audit:
             changed = sorted(p for p in hashes if prev.get(p) != hashes[p])
             gone = sorted(p for p in prev if p not in hashes)
             for p in changed:
+                if ours(p):  # treehouse's own services, or a vendor source its installs add (shows in the update log)
+                    continue
                 kind = "new" if p not in prev else "changed"
                 self.add(f"watched:{p}:{hashes[p]}", "medium", f"{kind} since last audit: {p}",
                          "Sensitive file (login, sudo, cron, boot-time services). Fine if you or an "
@@ -337,12 +350,14 @@ class Audit:
         for line in out.splitlines():
             uid, mode, path = line.split(" ", 2)
             found[path] = f"{uid}:{mode}"
-            if uid == "0" and re.match(r"/(home|tmp|var/tmp|dev/shm|srv|opt)/", path):
+            if uid == "0" and re.match(r"/(home|tmp|var/tmp|dev/shm|srv)/", path):
                 self.add(f"suidhome:{path}", "high", f"root-owned setuid/setgid file in a user-writable area: {path}",
                          "This is a planted privilege escalation backdoor unless you made it.", f"rm {path}")
         prev = self.baseline.get("setuid")
         if prev is not None:
             for p in sorted(set(found) - set(prev)):
+                if run(["dpkg", "-S", p], timeout=30)[0] == 0:  # shipped by an installed package (e.g. Chrome's sandbox)
+                    continue
                 self.add(f"suidnew:{p}:{found[p]}", "medium", f"new setuid/setgid binary: {p}",
                          "Fine after installing a package that ships one; otherwise suspicious.", "")
         self.new_baseline["setuid"] = found
@@ -534,10 +549,11 @@ class Audit:
         for u in users:
             n = sum(1 for h in hits if h.get("user") == u)
             ex = next(h for h in hits if h.get("user") == u)
+            frozen = any(h.get("frozen") for h in hits if h.get("user") == u)
             self.add(f"canary:{u}", "high", f"TRIPWIRE: {u} opened decoy secrets ({n}x)",
-                     f"e.g. {ex.get('file')} by `{ex.get('cmd', '')[:100]}`"
-                     + (" — account was frozen" if any(h.get("frozen") for h in hits if h.get("user") == u) else ""),
-                     f"investigate; sharedbox-canary thaw {u} to unfreeze")
+                     f"e.g. {ex.get('file')} by `{ex.get('cmd', '')[:100]}`" + (" (account was frozen)" if frozen else ""),
+                     f"investigate; sharedbox-canary thaw {u} to unfreeze" if frozen else
+                     "investigate what ran it (ignore if it was a test)")
 
     # ------------------------------------------------------------------ driver
     def run_all(self, deep=True, since=None):
