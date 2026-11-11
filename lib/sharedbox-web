@@ -58,6 +58,7 @@ def _form_key():
 
 
 SECRET = _form_key()
+FLASH = {}  # id -> (time, who id, result): a button's outcome shown on the GET after it (post/redirect/get)
 HOST = socket.gethostname()
 BRAND = sb.brand(CFG)
 SELF_IP = None
@@ -1614,6 +1615,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, join_page(ip, who, msg="<h2>Account created</h2><p>Reload this page.</p>"))
         return self.send(200, portal_page(ip, who, name, rec, welcome=True))
 
+    def after_post(self, ip, who, name, rec, result):
+        """Post/redirect/get on the public site: show the result on a normal GET, so a refresh never resends a
+        button press (no "resend the form?" dialog, no repeated actions)."""
+        if ip != "gate":
+            return self.send(200, portal_page(ip, who, name, rec, result))
+        now = time.time()
+        for k in [k for k, v in FLASH.items() if now - v[0] > 900]:
+            FLASH.pop(k, None)
+        fid = secrets.token_urlsafe(9)
+        FLASH[fid] = (now, who["id"], result)
+        return self.redirect(f"/_box/me?r={fid}")
+
     def portal_post(self, ip, who, form):
         name, rec = (who["name"], who["rec"]) if who.get("session") or who.get("cf_jwt") else existing_account(who["id"])
         if not name:
@@ -1633,31 +1646,31 @@ class Handler(BaseHTTPRequestHandler):
                                                   {"ok": False, "error": "too many tries; wait a few minutes"}))
             q.append(now)
         if who.get("owner") and action not in OWNER_ACTIONS:
-            return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
+            return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if who.get("owner") and action == "self-update":
             res = portal_call(ip, who, "self-update")
-            return self.send(200, portal_page(ip, who, name, rec, dict(res, _view="request-update")))
+            return self.after_post(ip, who, name, rec, dict(res, _view="request-update"))
         if who.get("owner") and action.startswith("request-"):
             if not REQUEST_ID_RE.fullmatch(key):
-                return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "no such request"}))
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such request"})
             res = portal_call(ip, who, action, key=key)
-            return self.send(200, portal_page(ip, who, name, rec, dict(res, _view=action)))
+            return self.after_post(ip, who, name, rec, dict(res, _view=action))
         if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
             op = form.get("op", "")
             if not SERVER_RE.fullmatch(key) or (action.startswith("serve-") and key == "t3") \
                     or (action.endswith("-ctl") and op not in SERVER_OPS):
-                return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown server"}))
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server"})
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
-            return self.send(200, portal_page(ip, who, name, rec, dict(res, _view=action, key=key)))
+            return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
         actions = ("t3", "t3app", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
         keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
-            return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
+            return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if action == "add-key":
             key_txt = form.get("sshkey", "")
             res = portal_call(ip, who, "add-key", sshkey=key_txt[:8192])
             res = dict(res, key_added=bool(res.get("ok")))
-            return self.send(200, portal_page(ip, who, name, rec, res))
+            return self.after_post(ip, who, name, rec, res)
         kw = {"key": key}
         if action == "login" and form.get("console"):
             kw["console"] = True
@@ -1666,7 +1679,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "t3app":  # a pairing link for the laptop app over Tailscale: keep the tailnet address
             res = portal_call(ip, who, "t3")
             res = ({"ok": True, "app_pair": res["pair_url"]} if res.get("ok") and res.get("pair_url") else res)
-            return self.send(200, portal_page(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"]))))
+            return self.after_post(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"])))
         res = portal_call(ip, who, action, **kw)
         if (who.get("session") or who.get("cf_jwt")) and res.get("pair_url"):
             res = public_pair(res)
@@ -1959,7 +1972,9 @@ class GateHandler(Handler):
         if kind == "features":
             return self.send(200, features_page(owner=not self.who() and CF and self.cf_email() in sb.owner_emails(CFG)))
         if kind == "me" and who:
-            return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q,
+            fl = FLASH.get((q.get("r") or [""])[0])
+            result = fl[2] if fl and fl[1] == who["id"] else None  # a button's outcome, after post/redirect/get
+            return self.send(200, portal_page("gate", who, who["name"], who["rec"], result, welcome="welcome" in q,
                                               rng=(q.get("range") or ["24h"])[0]))
         if kind == "landing" and who and who.get("owner"):
             return self.redirect("/_box/me")  # the owner always has a page: their dashboard
