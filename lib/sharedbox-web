@@ -1306,7 +1306,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
                 if t3 and t3.get("sleeping") else "")
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
-            out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
+            out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>T3 is where you chat with your agents (Claude, Codex). Best on the T3 Code app on your laptop: "
                        "<a href='#t3app'>set it up</a>."
                        + (" Use the browser a lot? <a href='/_box/direct-on'>Open T3 straight away next time</a> "
                           "(this page stays at <b>/_box/me</b>; <a href='/_box/direct-off'>undo</a>)." if CF and gate
