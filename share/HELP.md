@@ -23,8 +23,9 @@ Never ask for passwords or tokens in chat.
   Build outputs (`node_modules`, `build/`, `target/`, `.next`, `.venv`, …) in projects idle {artifact_ttl} days are
   deleted. Over the disk budget, everything regenerable is wiped right away.
 - `/tmp` files older than {tmp_ttl} days are deleted.
-- The user's T3 Code server is stopped after {t3_idle} days unused (no visit, no agent working) to free memory. It
-  starts again by itself when they open it (their page, or the T3 link); `box t3` starts it from a terminal.
+- The user's T3 Code server naps after {t3_nap} minutes unused (no app or tab connected, no agent working, nothing
+  it started still serving) to free memory. Its port stays open: opening T3 (app, browser, their page) wakes it in
+  a few seconds. Linked to T3 Connect: it naps after {t3_idle} days instead. `box t3 status` shows which.
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{host}:<absolute path> .`
 - Nothing is backed up. Push to git often.
@@ -50,7 +51,7 @@ Never ask for passwords or tokens in chat.
   restarts on crash. The port is in `$PORT` (your range: {ports}). Listen on `0.0.0.0`.
 - Manage: `box serve ls`, `box serve logs <name>`, `box serve restart|stop|start|rm <name>`.
 - The user also sees and controls these on their page {portal}.
-- Their T3 Code isn't one of these: it sleeps after {t3_idle} days unused and wakes when they open it.
+- Their T3 Code isn't one of these: it naps when unused and wakes when they open it. Ports {t3_ports} are its.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
 - Others on the tailnet reach it at `http://{host}:<port>`.{serve_public}
 

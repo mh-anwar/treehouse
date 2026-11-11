@@ -1318,8 +1318,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
     t3_btn = ("<a class='btn' href='/_box/app'>Open T3 in browser</a>" if CF and gate
               else btn("t3", "Open T3 in browser"))
-    sleeping = ("<span class='sub'>T3 sleeping (unused for a while): it opens on click, give it a minute.</span>"
-                if t3 and t3.get("sleeping") else "")
+    sleeping = ""  # a napping T3 wakes by itself when opened: nothing to tell them
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
             out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
@@ -1352,7 +1351,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         on_top = ai_ok and not welcome  # the button is already at the top of the page: don't repeat it
         out.append(("" if on_top else
                     "<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
-                    "It keeps running when you close the tab.</p>" + t3_btn + " " + sleeping)
+                    "Your agents keep working when you close the tab.</p>" + t3_btn + " " + sleeping)
                    + (f"<p class='sub'>Bookmark <b>{e(PUBLIC)}</b>: it opens this page, and T3 is one click away.</p>"
                       if CF and gate else
                       f"<p class='sub'>Already opened it on this device? Just go to "

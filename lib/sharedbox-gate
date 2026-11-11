@@ -776,6 +776,11 @@ async def handle_request(reader, writer, head, peer):
             try:
                 rhead = await asyncio.wait_for(br.readuntil(b"\r\n\r\n"), RESPONSE_TIMEOUT)
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+                if not to_web and not app_kind:  # a napping T3 that couldn't wake (its port answered, T3 didn't)
+                    await respond(writer, 502, page("Couldn't start T3", "Your T3 Code didn't start. Open "
+                                                    "<a href='/_box/open'>this link</a> to start it again, or "
+                                                    "use <a href='/_box/me'>your page</a>."))
+                    return False
                 await respond(writer, 502, page("Couldn't load this", "The app hung up before answering. Try reloading."))
                 return False
             rlines = rhead[:-4].split(b"\r\n")
