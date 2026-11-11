@@ -5,6 +5,7 @@
   sharedbox-janitor guard                            make friend processes first in line for the OOM killer
 
 Root only *reads* (du) and decides. Every deletion runs as the friend via setpriv.
+Scope: friends' homes and their own files in /tmp, /var/tmp. Never SHARED_DIR (box shared code).
 """
 
 import argparse
