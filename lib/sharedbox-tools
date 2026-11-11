@@ -496,7 +496,11 @@ def security_pass(cfg, names, force=None):
         if notes:
             path = os.path.join(sb.AGENT_PINS, user, "notices.json")
             prev = [n for n in (sb.read_json(path, []) or []) if time.time() - n.get("ts", 0) < 30 * 86400]
-            sb.write_json(path, prev + [dict(n, ts=int(time.time())) for n in notes], mode=0o644)
+            try:  # 0640 root:<their group>: root also puts their `box request` outcomes in here
+                owner, mode = (0, pwd.getpwnam(user).pw_gid), 0o640
+            except KeyError:
+                owner, mode = None, 0o644
+            sb.write_json(path, prev + [dict(n, ts=int(time.time())) for n in notes], mode=mode, owner=owner)
     return moved
 
 

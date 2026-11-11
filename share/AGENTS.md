@@ -19,8 +19,8 @@ Details for any topic below: `box help <topic>` (`box help` lists topics). Read 
 ## No sudo, ever
 - Never run `sudo`, `apt`, `pacman`, and **never ask the user or owner for admin/root**. Install into your home:
   `npm i -g X`, `uv tool install X` / `uv venv`, `pipx install X`, `cargo install X`, `go install X@latest`.
-- Only a true system package needs the owner: `box request "install <pkg> (system package): <why>"`, tell the
-  user, and keep working around it.
+- System packages: `box request install PKG --why "<why>"` (most install automatically within a minute;
+  `box help requests`).
 - Preinstalled: {tools}. Don't install your own copies of the coding agents or run their self-updaters.
 {extras}
 

@@ -8,7 +8,7 @@
   sharedbox-admin suspend USER | resume USER
   sharedbox-admin kill USER                       stop every process the user has (account stays)
   sharedbox-admin remove USER [--archive]
-  sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
+  sharedbox-admin requests [--done ID]            package/other requests filed with `box request`
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
   sharedbox-admin reapply                         rewrite every friend's limit drop-ins (+ shared-sync)
   sharedbox-admin shared-sync                     shared servers: dirs, slice, SHARED_GROUP membership
@@ -25,6 +25,7 @@
   sharedbox-admin cloudflare enable | status      start cloudflared + the gate | check everything
   sharedbox-admin access list | add EMAIL [--user NAME] | remove EMAIL   who Cloudflare Access lets in
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
+  sharedbox-admin process-requests                (run by sharedbox-requests.service: `box request`s)
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
 """
@@ -372,6 +373,11 @@ def process_admin_drop(cfg):
                 res = share_skill(req, user)
             except (ValueError, TypeError, OSError, RuntimeError) as e:
                 res = {"ok": False, "error": f"could not share the skill: {e}"}
+        elif len(raw) <= 4096 and isinstance(req, dict) and req.get("action") in FRIENDS_ACTIONS:
+            try:
+                res = friends_action(cfg, user, req)
+            except (ValueError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+                res = {"ok": False, "error": f"that didn't work: {e}"}
         elif len(raw) > 4096 or not isinstance(req, dict) or req.get("action") != "invite":
             res = {"ok": False, "error": "unknown request"}
         elif sb.public_url(cfg) and not req.get("tailscale") and req.get("create", True):
@@ -530,6 +536,10 @@ def process_spool(cfg):
                     running.add(pool.submit(answer, rid, handle_portal, req))
             time.sleep(0.2)
     gate_prune()
+    try:  # after the joins: signups waiting for approval reach the owner by email
+        notify_signups(cfg)
+    except Exception as e:  # noqa: BLE001
+        print(f"notify_signups: {e!r}", file=sys.stderr)
     # results nobody collected
     for path in glob.glob(os.path.join(sb.SPOOL, "res-*.json")):
         try:
@@ -796,7 +806,9 @@ def handle_owner_pair(cfg, rid, req):
 
 # what the owner's /_box/me page may do as the owner's own account: the dashboard's server controls only.
 # Their logins, SSH keys, agent updates and T3 Code are their own business, set up on the box itself.
-OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs")
+REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
+OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
+                        "shared-logs") + REQUEST_PORTAL_ACTIONS
 
 
 def handle_portal(cfg, rid, req):
@@ -827,6 +839,11 @@ def handle_portal(cfg, rid, req):
     if owner:
         if req.get("action") not in OWNER_PORTAL_ACTIONS:
             return {"ok": False, "error": "not available for the owner's account"}
+        if req.get("action") in REQUEST_PORTAL_ACTIONS:  # the dashboard's buttons on a friend's `box request`
+            try:
+                return request_act(cfg, str(req.get("key") or "")[:200], req["action"][8:], by=name)
+            except FriendError as e:
+                return {"ok": False, "error": str(e)}
         rec = {}
     else:
         rec = sb.friend_users()[name]
@@ -920,6 +937,8 @@ def cmd_invite(cfg, a):
         print(f"\n({TAILSCALE_NOTE})", file=sys.stderr)
 
 
+SUBSCRIPTION_LINE = "You'll need your own Claude Pro/Max or ChatGPT Plus/Pro subscription to use the agents."
+
 TAILSCALE_NOTE = ("no account was created: on a Tailscale-only box it needs the friend's Tailscale login, so "
                   "they pick a username on the join page")
 
@@ -1010,7 +1029,7 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
         save_registry(reg)
     hello = ("Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) "
              "that\nbuilds things for you in your browser and keeps running when you close your laptop. "
-             "Works on your phone too.")
+             "Works on your phone too.\n" + SUBSCRIPTION_LINE)
     if cf:
         sb.log_event("invite_created", by, account=username, email=email, note=note)
         message = f"""{hello}
@@ -1021,7 +1040,7 @@ Stuck? Ask the agent, or text me."""
         return {"ok": True, "message": message, "username": username, "link": f"{pub}/", "id": "",
                 "email": email, "expires": None,
                 "summary": f"account {username} created for {email} and allowed in Cloudflare Access; "
-                           f"undo: sharedbox-admin remove {username}"}
+                           f"undo: box friends remove {username}"}
     tok, h = gate_mint("logins", days * 86400, user=username, invite=True, note=note, by=by or "root")
     exp = int(time.time()) + days * 86400
     sb.log_event("invite_created", by, invite=h[:12], account=username, email=email or None, note=note)
@@ -1038,7 +1057,7 @@ tap "Add a device". Stuck? Ask the agent, or text me."""
             "email": email or None, "expires": exp,
             "summary": f"account {username} created; login link {h[:12]} works once until "
                        f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(exp))}; "
-                       f"undo: sharedbox-admin remove {username}"}
+                       f"undo: box friends remove {username}"}
 
 
 class InviteError(Exception):
@@ -1069,6 +1088,7 @@ def public_invite(cfg, days=None, note=None, by=None, email=None):
     if fields:
         return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
 builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
+{SUBSCRIPTION_LINE}
 
 1. Open this link (it works once, for the next {days} days):
    {pub}/i/{tok}
@@ -1079,6 +1099,7 @@ Later, on any device, just open {pub}/ and sign in with {email} again. Stuck? As
                 h, int(time.time()) + days * 86400)
     return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
 builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
+{SUBSCRIPTION_LINE}
 
 1. Open this link (it works once, for the next {days} days):
    {pub}/i/{tok}
@@ -1099,6 +1120,7 @@ def tailscale_invite(cfg):
     url = f"http://{host}:{cfg['WEB_PORT']}/join"
     return f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
 builds things for you in your browser and keeps running when you close your laptop.
+{SUBSCRIPTION_LINE}
 
 1. Install Tailscale and sign in: https://tailscale.com/download
 2. Accept the "shared machine" invite I sent you (check your email), using that same Tailscale account.
@@ -1374,49 +1396,761 @@ def cmd_access(cfg, a):
     if not cf_mode(cfg):
         die("PUBLIC_MODE isn't cloudflare; see: sharedbox-admin cloudflare setup")
     try:
-        c = sbcloudflare.client(cfg)
         if a.what == "list":
-            emails = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, c))
-            reg = sb.registry()
-            inv = {}
-            for _, r in sb.gate_records("invites"):
-                if r.get("email"):
-                    inv[str(r["email"]).lower()] = "invited" + (" (expired)" if float(r.get("expires", 0)) < time.time() else "")
-            owners = sb.owner_emails(cfg)
-            for e in emails:
-                who = ("owner" if e in owners else
-                       (f"account {sb.email_taken(e)} ({reg['users'][sb.email_taken(e)].get('status', 'active')})"
-                        if sb.email_taken(e) else inv.get(e, "no account, no open invite")))
-                print(f"{sb.printable(e):<40} {who}")
-            print(f"\n{len(emails)} allowed. remove: sharedbox-admin access remove EMAIL")
+            res = access_list(cfg)
+            for r in res["emails"]:
+                print(f"{sb.printable(r['email']):<40} {r['who']}")
+            print(f"\n{res['used']} allowed (limit {res['limit']}). remove: sharedbox-admin access remove EMAIL")
             return
+        if a.what == "add":
+            print(access_add(cfg, a.email, a.user)["message"])
+            return
+        c = sbcloudflare.client(cfg)
         email, err = sb.validate_email(a.email or "")
         if err or not email:
             die(err or "give an email address")
         email = email.lower()
-        if a.what == "remove":
-            if email in sb.owner_emails(cfg):
-                die(f"{email} is in CF_OWNER_EMAILS; the owner is never removed")
-            sbcloudflare.update_policy(cfg, c, remove=[email])
-            n = gate_delete("invites", lambda h, r: str(r.get("email") or "").lower() == email)
-            print(f"removed {email} from Cloudflare Access" + (f"; revoked {n} open invite(s)" if n else ""))
-            taken = sb.email_taken(email)
-            if taken:
-                print(f"note: the account {taken} still exists (sharedbox-admin suspend/remove {taken})")
-            return
-        # add
-        if a.user:
-            reg, rec = require_friend(a.user)
-            other = sb.email_taken(email, reg)
-            if other and other != a.user:
-                die(f"{email} already belongs to {other}")
-            rec["email"] = email
-            save_registry(reg)
-        sbcloudflare.update_policy(cfg, c, add=[email])
-        print(f"allowed {email} in Cloudflare Access" + (f"; it logs in as {a.user}" if a.user else ""))
+        if email in sb.owner_emails(cfg):
+            die(f"{email} is in CF_OWNER_EMAILS; the owner is never removed")
+        sbcloudflare.update_policy(cfg, c, remove=[email])
+        n = gate_delete("invites", lambda h, r: str(r.get("email") or "").lower() == email)
+        print(f"removed {email} from Cloudflare Access" + (f"; revoked {n} open invite(s)" if n else ""))
+        taken = sb.email_taken(email)
+        if taken:
+            print(f"note: the account {taken} still exists (sharedbox-admin suspend/remove {taken})")
+        sb.log_event("cf_access", None, what="remove", email=email)
     except sbcloudflare.CFError as e:
         die(str(e))
-    sb.log_event("cf_access", a.user, what=a.what, email=a.email)
+    except FriendError as e:
+        die(str(e))
+
+
+# ---------- owner self-serve: `box friends` (admin drop) and the sharedbox-admin commands share these ----------
+# Each returns a dict (or raises FriendError with a message for the owner) and never weakens a check:
+# the owner's own accounts (ADMIN_USERS, OWNER_T3_USER, root) are never removed or suspended from here,
+# emails are validated, and the Cloudflare allow list stays under CF_SEAT_LIMIT (sbcloudflare.update_policy).
+
+class FriendError(Exception):
+    pass
+
+
+NOTIFIED = os.path.join(sb.STATE_DIR, "notified.json")       # root-only: signups the owner was told about
+REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedbox: open requests for the dashboard
+REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
+FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
+                   "friends-access", "friends-requests", "friends-request", "friends-issues",
+                   "friends-approve", "friends-deny")
+
+
+def friend_record(cfg, name):
+    """(registry, record) of a friend account, refusing anything that is one of the owner's own accounts."""
+    name = str(name or "").strip()
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", name):
+        raise FriendError(f"{sb.printable(name)[:40]!r} isn't a username")
+    owner = sb.owner_account(cfg)
+    if name == "root" or name in sb.admin_users(cfg) or (owner and owner.pw_name == name):
+        raise FriendError(f"{name} is one of the owner's own accounts; those can't be changed from here")
+    reg = sb.registry()
+    rec = reg["users"].get(name)
+    if not isinstance(rec, dict):
+        raise FriendError(f"{name} is not a friend account on this box (see: box friends)")
+    lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
+    if not lo <= int(rec.get("uid") or 0) <= hi:
+        raise FriendError(f"{name} isn't in the friends' uid range; refusing")
+    return reg, rec
+
+
+def friend_suspend(cfg, name, by="root"):
+    reg, rec = friend_record(cfg, name)
+    run(["gpasswd", "-d", name, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
+    # no more editing shared servers' code either (the servers themselves keep running)
+    run(["gpasswd", "-d", name, cfg["SHARED_GROUP"]], check=False, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    # an expired account fails PAM's account phase, so cron/at stop starting jobs for it too
+    run(["usermod", "--expiredate", "1", name], check=False)
+    stop_everything(name)
+    revoke_user_gate(name)  # public-gateway sessions and login links
+    rec["status"] = "suspended"
+    save_registry(reg)
+    warnings = []
+    if rec.get("email"):
+        err = cf_access(cfg, remove=[rec["email"]])  # Cloudflare stops letting them in, too
+        if err:
+            warnings.append(f"Cloudflare Access not updated: {err}")
+    sb.log_event("user_suspended", name, by=by)
+    return {"ok": True, "username": name, "status": "suspended", "warnings": warnings,
+            "message": f"suspended {name}: ssh access removed, processes stopped, files kept"}
+
+
+def friend_resume(cfg, name, by="root"):
+    reg, rec = friend_record(cfg, name)
+    run(["usermod", "--expiredate", "", name], check=False)
+    run(["loginctl", "enable-linger", name], check=False)
+    run(["gpasswd", "-a", name, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
+    add_to_shared(cfg, name)
+    rec["status"] = "active"
+    save_registry(reg)
+    warnings = []
+    if rec.get("email"):
+        err = cf_access(cfg, add=[rec["email"]])
+        if err:
+            warnings.append(f"Cloudflare Access not updated: {err}")
+    sb.log_event("user_resumed", name, by=by)
+    return {"ok": True, "username": name, "status": "active", "warnings": warnings, "message": f"resumed {name}"}
+
+
+def friend_remove(cfg, name, archive=False, by="root"):
+    reg, rec = friend_record(cfg, name)
+    try:
+        pw = pwd.getpwnam(name)
+    except KeyError:
+        raise FriendError(f"{name} is in the registry but has no Linux account; fix it by hand") from None
+    if pw.pw_uid != rec.get("uid"):
+        raise FriendError(f"{name}'s uid doesn't match the registry; refusing")
+    run(["gpasswd", "-d", name, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
+    stop_everything(name)
+    out, warnings = None, []
+    if archive:
+        dest = os.path.join(sb.STATE_DIR, "archive")
+        os.makedirs(dest, mode=0o700, exist_ok=True)
+        out = os.path.join(dest, f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz")
+        run(["tar", "--one-file-system", "-czf", out, "-C", os.path.dirname(pw.pw_dir),
+             os.path.basename(pw.pw_dir)], check=False)
+    run(["crontab", "-r", "-u", name], check=False, stderr=subprocess.DEVNULL)
+    kill_stragglers(name)
+    r = run(["userdel", "-r", name], check=False, capture_output=True, text=True)
+    if r.returncode != 0:
+        try:
+            pwd.getpwnam(name)
+        except KeyError:  # account is gone, only the home/mail cleanup failed (e.g. exit 12)
+            warnings.append(f"userdel: {r.stderr.strip()}; check {pw.pw_dir}")
+        else:
+            raise FriendError(f"userdel failed ({r.returncode}): {r.stderr.strip()}; "
+                              "registry and limits left as they were")
+    remove_dropins(pw.pw_uid)
+    daemon_reload()
+    revoke_user_gate(name)
+    if rec.get("email"):
+        err = cf_access(cfg, remove=[rec["email"]])
+        if err:
+            warnings.append(f"Cloudflare Access not updated: {err}")
+    reg = sb.registry()  # re-read: stop/kill took a while
+    reg["users"].pop(name, None)
+    save_registry(reg)
+    sb.log_event("user_removed", name, by=by, archive=out)
+    return {"ok": True, "username": name, "archive": out, "warnings": warnings,
+            "message": f"removed {name}" + (f" (home archived to {out})" if out else "")}
+
+
+def last_active_map(days=7, floor=0.05):
+    """name -> ts of the newest health sample where that account used at least `floor` cores."""
+    path = os.path.join(sb.STATE_DIR, "health", "metrics.jsonl")
+    cutoff, out, prev = time.time() - days * 86400, {}, {}
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            f.seek(max(0, size - (8 << 20)))
+            data = f.read().decode(errors="replace")
+    except OSError:
+        return out
+    for line in data.splitlines():
+        try:
+            r = json.loads(line)
+            ts = float(r["ts"])
+            users = r.get("users") or {}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if ts < cutoff or not isinstance(users, dict):
+            continue
+        for name, u in users.items():
+            if not (isinstance(u, list) and len(u) >= 2 and isinstance(u[0], (int, float))):
+                continue
+            p = prev.get(name)
+            if p and 0 < ts - p[0] <= 3600 and u[0] >= p[1] and (u[0] - p[1]) / 1e6 / (ts - p[0]) >= floor:
+                out[name] = ts
+            prev[name] = (ts, u[0])
+    return out
+
+
+def signup_list():
+    out = []
+    for p in sorted(glob.glob(os.path.join(sb.PENDING, "*.json"))):
+        r = sb.read_json(p, {}) or {}
+        out.append({"id": os.path.basename(p)[:-5], "username": r.get("username"), "login": r.get("login"),
+                    "ts": r.get("ts")})
+    return out
+
+
+def _pending_path(sid):
+    sid = str(sid or "").strip()
+    if not (sid.isascii() and sid.isalnum() and len(sid) <= 64):
+        raise FriendError("no such pending signup (see: box friends)")
+    return os.path.join(sb.PENDING, f"{sid}.json")
+
+
+def signup_approve(cfg, sid, by="root"):
+    p = _pending_path(sid)
+    r = sb.read_json(p)
+    if not r:
+        raise FriendError("no such pending signup (see: box friends)")
+    rec, err = create_user(cfg, r["username"], r["key"], r["login"], r["ts_id"], r["node"])
+    if err:
+        raise FriendError(err)
+    os.unlink(p)
+    sb.log_event("join_approved", r["username"], by=by)
+    return {"ok": True, "username": r["username"], "message": f"approved {r['username']}"}
+
+
+def signup_deny(cfg, sid, by="root"):
+    p = _pending_path(sid)
+    r = sb.read_json(p)
+    if r is None:
+        raise FriendError("no such pending signup (see: box friends)")
+    os.unlink(p)
+    sb.log_event("join_denied", (r or {}).get("username"), by=by)
+    return {"ok": True, "username": (r or {}).get("username"), "message": "denied"}
+
+
+def friends_list(cfg):
+    users = sb.friend_users()
+    usage = (sb.read_json(sb.USAGE, {}) or {}).get("users") or {}
+    seen = last_active_map()
+    rows = []
+    for name, r in sorted(users.items()):
+        u = usage.get(name) or {}
+        rows.append({"username": name, "email": r.get("email"), "status": r.get("status", "active"),
+                     "joined": r.get("created"), "disk": u.get("disk"), "disk_budget": u.get("budget"),
+                     "over_budget": bool(u.get("over")), "last_active": seen.get(name),
+                     "login": r.get("login"), "invited_by": r.get("invited_by"), "note": r.get("note")})
+    return {"ok": True, "friends": rows, "pending_signups": signup_list(), "open_requests": len(requests_list()),
+            "max_users": sb.cfg_int(cfg, "MAX_USERS"), "join_mode": cfg.get("JOIN_MODE")}
+
+
+def add_notice(user, kind, text):
+    """A line for that user's agents (`box status` advice), next to sharedbox-tools' agent-update notices.
+    0640 root:<user's group>, so other friends can't read it."""
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return
+    d = os.path.join(sb.AGENT_PINS, user)
+    os.makedirs(d, mode=0o755, exist_ok=True)
+    if os.path.islink(d):
+        return
+    path = os.path.join(d, "notices.json")
+    prev = [n for n in (sb.read_json(path, []) or []) if isinstance(n, dict)
+            and time.time() - n.get("ts", 0) < 30 * 86400]
+    prev.append({"kind": kind, "text": sb.printable(text)[:400], "ts": int(time.time())})
+    sb.write_json(path, prev, mode=0o640, owner=(0, pw.pw_gid))
+
+
+def issues_summary(days=7, user=None):
+    days = max(1, min(int(days or 7), 90))
+    rows = sb.read_issues(time.time() - days * 86400, users=[user] if user else None)
+    groups = [{"count": n, "users": users, "first": first, "last": last, "kind": r["kind"], "auto": bool(r.get("auto")),
+               "text": sb.printable(r["text"])[:500], "agent": sb.printable(r.get("agent", "?")),
+               "cwd": sb.printable(r.get("cwd", ""))}
+              for n, users, first, last, r in sb.group_issues(rows)]
+    return {"ok": True, "days": days, "total": len(rows), "users": len({r["user"] for r in rows}),
+            "groups": groups, "raw": rows}
+
+
+def access_list(cfg):
+    import sbcloudflare
+    if not cf_mode(cfg):
+        raise FriendError("this box doesn't use Cloudflare Access, so there's no allow list")
+    try:
+        emails = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, sbcloudflare.client(cfg)))
+    except sbcloudflare.CFError as e:
+        raise FriendError(f"couldn't read the Cloudflare allow list: {e}") from None
+    reg = sb.registry()
+    inv = {}
+    for _, r in sb.gate_records("invites"):
+        if r.get("email"):
+            inv[str(r["email"]).lower()] = "invited" + (" (expired)" if float(r.get("expires", 0)) < time.time() else "")
+    owners = sb.owner_emails(cfg)
+    rows = []
+    for e in emails:
+        acct = sb.email_taken(e)
+        who = ("owner" if e in owners else
+               f"account {acct} ({reg['users'][acct].get('status', 'active')})" if acct else
+               inv.get(e, "no account, no open invite"))
+        rows.append({"email": e, "who": who, "account": acct, "owner": e in owners})
+    return {"ok": True, "emails": rows, "used": len(emails), "limit": sb.cfg_int(cfg, "CF_SEAT_LIMIT")}
+
+
+def access_add(cfg, email, user=None, by="root"):
+    """Allow EMAIL through Cloudflare Access, and with `user` link it to that friend account (they log in as it)."""
+    import sbcloudflare
+    if not cf_mode(cfg):
+        raise FriendError("this box doesn't use Cloudflare Access (PUBLIC_MODE isn't cloudflare)")
+    email, err = sb.validate_email(email or "")
+    if err or not email:
+        raise FriendError(err or "give an email address")
+    email = email.lower()
+    if user:
+        friend_record(cfg, user)
+        if email in sb.owner_emails(cfg):
+            raise FriendError(f"{email} is an owner email (CF_OWNER_EMAILS); it can't log in as a friend")
+        other = sb.email_taken(email)
+        if other and other != user:
+            raise FriendError(f"{email} already belongs to {other}")
+    try:
+        sbcloudflare.update_policy(cfg, sbcloudflare.client(cfg), add=[email])
+    except sbcloudflare.CFError as e:
+        raise FriendError(f"couldn't allow {email} in Cloudflare Access: {e}") from None
+    if user:
+        reg, rec = friend_record(cfg, user)
+        rec["email"] = email
+        save_registry(reg)
+    sb.log_event("cf_access", user, what="add", email=email, by=by)
+    return {"ok": True, "email": email, "username": user or None,
+            "message": f"allowed {email} in Cloudflare Access" + (f"; it logs in as {user}" if user else "")}
+
+
+def friends_action(cfg, by, req):
+    """One `box friends` request from an ADMIN_USERS account (the drop file's owner, checked by the caller)."""
+    act, name = req.get("action"), str(req.get("name") or "")[:64]
+    try:
+        if act == "friends-list":
+            return friends_list(cfg)
+        if act == "friends-remove":
+            return friend_remove(cfg, name, bool(req.get("archive")), by=by)
+        if act == "friends-suspend":
+            return friend_suspend(cfg, name, by=by)
+        if act == "friends-resume":
+            return friend_resume(cfg, name, by=by)
+        if act == "friends-email":
+            return access_add(cfg, str(req.get("email") or "")[:300], name, by=by)
+        if act == "friends-access":
+            return access_list(cfg)
+        if act == "friends-requests":
+            return {"ok": True, "requests": requests_list(bool(req.get("all")))}
+        if act == "friends-request":
+            return request_act(cfg, str(req.get("id") or "")[:200], str(req.get("op") or ""), by=by,
+                               reason=str(req.get("reason") or "")[:200])
+        if act == "friends-issues":
+            res = issues_summary(req.get("days") if isinstance(req.get("days"), int) else 7)
+            res.pop("raw")
+            return res
+        if act == "friends-approve":
+            return signup_approve(cfg, str(req.get("id") or "")[:64], by=by)
+        if act == "friends-deny":
+            return signup_deny(cfg, str(req.get("id") or "")[:64], by=by)
+    except FriendError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "unknown request"}
+
+
+# ---------- `box request`: friends ask, root installs packages itself or asks the owner ----------
+# Friends drop REQUESTS/<id>.txt (free text) or <id>.json ({"install": [...], "why": ...}); the file's owner is
+# who asked. sharedbox-requests.service (its .path unit watches the drop) moves each into REQ_DB (root-only) and
+# deletes the file, then: a package request that passes every REQUEST_* check is installed right away (with
+# `sharedbox-tools add pkg`, so it survives reinstalls); anything else waits for the owner, who gets one email
+# per request and Approve / Done / Decline on the dashboard (or `box friends requests ...`). Every outcome goes
+# into the friend's agent notices and their own status file (`box request status`).
+
+REQ_DB = os.path.join(sb.STATE_DIR, "requests-db.json")
+REQ_LOCK = os.path.join(sb.STATE_DIR, ".requests.lock")
+REQ_WORKER_LOCK = os.path.join(sb.STATE_DIR, ".requests-worker.lock")
+REQ_OPEN = ("new", "queued", "installing", "approved", "waiting")
+REQ_KEEP_DAYS = 30
+REQ_INSTALL_TIMEOUT = 1800
+FYI_EVERY = 3600
+
+
+class _Locked:
+    def __init__(self, path, block=True):
+        self.path, self.block, self.f = path, block, None
+
+    def __enter__(self):
+        import fcntl
+        self.f = open(self.path, "a")
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | (0 if self.block else fcntl.LOCK_NB))
+        except BlockingIOError:
+            self.f.close()
+            self.f = None
+        return self.f is not None
+
+    def __exit__(self, *exc):
+        if self.f:
+            self.f.close()
+
+
+def req_db():
+    db = sb.read_json(REQ_DB, {}) or {}
+    db.setdefault("requests", {})
+    db.setdefault("fyi", [])
+    return db
+
+
+def req_save(db):
+    cut = time.time() - REQ_KEEP_DAYS * 86400
+    db["requests"] = {k: r for k, r in db["requests"].items()
+                      if r.get("state") in REQ_OPEN or r.get("updated", r.get("ts", 0)) > cut}
+    sb.write_json(REQ_DB, db, mode=0o600)
+
+
+def req_update(fn):
+    """Read-modify-write REQ_DB under its lock; returns fn(db)."""
+    with _Locked(REQ_LOCK):
+        db = req_db()
+        out = fn(db)
+        req_save(db)
+        return out
+
+
+def req_public(r):
+    """What the owner and the friend see of a record."""
+    keys = ("id", "user", "kind", "packages", "why", "text", "ts", "state", "reason", "updated", "by", "auto",
+            "installed")
+    return {k: r.get(k) for k in keys if r.get(k) not in (None, [], "")}
+
+
+def req_summary(r):
+    if r.get("kind") == "install":
+        return "install " + " ".join(r.get("packages") or []) + (f" ({r['why']})" if r.get("why") else "")
+    return r.get("text") or ""
+
+
+def req_ingest(cfg):
+    """Move every dropped request file into REQ_DB; each file is deleted whatever it holds. Returns new ids."""
+    try:
+        names = os.listdir(sb.REQUESTS)
+    except FileNotFoundError:
+        return []
+    found = []
+    for fn in sorted(names):
+        p = os.path.join(sb.REQUESTS, fn)
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            continue
+        if fn.startswith(".") and time.time() - st.st_mtime < 600:
+            continue  # `box request` is still writing it (it renames it into place when done)
+        raw = read_untrusted(p, st.st_uid, 8192) if stat.S_ISREG(st.st_mode) else None
+        try:
+            os.unlink(p)
+        except OSError:
+            continue
+        try:
+            user = pwd.getpwuid(st.st_uid).pw_name
+        except KeyError:
+            continue
+        if raw is None or fn.startswith(".") or not fn.endswith((".txt", ".json")):
+            continue
+        stem = fn.rsplit(".", 1)[0]
+        rec = {"user": user, "ts": int(st.st_mtime), "state": "new", "updated": int(time.time())}
+        req = None
+        if fn.endswith(".json"):
+            try:
+                req = json.loads(raw)
+            except ValueError:
+                req = None
+        if isinstance(req, dict) and isinstance(req.get("install"), list) and req["install"]:
+            pkgs = [str(x).strip().lower() for x in req["install"]][:20]
+            rec.update(kind="install", packages=pkgs, why=sb.printable(str(req.get("why") or ""))[:300])
+            bad = [x for x in pkgs if not sbdistro().PKG_NAME_RE.fullmatch(x)]
+            if bad:
+                rec.update(kind="text", text=sb.printable("install " + " ".join(pkgs))[:300],
+                           packages=[], reason="not valid package names: " + " ".join(map(sb.printable, bad))[:200])
+        else:
+            text = req.get("text") if isinstance(req, dict) else raw
+            rec.update(kind="text", text=sb.printable(" ".join(str(text or "").split()))[:1000])
+        found.append((stem, rec))
+
+    def put(db):
+        ids = []
+        for stem, rec in found:
+            rid = stem if REQUEST_ID_RE.fullmatch(stem) else f"{rec['user']}-{rec['ts']}"
+            base, n = rid, 2
+            while rid in db["requests"]:
+                rid, n = f"{base}-{n}", n + 1
+            db["requests"][rid] = dict(rec, id=rid)
+            ids.append(rid)
+            sb.log_event("request_filed", rec["user"], id=rid, what=req_summary(rec)[:200])
+        return ids
+    return req_update(put) if found else []
+
+
+def sbdistro():
+    import sbdistro as d
+    return d
+
+
+def deny_globs(cfg):
+    return [g for g in re.split(r"[\s,]+", cfg.get("REQUEST_DENY") or "") if g]
+
+
+def denied(cfg, names):
+    import fnmatch
+    globs = deny_globs(cfg)
+    return [n for n in names if any(fnmatch.fnmatchcase(n, g) for g in globs)]
+
+
+def auto_installed_today(db, user):
+    cut = time.time() - 86400
+    return sum(len(r.get("installed") or []) for r in db["requests"].values()
+               if r.get("user") == user and r.get("auto") and r.get("updated", 0) > cut)
+
+
+def req_check(cfg, rec, db, owner_ok=False):
+    """Decide a package request: ("install", native names, "") / ("installed", [], why) / ("waiting", [], why).
+    The owner's approval (owner_ok) skips REQUEST_DENY, the dependency cap and the daily limit, nothing else."""
+    d = sbdistro()
+    try:
+        pkgs = d.native_names(rec.get("packages") or [])
+        if not pkgs:
+            return "waiting", [], "no packages named"
+        missing = [p for p in pkgs if not d.installed(p)]
+        if not missing:
+            return "installed", [], "already installed"
+        if not owner_ok:
+            if not sb.cfg_bool(cfg, "REQUEST_AUTO_INSTALL"):
+                return "waiting", [], "automatic installs are off (REQUEST_AUTO_INSTALL)"
+            bad = denied(cfg, missing)
+            if bad:
+                return "waiting", [], f"{' '.join(bad)} needs the owner's OK (REQUEST_DENY)"
+            limit = sb.cfg_int(cfg, "REQUEST_DAILY_LIMIT")
+            if limit and auto_installed_today(db, rec["user"]) + len(missing) > limit:
+                return "waiting", [], f"over {limit} automatic installs today for {rec['user']}"
+        ok, new, err = d.simulate_install(missing)
+        if not ok:
+            return "waiting", [], f"not installable from the distro's repos: {err}"
+        if not owner_ok:
+            cap = sb.cfg_int(cfg, "REQUEST_MAX_DEPS")
+            if cap and len(new) > cap:
+                return "waiting", [], f"it would pull in {len(new)} packages (limit {cap})"
+            bad = denied(cfg, [n for n in new if n not in missing])
+            if bad:
+                return "waiting", [], f"it would pull in {' '.join(bad[:5])}, which needs the owner's OK"
+        return "install", missing, ""
+    except d.Unsupported as e:
+        return "waiting", [], str(e)[:200]
+
+
+def req_install(names):
+    """Install with sharedbox-tools (records them in tools.local, refreshes tools.json). (ok, error)."""
+    d = sbdistro()
+    try:
+        r = run([os.path.join(sb.LIB_DIR, "sharedbox-tools"), "add", "pkg", *names], check=False,
+                capture_output=True, text=True, timeout=REQ_INSTALL_TIMEOUT)
+        tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or [""]
+    except subprocess.TimeoutExpired:
+        return False, f"the install took over {REQ_INSTALL_TIMEOUT // 60} minutes and was stopped"
+    left = [n for n in names if not d.installed(n)]
+    if left:
+        return False, f"{' '.join(left)} didn't install: {tail[0][:200]}"
+    return True, ""
+
+
+def req_finish(cfg, rid, state, reason="", by=None, installed=None, auto=None):
+    """Set a record's outcome, tell the friend's agents, refresh the views."""
+    def upd(db):
+        r = db["requests"].get(rid)
+        if not r:
+            return None
+        r.update(state=state, reason=reason, updated=int(time.time()))
+        if by:
+            r["by"] = by
+        if installed is not None:
+            r["installed"] = installed
+        if auto is not None:
+            r["auto"] = auto
+        if state == "installed" and auto:
+            db["fyi"].append({"user": r["user"], "packages": installed or [], "ts": int(time.time())})
+        return dict(r)
+    r = req_update(upd)
+    if not r:
+        return None
+    what = req_summary(r)
+    msg = {"installed": (f"{' '.join(r.get('packages') or [])} is installed now (your `box request`)"
+                         + (f"; {reason}" if reason else "") + "."),
+           "done": f"The owner marked your `box request` as done: {what}",
+           "declined": f"The owner declined your `box request`: {what}" + (f" ({reason})" if reason else ""),
+           "failed": f"Your `box request` ({what}) failed: {reason}. The owner has been told."}.get(state)
+    if msg and r.get("user") in sb.friend_users():
+        add_notice(r["user"], "request-" + state, msg)
+    sb.log_event("request_" + state, r.get("user"), id=rid, by=by or "auto", what=what[:200],
+                 **({"reason": reason} if reason else {}))
+    return r
+
+
+def write_request_views(cfg, db=None):
+    """The open requests for the owner's dashboard (REQUESTS_JSON, 0640 root:sharedbox), and each friend's own
+    requests in AGENT_PINS/<user>/requests.json (0640 root:<their group>) for `box request status`."""
+    db = db or req_db()
+    recs = sorted(db["requests"].values(), key=lambda r: r.get("ts", 0))
+    open_ = [req_public(r) for r in recs if r.get("state") in REQ_OPEN]
+    try:
+        owner, mode = (0, grp.getgrnam(cfg["SERVICE_USER"]).gr_gid), 0o640
+    except KeyError:
+        owner, mode = None, 0o600
+    if (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") != open_:
+        sb.write_json(REQUESTS_JSON, {"generated": int(time.time()), "requests": open_}, mode=mode, owner=owner)
+    by_user = {}
+    for r in recs:
+        by_user.setdefault(r.get("user"), []).append(req_public(r))
+    for user in set(by_user) | {u for u in sb.friend_users()}:
+        try:
+            pw = pwd.getpwnam(user)
+        except (KeyError, TypeError):
+            continue
+        d = os.path.join(sb.AGENT_PINS, user)
+        path = os.path.join(d, "requests.json")
+        mine = by_user.get(user, [])
+        if not mine and not os.path.exists(path):
+            continue
+        if (sb.read_json(path, {}) or {}).get("requests") == mine:
+            continue
+        os.makedirs(d, mode=0o755, exist_ok=True)
+        if not os.path.islink(d):
+            sb.write_json(path, {"requests": mine}, mode=0o640, owner=(0, pw.pw_gid))
+
+
+def req_link(cfg):
+    pub = sb.public_url(cfg)
+    return f"{pub}/_box/me#requests" if pub else "ask your agent: box friends requests"
+
+
+def req_mail_owner(cfg):
+    """One email per request that needs the owner (never twice), and the hourly FYI of automatic installs."""
+    import sbmail
+    if not sbmail.configured(cfg):
+        return
+
+    def pick(db):
+        todo = [dict(r) for r in db["requests"].values() if r.get("state") == "waiting" and not r.get("mailed")]
+        for r in todo:
+            db["requests"][r["id"]]["mailed"] = int(time.time())  # before sending: at most one email each
+        fyi = []
+        if db["fyi"] and time.time() - db.get("last_fyi", 0) >= FYI_EVERY:
+            fyi, db["fyi"], db["last_fyi"] = db["fyi"], [], int(time.time())
+        return todo, fyi
+    todo, fyi = req_update(pick)
+    link = req_link(cfg)
+    if todo:
+        lines = []
+        for r in todo:
+            lines.append(f"{r['user']} asked (box request): {req_summary(r)}\n"
+                         + (f"  Why it wasn't installed automatically: {r['reason']}\n" if r.get("reason") else "")
+                         + f"  {'Approve installs it' if r.get('kind') == 'install' else 'Your agent can do it'}"
+                         f" (ask your agent: \"handle {r['user']}'s request {r['id']}\"), or Done / Decline.\n")
+        extra = f" (+{len(todo) - 1} more)" if len(todo) > 1 else ""
+        try:
+            sbmail.send(cfg, f"{todo[0]['user']} asked: {req_summary(todo[0])[:60]}{extra}",
+                        "\n".join(lines) + f"\nApprove / Done / Decline: {link}\n")
+        except Exception as e:  # noqa: BLE001 - mail trouble never blocks the provisioner
+            print(f"request mail failed: {e!r}", file=sys.stderr)
+    if fyi:
+        lines = [f"- {f['user']}: {' '.join(f['packages'])} ({time.strftime('%a %H:%M', time.localtime(f['ts']))})"
+                 for f in fyi]
+        try:
+            sbmail.send(cfg, f"FYI: installed {sum(len(f['packages']) for f in fyi)} requested package(s)",
+                        "Installed automatically for friends' `box request install` (REQUEST_AUTO_INSTALL):\n"
+                        + "\n".join(lines) + "\n\nNothing to do. Undo one: sudo sharedbox-tools remove pkg NAME\n")
+        except Exception as e:  # noqa: BLE001
+            print(f"request FYI mail failed: {e!r}", file=sys.stderr)
+
+
+def process_requests(cfg):
+    """sharedbox-requests.service: ingest, decide, install (one at a time), tell everyone. Loops until idle."""
+    with _Locked(REQ_WORKER_LOCK, block=False) as got:
+        if not got:
+            return
+        for _ in range(100):
+            req_ingest(cfg)
+            db = req_db()
+            work = [r for r in db["requests"].values() if r.get("state") in ("new", "approved")]
+            if not work:
+                break
+            for r in sorted(work, key=lambda r: r.get("ts", 0)):
+                owner_ok = r["state"] == "approved"
+                if r.get("kind") != "install":
+                    req_update(lambda db, rid=r["id"]: db["requests"][rid].update(state="waiting"))
+                    continue
+                verdict, names, why = req_check(cfg, r, req_db(), owner_ok)
+                if verdict == "installed":
+                    req_finish(cfg, r["id"], "installed", why, by=r.get("by"), installed=[], auto=not owner_ok)
+                elif verdict == "waiting":
+                    if owner_ok:  # the owner said yes but it can't be installed: they need to know why
+                        req_update(lambda db, rid=r["id"], why=why: db["requests"][rid].update(
+                            state="waiting", reason=why, mailed=0))
+                    else:
+                        req_update(lambda db, rid=r["id"], why=why: db["requests"][rid].update(
+                            state="waiting", reason=why))
+                else:
+                    req_update(lambda db, rid=r["id"]: db["requests"][rid].update(state="installing"))
+                    write_request_views(cfg)
+                    ok, err = req_install(names)
+                    if ok:
+                        req_finish(cfg, r["id"], "installed", by=r.get("by"), installed=names, auto=not owner_ok)
+                    else:  # back to the owner, with the reason
+                        req_update(lambda db, rid=r["id"], err=err: db["requests"][rid].update(
+                            state="waiting", reason=f"the install failed: {err}", mailed=0))
+                write_request_views(cfg)
+        write_request_views(cfg)
+        req_mail_owner(cfg)
+
+
+def request_act(cfg, rid, op, by="root", reason=""):
+    """The owner's answer to a request: approve (install it, REQUEST_DENY aside) / done / decline."""
+    rid = os.path.basename(str(rid or "").strip())
+    rid = rid[:-4] if rid.endswith(".txt") else rid
+    if op not in ("approve", "done", "decline"):
+        raise FriendError("unknown answer; use approve, done or decline")
+    r = req_db()["requests"].get(rid) if REQUEST_ID_RE.fullmatch(rid) else None
+    if not r:
+        raise FriendError(f"no request {sb.printable(rid)[:80]} (see: box friends requests)")
+    if r.get("state") not in REQ_OPEN:
+        raise FriendError(f"that request is already {r.get('state')}")
+    if op == "approve" and r.get("kind") == "install":
+        if r.get("state") == "installing":
+            raise FriendError("it's being installed right now")
+        req_update(lambda db: db["requests"][rid].update(state="approved", by=by, updated=int(time.time())))
+        sb.log_event("request_approved", r.get("user"), id=rid, by=by)
+        write_request_views(cfg)
+        run(["systemctl", "start", "--no-block", "sharedbox-requests.service"], check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"ok": True, "id": rid, "user": r.get("user"), "state": "approved",
+                "message": f"approved: installing {' '.join(r.get('packages') or [])} for {r.get('user')} now; "
+                           "their agent is told when it's done"}
+    state = "declined" if op == "decline" else "done"
+    req_finish(cfg, rid, state, sb.printable(reason)[:200], by=by)
+    write_request_views(cfg)
+    return {"ok": True, "id": rid, "user": r.get("user"), "state": state,
+            "message": f"{'declined' if state == 'declined' else 'closed'} {r.get('user')}'s request; "
+                       "their agent will see it"}
+
+
+def requests_list(include_closed=False):
+    recs = sorted(req_db()["requests"].values(), key=lambda r: r.get("ts", 0))
+    return [req_public(r) for r in recs if include_closed or r.get("state") in REQ_OPEN]
+
+
+def notify_signups(cfg):
+    """Email the owner once per signup waiting for approval (JOIN_MODE=approve)."""
+    state = sb.read_json(NOTIFIED, {}) or {}
+    pend = signup_list()
+    told = state.get("pending") or {}
+    new = [p for p in pend if p["id"] not in told]
+    fresh = {"pending": {p["id"]: told.get(p["id"], int(time.time())) for p in pend}}
+    if fresh != state:  # before mailing: at most one email per signup, even on errors
+        sb.write_json(NOTIFIED, fresh, mode=0o600)
+    if not new:
+        return
+    import sbmail
+    if not sbmail.configured(cfg):
+        return
+    lines = [f"{sb.printable(p['username'])} ({sb.printable(p['login'] or '?')}) wants an account.\n"
+             f"  Ask your agent: \"approve {sb.printable(p['username'])}\" (box friends approve {p['id']}) "
+             f"or deny it (box friends deny {p['id']}).\n" for p in new]
+    try:
+        sbmail.send(cfg, f"{sb.printable(new[0]['username'])} wants to join"
+                    + (f" (+{len(new) - 1} more)" if len(new) > 1 else ""), "\n".join(lines))
+    except Exception as e:  # noqa: BLE001
+        print(f"signup mail failed: {e!r}", file=sys.stderr)
 
 
 # ---------- commands ----------
@@ -1448,23 +2182,19 @@ def cmd_pending(cfg, a):
 
 
 def cmd_approve(cfg, a):
-    p = os.path.join(sb.PENDING, f"{a.id}.json")
-    r = sb.read_json(p)
-    if not r:
-        die("no such pending request")
-    rec, err = create_user(cfg, r["username"], r["key"], r["login"], r["ts_id"], r["node"])
-    if err:
-        die(err)
-    os.unlink(p)
-    print(f"approved {r['username']}")
+    try:
+        res = signup_approve(cfg, a.id)
+    except FriendError as e:
+        die(str(e))
+    print(res["message"])
 
 
 def cmd_deny(cfg, a):
-    p = os.path.join(sb.PENDING, f"{a.id}.json")
-    if not os.path.exists(p):
-        die("no such pending request")
-    os.unlink(p)
-    print("denied")
+    try:
+        res = signup_deny(cfg, a.id)
+    except FriendError as e:
+        die(str(e))
+    print(res["message"])
 
 
 def cmd_limits(cfg, a):
@@ -1505,35 +2235,17 @@ def stop_everything(name):
 
 
 def cmd_suspend(cfg, a):
-    reg, rec = require_friend(a.user)
-    run(["gpasswd", "-d", a.user, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
-    # no more editing shared servers' code either (the servers themselves keep running)
-    run(["gpasswd", "-d", a.user, cfg["SHARED_GROUP"]], check=False, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL)
-    # an expired account fails PAM's account phase, so cron/at stop starting jobs for it too
-    run(["usermod", "--expiredate", "1", a.user], check=False)
-    stop_everything(a.user)
-    revoke_user_gate(a.user)  # public-gateway sessions and login links
-    rec["status"] = "suspended"
-    save_registry(reg)
-    if rec.get("email"):
-        cf_access(cfg, remove=[rec["email"]])  # Cloudflare stops letting them in, too
-    sb.log_event("user_suspended", a.user)
-    print(f"suspended {a.user}: ssh access removed, processes stopped, files kept")
+    try:
+        print(friend_suspend(cfg, a.user)["message"])
+    except FriendError as e:
+        die(str(e))
 
 
 def cmd_resume(cfg, a):
-    reg, rec = require_friend(a.user)
-    run(["usermod", "--expiredate", "", a.user], check=False)
-    run(["loginctl", "enable-linger", a.user], check=False)
-    run(["gpasswd", "-a", a.user, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
-    add_to_shared(cfg, a.user)
-    rec["status"] = "active"
-    save_registry(reg)
-    if rec.get("email"):
-        cf_access(cfg, add=[rec["email"]])
-    sb.log_event("user_resumed", a.user)
-    print(f"resumed {a.user}")
+    try:
+        print(friend_resume(cfg, a.user)["message"])
+    except FriendError as e:
+        die(str(e))
 
 
 def cmd_kill(cfg, a):
@@ -1548,70 +2260,38 @@ def cmd_kill(cfg, a):
 
 
 def cmd_remove(cfg, a):
-    reg, rec = require_friend(a.user)
-    pw = pwd.getpwnam(a.user)
-    run(["gpasswd", "-d", a.user, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
-    stop_everything(a.user)
-    if a.archive:
-        dest = os.path.join(sb.STATE_DIR, "archive")
-        os.makedirs(dest, mode=0o700, exist_ok=True)
-        out = os.path.join(dest, f"{a.user}-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz")
-        run(["tar", "--one-file-system", "-czf", out, "-C", os.path.dirname(pw.pw_dir),
-             os.path.basename(pw.pw_dir)], check=False)
-        print(f"archived to {out}")
-    run(["crontab", "-r", "-u", a.user], check=False, stderr=subprocess.DEVNULL)
-    kill_stragglers(a.user)
-    r = run(["userdel", "-r", a.user], check=False, capture_output=True, text=True)
-    if r.returncode != 0:
-        try:
-            pwd.getpwnam(a.user)
-        except KeyError:  # account is gone, only the home/mail cleanup failed (e.g. exit 12)
-            print(f"warning: userdel: {r.stderr.strip()}; check {pw.pw_dir}", file=sys.stderr)
-        else:
-            die(f"userdel failed ({r.returncode}): {r.stderr.strip()}; registry and limits left as they were")
-    remove_dropins(pw.pw_uid)
-    daemon_reload()
-    revoke_user_gate(a.user)
-    if rec.get("email"):
-        cf_access(cfg, remove=[rec["email"]])
-    del reg["users"][a.user]
-    save_registry(reg)
-    sb.log_event("user_removed", a.user)
-    print(f"removed {a.user}")
+    try:
+        res = friend_remove(cfg, a.user, a.archive)
+    except FriendError as e:
+        die(str(e))
+    for w in res.get("warnings", []):
+        print(f"warning: {w}", file=sys.stderr)
+    if res.get("archive"):
+        print(f"archived to {res['archive']}")
+    print(res["message"])
 
 
 def cmd_requests(cfg, a):
     if a.done:
-        p = os.path.join(sb.REQUESTS, os.path.basename(a.done))
-        os.unlink(p)
-        print("closed")
+        try:
+            print(request_act(cfg, a.done, "done", by="root")["message"])
+        except FriendError as e:
+            die(str(e))
         return
-    # friends can write this directory: lstat only, and every byte shown is sanitized
-    files = []
-    for p in glob.glob(os.path.join(sb.REQUESTS, "*.txt")):
-        try:
-            files.append((p, os.lstat(p)))
-        except FileNotFoundError:
-            pass
-    files.sort(key=lambda x: x[1].st_mtime)
-    if not files:
+    reqs = requests_list()
+    if not reqs:
         print("no open requests")
-    for p, st in files:
-        try:
-            who = pwd.getpwuid(st.st_uid).pw_name  # owner, not the claimed filename
-        except KeyError:
-            who = "?"
-        text = read_untrusted(p, st.st_uid, 1000)
-        text = "(not a plain file; ignored)" if text is None else text.strip()
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
-        print(f"{sb.printable(os.path.basename(p))}\n  {when}  {who}: {sb.printable(text)}")
-    if files:
-        print("\nfulfil e.g. with: sharedbox-tools add pkg PKG   then: sharedbox-admin requests --done FILE")
+    for r in reqs:
+        print(f"{sb.printable(r['id'])}  [{r['state']}]\n  {fmt_t(r['ts'])}  {r['user']}: "
+              f"{sb.printable(req_summary(r))}" + (f"\n  ({r['reason']})" if r.get("reason") else ""))
+    if reqs:
+        print("\nanswer: box friends requests approve|done|decline ID (as the owner's account), "
+              "or sharedbox-admin requests --done ID")
 
 
 def cmd_issues(cfg, a):
-    since = time.time() - a.days * 86400
-    rows = sb.read_issues(since, users=[a.user] if a.user else None)
+    res = issues_summary(a.days, a.user)
+    rows = res["raw"]
     if not rows:
         print(f"no agent-reported issues in the last {a.days} days")
         return
@@ -1622,13 +2302,13 @@ def cmd_issues(cfg, a):
                   f"[{r['kind']}]{' auto' if r.get('auto') else ''} {P(r.get('agent', '?'))}  "
                   f"{P(r['text'])}\n      cwd {P(r.get('cwd', ''))}")
         return
-    groups = sb.group_issues(rows)
-    print(f"{len(rows)} issue(s) from {len({r['user'] for r in rows})} user(s), {len(groups)} distinct, "
+    groups = res["groups"]
+    print(f"{len(rows)} issue(s) from {res['users']} user(s), {len(groups)} distinct, "
           f"last {a.days} days (most widespread first):\n")
-    for n, users, first, last, r in groups:
-        print(f"{n:>3}x [{r['kind']}]{' auto' if r.get('auto') else ''} {P(r['text'])}\n"
-              f"      {', '.join(users)} · last {time.strftime('%a %d %b %H:%M', time.localtime(last))}"
-              f" · {P(r.get('agent', '?'))} in {P(r.get('cwd', ''))}")
+    for g in groups:
+        print(f"{g['count']:>3}x [{g['kind']}]{' auto' if g['auto'] else ''} {P(g['text'])}\n"
+              f"      {', '.join(g['users'])} · last {time.strftime('%a %d %b %H:%M', time.localtime(g['last']))}"
+              f" · {P(g['agent'])} in {P(g['cwd'])}")
     print("\nraw lines: sharedbox-admin issues --raw   files: ~USER/.sharedbox/issues.jsonl")
 
 
@@ -1722,6 +2402,7 @@ def main():
     x.add_argument("email", nargs="?"); x.add_argument("--user", help="add: link EMAIL to this existing account")
     x.set_defaults(fn=cmd_access)
     s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
+    s.add_parser("process-requests").set_defaults(fn=lambda c, a: process_requests(c))
     a = p.parse_args()
     a.fn(cfg, a)
 

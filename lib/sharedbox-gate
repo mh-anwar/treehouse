@@ -736,12 +736,13 @@ async def handle_request(reader, writer, head, peer):
             try:
                 rhead = await asyncio.wait_for(br.readuntil(b"\r\n\r\n"), RESPONSE_TIMEOUT)
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
-                await respond(writer, 502, page("Bad gateway", "The app closed the connection. Try reloading."))
+                await respond(writer, 502, page("Couldn't load this", "The app hung up before answering. Try reloading."))
                 return False
             rlines = rhead[:-4].split(b"\r\n")
             sm = STATUS_LINE.fullmatch(rlines[0])
             if not sm:
-                await respond(writer, 502, page("Bad gateway", "The app sent a broken response."))
+                await respond(writer, 502, page("Couldn't load this", "The app answered in a way the box couldn't understand. Try reloading; "
+                                                      "if it keeps happening, tell the owner."))
                 return False
             code = int(sm.group(1))
             if 100 <= code < 200 and code != 101:
@@ -753,7 +754,8 @@ async def handle_request(reader, writer, head, peer):
 
         if code == 101:
             if not (upgrade and not to_web):
-                await respond(writer, 502, page("Bad gateway", "Unexpected protocol switch."))
+                await respond(writer, 502, page("Couldn't load this", "The app tried to open a live connection the box doesn't allow "
+                                                      "here. Try reloading; if it keeps happening, tell the owner."))
                 return False
             resp = ["HTTP/1.1 101 Switching Protocols"]
             resp += [f"{n}: {v}" for n, v in rheaders
