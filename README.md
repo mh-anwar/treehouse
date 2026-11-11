@@ -59,6 +59,12 @@ No terminal, no VPN invites, no "can you run this command for me".
   per-user disk budget. Root never deletes inside a home; cleanup runs *as the user*.
 - 💤 **Idle T3 servers sleep.** A friend's T3 Code server (~450 MB) unused for 3 days is stopped and starts
   again by itself on their next visit. Yours never sleeps.
+- ⚡ **Tuned out of the box.** The installer makes the machine itself fast for agent work: compressed memory
+  before swap (and a swap file if there's none), file-watch limits for many dev servers, network settings for the
+  Cloudflare tunnel and phones, T3 Code reopening from the browser's cache, agents installed in parallel.
+  `box tune` shows what's left on your machine; agents use it to find more and suggest it.
+- 🗄️ **Idle databases sleep.** A Docker database nobody connected to for an hour (and no agent working) is
+  stopped, data kept; agents start it again when they need it. Everyone's, the owner's too.
 - 📊 **Dashboard.** Live CPU/RAM per person with sparklines, disk vs. budget, running servers.
 - 📬 **Health email.** A weekly report plus hourly urgent checks: disk, failed services, SMART, pending
   updates, security audit, and a section for **what slowed agents down**, logged by the agents themselves
@@ -82,8 +88,9 @@ Then tell your agent:
 Set up treehouse on this machine. Follow https://github.com/mh-anwar/treehouse/blob/main/INSTALL.md
 ```
 
-That's it. Your agent checks the machine, asks you three questions, installs everything, sets up email
-alerts and a public join link, checks it all works, and hands you an invite message for your first friend.
+That's it. Your agent checks the machine, asks you three questions, installs everything, tunes the machine,
+sets up email alerts and a public join link, checks it all works, and hands you an invite message for your
+first friend.
 The only things you do yourself are click "approve" on a login page and maybe type your sudo password.
 
 <details>
@@ -97,8 +104,9 @@ box invite --note "Sam"                              # a one-time link to send y
 ```
 </details>
 
-The installer is additive and safe on a live machine. It **never** touches sshd, tailscaled, networking
-or the firewall, never changes limits for existing users, and never reboots. `./uninstall.sh` reverses it.
+The installer is additive and safe on a live machine. It **never** touches sshd, tailscaled or the firewall,
+never restarts networking (its network tuning applies live), never changes limits for existing users, and
+never reboots. `./uninstall.sh` reverses it.
 
 **Requirements:** Linux with systemd + cgroup v2, Python ≥ 3.12, Tailscale on the server (friends don't
 need it), and for the recommended public site a domain on Cloudflare (free plan). Tested on Ubuntu 24.04; Omarchy/Arch support is new. Please [open an issue](../../issues) with
