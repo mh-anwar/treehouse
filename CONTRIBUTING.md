@@ -20,6 +20,9 @@ No build step, no dependencies to install.
 uv run --no-project --with ruff ruff check --select E9,F lib/*.py lib/box lib/sharedbox-*
 bash -n install.sh uninstall.sh
 python3 -m unittest discover -s tests   # stdlib-only unit tests, no root or network
+python3 tests/e2e_gate.py .              # the real gate against fake logins and backends
+# the real gate + web pages in Chromium: every link, button and form, per persona (--quick: one level deep)
+uv run --no-project --with playwright python tests/e2e_browser.py . --shots /tmp/shots
 sudo ./install.sh            # dry run: read what it would do
 ```
 
