@@ -1650,15 +1650,9 @@ PASTE_RE = re.compile(r"[A-Za-z0-9#_.~+/=-]{4,600}")
 
 
 def t3_connect_on():
-    """Is this account's T3 Code linked to a T3 account (T3 Connect)?"""
-    if not shutil.which("t3"):
-        return False
-    try:
-        r = subprocess.run(["t3", "status"], capture_output=True, text=True, timeout=30, env=user_env(), cwd=HOME)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    m = re.search(r"T3 Connect\s+(\S+)", r.stdout or "")
-    return bool(m and m.group(1).lower() not in ("off", "disabled", "no"))
+    """Is this account's T3 Code linked to a T3 account (T3 Connect)? T3 keeps the link in its data folder
+    (`t3 status` reports the T3 desktop service instead, which friends' accounts don't use)."""
+    return os.path.exists(os.path.join(HOME, ".t3", "userdata", "secrets", "cloud-linked-user-id.bin"))
 
 
 def portal_logged_in(key):
@@ -1858,14 +1852,13 @@ def portal_login_wait(key, seconds):
         if portal_logged_in(key):
             if key == "gh":
                 gh_finish()
+            if key == "t3connect":
+                # T3 links "on next start": restart this account's T3 Code so its relay comes up
+                sctl("restart", T3_UNIT, capture=True)
             tmux("kill-session", "-t", key)
             mark_setup_done(key)
             return {"ok": True, "done": True}
         if "[login exited" in login_screen(key):
-            if key == "t3connect" and "error" not in login_screen(key).lower():
-                # T3 links "on next start": restart this account's T3 Code so the relay comes up
-                sctl("restart", T3_UNIT, capture=True)
-                time.sleep(3)
             break
         time.sleep(1)
     if portal_logged_in(key):
