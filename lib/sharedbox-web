@@ -246,7 +246,6 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.feat{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px}.feat .tile{padding:16px 18px}.feat .ft{font-size:15px;text-transform:none;letter-spacing:0;color:var(--fg);margin:0 0 6px}.feat p{margin:0;font-size:14px;line-height:1.55}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -970,39 +969,8 @@ def event_text(ev, show_email=True):
     return f"<b>{e(fields['user'])}</b> · {e(kind.replace('_', ' '))}" + (" · " + ", ".join(bits) if bits else "")
 
 
-def feature_cards():
-    """(title, one line). Short on purpose: people skim."""
-    cpu = CFG.get("BURST_CPU_QUOTA", "500%")
-    try:
-        cpu = f"{float(str(cpu).rstrip('%')) / 100:g}"
-    except ValueError:
-        pass
-    mem = CFG.get("BURST_MEMORY_HIGH", "15G").replace("G", " GB")
-    cards = [
-        ("Agents that know the box", "Claude, Codex and opencode come set up and already know how everything here works."),
-        ("Burst mode", f"Dynamic resource allocation: burst to {cpu} cores and {mem} when the box is quiet, "
-                       "scaled back fairly when it's busy. Rebalances every minute."),
-        ("Group servers", "One shared copy of a bot for the whole group. Anyone can restart it or fix it."),
-        ("Always on", "Your servers keep running after you close your laptop and come back after restarts."),
-        ("T3 from anywhere", "Best on the T3 Code app on your laptop. For your phone or someone else's "
-                             "computer, the same T3 runs in any browser as a backup. Unused for "
-                             f"{CFG.get('T3_IDLE_DAYS', '3')} days, it naps and wakes up when you open it."),
-    ]
-    if live_ssh_host():
-        cards.append(("Your laptop's agent too", "Paste one prompt into Claude Code on your laptop and it connects itself."))
-    cards += [
-        ("Ask for any tool", "Most system tools install by themselves in about a minute. Your agent asks for you."),
-        ("Tripwire", "If anything goes snooping for passwords, you get an email in seconds."),
-        ("Never loses your work", f"Old projects get packed away, not deleted. {CFG.get('ARCHIVE_DAYS', '14')} days "
-                                  "to grab them back (box restore)."),
-        ("Painless restarts", "Scheduled restarts wait (up to 2 hours) for your agent to finish, and your servers "
-                              "and T3 come back on their own."),
-    ]
-    return cards
-
-
 def features_page():
-    """What the box does for you, in plain words, with this box's real numbers."""
+    """What the box does, in the dashboard's own style: one column, plain headings and short text."""
     e = html.escape
 
     def cores(v):
@@ -1010,20 +978,53 @@ def features_page():
             return f"{float(str(v).rstrip('%')) / 100:g}"
         except ValueError:
             return str(v)
+    big_c, big_m = cores(CFG["BURST_CPU_QUOTA"]), str(CFG["BURST_MEMORY_HIGH"]).replace("G", " GB")
+    small_c, small_m = cores(CFG["CPU_QUOTA"]), str(CFG["MEMORY_HIGH"]).replace("G", " GB")
     bal = sb.read_json(os.path.join(sb.STATE_DIR, "balance.json"), {}) or {}
     busy = bal.get("cpu_busy") or bal.get("mem_tight")
-    big = f"{cores(CFG['BURST_CPU_QUOTA'])} cores and {CFG['BURST_MEMORY_HIGH']} of memory"
-    small = f"{cores(CFG['CPU_QUOTA'])} cores and {CFG['MEMORY_HIGH']}"
-    now = (f"The box is busy right now, so everyone's on {e(small)}." if busy else
-           f"The box is quiet right now, so you've got the full {e(big)}.")
-    body_cards = feature_cards()
-    body = (f"<div class='box'><h2>What you get on {e(HOST)}</h2>"
-            f"<p class='mut'>{now}</p><div class='feat'>"
-            + "".join(f"<div class='tile'><h3 class='ft'>{e(t)}</h3><p>{e(d)}</p></div>"
-                      for t, d in body_cards)
-            + "</div><p style='margin-top:24px'><a class='btn' href='/_box/app'>Open T3 Code</a> "
-              "<a class='btn' href='/_box/me' style='background:var(--btn2);color:var(--fg)'>Dashboard</a></p></div>")
-    return page("Features", body, gate=True)
+    days = " and ".join({"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday",
+                         "Sat": "Saturday", "Sun": "Sunday"}.get(d, d)
+                        for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split())
+    idle, ttl, arch = CFG.get("T3_IDLE_DAYS", "3"), CFG.get("PROJECT_TTL_DAYS", "7"), CFG.get("ARCHIVE_DAYS", "14")
+    laptop_agent = (" If you'd rather use Claude Code on your laptop, your dashboard has a prompt you can paste in "
+                    "to connect it to the box." if live_ssh_host() else "")
+    out = [
+        "<h2>Get the T3 app</h2>",
+        "<p>T3 Code is where you chat with your agents. The desktop app on your own laptop is the best way to use "
+        "it.</p>",
+        "<p><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code</a></p>",
+        "<p>If you're on Tailscale, add the box's address in the app. If you're not, click <b>Link my T3 account</b> "
+        "on <a href='/_box/me#t3app'>your dashboard</a> and sign in to the app with the same T3 account. On a phone or "
+        f"someone else's computer, use <a href='/_box/app'>T3 in the browser</a> instead. It goes to sleep after {e(idle)} "
+        "days without use and wakes up when you open it.</p>",
+        "<h2>Your agents</h2>",
+        "<p>Claude Code, Codex and opencode are already installed and stay up to date. They already know how the box "
+        "works, so you don't have to explain it to them. Ask them to put a site online or keep a bot running."
+        + e(laptop_agent) + "</p>",
+        "<h2>Burst mode</h2>",
+        f"<p>When the box is quiet, you can use up to {e(big_c)} cores and {e(big_m)} of memory. When it's busy, "
+        f"everyone gets an even share of {e(small_c)} cores and {e(small_m)}. The box checks every minute and adjusts, "
+        "so a busy afternoon slows everyone down a little instead of locking anyone out.</p>"
+        + (f"<p class='sub'>Right now it's {'busy' if busy else 'quiet'}.</p>"),
+        "<h2>Your servers</h2>",
+        "<p>Anything your agent starts keeps running after you close your laptop, and comes back after a reboot. "
+        "Each one gets start, stop and logs buttons on your dashboard, plus a private link only you can open.</p>",
+        "<h2>Group servers</h2>",
+        "<p>Some things the whole group uses, like a job application bot. A group server is one shared copy, so four "
+        "people don't run four of them. Anyone can start, stop or restart it and read its logs from the dashboard, "
+        "and anyone's agent can fix its code. Everyone in the group can see what's in it, so keep private keys "
+        "out.</p>",
+        "<h2>Good to know</h2><ul>",
+        "<li>Need ffmpeg, Chrome or another system tool? Ask your agent. Common ones install by themselves in about a "
+        "minute. Unusual ones go to the owner.</li>",
+        "<li>The box reboots for security updates" + (f" and on {e(days)} nights" if days else "") + ". A scheduled "
+        "reboot waits up to 2 hours if an agent is busy. Your servers and T3 start again by themselves.</li>",
+        f"<li>Projects you haven't touched in {e(ttl)} days get archived, with an email warning first. They aren't "
+        f"deleted, and you can bring one back for {e(arch)} days.</li>",
+        "<li>There are fake passwords and keys planted on the box. If anything reads them, you and the owner get an "
+        "email within seconds.</li></ul>",
+    ]
+    return page("Features", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
 def own_events(name, n=8):
