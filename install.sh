@@ -9,7 +9,8 @@
 #
 # This script never restarts or reconfigures sshd, tailscaled, networking or the firewall,
 # and never changes limits of existing users. The trap only listens on ports nothing else uses. It only adds files, creates the `friends`
-# group and a `sharedbox` system user, runs `systemctl daemon-reload` and starts its own units.
+# group, a `sharedbox` system user and an `sbshared` system user/group (shared servers), runs `systemctl daemon-reload`
+# and starts its own units.
 set -euo pipefail
 
 APPLY=0
@@ -67,6 +68,9 @@ conf_get() { sed -n "s/^$1=//p" "${ETC}/sharedbox.conf" 2>/dev/null | tail -1 ||
 SSH_GROUP=$(conf_get SSH_GROUP); SSH_GROUP=${SSH_GROUP:-ssh-users}
 FRIENDS_GROUP=$(conf_get FRIENDS_GROUP); FRIENDS_GROUP=${FRIENDS_GROUP:-friends}
 SLOTS=$(conf_get HEAVY_SLOTS); SLOTS=${SLOTS:-2}
+SHARED_USER=$(conf_get SHARED_USER); SHARED_USER=${SHARED_USER:-sbshared}
+SHARED_GROUP=$(conf_get SHARED_GROUP); SHARED_GROUP=${SHARED_GROUP:-sbshared}
+SHARED_DIR=$(conf_get SHARED_DIR); SHARED_DIR=${SHARED_DIR:-/srv/shared}
 
 ALLOW=$(sshd -T 2>/dev/null | sed -n 's/^allowgroups //p' || true)
 if [[ -n $ALLOW ]] && ! tr ' ' '\n' <<<"$ALLOW" | grep -qx "$SSH_GROUP"; then
@@ -81,11 +85,17 @@ getent group "$FRIENDS_GROUP" >/dev/null || do_ groupadd "$FRIENDS_GROUP"
 getent group "$SSH_GROUP" >/dev/null || do_ groupadd "$SSH_GROUP"
 getent passwd sharedbox >/dev/null || do_ useradd --system --no-create-home --home-dir /nonexistent \
     --shell /usr/sbin/nologin --user-group sharedbox
+# shared servers (box shared) run as SHARED_USER: no login, not in FRIENDS_GROUP/SSH_GROUP. Friends and admins
+# join SHARED_GROUP (sharedbox-admin shared-sync below, and on every new account) to edit the code.
+getent group "$SHARED_GROUP" >/dev/null || do_ groupadd --system "$SHARED_GROUP"
+getent passwd "$SHARED_USER" >/dev/null || do_ useradd --system --no-create-home --home-dir "$SHARED_DIR" \
+    --shell /usr/sbin/nologin --gid "$SHARED_GROUP" "$SHARED_USER"
+command -v setfacl >/dev/null || warn "setfacl not found (package acl): files friends add to shared servers may not be group-writable"
 
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap \
          sharedbox-canary sharedbox-gate; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -135,6 +145,16 @@ do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites" "$STATE/g
 # `box invite` without sudo: anyone can drop a file, root only acts on files owned by ADMIN_USERS
 do_ install -d -m 1733 "$STATE/admin"
 do_ install -d -m 711 "$STATE/admin-replies"
+# `box shared`: friends and admins drop requests, root acts (only on files owned by them)
+do_ install -d -m 1733 "$STATE/shared-drop"
+do_ install -d -m 711 "$STATE/shared-replies"
+[[ -e $STATE/shared.json ]] || do_ sh -c "echo '{}' > $STATE/shared.json"
+# shared servers' code: members only (it may hold the servers' secrets); the janitor never looks here
+do_ install -d -m 750 -o root -g "$SHARED_GROUP" "$SHARED_DIR" "$SHARED_DIR/.trash"
+# the code folders belong to SHARED_USER, so git would call friends' checkouts there "dubious ownership"
+if command -v git >/dev/null && ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$SHARED_DIR/*"; then
+    do_ git config --system --add safe.directory "$SHARED_DIR/*"
+fi
 
 # ---------- cron/at ----------
 # cron/at sessions skip pam_systemd, so friends' jobs would run outside their slice limits.
@@ -165,6 +185,8 @@ fi
 say "systemd units"
 for u in "$SRC"/systemd/*; do do_ install -m 644 "$u" "/etc/systemd/system/$(basename "$u")"; done
 do_ systemctl daemon-reload
+# shared servers: slice limits, folder owners, SHARED_GROUP = friends + admins (never starts/stops a server)
+do_ "$LIB/sharedbox-admin" shared-sync
 do_ systemctl enable --now sharedbox-provision.path sharedbox-janitor.timer sharedbox-guard.timer \
     sharedbox-tools-update.timer
 do_ systemctl restart sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer   # pick up schedule changes

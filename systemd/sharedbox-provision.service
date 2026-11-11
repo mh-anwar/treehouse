@@ -1,5 +1,5 @@
 [Unit]
-Description=sharedbox: process join requests
+Description=sharedbox: process join, admin and shared-server requests
 
 [Service]
 Type=oneshot

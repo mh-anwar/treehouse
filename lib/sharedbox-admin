@@ -10,7 +10,9 @@
   sharedbox-admin remove USER [--archive]
   sharedbox-admin requests [--done FILE]          package/other requests filed with `box request`
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
-  sharedbox-admin reapply                         rewrite every friend's limit drop-ins
+  sharedbox-admin reapply                         rewrite every friend's limit drop-ins (+ shared-sync)
+  sharedbox-admin shared-sync                     shared servers: dirs, slice, SHARED_GROUP membership
+  sharedbox-admin shared ls | ACTION NAME ...     act on a shared server as root (same as `box shared`)
   sharedbox-admin invite [--days N] [--note TEXT] [--tailscale] [--email ADDR]   a message to paste to a new
                                                   friend (with PUBLIC_URL set: includes a one-time signup link;
                                                   PUBLIC_MODE=cloudflare: --email is required and is allowed in)
@@ -45,6 +47,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbshared  # noqa: E402
 
 SYSTEMD_DIR = "/etc/systemd/system"
 MANAGED_PROPS = {
@@ -165,6 +168,7 @@ def create_user(cfg, name, key, login=None, ts_id=None, node=None, email=None):
          "--groups", cfg["FRIENDS_GROUP"], "--shell", "/bin/bash",
          "--comment", gecos, "-K", "HOME_MODE=0700", name])
     run(["usermod", "-p", "*", name])  # no password; key-only login
+    add_to_shared(cfg, name)  # before their user manager starts, so their sessions have the group
     pw = pwd.getpwnam(name)
     lo, hi = sb.port_range(cfg, uid)
 
@@ -405,12 +409,81 @@ def process_admin_drop(cfg):
             pass
 
 
+def add_to_shared(cfg, name):
+    """Friends and admins share SHARED_GROUP (group-owned servers). No-op until install.sh made it."""
+    try:
+        grp.getgrnam(cfg["SHARED_GROUP"])
+    except KeyError:
+        return
+    run(["gpasswd", "-a", name, cfg["SHARED_GROUP"]], check=False, stdout=subprocess.DEVNULL)
+
+
+def shared_uids(cfg):
+    """uid -> name of everyone who may manage shared servers: active friends and ADMIN_USERS."""
+    out = {r["uid"]: n for n, r in sb.friend_users().items() if r.get("status", "active") == "active"}
+    out.update(admin_uids(cfg))
+    return out
+
+
+def shared_handle(cfg, user, req):
+    """sbshared.handle, with every failure turned into a reply (one bad request never wedges the path unit)."""
+    try:
+        return sbshared.handle(cfg, user, req)
+    except KeyError as e:
+        return {"ok": False, "error": f"shared servers aren't set up on this box yet ({e} is missing); "
+                                      "ask the owner to re-run install.sh"}
+    except Exception as e:  # noqa: BLE001
+        print(f"shared request {req.get('action')!r}: {e!r}", file=sys.stderr)
+        return {"ok": False, "error": "internal error; ask the owner"}
+
+
+def process_shared_drop(cfg):
+    """`box shared` requests: same pattern as process_admin_drop. The file's owner is the identity, and
+    only active friends and ADMIN_USERS get an answer (shared-replies/<id>.json, readable only by them)."""
+    _secure_dir(sb.SHARED_DROP, 0o1733)
+    _secure_dir(sb.SHARED_REPLIES, 0o711)
+    allowed = shared_uids(cfg)
+    for path in sorted(glob.glob(os.path.join(sb.SHARED_DROP, "*.json"))):
+        rid = os.path.basename(path)[:-5]
+        try:
+            owner = os.lstat(path).st_uid
+        except FileNotFoundError:
+            continue
+        raw = read_untrusted(path, owner, limit=16 << 10)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        if owner not in allowed or raw is None or not (rid.isascii() and rid.isalnum() and len(rid) <= 64):
+            if owner not in allowed:
+                sb.log_event("shared_drop_refused", None, uid=owner)
+            continue
+        try:
+            req = json.loads(raw)
+        except ValueError:
+            req = None
+        res = shared_handle(cfg, allowed[owner], req) if isinstance(req, dict) else \
+            {"ok": False, "error": "unknown request"}
+        sb.write_json(os.path.join(sb.SHARED_REPLIES, f"{rid}.json"), res, mode=0o600, owner=(owner, 0))
+    for path in glob.glob(os.path.join(sb.SHARED_REPLIES, "*.json")):
+        try:
+            if time.time() - os.lstat(path).st_mtime > 600:
+                os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def process_drops(cfg):
+    for fn in (process_admin_drop, process_shared_drop):
+        try:
+            fn(cfg)
+        except Exception as e:  # noqa: BLE001 - never block joins
+            print(f"{fn.__name__}: {e!r}", file=sys.stderr)
+
+
 def process_spool(cfg):
     svc = pwd.getpwnam(cfg["SERVICE_USER"])
-    try:
-        process_admin_drop(cfg)
-    except Exception as e:  # noqa: BLE001 - never block joins
-        print(f"admin drop: {e!r}", file=sys.stderr)
+    process_drops(cfg)
 
     def answer(rid, fn, req):
         try:
@@ -428,11 +501,8 @@ def process_spool(cfg):
         while True:
             paths = sorted(glob.glob(os.path.join(sb.SPOOL, "req-*.json")))
             running = {f for f in running if not f.done()}
-            if glob.glob(os.path.join(sb.ADMIN_DROP, "*.json")):
-                try:
-                    process_admin_drop(cfg)
-                except Exception as e:  # noqa: BLE001
-                    print(f"admin drop: {e!r}", file=sys.stderr)
+            if glob.glob(os.path.join(sb.ADMIN_DROP, "*.json")) or glob.glob(os.path.join(sb.SHARED_DROP, "*.json")):
+                process_drops(cfg)
             if not paths and not running:
                 break
             for path in paths:
@@ -1379,6 +1449,9 @@ def stop_everything(name):
 def cmd_suspend(cfg, a):
     reg, rec = require_friend(a.user)
     run(["gpasswd", "-d", a.user, cfg["SSH_GROUP"]], check=False, stdout=subprocess.DEVNULL)
+    # no more editing shared servers' code either (the servers themselves keep running)
+    run(["gpasswd", "-d", a.user, cfg["SHARED_GROUP"]], check=False, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
     # an expired account fails PAM's account phase, so cron/at stop starting jobs for it too
     run(["usermod", "--expiredate", "1", a.user], check=False)
     stop_everything(a.user)
@@ -1396,6 +1469,7 @@ def cmd_resume(cfg, a):
     run(["usermod", "--expiredate", "", a.user], check=False)
     run(["loginctl", "enable-linger", a.user], check=False)
     run(["gpasswd", "-a", a.user, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
+    add_to_shared(cfg, a.user)
     rec["status"] = "active"
     save_registry(reg)
     if rec.get("email"):
@@ -1505,6 +1579,40 @@ def cmd_reapply(cfg, a):
         write_dropins(cfg, name, rec, rec["uid"])
         print(f"rewrote limits for {name}")
     daemon_reload()
+    cmd_shared_sync(cfg, a)
+
+
+def cmd_shared_sync(cfg, a):
+    """Shared servers: dirs, slice limits, group membership. Removing a friend leaves the servers alone."""
+    try:
+        members = sbshared.sync(cfg)
+    except KeyError as e:
+        print(f"shared servers: skipped, {e} is missing (install.sh creates SHARED_USER/SHARED_GROUP)",
+              file=sys.stderr)
+        return
+    _secure_dir(sb.SHARED_DROP, 0o1733)
+    _secure_dir(sb.SHARED_REPLIES, 0o711)
+    print(f"shared servers: {len(sbshared.registry())} in {cfg['SHARED_DIR']}, "
+          f"{cfg['SHARED_GROUP']} = {', '.join(members) or '(nobody yet)'}")
+
+
+def cmd_shared(cfg, a):
+    """Root's own `box shared` (logged as done by root)."""
+    err = sbshared.parse_tail(a)
+    if err:
+        die(err)
+    if a.action == "ls":
+        for s in sbshared.list_servers(cfg):
+            print(f"{s['name']:<20} {s['state']:<10} port {s['port']}  {' '.join(s['cmd'])}  "
+                  f"(by {s['created_by']}, last change {s['updated_by']})")
+        return
+    if not a.name:
+        die(f"usage: sharedbox-admin shared {a.action} NAME")
+    req = {"action": a.action, "name": a.name, "cmd": a.cmd, "port": a.port, "lines": a.lines}
+    res = shared_handle(dict(cfg, ADMIN_USERS=",".join(sb.admin_users(cfg) + ["root"])), "root", req)
+    if not res.get("ok"):
+        die(res.get("error", "failed"))
+    print("\n".join(res["lines"]) if "lines" in res else res["message"])
 
 
 def main():
@@ -1527,6 +1635,11 @@ def main():
     x = s.add_parser("remove"); x.add_argument("user"); x.add_argument("--archive", action="store_true")
     x.set_defaults(fn=cmd_remove)
     s.add_parser("reapply").set_defaults(fn=cmd_reapply)
+    s.add_parser("shared-sync").set_defaults(fn=cmd_shared_sync)
+    x = s.add_parser("shared"); x.add_argument("action", choices=("ls",) + sbshared.ACTIONS)
+    x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
+    x.add_argument("-n", "--lines", type=int, default=100)
+    x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_shared)
     x = s.add_parser("requests"); x.add_argument("--done"); x.set_defaults(fn=cmd_requests)
     x = s.add_parser("issues"); x.add_argument("--days", type=int, default=7); x.add_argument("--user")
     x.add_argument("--raw", action="store_true"); x.set_defaults(fn=cmd_issues)

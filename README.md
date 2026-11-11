@@ -44,6 +44,9 @@ is a QR code on their page.
   themselves and never send a non-technical user to a terminal.
 - 🧰 **Ready on first login.** Claude Code, Codex, opencode, node, Python + uv, git + gh, Go, rustup,
   build tools, headless-browser libs, optional JDK + Android SDK. `npm i -g` works without sudo.
+- 🏕️ **Shared servers the whole group owns.** A group chat bot or game server lives in `/srv/shared/NAME`:
+  any friend (or their agent) can edit its code, start/stop/restart it and read its logs with `box shared`.
+  It runs as its own locked-down account, in one slice with a shared CPU/RAM cap, and survives reboots.
 - 💻 **Terminal still works.** Technical users can add an SSH key and use the `box` CLI.
 
 **For you (the owner)**
@@ -135,6 +138,7 @@ so symlink tricks can't redirect deletions.
 | Build outputs in `~/projects/*` | project idle 3 days, or now if over budget |
 | A whole `~/projects/<name>` | untouched 7 days, no process, no service. Announced 3 days ahead |
 | `~/services`, `~/keep`, dotfiles | never |
+| `/srv/shared` (shared servers' code) | never (`box shared rm` only moves code to `/srv/shared/.trash`) |
 
 Below 20% free disk all TTLs halve; below 10% caches are wiped.
 </details>
@@ -145,6 +149,7 @@ Below 20% free disk all TTLs halve; below 10% caches are wiped.
 ```
 box invite [--note WHO] [--json]        # owner accounts, no sudo: one-time invite link
 box skills share DIR | unshare NAME     # owner accounts, no sudo: publish a skill to everyone
+box shared ls | create NAME | set NAME -- CMD... | logs NAME   # anyone: group-owned servers in /srv/shared
 sharedbox-admin list | invite | sessions | issues | requests
 sharedbox-admin limits NAME MEMORY_MAX=10G CPU_QUOTA=400% DISK_BUDGET_GB=50
 sharedbox-admin suspend NAME | resume NAME | remove NAME --archive
