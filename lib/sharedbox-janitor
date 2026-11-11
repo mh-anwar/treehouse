@@ -31,7 +31,10 @@ T3_BUSY_USEC = 60_000_000   # CPU used under a T3 (besides T3 itself) between tw
 
 
 def du(path):
-    r = subprocess.run(["du", "-sx", "--block-size=1", path], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["du", "-sx", "--block-size=1", path], capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:  # a hung filesystem must not stall the whole cleanup run
+        return None
     try:
         return int(r.stdout.split()[0])
     except (IndexError, ValueError):

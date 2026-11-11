@@ -462,7 +462,7 @@ def need_root():
 
 def ts(*args):
     print("+ tailscale", " ".join(args))
-    r = subprocess.run(["tailscale", *args], capture_output=True, text=True)
+    r = subprocess.run(["tailscale", *args], capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         sys.exit(f"failed: {(r.stderr or r.stdout).strip()}\n(Funnel must be allowed for this machine in "
                  "the tailnet policy file: nodeAttrs with \"funnel\")")
