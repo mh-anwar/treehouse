@@ -1001,6 +1001,10 @@ def features_page():
         "<p>Claude Code, Codex and opencode are already installed and stay up to date. They already know how the box "
         "works, so you don't have to explain it to them. Ask them to put a site online or keep a bot running."
         + e(laptop_agent) + "</p>",
+        "<p>There's also a shared shelf of agent skills, starting with Theo's tstack set (like <b>council</b>, which "
+        "has four different AI models review your work, and <b>full-send</b>, which takes a change all the way to a "
+        "merged PR). Anyone can add their own skills to it. Your agent suggests one when it would help and only "
+        "installs it after you say yes.</p>",
         "<h2>Burst mode</h2>",
         f"<p>When the box is quiet, you can use up to {e(big_c)} cores and {e(big_m)} of memory. When it's busy, "
         f"everyone gets an even share of {e(small_c)} cores and {e(small_m)}. The box checks every minute and adjusts, "
