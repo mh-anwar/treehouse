@@ -32,6 +32,7 @@ to GitHub. `box help files` for the rest.
 
 ## Running things
 - Run `box status` at session start and before heavy work (usage, box load, **projects about to be archived**, reboots).
+- Docker works without sudo (rootless, your own daemon): `box help docker` before using it.
 - Heavy builds/tests: `box heavy -- <cmd>`, one at a time, {jobs} parallel jobs max (`box help heavy`).
 - Anything long-running: `box serve add <name> -- <cmd>` (survives logout and reboots; `box help servers`).
   Never leave servers in `nohup`/`tmux`/`&`: the box reboots at {reboot_time} (`box help reboots`).

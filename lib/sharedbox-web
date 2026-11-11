@@ -970,7 +970,7 @@ def event_text(ev, show_email=True):
     return f"<b>{e(fields['user'])}</b> · {e(kind.replace('_', ' '))}" + (" · " + ", ".join(bits) if bits else "")
 
 
-def features_page():
+def features_page(owner=False):
     """What the box does, in the dashboard's own style: one column, plain headings and short text."""
     e = html.escape
 
@@ -993,8 +993,9 @@ def features_page():
     out = [
         "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The best way to talk to your agents.</p>"
         "<ol class='steps'><li><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code"
-        "</a></li><li><a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my "
-        "T3 account</a></li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
+        "</a></li><li>" + ("In the app, add your own T3 on this box (over Tailscale)." if owner else
+        "<a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my T3 account</a>")
+        + "</li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
         "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
@@ -1008,6 +1009,7 @@ def features_page():
         row("Skills", "A shared shelf of agent skills, like council and full-send.",
             "Starts with Theo's tstack set, and anyone can add their own."),
         row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
+        row("Docker", "Docker works, no admin needed.", "Everyone gets their own, inside their own limits."),
         row("Reboots", "Your servers and T3 come back on their own.",
             "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
             "to finish."),
@@ -1896,7 +1898,7 @@ class GateHandler(Handler):
                 return self.redirect(res["pair_url"])
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], res))
         if kind == "features":
-            return self.send(200, features_page())
+            return self.send(200, features_page(owner=not self.who() and CF and self.cf_email() in sb.owner_emails(CFG)))
         if kind == "me" and who:
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q,
                                               rng=(q.get("range") or ["24h"])[0]))
