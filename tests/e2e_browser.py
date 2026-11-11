@@ -258,8 +258,11 @@ def _fake_root(req):
         PAIR_TOKENS.add(tok)
         return {"ok": True, "pair_url": f"http://100.64.0.5:{OWNER_T3_PORT}/pair#token={tok}"}
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
-                                "request-approve", "request-done", "request-decline", "self-update"):
+                                "request-approve", "request-done", "request-decline", "self-update", "invite"):
         return {"ok": False, "error": "not available for the owner's account"}
+    if action == "invite":
+        return {"ok": True, "invite_user": "sam", "invite_message": f"Open https://treehouse.test and sign in with "
+                f"{req.get('email')}."}
     if action == "self-update":
         write("update.json", {"state": "running", "started": int(time.time())})
         return {"ok": True, "message": "Updating treehouse. This page may blink for a few seconds; refresh in a minute."}
@@ -610,7 +613,8 @@ def submit(page, sig):
                 n = inp.get_attribute("name") or ""
                 if inp.get_attribute("readonly") is not None:
                     continue
-                inp.fill({"sshkey": SSH_KEY, "code": "sk-paste-code-123", "username": "carol"}.get(n, "x"))
+                inp.fill({"sshkey": SSH_KEY, "code": "sk-paste-code-123", "username": "carol",
+                          "email": "sam@example.com", "note": "Sam"}.get(n, "x"))
             with page.expect_navigation(timeout=30000):
                 f.locator("button").first.click()
             return True
