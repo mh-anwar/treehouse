@@ -199,6 +199,9 @@ DEFAULTS = {
     "CF_SEAT_LIMIT": "40",
     # port of the owner's own T3 Code on GATE_BACKEND_HOST; set it to let CF_OWNER_EMAILS open it on the public site
     "OWNER_T3_PORT": "",
+    # the owner's "Update treehouse" button installs the latest commit of UPDATE_BRANCH from this git checkout
+    "UPDATE_SOURCE": "",
+    "UPDATE_BRANCH": "main",
     # serve group servers on the public site (/s/NAME/)? Off: any member can edit a group server's code, and on the
     # same site as everyone's T3 Code a malicious script there could act as whoever opens it. Tailnet links only.
     "SHARED_PUBLIC_LINKS": "no",

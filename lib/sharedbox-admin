@@ -829,7 +829,23 @@ def handle_owner_pair(cfg, rid, req):
 # Their logins, SSH keys, agent updates and T3 Code are their own business, set up on the box itself.
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
-                        "shared-logs") + REQUEST_PORTAL_ACTIONS
+                        "shared-logs", "self-update") + REQUEST_PORTAL_ACTIONS
+
+
+def start_update(cfg, by):
+    """Install the latest treehouse from UPDATE_SOURCE, detached (it restarts the services that asked for it)."""
+    src = (cfg.get("UPDATE_SOURCE") or "").strip()
+    if not src:
+        return {"ok": False, "error": "updates from the dashboard aren't set up (UPDATE_SOURCE in sharedbox.conf)"}
+    st = sb.read_json(os.path.join(sb.STATE_DIR, "update.json"), {}) or {}
+    if st.get("state") == "running" and time.time() - float(st.get("started") or 0) < 1800:
+        return {"ok": True, "message": "an update is already running"}
+    r = run(["systemd-run", f"--unit=sharedbox-update-{int(time.time())}", "--collect", "--quiet",
+             os.path.join(sb.LIB_DIR, "sharedbox-update"), str(by)], check=False, capture_output=True, text=True)
+    if r.returncode != 0:
+        return {"ok": False, "error": "couldn't start the update: " + (r.stderr or "")[-200:]}
+    sb.log_event("treehouse_update_started", by)
+    return {"ok": True, "message": "Updating treehouse. This page may blink for a few seconds; refresh in a minute."}
 
 
 def handle_portal(cfg, rid, req):
@@ -860,6 +876,8 @@ def handle_portal(cfg, rid, req):
     if owner:
         if req.get("action") not in OWNER_PORTAL_ACTIONS:
             return {"ok": False, "error": "not available for the owner's account"}
+        if req.get("action") == "self-update":
+            return start_update(cfg, name)
         if req.get("action") in REQUEST_PORTAL_ACTIONS:  # the dashboard's buttons on a friend's `box request`
             try:
                 return request_act(cfg, str(req.get("key") or "")[:200], req["action"][8:], by=name)
@@ -1758,6 +1776,8 @@ def friends_action(cfg, by, req):
     try:
         if act == "friends-list":
             return friends_list(cfg)
+        if act == "friends-update":
+            return start_update(cfg, by)
         if act == "friends-remove":
             return friend_remove(cfg, name, bool(req.get("archive")), by=by)
         if act == "friends-suspend":

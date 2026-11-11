@@ -881,7 +881,7 @@ def portal_btn(tok, base):
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
 OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs",  # root allows only these (+ the lists)
-                 "request-approve", "request-done", "request-decline")
+                 "request-approve", "request-done", "request-decline", "self-update")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -1078,6 +1078,26 @@ def requests_section(btn=None):
     return "".join(out)
 
 
+def update_section(btn):
+    """The owner's "Update treehouse" button and how the last update went."""
+    e = html.escape
+    st = sb.read_json(os.path.join(sb.STATE_DIR, "update.json"), {}) or {}
+    state = st.get("state")
+    if state == "running":
+        line = f"Updating now (started {e(ago_text(st.get('started', 0)))})."
+    elif state == "failed":
+        line = f"<span style='color:var(--bad)'>The last update failed:</span> {e(str(st.get('error') or '?'))}"
+    elif state == "done":
+        line = (f"Up to date as of {e(ago_text(st.get('finished', 0)))}: <code>{e(str(st.get('commit') or ''))}</code> "
+                f"{e(str(st.get('subject') or ''))}")
+    else:
+        line = "Installs the latest version of treehouse and refreshes everyone's agent rules."
+    if not (CFG.get("UPDATE_SOURCE") or "").strip():
+        return ""
+    return ("<h2>Treehouse</h2><p class='sub'>" + line + "</p>"
+            + btn("self-update", "Update treehouse", primary=False))
+
+
 def box_section(n_events=30, btn=None):
     """Friends, invites, Cloudflare seats, everything that happened. Only ever rendered for the owner;
     read from world-readable state files (and the gate's invite records, which this process may read)."""
@@ -1188,6 +1208,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
     out.append(servers_section(st, shared, btn, base))
     try:
+        out.append(update_section(btn))
         out.append(box_section(btn=btn))
     except Exception as ex:  # noqa: BLE001
         print(f"box section: {ex!r}", file=sys.stderr, flush=True)
@@ -1578,6 +1599,9 @@ class Handler(BaseHTTPRequestHandler):
             q.append(now)
         if who.get("owner") and action not in OWNER_ACTIONS:
             return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
+        if who.get("owner") and action == "self-update":
+            res = portal_call(ip, who, "self-update")
+            return self.send(200, portal_page(ip, who, name, rec, dict(res, _view="request-update")))
         if who.get("owner") and action.startswith("request-"):
             if not REQUEST_ID_RE.fullmatch(key):
                 return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "no such request"}))
