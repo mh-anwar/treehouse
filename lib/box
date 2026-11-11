@@ -2703,6 +2703,12 @@ def cmd_sync_rules(a):
     print(json.dumps({"synced": True}))
 
 
+def cmd_cache_pass(a):
+    """The janitor's pass for the owner's own accounts: stale caches only (see sbclean.run_cache_pass)."""
+    import sbclean
+    json.dump(sbclean.run_cache_pass(json.load(sys.stdin)), sys.stdout)
+
+
 def cmd_pass(a):
     import sbclean
     plan = json.load(sys.stdin)
@@ -2801,6 +2807,7 @@ def main():
     x = s.add_parser("help", help="details for agents: box help <topic>")
     x.add_argument("topic", nargs="?"); x.set_defaults(fn=cmd_help)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
+    s.add_parser("_cache-pass").set_defaults(fn=cmd_cache_pass)
     s.add_parser("_t3-nap").set_defaults(fn=cmd_t3_nap)  # the janitor's nap check, run as the friend
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
     x = s.add_parser("_docker-nap")  # the janitor: stop this account's idle Docker databases
