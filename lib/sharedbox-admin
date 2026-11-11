@@ -829,7 +829,7 @@ def handle_owner_pair(cfg, rid, req):
 # Their logins, SSH keys, agent updates and T3 Code are their own business, set up on the box itself.
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
-                        "shared-logs", "self-update") + REQUEST_PORTAL_ACTIONS
+                        "shared-logs", "self-update", "invite") + REQUEST_PORTAL_ACTIONS
 
 
 def start_update(cfg, by):
@@ -878,6 +878,13 @@ def handle_portal(cfg, rid, req):
             return {"ok": False, "error": "not available for the owner's account"}
         if req.get("action") == "self-update":
             return start_update(cfg, name)
+        if req.get("action") == "invite":  # the owner's dashboard: same as `box invite --email ... --note ...`
+            try:
+                res = invite_account(cfg, None, str(req.get("note") or "")[:120], by=name,
+                                     email=str(req.get("email") or "")[:300] or None)
+            except InviteError as e:
+                return {"ok": False, "error": str(e)}
+            return {"ok": True, "invite_message": res.get("message", ""), "invite_user": res.get("username") or ""}
         if req.get("action") in REQUEST_PORTAL_ACTIONS:  # the dashboard's buttons on a friend's `box request`
             try:
                 return request_act(cfg, str(req.get("key") or "")[:200], req["action"][8:], by=name)

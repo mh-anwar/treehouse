@@ -908,7 +908,7 @@ def portal_btn(tok, base):
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
 OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs",  # root allows only these (+ the lists)
-                 "request-approve", "request-done", "request-decline", "self-update")
+                 "request-approve", "request-done", "request-decline", "self-update", "invite")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -1201,9 +1201,14 @@ def box_section(n_events=30, btn=None):
                    + "".join(trs) + "</tbody></table></div>")
     else:
         out.append("<p class='mut'>Nobody has joined yet.</p>")
-    out.append('<p class="sub">To invite someone, ask your agent: <b>invite sam@example.com</b> (it runs '
-               '<code>box invite --email sam@example.com</code> and gives you a message to send them). '
-               'To remove, suspend or link an email, ask it too (<code>box friends</code>).</p>')
+    if btn:
+        out.append("<h3 id='invite'>Invite someone</h3>"
+                   + btn("invite", "Invite", extra="<input type='email' name='email' placeholder='their email' "
+                         "required style='margin-right:8px'><input name='note' placeholder='who (optional)' "
+                         "maxlength='120' style='margin-right:8px'>")
+                   + "<p class='sub'>They get an account right away and sign in with that email. You'll get a "
+                     "message to send them.</p>")
+    out.append('<p class="sub">To remove, suspend or link an email, ask your agent (<code>box friends</code>).</p>')
     try:
         out.append(requests_section(btn))
     except Exception as ex:  # noqa: BLE001
@@ -1452,6 +1457,10 @@ def portal_result(res, btn, base=""):
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
         return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
+    if res.get("invite_message") is not None and res.get("ok"):
+        return (f"<div class='card'><h3>Invite ready{(' for ' + e(res['invite_user'])) if res.get('invite_user') else ''}"
+                f"</h3><p>Send them this:</p><pre style='white-space:pre-wrap;user-select:all'>"
+                f"{e(str(res['invite_message']))}</pre></div>")
     if res.get("app_pair"):
         u = str(res["app_pair"])
         return (f"<div class='card'><h3>Your code for the T3 app</h3><p>Paste this into the app when it asks "
@@ -1656,6 +1665,12 @@ class Handler(BaseHTTPRequestHandler):
             q.append(now)
         if who.get("owner") and action not in OWNER_ACTIONS:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
+        if who.get("owner") and action == "invite":
+            email, err = sb.validate_email(form.get("email", "")[:300])
+            if err or not email:
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": err or "type their email address"})
+            res = portal_call(ip, who, "invite", email=email, note=form.get("note", "")[:120])
+            return self.after_post(ip, who, name, rec, dict(res, _view="invite"))
         if who.get("owner") and action == "self-update":
             res = portal_call(ip, who, "self-update")
             return self.after_post(ip, who, name, rec, dict(res, _view="request-update"))
