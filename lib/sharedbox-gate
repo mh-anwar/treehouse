@@ -143,6 +143,13 @@ def backend_for(user):
 
 # ---------- public links to friends' servers: /s/NAME/ (group) and /p/PORT/ (own) ----------
 
+# T3 Code's build files: the name carries a hash of the content, so a changed file always gets a new name. T3 sends
+# them "no-cache", which makes the browser re-ask about all ~200 of them on every open (one round trip each through
+# Cloudflare). Browsers may keep these: opening T3 again then loads them from the browser's own cache.
+HASHED_ASSET = re.compile(r"/assets/[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8}\.(?:js|mjs|css|woff2?|ttf|otf|png|jpe?g|gif|"
+                          r"webp|avif|svg|ico|wasm|json|map)")
+IMMUTABLE = "private, max-age=31536000, immutable"
+
 APP_PATH = re.compile(r"/([sp])/([^/?]*)(/[^?]*)?(\?.*)?", re.S)
 SHARED_NAME = re.compile(r"[a-z][a-z0-9-]{1,30}")
 APP_PORT = re.compile(r"[1-9][0-9]{0,4}")
@@ -828,9 +835,13 @@ async def handle_request(reader, writer, head, peer):
         if rframing == "close" or (rframing == "chunked" and version == "HTTP/1.0"):
             keep, decode = False, rframing == "chunked"
         resp = [rlines[0].decode("latin-1").replace("HTTP/1.0", "HTTP/1.1", 1)]
+        immutable = (code == 200 and not to_web and not prefix and method in ("GET", "HEAD")
+                     and bool(HASHED_ASSET.fullmatch(path)))
+        if immutable:
+            resp.append(f"Cache-Control: {IMMUTABLE}")
         for n, v in rheaders:
             ln = n.lower()
-            if ln in HOP or ln.startswith("x-sharedbox-"):
+            if ln in HOP or ln.startswith("x-sharedbox-") or (immutable and ln in ("cache-control", "expires", "pragma")):
                 continue
             if ln == "set-cookie" and v.strip().startswith(COOKIE + "="):
                 continue  # only the gate sets its own cookie
