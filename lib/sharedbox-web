@@ -246,6 +246,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -985,48 +986,39 @@ def features_page():
     days = " and ".join({"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday",
                          "Sat": "Saturday", "Sun": "Sunday"}.get(d, d)
                         for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split())
-    idle, ttl, arch = CFG.get("T3_IDLE_DAYS", "3"), CFG.get("PROJECT_TTL_DAYS", "7"), CFG.get("ARCHIVE_DAYS", "14")
-    laptop_agent = (" If you'd rather use Claude Code on your laptop, your dashboard has a prompt you can paste in "
-                    "to connect it to the box." if live_ssh_host() else "")
+    ttl, arch = CFG.get("PROJECT_TTL_DAYS", "7"), CFG.get("ARCHIVE_DAYS", "14")
+    def row(label, lead, more=""):
+        return (f"<div class='frow'><div class='fl'>{label}</div><div><p class='fp'>{lead}</p>"
+                + (f"<p class='fm'>{more}</p>" if more else "") + "</div></div>")
     out = [
-        "<h2>Get the T3 app</h2>",
-        "<p>T3 Code is where you chat with your agents. The desktop app on your own laptop is the best way to use "
-        "it.</p>",
-        "<p><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code</a></p>",
-        "<p>If you're on Tailscale, add the box's address in the app. If you're not, click <b>Link my T3 account</b> "
-        "on <a href='/_box/me#t3app'>your dashboard</a> and sign in to the app with the same T3 account. On a phone or "
-        f"someone else's computer, use <a href='/_box/app'>T3 in the browser</a> instead. It goes to sleep after {e(idle)} "
-        "days without use and wakes up when you open it.</p>",
-        "<h2>Your agents</h2>",
-        "<p>Claude Code, Codex and opencode are already installed and stay up to date. They already know how the box "
-        "works, so you don't have to explain it to them. Ask them to put a site online or keep a bot running."
-        + e(laptop_agent) + "</p>",
-        "<p>There's also a shared shelf of agent skills, starting with Theo's tstack set (like <b>council</b>, which "
-        "has four different AI models review your work, and <b>full-send</b>, which takes a change all the way to a "
-        "merged PR). Anyone can add their own skills to it. Your agent suggests one when it would help and only "
-        "installs it after you say yes.</p>",
-        "<h2>Burst mode</h2>",
-        f"<p>When the box is quiet, you can use up to {e(big_c)} cores and {e(big_m)} of memory. When it's busy, "
-        f"everyone gets an even share of {e(small_c)} cores and {e(small_m)}. The box checks every minute and adjusts, "
-        "so a busy afternoon slows everyone down a little instead of locking anyone out.</p>"
-        + (f"<p class='sub'>Right now it's {'busy' if busy else 'quiet'}.</p>"),
-        "<h2>Your servers</h2>",
-        "<p>Anything your agent starts keeps running after you close your laptop, and comes back after a reboot. "
-        "Each one gets start, stop and logs buttons on your dashboard, plus a private link only you can open.</p>",
-        "<h2>Group servers</h2>",
-        "<p>Some things the whole group uses, like a job application bot. A group server is one shared copy, so four "
-        "people don't run four of them. Anyone can start, stop or restart it and read its logs from the dashboard, "
-        "and anyone's agent can fix its code. Everyone in the group can see what's in it, so keep private keys "
-        "out.</p>",
-        "<h2>Good to know</h2><ul>",
-        "<li>Need ffmpeg, Chrome or another system tool? Ask your agent. Common ones install by themselves in about a "
-        "minute. Unusual ones go to the owner.</li>",
-        "<li>The box reboots for security updates" + (f" and on {e(days)} nights" if days else "") + ". A scheduled "
-        "reboot waits up to 2 hours if an agent is busy. Your servers and T3 start again by themselves.</li>",
-        f"<li>Projects you haven't touched in {e(ttl)} days get archived, with an email warning first. They aren't "
-        f"deleted, and you can bring one back for {e(arch)} days.</li>",
-        "<li>There are fake passwords and keys planted on the box. If anything reads them, you and the owner get an "
-        "email within seconds.</li></ul>",
+        "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The desktop app on your laptop is the best way to "
+        "talk to your agents.</p><p><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download "
+        "T3 Code</a></p><p class='fm'>On Tailscale, add the box's address in the app. Otherwise click <b>Link my T3 "
+        "account</b> on <a href='/_box/me#t3app'>your dashboard</a>. On a phone, use <a href='/_box/app'>T3 in the "
+        "browser</a>.</p></div>",
+        "<div class='flist'>",
+        row("Your agents", "Claude Code, Codex and opencode, ready to go.",
+            "Kept up to date, and they already know how the box works."
+            + (" Prefer Claude Code on your laptop? Your dashboard has a prompt that connects it." if live_ssh_host() else "")),
+        row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
+            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. Checked every minute. "
+            f"Right now it's {'busy' if busy else 'quiet'}."),
+        row("Your servers", "Keep running after you close your laptop.",
+            "They come back after reboots, with start, stop and logs buttons and a private link."),
+        row("Group servers", "One shared copy of a bot for the whole group.",
+            "Anyone can restart it or fix it. Everyone can see what's in it, so keep private keys out."),
+        row("Skills", "A shared shelf of agent skills, like council and full-send.",
+            "Starts with Theo's tstack set, and anyone can add their own. Your agent asks before installing one."),
+        row("System tools", "Ask your agent for ffmpeg, Chrome and the like.",
+            "Common ones install by themselves in about a minute."),
+        row("Reboots", "Your servers and T3 come back on their own.",
+            "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
+            "to finish."),
+        row("Old projects", f"Archived after {e(ttl)} days untouched, not deleted.",
+            f"You get an email first and {e(arch)} days to bring one back."),
+        row("Tripwire", "Fake passwords are planted on the box.",
+            "If anything reads them, you and the owner get an email within seconds."),
+        "</div>",
     ]
     return page("Features", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
