@@ -271,7 +271,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.fg{margin:28px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--acc)}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.fg{margin:28px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--acc)}.inv{display:flex!important;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0}.inv input{width:auto;flex:1 1 220px;max-width:300px;margin:0}.inv input.short{flex:1 1 140px;max-width:180px}.inv button{margin:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -1204,9 +1204,9 @@ def box_section(n_events=30, btn=None):
         out.append("<p class='mut'>Nobody has joined yet.</p>")
     if btn:
         out.append("<h3 id='invite'>Invite someone</h3>"
-                   + btn("invite", "Invite", extra="<input type='email' name='email' placeholder='their email' "
-                         "required style='margin-right:8px'><input name='note' placeholder='who (optional)' "
-                         "maxlength='120' style='margin-right:8px'>")
+                   + btn("invite", "Invite", attrs=" class='inv'",
+                         extra="<input type='email' name='email' placeholder='their email' required>"
+                               "<input name='note' placeholder='name (optional)' maxlength='120' class='short'>")
                    + "<p class='sub'>They get an account right away and sign in with that email. You'll get a "
                      "message to send them.</p>")
     out.append('<p class="sub">To remove, suspend or link an email, ask your agent (<code>box friends</code>).</p>')
@@ -1306,7 +1306,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
                 if t3 and t3.get("sleeping") else "")
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
-            out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>T3 is where you chat with your agents (Claude, Codex). Best on the T3 Code app on your laptop: "
+            out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
                        "<a href='#t3app'>set it up</a>."
                        + (" Use the browser a lot? <a href='/_box/direct-on'>Open T3 straight away next time</a> "
                           "(this page stays at <b>/_box/me</b>; <a href='/_box/direct-off'>undo</a>)." if CF and gate
