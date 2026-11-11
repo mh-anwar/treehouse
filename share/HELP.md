@@ -12,14 +12,19 @@ Never ask for passwords or tokens in chat.
 
 @@ files
 - `~/projects/<name>/`: your work. A project **untouched for {project_ttl} days (no file read or written) is
-  deleted**, with {warn} days of warning in `box status`. Never deleted while a process runs from it or a
-  `box serve` service points at it (even a stopped one).
+  archived**, with {warn} days of warning in `box status` (and an email to the user). Never while a process runs
+  from it or a `box serve` service points at it (even a stopped one).
+- Archived = moved to `~/.sharedbox/archive/<name>-<date>/`, **restorable for {archive_days} days: `box restore NAME`**
+  (`box restore` lists them), then deleted. Archives count toward the disk budget and are deleted first when the
+  user is over it. If the user asks where a project went, check `box restore` before anything else.
 - `~/services/<name>/`: code for long-running servers. Never auto-deleted; counts toward the disk budget.
 - `~/keep/`: small files that must survive. Never auto-deleted.
 - Caches (`~/.cache`, `~/.npm`, `~/.gradle/caches`, `~/.cargo/registry`, …) unused {cache_ttl} days are deleted.
   Build outputs (`node_modules`, `build/`, `target/`, `.next`, `.venv`, …) in projects idle {artifact_ttl} days are
   deleted. Over the disk budget, everything regenerable is wiped right away.
 - `/tmp` files older than {tmp_ttl} days are deleted.
+- The user's T3 Code server is stopped after {t3_idle} days unused (no visit, no agent working) to free memory. It
+  starts again by itself when they open it (their page, or the T3 link); `box t3` starts it from a terminal.
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{host}:<absolute path> .`
 - Nothing is backed up. Push to git often.
@@ -35,6 +40,7 @@ Never ask for passwords or tokens in chat.
 @@ reboots
 {updates}
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
+- Never start a long job (big build, long test run) close to a reboot `box status` announces.
 - Comes back: `box serve` services, group servers, the user's T3 Code, everything on disk.
 - Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, `box heavy` jobs, memory.
 - Make servers safe to restart any time: keep state in files or a database.
@@ -44,6 +50,7 @@ Never ask for passwords or tokens in chat.
   restarts on crash. The port is in `$PORT` (your range: {ports}). Listen on `0.0.0.0`.
 - Manage: `box serve ls`, `box serve logs <name>`, `box serve restart|stop|start|rm <name>`.
 - The user also sees and controls these on their page {portal}.
+- Their T3 Code isn't one of these: it sleeps after {t3_idle} days unused and wakes when they open it.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
 - Others on the tailnet reach it at `http://{host}:<port>`.{serve_public}
 

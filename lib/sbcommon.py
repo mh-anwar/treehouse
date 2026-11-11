@@ -53,9 +53,18 @@ SKILLS_SHARED = os.path.join(STATE_DIR, "skills")
 SKILL_NAME_RE = r"^[a-z0-9][a-z0-9-]{0,47}$"
 SKILL_MAX_FILES, SKILL_MAX_BYTES = 40, 256 << 10
 CF_CERTS_CACHE = os.path.join(GATE_DIR, "cf-certs.json")  # Cloudflare Access signing keys (root writes)
+# last time each friend's T3 Code was opened through the public gate: the gate (user sharedbox) touches
+# T3_SEEN/<user>, the janitor reads the mtimes to put idle T3 servers to sleep (T3_IDLE_DAYS)
+T3_SEEN = os.path.join(STATE_DIR, "t3-seen")
+# the scheduled reboot's state while it waits for agents to finish a turn (root writes, 0644)
+REBOOT_STATE = os.path.join(STATE_DIR, "reboot.json")
 
 DEFAULTS = {
-    # who may join: open | approve | closed
+    # the name people see on pages, emails and broadcasts ("treehouse · <hostname>"). Commands, paths and
+    # unit names stay sharedbox-*.
+    "BRAND": "treehouse",
+    # who may join: open | approve | closed. Not set in the conf file + PUBLIC_MODE=cloudflare = closed
+    # (invites only; see load_config)
     "JOIN_MODE": "open",
     "MAX_USERS": "25",
     "ADMIN_USERS": "",
@@ -94,6 +103,11 @@ DEFAULTS = {
     "CACHE_TTL_DAYS": "7",
     "TMP_TTL_DAYS": "2",
     "WARN_DAYS": "3",
+    # an expired project is moved to ~/.sharedbox/archive/ (restorable: `box restore NAME`) and deleted this
+    # many days later; archives still count toward the disk budget and go first when someone is over it
+    "ARCHIVE_DAYS": "14",
+    # a friend's T3 Code server (~450 MB RAM) unused this long is stopped; their next visit starts it again
+    "T3_IDLE_DAYS": "3",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
     "DISK_CRITICAL_FREE_PCT": "10",
@@ -209,6 +223,7 @@ DEFAULTS = {
 
 def load_config(path=CONF_PATH):
     cfg = dict(DEFAULTS)
+    explicit = set()
     try:
         with open(path) as f:
             for line in f:
@@ -217,9 +232,24 @@ def load_config(path=CONF_PATH):
                     continue
                 k, v = line.split("=", 1)
                 cfg[k.strip()] = v.strip().strip('"').strip("'")
+                explicit.add(k.strip())
     except FileNotFoundError:
         pass
+    # behind Cloudflare Access only invited emails get in at all, so self-signup makes no sense there:
+    # invites only, unless the owner chose otherwise in the conf file
+    if "JOIN_MODE" not in explicit and (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare":
+        cfg["JOIN_MODE"] = "closed"
     return cfg
+
+
+def brand(cfg):
+    return (cfg.get("BRAND") or "").strip() or "treehouse"
+
+
+def brand_host(cfg):
+    """"treehouse · sietchtabr": the name on pages and emails, with this machine's name second."""
+    import socket
+    return f"{brand(cfg)} · {socket.gethostname()}"
 
 
 def cfg_bool(cfg, key):
@@ -545,6 +575,134 @@ def box_load():
         "mem_avail": mi.get("MemAvailable", 0),
         "disk_total": total, "disk_free": free,
     }
+
+
+# ---------- reboots ----------
+
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def reboot_days(cfg):
+    """SCHEDULED_REBOOT_DAYS as ['Wed', 'Sun'] (config order, bad entries dropped)."""
+    out = []
+    for d in (cfg.get("SCHEDULED_REBOOT_DAYS") or "").split(","):
+        d = d.strip()[:3].title()
+        if d in WEEKDAYS and d not in out:
+            out.append(d)
+    return out
+
+
+def _and(items):
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def reboot_schedule_text(cfg):
+    """'twice a week (Wed and Sun at 04:00)', or "" when there are no scheduled reboots."""
+    days, t = reboot_days(cfg), cfg.get("REBOOT_TIME") or "04:00"
+    if not days:
+        return ""
+    if len(days) == 7:
+        return f"every day at {t}"
+    times = {1: "once a week", 2: "twice a week", 3: "three times a week"}.get(len(days), f"{len(days)} times a week")
+    return f"{times} ({_and(days)} at {t})"
+
+
+def next_scheduled_reboot(cfg, now=None):
+    """Epoch seconds of the next SCHEDULED_REBOOT_DAYS reboot, or None."""
+    days = reboot_days(cfg)
+    try:
+        hh, mm = (int(x) for x in (cfg.get("REBOOT_TIME") or "04:00").split(":")[:2])
+    except ValueError:
+        return None
+    now = now or time.time()
+    for i in range(8):
+        t = time.localtime(now + i * 86400)
+        if WEEKDAYS[t.tm_wday] not in days:
+            continue
+        ts = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, hh, mm, 0, 0, 0, -1))
+        if ts > now:
+            return ts
+    return None
+
+
+def pending_shutdown():
+    """Epoch seconds of a pending `shutdown -r` (security updates, or the scheduled one), or None."""
+    try:
+        with open("/run/systemd/shutdown/scheduled") as f:
+            kv = dict(l.strip().split("=", 1) for l in f if "=" in l)
+        if kv.get("MODE", "reboot") == "reboot" and kv.get("USEC"):
+            return int(kv["USEC"]) / 1e6
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def reboot_info(cfg, now=None):
+    """What to tell people about the next reboot: {at, why ('updates'|'scheduled'), postponed, latest, schedule}.
+    `at` None = nothing planned. A scheduled reboot that is waiting for agents to finish their turn has
+    postponed=True and `latest` = when it happens regardless."""
+    now = now or time.time()
+    out = {"at": None, "why": None, "postponed": False, "latest": None, "schedule": reboot_schedule_text(cfg)}
+    st = read_json(REBOOT_STATE, {}) or {}
+    pend = pending_shutdown()
+    if pend and pend > now - 600:
+        out.update(at=pend, why="scheduled" if st.get("state") == "rebooting" else "updates")
+        return out
+    try:
+        latest = float(st.get("deadline") or 0)
+    except (TypeError, ValueError):
+        latest = 0
+    if st.get("state") == "waiting" and latest > now:
+        out.update(at=now, why="scheduled", postponed=True, latest=latest)
+        return out
+    nxt = next_scheduled_reboot(cfg, now)
+    if nxt:
+        out.update(at=nxt, why="scheduled")
+    return out
+
+
+# ---------- coding-agent processes ----------
+
+AGENT_PROC_RE = re.compile(r"(?:^|/)(claude|codex|opencode)(?:\.m?js)?$|/claude-code/|/@openai/codex/|/@opencode/|/opencode-ai/")
+_CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+
+def agent_processes(uids=None, pids=None):
+    """{pid: (uid, agent, cpu_ticks)} for claude/codex/opencode processes, optionally only `uids` / `pids`.
+    Reads /proc only; other users' entries are visible to root (and to themselves)."""
+    out = {}
+    for pid in (pids if pids is not None else os.listdir("/proc")):
+        pid = str(pid)
+        if not pid.isdigit():
+            continue
+        try:
+            uid = os.stat(f"/proc/{pid}").st_uid
+            if uids is not None and uid not in uids:
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = f.read(4096).split(b"\0")[:2]
+            with open(f"/proc/{pid}/stat") as f:
+                stat_f = f.read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        for a in argv:
+            m = AGENT_PROC_RE.search(a.decode(errors="replace"))
+            if m:
+                out[int(pid)] = (uid, m.group(1) or "agent", int(stat_f[11]) + int(stat_f[12]))
+                break
+    return out
+
+
+def busy_agents(uids=None, pids=None, seconds=3.0, min_cpu_pct=1.0):
+    """{pid: (uid, agent)} of agent processes that used CPU during a short sample: an agent mid-turn (streaming,
+    running tools). One waiting for its user's next message uses ~none."""
+    a = agent_processes(uids, pids)
+    if not a:
+        return {}
+    time.sleep(seconds)
+    b = agent_processes(uids, list(a))
+    need = min_cpu_pct / 100 * seconds * _CLK_TCK
+    return {p: (v[0], v[1]) for p, v in b.items() if p in a and v[2] - a[p][2] >= need}
 
 
 # ---------- tailscale ----------
