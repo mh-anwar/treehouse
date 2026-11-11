@@ -1,0 +1,10 @@
+[Unit]
+Description=sharedbox: box tuning that a sysctl file can't hold (compressed memory before swap)
+After=swap.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-tune apply
+
+[Install]
+WantedBy=multi-user.target

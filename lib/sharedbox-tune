@@ -1,0 +1,268 @@
+#!/usr/bin/python3 -I
+"""sharedbox-tune: make the box itself efficient (kernel, memory, disk, network), and say what's left.
+
+  sharedbox-tune check [--json]   read-only report; any user (agents run it as `box tune`)
+  sharedbox-tune apply            root: the runtime settings a sysctl file can't hold (zswap). Run by
+                                  install.sh and at every boot (sharedbox-tune.service)
+
+Two kinds of findings:
+  "treehouse"  every box should have it: the repo ships it (etc/sysctl-*.conf, `apply` below) and an update
+               applies it. If one shows up as not applied, the install is old or something overrode it.
+  "owner"      depends on this machine (a desktop service the owner may use, swap size, CPU power mode): a
+               suggestion for the owner to decide. Agents never switch these on their own.
+
+Adding a check: measure first, then add it to CHECKS. If it helps every box, ship the setting too (a line in
+etc/sysctl-*.conf or a step in `apply`), so `check` and the install agree.
+"""
+
+import argparse
+import glob
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SYSCTL_INSTALLED = "/etc/sysctl.d/60-sharedbox-*.conf"
+SYSCTL_REPO = os.path.join(os.path.dirname(HERE), "etc", "sysctl-*.conf")  # running from a checkout
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def sysctl_path(key):
+    return "/proc/sys/" + key.replace(".", "/")
+
+
+def shipped_sysctls():
+    """{key: (value, file, why)} from treehouse's sysctl files: the installed ones, plus a checkout's own when run
+    from one (so a setting added to the repo shows up as missing before it's deployed)."""
+    files = sorted(glob.glob(SYSCTL_INSTALLED)) + sorted(glob.glob(SYSCTL_REPO))
+    out = {}
+    for fn in files:
+        why = []
+        for line in read(fn).splitlines():
+            line = line.strip()
+            if line.startswith("#"):
+                why.append(line.lstrip("# "))
+                continue
+            if not line:
+                why = []
+                continue
+            if "=" in line:
+                k, v = (x.strip() for x in line.split("=", 1))
+                out[k] = (" ".join(v.split()), os.path.basename(fn), " ".join(why))
+    return out, files
+
+
+def systemd_active(unit):
+    try:
+        return subprocess.run(["systemctl", "is-active", "--quiet", unit], timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def systemd_enabled(unit):
+    try:
+        return subprocess.run(["systemctl", "is-enabled", "--quiet", unit], timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def finding(name, ok, now, want, why, kind):
+    return {"name": name, "ok": bool(ok), "now": str(now), "want": str(want), "why": why, "kind": kind}
+
+
+# ---------- checks ----------
+
+def check_sysctls():
+    want, files = shipped_sysctls()
+    if not files:
+        return [finding("treehouse kernel settings", False, "not installed", "/etc/sysctl.d/60-sharedbox-*.conf",
+                        "the box predates them: update treehouse", "treehouse")]
+    out = []
+    for k, (v, fn, why) in sorted(want.items()):
+        now = " ".join(read(sysctl_path(k), "?").split())
+        out.append(finding(k, now == v, now, v, why or fn, "treehouse"))
+    return out
+
+
+ZSWAP = "/sys/module/zswap/parameters"
+
+
+def check_memory():
+    out = []
+    swaps = [ln.split()[0] for ln in read("/proc/swaps").splitlines()[1:] if ln.split()]
+    mem_kb = next((int(ln.split()[1]) for ln in read("/proc/meminfo").splitlines() if ln.startswith("MemTotal:")), 0)
+    out.append(finding("swap", bool(swaps), ", ".join(swaps) or "none", f"a swap file (~{min(8, max(2, mem_kb // 2 // 2**20))} GB)",
+                       "without swap, a memory spike kills programs instead of slowing them; with zswap on, "
+                       "swap is mostly compressed RAM and rarely touches the disk", "owner"))
+    if os.path.isdir(ZSWAP):
+        en = read(f"{ZSWAP}/enabled")
+        comp = read(f"{ZSWAP}/compressor")
+        out.append(finding("zswap (compressed memory before swap)", en == "Y" or not swaps,
+                           f"{en} ({comp})", "Y (zstd or lz4)",
+                           "idle memory is compressed (~3x) instead of written to disk: a full box slows down "
+                           "gently instead of freezing", "treehouse"))
+    thp = read("/sys/kernel/mm/transparent_hugepage/enabled")
+    cur = thp.split("[")[1].split("]")[0] if "[" in thp else thp
+    out.append(finding("transparent hugepages", cur != "always", cur, "madvise",
+                       "'always' wastes memory and causes stalls with many small processes (agents, node)", "owner"))
+    return out
+
+
+def check_disk():
+    out = []
+    ssd = any(read(f"{d}/queue/rotational") == "0" for d in glob.glob("/sys/block/*")
+              if not os.path.basename(d).startswith(("loop", "sr", "zram", "ram")))
+    if ssd:
+        out.append(finding("fstrim.timer (SSD trim, weekly)", systemd_enabled("fstrim.timer"),
+                           "enabled" if systemd_enabled("fstrim.timer") else "off", "enabled",
+                           "an untrimmed SSD gets slower as it fills", "owner"))
+    return out
+
+
+# services a server rarely needs; each is the owner's call (a desktop box may use them)
+DESKTOP_LEFTOVERS = {
+    "gdm.service": "a login screen; holds a desktop session's memory on a box nobody sits at",
+    "sddm.service": "a login screen (see gdm)",
+    "lightdm.service": "a login screen (see gdm)",
+    "cups.service": "printing",
+    "cups-browsed.service": "finds network printers",
+    "avahi-daemon.service": "announces the box on the local network",
+    "bluetooth.service": "Bluetooth",
+    "ModemManager.service": "mobile modems",
+    "packagekit.service": "a GUI software center's backend",
+    "whoopsie.service": "crash reports to Canonical",
+    "kerneloops.service": "kernel crash reports",
+    "colord.service": "screen color profiles",
+}
+
+
+def wireless_in_use():
+    for d in glob.glob("/sys/class/net/*"):
+        if os.path.isdir(os.path.join(d, "wireless")) and read(os.path.join(d, "operstate")) == "up":
+            return True
+    return False
+
+
+def check_services():
+    out = []
+    running = [u for u in DESKTOP_LEFTOVERS if systemd_active(u)]
+    if systemd_active("wpa_supplicant.service") and not wireless_in_use():
+        running.append("wpa_supplicant.service")
+    why = "; ".join(f"{u.removesuffix('.service')}: {DESKTOP_LEFTOVERS.get(u, 'Wi-Fi, but no Wi-Fi link is up')}"
+                    for u in running)
+    out.append(finding("desktop services running on a server", not running, ", ".join(running) or "none", "none",
+                       (why + ". Turn off only what the owner confirms nobody uses "
+                        "(sudo systemctl disable --now NAME)") if running else "", "owner"))
+    return out
+
+
+def check_cpu():
+    gov = read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    epp = read("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
+    if not gov:
+        return []
+    slow = gov == "powersave" and epp in ("power", "balance_power")
+    return [finding("CPU power mode", not slow, gov + (f" / {epp}" if epp else ""),
+                    "schedutil, or powersave with balance_performance",
+                    "a battery-saving mode makes every build and agent turn slower", "owner")]
+
+
+def check_network():
+    out = []
+    try:
+        st = json.loads(subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True,
+                                       timeout=10).stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        st = {}
+    relayed = [p.get("HostName", "?") for p in (st.get("Peer") or {}).values()
+               if p.get("Online") and p.get("Active") and not p.get("CurAddr") and p.get("Relay")]
+    if st:
+        out.append(finding("Tailscale direct connections", not relayed, ", ".join(relayed) + " relayed" if relayed
+                           else "all direct", "all direct",
+                           "relayed devices go through a Tailscale server (slower, capped): usually a strict router "
+                           "or firewall on that side; UDP 41641 open on this box's router helps", "owner"))
+    return out
+
+
+CHECKS = [check_sysctls, check_memory, check_disk, check_cpu, check_services, check_network]
+
+
+def run_checks():
+    out = []
+    for c in CHECKS:
+        try:
+            out += c()
+        except Exception as e:  # one broken check must not hide the others
+            out.append(finding(c.__name__, False, f"check failed: {e}", "", "", "treehouse"))
+    return out
+
+
+def cmd_check(a):
+    res = run_checks()
+    if a.json:
+        print(json.dumps(res, indent=2))
+        return
+    todo_t = [r for r in res if not r["ok"] and r["kind"] == "treehouse"]
+    todo_o = [r for r in res if not r["ok"] and r["kind"] == "owner"]
+    print(f"Box tuning: {sum(r['ok'] for r in res)}/{len(res)} as recommended.")
+    if todo_t:
+        print("\nShould already be set by treehouse (update treehouse; if it stays, something overrides it):")
+        for r in todo_t:
+            print(f"  - {r['name']}: {r['now']} (want {r['want']}). {r['why']}")
+    if todo_o:
+        print("\nFor the owner to decide (suggest; never change these yourself):")
+        for r in todo_o:
+            print(f"  - {r['name']}: {r['now']} (suggested {r['want']}). {r['why']}")
+    if not todo_t and not todo_o:
+        print("Nothing to do. Look further: `box help tune`.")
+
+
+# ---------- apply (root) ----------
+
+def apply_zswap():
+    if not os.path.isdir(ZSWAP) or not read("/proc/swaps").splitlines()[1:]:
+        return "zswap: no swap, skipped"
+    for comp in ("zstd", "lz4", "lzo-rle", "lzo"):
+        try:
+            with open(f"{ZSWAP}/compressor", "w") as f:
+                f.write(comp)
+            break
+        except OSError:
+            continue
+    with open(f"{ZSWAP}/enabled", "w") as f:
+        f.write("Y")
+    return f"zswap: on ({read(f'{ZSWAP}/compressor')})"
+
+
+def cmd_apply(a):
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-tune apply: needs root (install.sh and sharedbox-tune.service run it)")
+    for step in (apply_zswap,):
+        try:
+            print(step())
+        except OSError as e:
+            print(f"{step.__name__}: {e}", file=sys.stderr)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="sharedbox-tune", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    x = s.add_parser("check")
+    x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=cmd_check)
+    s.add_parser("apply").set_defaults(fn=cmd_apply)
+    a = p.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

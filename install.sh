@@ -97,7 +97,7 @@ say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
 for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap sharedbox-update \
-         sharedbox-canary sharedbox-gate; do
+         sharedbox-canary sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
 done
 do_ install -m 644 "$SRC/share/AGENTS.md" "$SHARE/AGENTS.md"
@@ -110,11 +110,13 @@ do_ rm -rf "$SHARE/skills"
 do_ cp -r "$SRC/share/skills" "$SHARE/skills"   # the shared skill catalog (`box skills`)
 do_ chmod -R u=rwX,go=rX "$SHARE/skills"
 do_ install -m 644 "$SRC/share/profile.sh" /etc/profile.d/sharedbox.sh
-# network tuning (see the file): additive, applied live, nothing restarted
-do_ install -m 644 "$SRC/etc/sysctl-net.conf" /etc/sysctl.d/60-sharedbox-net.conf
-do_ sh -c "printf 'tcp_bbr\n' > /etc/modules-load.d/sharedbox-bbr.conf"
-do_ sh -c "modprobe tcp_bbr 2>/dev/null; sysctl -q -p /etc/sysctl.d/60-sharedbox-net.conf" \
-    || warn "some network settings didn't apply (see /etc/sysctl.d/60-sharedbox-net.conf); the rest did"
+# box tuning (etc/sysctl-*.conf, `sharedbox-tune`): additive, applied live, nothing restarted. `box tune` checks it.
+for f in "$SRC"/etc/sysctl-*.conf; do
+    n=$(basename "$f" .conf); do_ install -m 644 "$f" "/etc/sysctl.d/60-sharedbox-${n#sysctl-}.conf"
+done
+do_ sh -c "printf 'tcp_bbr\\n' > /etc/modules-load.d/sharedbox-bbr.conf"
+do_ sh -c "modprobe tcp_bbr 2>/dev/null; for f in /etc/sysctl.d/60-sharedbox-*.conf; do sysctl -q -p \"\$f\"; done" \
+    || warn "some box tuning settings didn't apply (see /etc/sysctl.d/60-sharedbox-*.conf); the rest did"
 if [[ ! -e $ETC/sharedbox.conf ]]; then
     do_ install -m 644 "$SRC/etc/sharedbox.conf" "$ETC/sharedbox.conf"
     if [[ -n $ADMINS ]]; then do_ sed -i "s/^ADMIN_USERS=.*/ADMIN_USERS=$ADMINS/" "$ETC/sharedbox.conf"; fi
@@ -198,6 +200,8 @@ do_ systemctl daemon-reload
 do_ "$LIB/sharedbox-admin" shared-sync
 do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path sharedbox-janitor.timer \
     sharedbox-guard.timer sharedbox-tools-update.timer sharedbox-t3-naps.timer
+do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too:
+do_ "$LIB/sharedbox-tune" apply || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
 do_ systemctl restart sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
 do_ systemctl enable sharedbox-web.service

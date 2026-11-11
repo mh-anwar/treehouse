@@ -153,6 +153,28 @@ Typical waste:
 - Leaks: test browsers (Playwright, Puppeteer) not closed in teardown, 300+ MB each; background jobs your own runs
   started and forgot.
 
+@@ tune
+The box itself (kernel, memory, disk, network) should be so efficient nobody feels it, even when everyone is busy.
+`box tune` is a read-only report: what treehouse sets on every box, and what's left for the owner. Run it when
+setting a box up, after a treehouse update, and whenever the box (not one program) feels slow.
+How to look further, agent-first:
+1. Measure before changing anything, and again after: `box status`, `box tune`, `free -h`, `cat /proc/pressure/*`
+   (memory/CPU/IO stalls), `vmstat 5`, `iostat -x 5` if installed, `ss -s`, `tailscale netcheck`, `sysctl -a`.
+2. Find what costs the most: memory pressure and swapping, disk waits, CPU throttling, slow network paths, services
+   nobody uses, settings left at defaults meant for a laptop or a desktop.
+3. Sort what you find:
+   - Helps every treehouse box (a safe kernel default, a check): it belongs in treehouse, so every owner gets it.
+     It goes in the repo: a line in `etc/sysctl-*.conf` with a comment saying why, or a step in `sharedbox-tune
+     apply`, plus a check in `sharedbox-tune` CHECKS. Write it up for the owner with the numbers (before/after);
+     if they maintain treehouse, propose the change there.
+   - Depends on this machine (a desktop service, swap size, a router setting, CPU power mode): a suggestion for the
+     owner, in plain words, with what it costs and what they'd lose. Never switch it yourself.
+4. Never trade safety or the owner's stuff for speed: nothing that restarts the network, reboots, drops security
+   updates, or turns off something someone may use. You can't use sudo; the owner (or a treehouse update) applies it.
+Places worth a look: zswap/swap/hugepages, inotify and open-file limits, disk trim and free space, I/O scheduler,
+TCP congestion control and buffers, Tailscale direct vs relayed peers, the Cloudflare tunnel protocol, what's
+running at boot, journald/log volume, per-account limits (`box status`), caching in front of web apps.
+
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
 - First time only: `dockerd-rootless-setuptool.sh install` (sets up a user service), then
