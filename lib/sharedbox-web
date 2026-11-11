@@ -1295,7 +1295,10 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
             out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
-                       "<a href='#t3app'>set it up</a>.</p>")
+                       "<a href='#t3app'>set it up</a>."
+                       + (" Use the browser a lot? <a href='/_box/direct-on'>Open T3 straight away next time</a> "
+                          "(this page stays at <b>/_box/me</b>; <a href='/_box/direct-off'>undo</a>)." if CF and gate
+                          else "") + "</p>")
         out.append(dash)
         out.append("<h2 style='margin-top:34px'>Setup</h2>")
         dash = ""
@@ -1931,6 +1934,8 @@ class GateHandler(Handler):
             return "features", None
         if path in ("/_box", "/_box/", "/_box/me"):
             return "me", None
+        if path in ("/_box/direct-on", "/_box/direct-off"):
+            return path[6:], None
         if path in ("/_box/logout", "/_box/healthz", "/_box/open", "/_box/app"):
             return path[6:], None
         return "landing", path
@@ -1948,6 +1953,10 @@ class GateHandler(Handler):
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
+        if kind in ("direct-on", "direct-off"):  # remember: visiting the site opens T3 directly (or the dashboard)
+            c = ("tb_direct=1; Path=/; Max-Age=31536000" if kind == "direct-on" else "tb_direct=; Path=/; Max-Age=0")
+            return self.redirect("/_box/app" if kind == "direct-on" else "/_box/me",
+                                 [("Set-Cookie", c + "; Secure; HttpOnly; SameSite=Lax")])
         if kind == "app":  # "Open T3 in browser": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
             # tells the gate this is the button, not a bookmark (browsers' Sec-Fetch-Site may not survive Cloudflare)
             return self.redirect("/", [("Set-Cookie", "tb_open=1; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Lax")])

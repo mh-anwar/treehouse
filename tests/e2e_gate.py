@@ -246,6 +246,8 @@ def run_tests():
     check("owner bookmark -> dashboard", c == 303 and hv(h, "location") == ["/_box/me"], (c, h))
     c, h, b = req("/", "N", extra=["Cookie: tb_open=1"])
     check("no account + marker -> not T3", c != 200 or b"31000" not in b, (c, b[:200]))
+    c, h, b = req("/", "A", extra=["Cookie: t3_session_1=secret; tb_direct=1"])
+    check("/ with 'open T3 directly' chosen -> T3", c == 200 and json.loads(b).get("port") == 31000, (c, b[:200]))
     c, h, b = req("/draft/abc", "A", extra=[T3C])
     check("deep T3 link (reload inside T3) -> T3, not dashboard", c == 200 and json.loads(b).get("path") == "/draft/abc", (c, b[:200]))
 
