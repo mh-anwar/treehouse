@@ -759,7 +759,7 @@ def handle_gate(cfg, rid, req):
 
 # ---------- portal (web page actions for an existing account) ----------
 
-PORTAL_KEYS = ("claude", "codex", "gh")
+PORTAL_KEYS = ("claude", "codex", "gh", "t3connect")
 
 
 def box_portal(pw, args, input_text=None):
