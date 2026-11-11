@@ -465,7 +465,7 @@ def notify_friend(cfg, user, uid, rec):
     except OSError as e:
         print(f"alert file for {user} failed: {e}", file=sys.stderr)
     # 2. every terminal they have open
-    banner = (f"\r\n\a*** sharedbox SECURITY ALERT ***\r\n{short}\r\n"
+    banner = (f"\r\n\a*** {sb.brand(cfg).upper()} SECURITY ALERT ***\r\n{short}\r\n"
               "Ask your agent or the box owner what to do.\r\n")
     try:
         ttys = os.listdir("/dev/pts")
@@ -498,7 +498,7 @@ def notify_friend(cfg, user, uid, rec):
     login = urec.get("email") or urec.get("login", "")
     if _email_like(login) and mail_ok(cfg):
         try:
-            sbmail.send(cfg, "Security alert on your sharedbox account",
+            sbmail.send(cfg, f"Security alert on your {sb.brand(cfg)} account",
                         f"Hi {user},\n\n{short}\n\nWhat to do:\n"
                         "- Think about anything you installed or ran recently (npm/pip packages, scripts).\n"
                         "  A malicious package is the usual cause.\n"

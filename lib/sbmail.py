@@ -38,7 +38,7 @@ def send(cfg, subject, text, html=None, to=None):
 
     msg = EmailMessage()
     msg["Subject"] = f"[{host}] {subject}"
-    msg["From"] = f"sharedbox on {host} <{sender}>"
+    msg["From"] = f"{(cfg.get('BRAND') or 'treehouse').strip()} on {host} <{sender}>"
     msg["To"] = to or cfg["MAIL_TO"]
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=host)
