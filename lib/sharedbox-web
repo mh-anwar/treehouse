@@ -1004,7 +1004,7 @@ def features_page(owner=False):
         row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
             f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. "
             f"Right now it's {'busy' if busy else 'quiet'}."),
-        row("Your servers", "Servers that run 24/7.", "Back after reboots, with controls and a private link."),
+        row("Your servers", "Servers that run 24/7.", "Self-healing, with controls + a private link."),
         row("Group servers", "One shared copy of a bot for the whole group."),
         row("Skills", "A shared shelf of agent skills, like council and full-send."),
         row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
