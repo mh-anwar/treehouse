@@ -400,8 +400,6 @@ def cmd_clean(a):
 # ---------- agent rules ----------
 
 def render_rules(notices=()):
-    lim = my_limits()
-    r = ports() or (0, 0)
     with open(os.path.join(sb.SHARE_DIR, "AGENTS.md")) as f:
         tpl = f.read()
     tv = tools()
@@ -418,17 +416,14 @@ def render_rules(notices=()):
                    "or `box request` it. Always build APKs with `box heavy -- ./gradlew assembleDebug`.")
     extras = []
     if "xvfb-run" in tv:
-        extras.append("- Headless browsers (Playwright/Puppeteer) work: system libs are installed. Use "
-                      "`npx playwright install chromium` (the browser download is per user and counts "
-                      "against the disk budget). Use `xvfb-run` if something needs a display.")
+        extras.append("- Headless browsers work without root (Playwright/Selenium/Puppeteer): install into your home "
+                      "and launch with `--no-sandbox`. `box help browsers` before setting one up.")
     if android:
         extras.append(android.lstrip("\n"))
     if ME.pw_name in sb.admin_users(CFG) and sb.public_mode(CFG) == "cloudflare":
-        extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --email <their email> "
-                      "--note \"<who>\"` (no sudo needed; ask the owner for the email if you don't have it) and give "
-                      "the owner the message it prints. It creates their account right away and allows the email "
-                      "through Cloudflare Access, so the friend just signs in with it: no signup form. "
-                      "`--username NAME` picks the name; `box invite --json` gives `username`, `link`, `email`.")
+        extras.append("- This is the box OWNER's account. Invite a friend: `box invite --email <their email> "
+                      "--note \"<who>\"` (no sudo), then give the owner the message it prints. It creates the account "
+                      "and lets that email through Cloudflare, so the friend just signs in with it.")
     elif ME.pw_name in sb.admin_users(CFG):
         extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
                       "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
@@ -436,15 +431,23 @@ def render_rules(notices=()):
                       "straight in (once). `box invite --json` gives `username`, `link`, `expires`.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
-                      "with the device-code steps above. Don't send them to `box setup` or a terminal, "
-                      "and don't ask for tokens in chat.")
+                      "(`box help logins`).")
     nt = ""
     if notices:
         nt = "## Current notices (updated by the janitor)\n" + "\n".join(f"- {n}" for n in notices)
-    return tpl.format(
+    return tpl.format(**rule_fields(tl, extras, nt))
+
+
+def rule_fields(tl="", extras=(), nt=""):
+    """Values for the {placeholders} in AGENTS.md (always loaded) and HELP.md (`box help`, on demand)."""
+    lim = my_limits()
+    r = ports() or (0, 0)
+    return dict(
         host=socket.gethostname(), user=ME.pw_name, cpu=burst_text(lim, "CPU_QUOTA", "cores"),
         mem_high=burst_text(lim, "MEMORY_HIGH", "RAM"), mem_max=lim["MEMORY_MAX"], tasks=lim["TASKS_MAX"],
         disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}",
+        ports_line=(f"Ports: **{r[0]}-{r[1]}** only (the first is the user's T3 Code)." if r != (0, 0) else
+                    "Ports: no fixed range for this account; check `ss -ltn` and pick a free one."),
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
         cache_ttl=CFG["CACHE_TTL_DAYS"], artifact_ttl=CFG["ARTIFACT_TTL_DAYS"],
         tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], updates=updates_text(),
@@ -452,7 +455,36 @@ def render_rules(notices=()):
                      "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
         shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
-                                    sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1)).strip()
+                                    sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
+
+
+def help_topics():
+    """topic -> text from HELP.md ('@@ name' headers), placeholders filled in."""
+    try:
+        with open(os.path.join(sb.SHARE_DIR, "HELP.md")) as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    fields = rule_fields()
+    out = {}
+    for chunk in raw.split("@@ ")[1:]:
+        name, _, body = chunk.partition("\n")
+        out[name.strip()] = body.format(**fields).strip()
+    return out
+
+
+def cmd_help(a):
+    topics = help_topics()
+    if a.topic and a.topic in topics:
+        print(topics[a.topic])
+        return
+    if a.topic and a.topic not in ("all",):
+        print(f"no help topic {a.topic!r}.", file=sys.stderr)
+    if a.topic == "all":
+        print("\n\n".join(f"## {k}\n{v}" for k, v in topics.items()))
+        return
+    print("box help <topic>: details agents read on demand.\ntopics: " + ", ".join(topics) + ", all")
+    print("\ncommands: box -h")
 
 
 def updates_text():
@@ -1772,6 +1804,8 @@ def main():
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true")
     x.set_defaults(fn=lambda a: (a.action != "ls" and not a.name and sys.exit(f"box skills {a.action}: which skill?"))
                    or cmd_skills(a))
+    x = s.add_parser("help", help="details for agents: box help <topic>")
+    x.add_argument("topic", nargs="?"); x.set_defaults(fn=cmd_help)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
