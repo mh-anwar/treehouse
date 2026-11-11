@@ -190,7 +190,7 @@ def page(title, body, gate=False):
     # "treehouse · sietchtabr": the product first, this machine second
     mark = f'▣ {html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
     nav = (f'<a href="/_box/me" class="brand">{mark}</a><nav><a href="/_box/me">Dashboard</a>'
-           '<a href="/_box/features">Features</a><a href="/_box/app">T3 Code</a></nav>'
+           '<a href="/_box/features">Features</a><a href="/_box/app">T3 in browser</a></nav>'
            if gate else
            f'<a href="/" class="brand">{mark}</a>\n<nav><a href="/">dashboard</a><a href="/join">join</a></nav>')
     full = f"{title} · {BRAND} · {HOST}" if title and title != HOST else f"{BRAND} · {HOST}"
@@ -1182,7 +1182,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
     out = [f"<h2>Hi, owner</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
            f"This page shows your account <b>{e(name)}</b> on {e(HOST)}.</p>"]
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
-        out.append('<p><a class="btn" href="/_box/app">Open my T3 Code</a></p>')
+        out.append('<p><a class="btn" href="/_box/app">Open T3 in browser</a></p>')
     if result:
         out.append(portal_result(result, btn, base))
     try:
@@ -1236,8 +1236,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         dash = ""
     dash += servers_section(st, shared, btn, base)
     # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
-    t3_btn = ("<a class='btn' href='/_box/app'>Open my T3 Code</a>" if CF and gate
-              else btn("t3", "Open my T3 Code"))
+    t3_btn = ("<a class='btn' href='/_box/app'>Open T3 in browser</a>" if CF and gate
+              else btn("t3", "Open T3 in browser"))
     sleeping = ("<span class='sub'>T3 sleeping (unused for a while): it opens on click, give it a minute.</span>"
                 if t3 and t3.get("sleeping") else "")
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
@@ -1264,7 +1264,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             out.append("<p class='sub'>Pay for Claude by API key (Anthropic Console) instead? "
                        + btn("login", "Console login", "claude",
                              '<input type="hidden" name="console" value="1">', primary=False) + "</p>")
-    out.append(f"<h2>2. Open T3 Code {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
+    out.append(f"<h2>2. Open T3 {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
     if not t3:
         out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
     else:
@@ -1397,7 +1397,7 @@ def portal_result(res, btn, base=""):
 <p class="sub">Anyone who has this link can log in as you until it's used, so don't share it.</p></div>"""
     if res.get("pair_url"):
         return f"""<div class="card"><h3>Your T3 Code is ready</h3>
-<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 Code →</a></p>
+<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in browser →</a></p>
 <p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
@@ -1871,7 +1871,7 @@ class GateHandler(Handler):
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
-        if kind == "app":  # "Open my T3 Code": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
+        if kind == "app":  # "Open T3 in browser": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
             # tells the gate this is the button, not a bookmark (browsers' Sec-Fetch-Site may not survive Cloudflare)
             return self.redirect("/", [("Set-Cookie", "tb_open=1; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Lax")])
         who = self.who()
