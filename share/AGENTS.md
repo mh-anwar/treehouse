@@ -34,6 +34,8 @@ to GitHub. `box help files` for the rest.
 - Run `box status` before heavy work: usage, box load, projects about to be archived, reboots (it also shows when a session starts).
 - Docker works without sudo (rootless, your own daemon): `box help docker` before using it.
 - Heavy builds/tests: `box heavy -- <cmd>`, one at a time, {jobs} parallel jobs max (`box help heavy`).
+- Never block the chat on a test or build longer than a minute: start it in the background (your agent's
+  background-task feature), tell the user in a line what's running, keep working or answering, report when it ends.
 - Anything long-running: `box serve add <name> -- <cmd>` (survives logout and reboots; `box help servers`).
   Never leave servers in `nohup`/`tmux`/`&`: the box reboots at {reboot_time} (`box help reboots`).
 - Something the friends run *together* (group bot, shared tool, one copy instead of three): a group server,

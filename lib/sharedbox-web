@@ -221,10 +221,14 @@ def page(title, body, gate=False, member=True):
     full = f"{title} · {BRAND} · {HOST}" if title and title != HOST else f"{BRAND} · {HOST}"
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="{FAVICON}">
 <title>{html.escape(full)}</title><style>{CSS}</style></head>
 <body><header>{nav}</header>
 <main><!--email_off-->{body}<!--/email_off--></main></body></html>"""
 
+
+# treehouse icon, inline so the browser never falls back to /favicon.ico (which the gate proxies to T3)
+FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2316a34a'/%3E%3Cpath d='M16 5l8 11h-4l5 7H7l5-7H8z' fill='%23fff'/%3E%3Crect x='14.5' y='23' width='3' height='4' fill='%23fff'/%3E%3C/svg%3E"
 
 CSS = """
 :root{--bg:#0d0f12;--panel:#151920;--line:#252b35;--fg:#e6e9ef;--mut:#8a93a3;--acc:#5aa9ff;
@@ -252,6 +256,12 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .pill{display:inline-block;white-space:nowrap;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
 .pill.ok{color:var(--ok);border-color:var(--okb)}.pill.warn{color:var(--warn);border-color:var(--warnb)}
 .pill.bad{color:var(--bad);border-color:var(--badb)}
+.note{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:0 0 14px}
+.note p{margin:0}.note .ic{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;font-size:12px;font-weight:700;line-height:1}
+.note.ok{border-color:var(--okb)}.note.ok .ic{background:var(--ok);color:var(--on-acc)}
+.note.bad{border-color:var(--badb)}.note.bad .ic{background:var(--bad);color:#fff}
+.note.busy .ic{border:2px solid var(--line);border-top-color:var(--acc);animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.note.busy .ic{animation:none}}
 .mini{width:100%;min-width:90px}.mini .bar{margin-top:3px}
 h2{font-size:15px;margin:26px 0 10px}ul.ev{list-style:none;padding:0;margin:0;background:var(--panel);
 border:1px solid var(--line);border-radius:10px}ul.ev li{padding:7px 12px;border-bottom:1px solid var(--line);font-size:13px}
@@ -1444,16 +1454,26 @@ def public_pair(res):
                 url=PUBLIC + "/")
 
 
+def notice(text, kind="ok"):
+    """One-line result banner: icon + message, vertically centred. kind: ok | bad | busy (in progress)."""
+    icon = {"ok": "<svg viewBox='0 0 12 12' width='11' height='11'><path d='M2.5 6.3l2.3 2.3 4.7-5' fill='none' "
+                  "stroke='currentColor' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/></svg>",
+            "bad": "!", "busy": ""}[kind]
+    text = text[:1].upper() + text[1:]
+    return f"<div class='note {kind}' role='status'><span class='ic' aria-hidden='true'>{icon}</span><p>{text}</p></div>"
+
+
 def portal_result(res, btn, base=""):
     e = html.escape
     if not res.get("ok"):
-        return f"<div class='card'><p class='err'>{e(res.get('error') or 'something went wrong')}</p></div>"
+        return notice(e(res.get('error') or 'something went wrong'), "bad")
     view = str(res.get("_view") or "")
     if view.endswith("-logs"):
         return logs_card(res, btn)
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
-        return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
+        busy = view == "request-update"  # the update has only started; a check mark would claim it's done
+        return notice(e(sb.printable(msg)[:300]), "busy" if busy else "ok")
     if res.get("invite_message") is not None and res.get("ok"):
         return (f"<div class='card'><h3>Invite ready{(' for ' + e(res['invite_user'])) if res.get('invite_user') else ''}"
                 f"</h3><p>Send them this:</p><pre style='white-space:pre-wrap;user-select:all'>"
@@ -1477,13 +1497,12 @@ def portal_result(res, btn, base=""):
 <p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
-        return "<div class='card'><p><span class='pill ok'>✓</span> SSH key added.</p></div>"
+        return notice("SSH key added.")
     if res.get("updates") in ("auto", "manual"):
-        return ("<div class='card'><p><span class='pill ok'>✓</span> "
-                + ("Agents will update automatically." if res["updates"] == "auto"
-                   else "Agents will stay on the versions you have now.") + "</p></div>")
+        return notice("Agents will update automatically." if res["updates"] == "auto"
+                      else "Agents will stay on the versions you have now.")
     if res.get("done"):
-        return "<div class='card'><p><span class='pill ok'>✓</span> Logged in.</p></div>"
+        return notice("Logged in.")
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
     open_btn = f'<a class="btn" href="{e(url)}" target="_blank" rel="noopener">Open the login page →</a>'
     if res.get("paste"):
