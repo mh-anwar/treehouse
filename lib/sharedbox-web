@@ -1514,7 +1514,7 @@ class Handler(BaseHTTPRequestHandler):
         if not host_ok(host):
             return self.send(421, "unknown host; use this machine's Tailscale name", "text/plain")
         origin = self.headers.get("Origin")
-        if origin is not None and urllib.parse.urlsplit(origin).netloc != host:
+        if origin is not None and origin != "null" and urllib.parse.urlsplit(origin).netloc != host:
             return self.send(403, "bad origin", "text/plain")
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -1822,7 +1822,9 @@ class GateHandler(Handler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")  # the URL may hold a one-time token
+        # same-origin: one-time tokens in URLs never leave the site, and browsers send a real Origin on our forms
+        # (with no-referrer they send "Origin: null", which the checks below would refuse)
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                          "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'")
@@ -1966,7 +1968,7 @@ class GateHandler(Handler):
             return self.send(413, "too large", "text/plain")
         form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(n).decode(errors="replace")).items()}
         origin = self.headers.get("Origin")
-        if origin is not None and origin != PUBLIC:
+        if origin is not None and origin not in (PUBLIC, "null"):  # "null": older pages; every form has a token
             return self.send(403, "bad origin", "text/plain")
         ua = (self.headers.get("User-Agent") or "")[:200]
         if kind == "invite":
