@@ -9,10 +9,11 @@ Group=sharedbox
 ExecStart=/usr/lib/sharedbox/sharedbox-gate
 Restart=on-failure
 RestartSec=5
-# hardening: listens on 127.0.0.1 only; reads the gate records, writes only provisioning requests
+# hardening: listens on 127.0.0.1 only; reads the gate records, writes only provisioning requests and
+# t3-seen/<user> timestamps (when each friend last used their T3 Code; "-" = fine if it doesn't exist yet)
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/sharedbox/spool
+ReadWritePaths=/var/lib/sharedbox/spool -/var/lib/sharedbox/t3-seen
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

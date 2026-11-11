@@ -557,24 +557,44 @@ def handle_join(cfg, rid, req):
     key, kerr = "", None
     if str(req.get("key", "")).strip():
         key, kerr = sb.validate_pubkey(str(req.get("key", "")))
-    if err or kerr:
-        return {"ok": False, "error": err or kerr}
+    # every account has an email: it's the login on the public site (Cloudflare Access) and where notices go
+    email, eerr = sb.validate_email(str(req.get("email", ""))[:300])
+    email = (email or "").lower()
+    if not eerr and not email:
+        eerr = "please give your email"
+    if not eerr and sb.email_taken(email):
+        eerr = "that email already has an account here"
+    if err or kerr or eerr:
+        return {"ok": False, "error": err or kerr or eerr}
     if mode == "approve":
         os.makedirs(sb.PENDING, mode=0o700, exist_ok=True)
         if any((sb.read_json(p, {}) or {}).get("ts_id") == who["id"]
                for p in glob.glob(os.path.join(sb.PENDING, "*.json"))):
             return {"ok": True, "pending": True}
         sb.write_json(os.path.join(sb.PENDING, f"{rid}.json"),
-                      {"username": name, "key": key, "login": who["login"],
+                      {"username": name, "key": key, "login": who["login"], "email": email,
                        "ts_id": who["id"], "node": who["node"], "ts": int(time.time())},
                       mode=0o600)
         sb.log_event("join_pending", name, login=who["login"])
         return {"ok": True, "pending": True}
-    rec, err = create_user(cfg, name, key, who["login"], who["id"], who["node"])
+    rec, err = create_joined(cfg, name, key, who["login"], who["id"], who["node"], email)
     if err:
         return {"ok": False, "error": err}
     lo, hi = sb.port_range(cfg, rec["uid"])
     return {"ok": True, "username": name, "ports": [lo, hi]}
+
+
+def create_joined(cfg, name, key, login, ts_id, node, email):
+    """A Tailscale self-signup (or an approved one): the account, with its email allowed through Cloudflare
+    Access when the box uses it, so the friend can also come in from the public site."""
+    if email and cf_mode(cfg):
+        err = cf_access(cfg, add=[email], quiet=True)
+        if err:
+            return None, f"couldn't allow {email} in Cloudflare Access: {err}"
+    rec, err = create_user(cfg, name, key, login, ts_id, node, email=email or None)
+    if err and email and cf_mode(cfg):
+        cf_access(cfg, remove=[email], quiet=True)
+    return rec, err
 
 
 # ---------- public front door: invites, sessions, device logins (records read by sharedbox-gate) ----------
@@ -1444,6 +1464,7 @@ def cmd_pending(cfg, a):
     for p in sorted(glob.glob(os.path.join(sb.PENDING, "*.json"))):
         r = sb.read_json(p, {})
         print(f"{os.path.basename(p)[:-5]}  {r['username']:<16} {sb.printable(r['login'])}  "
+              f"{sb.printable(r.get('email') or '-')}  "
               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))}")
 
 
@@ -1452,7 +1473,7 @@ def cmd_approve(cfg, a):
     r = sb.read_json(p)
     if not r:
         die("no such pending request")
-    rec, err = create_user(cfg, r["username"], r["key"], r["login"], r["ts_id"], r["node"])
+    rec, err = create_joined(cfg, r["username"], r["key"], r["login"], r["ts_id"], r["node"], r.get("email") or "")
     if err:
         die(err)
     os.unlink(p)

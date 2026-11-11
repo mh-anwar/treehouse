@@ -36,6 +36,7 @@ import sbqr  # noqa: E402
 CFG = sb.load_config()
 SECRET = secrets.token_bytes(32)
 HOST = socket.gethostname()
+BRAND = sb.brand(CFG)
 SELF_IP = None
 ALLOWED_HOSTS = set()  # Host header values we answer to (DNS rebinding guard), filled in main()
 PUBLIC = sb.public_url(CFG)  # "" = public front door off: everything below behaves as before
@@ -167,9 +168,9 @@ def spool_call(req, wait=30):
     return {"ok": False, "error": "the box is busy; try again in a minute"}
 
 
-def submit_join(ip, who, username, key):
+def submit_join(ip, who, username, key, email=""):
     return spool_call({"action": "join", "ip": ip, "ts_id": who["id"], "login": who["login"],
-                       "username": username, "key": key})
+                       "username": username, "key": key, "email": email})
 
 
 def portal_call(ip, who, action, **kw):
@@ -185,12 +186,15 @@ def portal_call(ip, who, action, **kw):
 # ---------- html ----------
 
 def page(title, body, gate=False):
-    nav = ('<a href="/_box/me" class="brand">▣ ' + html.escape(HOST) + '</a><nav><a href="/">T3 Code</a></nav>'
+    # "treehouse · sietchtabr": the product first, this machine second
+    mark = f'▣ {html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
+    nav = (f'<a href="/_box/me" class="brand">{mark}</a><nav><a href="/">T3 Code</a></nav>'
            if gate else
-           f'<a href="/" class="brand">▣ {html.escape(HOST)}</a>\n<nav><a href="/">dashboard</a><a href="/join">join</a></nav>')
+           f'<a href="/" class="brand">{mark}</a>\n<nav><a href="/">dashboard</a><a href="/join">join</a></nav>')
+    full = f"{title} · {BRAND} · {HOST}" if title and title != HOST else f"{BRAND} · {HOST}"
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(title)}</title><style>{CSS}</style></head>
+<title>{html.escape(full)}</title><style>{CSS}</style></head>
 <body><header>{nav}</header>
 <main>{body}</main></body></html>"""
 
@@ -205,7 +209,7 @@ CSS = """
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;
-border-bottom:1px solid var(--line)}.brand{font-weight:700;color:var(--fg);text-decoration:none}
+border-bottom:1px solid var(--line)}.brand{font-weight:700;color:var(--fg);text-decoration:none}.brand .host{font-weight:400;color:var(--mut)}
 nav a{color:var(--mut);margin-left:18px;text-decoration:none}nav a:hover{color:var(--fg)}
 main{max-width:1200px;margin:0 auto;padding:24px}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:22px}
@@ -323,7 +327,7 @@ tick();setInterval(tick,5000);
 
 
 def dashboard():
-    return page(f"{HOST} — shared box", f"""
+    return page("dashboard", f"""
 <div id="cards" class="cards"></div>
 <table><thead><tr><th>who</th><th>cpu</th><th>cpu · 3h</th><th>memory</th><th>procs</th>
 <th>disk</th><th>ports</th><th>servers</th></tr></thead><tbody id="rows"></tbody></table>
@@ -348,7 +352,7 @@ invite, then open this page using the machine's Tailscale name.</p></div>""")
     tok = token_for(ip, who["id"])
     note = ("Your request goes to the owner for approval." if CFG["JOIN_MODE"] == "approve"
             else "Your account is created right away.")
-    return page("join", f"""<div class="box"><h2>Join {e(HOST)}</h2>
+    return page("join", f"""<div class="box"><h2>Join {e(BRAND)} on {e(HOST)}</h2>
 <p>Hi <b>{e(who['display'])}</b> <span class="mut">({e(who['login'])}, device {e(who['node'])})</span>.
 {note}</p>
 {f'<p class="err">{e(err)}</p>' if err else ''}
@@ -356,6 +360,8 @@ invite, then open this page using the machine's Tailscale name.</p></div>""")
 <input type="hidden" name="token" value="{tok}">
 <label>Username (3–16 lowercase letters/digits)</label>
 <input name="username" value="{e(form.get('username', ''))}" pattern="[a-z][a-z0-9]{{2,15}}" required autocomplete="off">
+<label>Your email (to sign in from other devices, and for important notices about your account)</label>
+<input name="email" type="email" value="{e(form.get('email', ''))}" required autocomplete="email">
 <details{' open' if form.get('key') else ''}><summary class="mut" style="margin-top:14px;cursor:pointer">
 Optional: SSH access from a terminal</summary>
 <label>SSH public key. Skip this if you just want the web app.
@@ -368,7 +374,8 @@ Run <code>cat ~/.ssh/id_ed25519.pub</code> on your computer to get it.</label>
 {e(CFG.get('BURST_MEMORY_HIGH') or CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG.get('BURST_CPU_QUOTA') or CFG['CPU_QUOTA']))} cores
 while the box is quiet. {e(CFG['DISK_BUDGET_GB'])}G of disk.</li>
 <li>A block of {e(CFG['PORT_BLOCK'])} ports for your servers, which keep running after you log out.</li>
-<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted automatically. Use git. Nothing here is backed up.</li>
+<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are archived (restorable for {e(CFG['ARCHIVE_DAYS'])} days).
+Use git. Nothing here is backed up.</li>
 </ul></div>""")
 
 
@@ -603,6 +610,21 @@ def ago_text(ts):
     return "just now"
 
 
+def reboot_tile():
+    """("Next reboot", value html, subtitle) for the box tiles, or None when no reboot is planned."""
+    rb = sb.reboot_info(CFG)
+    if not rb["at"]:
+        return None
+    if rb["postponed"]:
+        return ("Reboot", "Waiting", f"for agents to finish their turn, by "
+                f"{time.strftime('%H:%M', time.localtime(rb['latest']))} at the latest")
+    when = time.strftime("%a %H:%M", time.localtime(rb["at"]))
+    if rb["why"] == "updates":
+        return ("Next reboot", html.escape(when), "for security updates")
+    sched = rb["schedule"] or "scheduled"
+    return ("Next reboot", html.escape(when), sched[:1].upper() + sched[1:] + ". Servers and T3 come back by themselves.")
+
+
 def friend_dashboard(name, rec, rng="24h", base=""):
     """Their CPU/memory against their limits, disk vs budget, box health, who's around. All server-side."""
     e = html.escape
@@ -643,6 +665,9 @@ def friend_dashboard(name, rec, rng="24h", base=""):
             t = float(last["temp"])
             tiles.append(("Temperature", f"{t:.0f}<small>°C</small>",
                           "running hot" if t >= 80 else "warm" if t >= 65 else "cool"))
+    rb = reboot_tile()
+    if rb:
+        tiles.append(rb)
     out.append('<div class="tiles">' + "".join(
         f'<div class="tile"><h3>{e(h)}</h3><div class="v">{v}</div>'
         f'{f"<div class=sub>{e(s)}</div>" if s else ""}</div>' for h, v, s in tiles) + "</div>")
@@ -683,6 +708,8 @@ def friend_dashboard(name, rec, rng="24h", base=""):
     disk = u.get("disk")
     pct = min(100, 100 * (disk or 0) / budget) if budget else 0
     pend = [str(p) for p in (u.get("pending_deletions") or [])]
+    arch = [str(a.get("name")) for a in (u.get("archives") or []) if isinstance(a, dict)
+            and float(a.get("until") or 0) > now][:10]
     color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
     lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None and not owner else None
     if owner and not u:
@@ -693,10 +720,14 @@ def friend_dashboard(name, rec, rng="24h", base=""):
                    f'{e(sb.human(disk)) if disk is not None else "–"}'
                    + (f'<small> of {e(sb.human(budget))}</small></div>'
                       f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>' if budget else "</div>")
-                   + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be deleted soon (untouched '
-                      f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Touch them or push to GitHub.</div>'
+                   + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be archived soon (untouched '
+                      f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Open them in T3 or push to GitHub '
+                      f'to keep them where they are.</div>'
                       if pend else f'<div class="sub" style="margin-top:6px">{int(u.get("projects") or 0)} project(s). '
-                      f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are cleaned up.</div>')
+                      f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are archived.</div>')
+                   + (f'<div class="sub" style="margin-top:6px">Archived, restorable for {e(CFG["ARCHIVE_DAYS"])} days: '
+                      f'{e(", ".join(arch))}. Ask your agent to restore one (<code>box restore NAME</code>).</div>'
+                      if arch else "")
                    + "</div>"
                    + (f'<div class="tile"><h3>Your ports</h3><div class="v" style="font-size:17px">{lo_hi[0]}–{lo_hi[1]}'
                       f'</div><div class="sub">for your servers</div></div>' if lo_hi else "")
@@ -987,7 +1018,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     out.append('<p style="margin-top:30px"><a href="/cdn-cgi/access/logout"><button style="background:var(--btn2);'
                'color:var(--fg)">Log out of this browser</button></a></p>')
-    return page("you", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
+    return page("Owner dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
 def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
@@ -1027,9 +1058,11 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
     t3_btn = ("<a href='/_box/app'><button type='button'>Open my T3 Code</button></a>" if CF and gate
               else btn("t3", "Open my T3 Code"))
+    sleeping = ("<span class='sub'>T3 sleeping (unused for a while): it opens on click, give it a minute.</span>"
+                if t3 and t3.get("sleeping") else "")
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
         if t3:
-            out.append("<p>" + t3_btn + "</p>")
+            out.append("<p>" + t3_btn + " " + sleeping + "</p>")
         out.append(dash)
         out.append("<h2 style='margin-top:34px'>Setup</h2>")
         dash = ""
@@ -1050,12 +1083,12 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             out.append("<p class='sub'>Pay for Claude by API key (Anthropic Console) instead? "
                        + btn("login", "Console login", "claude",
                              '<input type="hidden" name="console" value="1">', primary=False) + "</p>")
-    out.append(f"<h2>2. Open T3 Code {done(bool(t3 and t3.get('running')) and ai_ok)}</h2>")
+    out.append(f"<h2>2. Open T3 Code {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
     if not t3:
         out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
     else:
         out.append("<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
-                   "It keeps running when you close the tab.</p>" + t3_btn
+                   "It keeps running when you close the tab.</p>" + t3_btn + " " + sleeping
                    + (f"<p class='sub'>Bookmark <b>{e(PUBLIC)}</b>: it opens this page, and T3 is one click away.</p>"
                       if CF and gate else
                       f"<p class='sub'>Already opened it on this device? Just go to "
@@ -1112,7 +1145,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
 <button style="background:var(--btn2);color:var(--fg)">Add SSH key</button></form>
 <p class="sub">Then: <code>{e(ssh_cmd)}</code>, and <code>box</code> shows your usage, ports and limits.</p></details>""")
     out.append(f"""<h2>Good to know</h2><ul>
-<li>Projects untouched for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted. Ask your agent to put them on GitHub.</li>
+<li>Projects untouched for {e(CFG['PROJECT_TTL_DAYS'])} days are archived, and can be restored for
+{e(CFG['ARCHIVE_DAYS'])} days (ask your agent). Ask it to put them on GitHub to be safe.</li>
 <li>Bookmark this page. Come back here any time to log in again or get a new T3 link.</li>
 <li>Stuck? Ask your agent in T3 Code. It knows how this machine works.</li></ul>""")
     if st.get("ok") is False and st.get("error"):
@@ -1123,7 +1157,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     elif gate:
         out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
 <button style="background:var(--btn2);color:var(--fg)">Log out of this browser</button></form>""")
-    return page("you", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
+    return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
 
 
 def public_pair(res):
@@ -1217,7 +1251,7 @@ def host_ok(value):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "sharedbox"
+    server_version = BRAND
     timeout = 30  # slow clients must not pin handler threads forever
 
     def log_message(self, fmt, *args):
@@ -1296,9 +1330,12 @@ class Handler(BaseHTTPRequestHandler):
         key, kerr = "", None  # the SSH key is optional
         if form.get("key", "").strip():
             key, kerr = sb.validate_pubkey(form.get("key", ""))
-        if err or kerr:
-            return self.send(400, join_page(ip, who, err=err or kerr, form=form))
-        res = submit_join(ip, who, username, key)
+        email, eerr = sb.validate_email(form.get("email", "")[:300])
+        if not eerr and not email:
+            eerr = "please give your email: it's how you sign in from other devices and get important notices"
+        if err or kerr or eerr:
+            return self.send(400, join_page(ip, who, err=err or kerr or eerr, form=form))
+        res = submit_join(ip, who, username, key, email)
         if not res.get("ok"):
             return self.send(400, join_page(ip, who, err=res.get("error"), form=form))
         if res.get("pending"):
@@ -1431,7 +1468,7 @@ invite for this one.</p></div>""", gate=True)
     email_field = (f"<p class='mut'>Signed in as <b>{e(email)}</b>. That's your login from now on.</p>" if CF else
                    f"""<label>Email (optional; only used to warn you if something on your account looks unsafe)</label>
 <input name="email" type="email" value="{e(form.get('email', ''))}" autocomplete="email">""")
-    return page("join", f"""<div class="box"><h2>Join {e(HOST)}</h2>
+    return page("join", f"""<div class="box"><h2>Join {e(BRAND)} on {e(HOST)}</h2>
 <p>Your friend invited you. Pick a username and you're in. No app to install, this works on a phone too.</p>
 {f'<p class="err">{e(err)}</p>' if err else ''}
 <form method="post" action="/i/{e(tok)}"><input type="hidden" name="token" value="{ftok}">
@@ -1444,7 +1481,8 @@ invite for this one.</p></div>""", gate=True)
 <li>Your own T3 Code: a web app where you chat with Claude or Codex and it builds things for you. Use your own subscription.</li>
 <li>Fair-share limits: {e(CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG['CPU_QUOTA']))} cores, more while the box is quiet.
 {e(CFG['DISK_BUDGET_GB'])}G of disk.</li>
-<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are deleted automatically. Use git. Nothing here is backed up.</li>
+<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are archived (restorable for {e(CFG['ARCHIVE_DAYS'])} days).
+Use git. Nothing here is backed up.</li>
 </ul></div>""", gate=True)
 
 
@@ -1457,7 +1495,7 @@ def login_page(tok, err=None):
 Get a new one on your other device ("Add a device"), or ask your friend.</p></div>""", gate=True)
     ftok = token_for("gate", "login:" + sb.token_hash(tok))
     # a button, not an automatic login: link previews in chat apps must not use up the link
-    return page("log in", f"""<div class="box"><h2>Log in to {e(HOST)}</h2>
+    return page("log in", f"""<div class="box"><h2>Log in to {e(BRAND)} on {e(HOST)}</h2>
 <p>This logs this browser in as <b>{e(rec.get('user', '?'))}</b>.</p>
 {f'<p class="err">{e(err)}</p>' if err else ''}
 <form method="post" action="/login/{e(tok)}"><input type="hidden" name="token" value="{ftok}">
