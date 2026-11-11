@@ -1842,8 +1842,9 @@ class GateHandler(Handler):
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
-        if kind == "app":  # "Open my T3 Code": a same-site hop to "/", which the gate sends to T3 (pairing first if needed)
-            return self.redirect("/")
+        if kind == "app":  # "Open my T3 Code": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
+            # tells the gate this is the button, not a bookmark (browsers' Sec-Fetch-Site may not survive Cloudflare)
+            return self.redirect("/", [("Set-Cookie", "tb_open=1; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Lax")])
         who = self.who()
         if kind == "open" and (not who or who.get("owner")) and CF and self.cf_email() in sb.owner_emails(CFG):
             # the owner's own T3: root checks the Access token itself and mints the pairing token
