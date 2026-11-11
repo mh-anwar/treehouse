@@ -105,6 +105,9 @@ def backend_for(user):
         host = boxes()[rec["box"]] if rec.get("box") else backend_host()
     The other box's T3 already listens on its tailnet IP, so this gate stays the single public front door.
     """
+    if user == OWNER:
+        port = CFG.get("OWNER_T3_PORT", "").strip()
+        return (backend_host(), int(port)) if port.isdigit() else (None, None)
     rec = users().get(user)
     if not rec:
         return None, None
@@ -160,8 +163,22 @@ def welcome_pending(user):
     return bool((sb.registry().get("users", {}).get(user) or {}).get("welcome"))  # fresh, not the cache
 
 
+OWNER = "\0owner"  # never a valid username
+
+
+def owner_t3(email):
+    """CF_OWNER_EMAILS may reach the owner's own T3 Code (on this box, OWNER_T3_PORT) when that is set."""
+    return (CFG.get("OWNER_T3_PORT", "").strip().isdigit()
+            and str(email or "").strip().lower() in sb.owner_emails(CFG))
+
+
 def cf_user(email):
     return sb.user_by_email(email, users())[0]
+
+
+def cf_identity(email):
+    """The friend account for this email, else OWNER for the owner's own T3 (T3's pairing is the second lock)."""
+    return cf_user(email) or (OWNER if owner_t3(email) else None)
 
 
 def rate_limited(bucket, n, window=600):
@@ -417,7 +434,7 @@ async def handle_request(reader, writer, head, peer):
             await respond(writer, 403, page("Not allowed", "Open this box through its Cloudflare login page: "
                                             f"<a href='{PUBLIC}/'>{PUBLIC}/</a>."))
             return False
-        user = cf_user(claims["email"])
+        user = cf_identity(claims["email"])
         secret, sess = None, ((user, None, None) if user else None)
         other_cookies = "; ".join(p.strip() for v in values(headers, "cookie") for p in v.split(";")
                                   if p.strip() and p.strip().partition("=")[0] not in (COOKIE, "CF_Authorization"))
@@ -533,7 +550,7 @@ async def handle_request(reader, writer, head, peer):
                 exp, email, user = float(claims["exp"]), claims["email"], sess[0]
 
                 def still_ok():
-                    return time.time() < exp + 60 and cf_user(email) == user
+                    return time.time() < exp + 60 and cf_identity(email) == user
             else:
                 def still_ok():
                     return session_for(secret)
