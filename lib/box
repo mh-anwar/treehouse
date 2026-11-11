@@ -1419,10 +1419,153 @@ def portal_url():
     return f"http://{socket.gethostname()}:{CFG['WEB_PORT']}/me"
 
 
+# servers from the web page: the friend's own `box serve` units, and the group's `box shared` ones
+PORTAL_SERVER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")  # never starts with "-": no option injection
+PORTAL_SERVER_OPS = ("start", "stop", "restart")
+PORTAL_LOG_LINES = 100
+PORTAL_LOG_BYTES = 48 * 1024
+
+
+def portal_server_name(name):
+    """A NAME the web page may act on, or None. Same rules as unit(), minus non-ASCII and leading -/_."""
+    name = name or ""
+    return name if PORTAL_SERVER_RE.fullmatch(name) and name.isascii() else None
+
+
+def portal_unit_port(name):
+    try:
+        with open(os.path.join(UNIT_DIR, f"sb-{name}.service")) as f:
+            for l in f:
+                if l.startswith("Environment=PORT="):
+                    return l.strip().split("=", 2)[2]
+    except OSError:
+        pass
+    return ""
+
+
+def portal_own_server(name):
+    """NAME if it's one of this user's own `box serve` units (a unit file we wrote), else None. Never sb-t3."""
+    name = portal_server_name(name)
+    if not name or name == "t3" or not os.path.isfile(os.path.join(UNIT_DIR, f"sb-{name}.service")):
+        return None
+    return name
+
+
+def portal_cap_lines(lines):
+    """The last PORTAL_LOG_LINES lines, at most PORTAL_LOG_BYTES in total, as printable text."""
+    out, size = [], 0
+    for l in reversed([str(x) for x in lines][-PORTAL_LOG_LINES:]):
+        l = l[:2000]
+        size += len(l) + 1
+        if size > PORTAL_LOG_BYTES:
+            break
+        out.append(l)
+    return out[::-1]
+
+
+def portal_serve_ls():
+    seen, servers = set(), []
+    for s in list_services():
+        if s["name"] != "t3" and portal_server_name(s["name"]):
+            seen.add(s["name"])
+            servers.append({"name": s["name"], "state": s["state"], "port": portal_unit_port(s["name"])})
+    try:  # a stopped, unloaded unit still has its file
+        files = sorted(os.listdir(UNIT_DIR))
+    except OSError:
+        files = []
+    for fn in files:
+        n = fn[3:-8] if fn.startswith("sb-") and fn.endswith(".service") else ""
+        if n and n != "t3" and n not in seen and portal_server_name(n):
+            servers.append({"name": n, "state": "stopped", "port": portal_unit_port(n)})
+    return {"ok": True, "servers": sorted(servers, key=lambda s: s["name"])}
+
+
+def portal_serve_ctl(name, op):
+    name = portal_own_server(name)
+    if not name or op not in PORTAL_SERVER_OPS:
+        return {"ok": False, "error": "no such server"}
+    r = sctl(op, f"sb-{name}.service", capture=True)
+    if r.returncode != 0:
+        return {"ok": False, "error": f"{op} {name} failed: " + (r.stderr or r.stdout or "").strip()[-300:]}
+    state = next((s["state"] for s in list_services() if s["name"] == name), "stopped")
+    return {"ok": True, "name": name, "op": op, "state": state,
+            "message": f"{name}: {'stopped' if op == 'stop' else op + 'ed'}"}
+
+
+def portal_serve_logs(name):
+    name = portal_own_server(name)
+    if not name:
+        return {"ok": False, "error": "no such server"}
+    r = subprocess.run(["journalctl", "--user", "-u", f"sb-{name}.service", "-n", str(PORTAL_LOG_LINES),
+                        "--no-pager", "-o", "short-iso"], env=user_env(), capture_output=True,
+                       text=True, errors="replace", timeout=30)
+    return {"ok": True, "name": name, "lines": portal_cap_lines(r.stdout.splitlines())}
+
+
+def portal_shared(args, missing):
+    """Run `box shared ARGS --json` (a fresh process, as this user) and pass its JSON answer through.
+    `missing` is the answer when this box's `box` has no `shared` command yet."""
+    r = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "shared", *args, "--json"],
+                       capture_output=True, text=True, errors="replace", timeout=240)
+    for line in reversed(r.stdout.splitlines()):
+        try:
+            out = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(out, dict):
+            if isinstance(out.get("lines"), list):
+                out["lines"] = portal_cap_lines(out["lines"])
+            return out
+    if r.returncode == 2 and "invalid choice" in r.stderr:
+        return missing
+    return {"ok": False, "error": "group servers: " + ((r.stderr or "").strip()[-300:] or "no answer")}
+
+
+def portal_shared_ls():
+    out = portal_shared(["ls"], {"ok": True, "servers": [], "unavailable": True})
+    if out.get("ok") and not isinstance(out.get("servers"), list):
+        out["servers"] = []
+    return out
+
+
+def portal_shared_ctl(name, op):
+    name = portal_server_name(name)
+    if not name or op not in PORTAL_SERVER_OPS:
+        return {"ok": False, "error": "no such server"}
+    return dict(portal_shared([op, name], {"ok": False, "unavailable": True,
+                                           "error": "group servers aren't set up on this box yet"}),
+                name=name, op=op)
+
+
+def portal_shared_logs(name):
+    name = portal_server_name(name)
+    if not name:
+        return {"ok": False, "error": "no such server"}
+    return dict(portal_shared(["logs", name, "-n", str(PORTAL_LOG_LINES)],
+                              {"ok": False, "unavailable": True,
+                               "error": "group servers aren't set up on this box yet"}), name=name)
+
+
 def cmd_portal(a):
     try:
         if a.action == "status":
             out = portal_status()
+            try:  # the page shows them, so save it a round trip
+                out["servers"] = portal_serve_ls()["servers"]
+            except (OSError, subprocess.SubprocessError):
+                out["servers"] = None
+        elif a.action == "serve-ls":
+            out = portal_serve_ls()
+        elif a.action == "serve-ctl" and a.arg in PORTAL_SERVER_OPS:
+            out = portal_serve_ctl(a.key, a.arg)
+        elif a.action == "serve-logs":
+            out = portal_serve_logs(a.key)
+        elif a.action == "shared-ls":
+            out = portal_shared_ls()
+        elif a.action == "shared-ctl" and a.arg in PORTAL_SERVER_OPS:
+            out = portal_shared_ctl(a.key, a.arg)
+        elif a.action == "shared-logs":
+            out = portal_shared_logs(a.key)
         elif a.action in ("t3-start", "t3-pair"):
             out = portal_t3(a.action == "t3-pair")
         elif a.action == "login-start" and a.key in PORTAL_LOGINS:
