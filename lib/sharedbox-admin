@@ -768,11 +768,7 @@ def box_portal(pw, args, input_text=None):
 
 
 def owner_t3_user(cfg):
-    name = (cfg.get("OWNER_T3_USER") or "").strip() or next(iter(sb.admin_users(cfg)), "")
-    try:
-        return pwd.getpwnam(name)
-    except KeyError:
-        return None
+    return sb.owner_account(cfg)
 
 
 def handle_owner_pair(cfg, rid, req):
@@ -798,10 +794,21 @@ def handle_owner_pair(cfg, rid, req):
     return {"ok": True, "pair_url": m.group(1)}
 
 
+# what the owner's /_box/me page may do as the owner's own account: the dashboard's server controls only.
+# Their logins, SSH keys, agent updates and T3 Code are their own business, set up on the box itself.
+OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs")
+
+
 def handle_portal(cfg, rid, req):
+    owner = False
     if req.get("cf_jwt") is not None:  # cloudflare mode: identity = the Access token's email, verified here
         email = cf_email(cfg, req.get("cf_jwt")) if cf_mode(cfg) else None
         name, _ = sb.user_by_email(email) if email else (None, None)
+        if not name and email and email in sb.owner_emails(cfg) and not sb.email_taken(email):
+            pw = owner_t3_user(cfg)  # CF_OWNER_EMAILS act as the owner's own account (never a friend's)
+            if not pw:
+                return {"ok": False, "error": "OWNER_T3_USER doesn't exist"}
+            name, owner = pw.pw_name, True
         if not name:
             return {"ok": False, "relogin": True, "error": "your Cloudflare login couldn't be verified; reload"}
     elif req.get("session") is not None:  # public gateway: identity = a root-minted session token
@@ -817,7 +824,12 @@ def handle_portal(cfg, rid, req):
         name = next((n for n, r in sb.friend_users().items() if r.get("ts_id") == who["id"]), None)
         if not name:
             return {"ok": False, "error": "no account for this Tailscale login yet"}
-    rec = sb.friend_users()[name]
+    if owner:
+        if req.get("action") not in OWNER_PORTAL_ACTIONS:
+            return {"ok": False, "error": "not available for the owner's account"}
+        rec = {}
+    else:
+        rec = sb.friend_users()[name]
     if rec.get("status", "active") != "active":
         return {"ok": False, "error": "your account is suspended; ask the owner"}
     if rec.get("welcome"):  # made at invite time: the gate stops sending / to the portal now it's been seen
