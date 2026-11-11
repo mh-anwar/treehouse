@@ -246,7 +246,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn{margin-top:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -991,11 +991,11 @@ def features_page():
         return (f"<div class='frow'><div class='fl'>{label}</div><div><p class='fp'>{lead}</p>"
                 + (f"<p class='fm'>{more}</p>" if more else "") + "</div></div>")
     out = [
-        "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The desktop app on your laptop is the best way to "
-        "talk to your agents.</p><p><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download "
-        "T3 Code</a></p><p class='fm'>On Tailscale, add the box's address in the app. Otherwise click <b>Link my T3 "
-        "account</b> on <a href='/_box/me#t3app'>your dashboard</a>. On a phone, use <a href='/_box/app'>T3 in the "
-        "browser</a>.</p></div>",
+        "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The best way to talk to your agents.</p>"
+        "<ol class='steps'><li><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code"
+        "</a></li><li><a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my "
+        "T3 account</a></li><li>Sign in to the app with the same account.</li></ol>"
+        "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
             "Kept up to date, and they already know how the box works."
