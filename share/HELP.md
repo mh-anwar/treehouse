@@ -34,7 +34,8 @@ Never ask for passwords or tokens in chat.
 - Prefix heavy commands with `box heavy --` (e.g. `box heavy -- ./gradlew assembleDebug`). It queues behind other
   users' heavy jobs ({slots} at a time) and runs at low priority.
 - Parallelism **{jobs} jobs**: `make -j{jobs}`, `cargo build -j {jobs}`, Gradle `--max-workers={jobs}` (preset).
-- One heavy build at a time. Stop dev servers, watchers, emulators and Gradle daemons (`./gradlew --stop`) after.
+- One heavy build at a time. Afterwards stop only the build helpers you started for it (Gradle daemons with
+  `./gradlew --stop`, emulators); leave the user's dev servers and databases running unless they ask.
 - If the box is `busy` in `box status`, avoid heavy work unless the user insists.
 - Docker works, rootless, under your own account (`box help docker`). Other tools install into your home (`~/.local`, nvm, uv, rustup, …).
 
@@ -136,7 +137,14 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
   `systemctl --user enable --now docker`. Check with `docker info` (it should say `rootless`).
 - Every shell/agent session: `export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock` (put it in `~/.bashrc`).
 - Published ports must be in your range ({ports}); bind them on `0.0.0.0` like any server. Ports under 1024 don't work.
-- Images live in `~/.local/share/docker` and count toward your disk budget: `docker system prune` when done.
+- Images live in `~/.local/share/docker` and count toward your disk budget. Prune (`docker image prune`) only when
+  the user asks or you're over budget. Never `docker system prune` (it deletes stopped databases' containers) and never
+  anything with `--volumes` (it deletes their data).
+- Idle databases (Postgres, Supabase, MySQL, Redis, Mongo, ...) are {docker_nap}: no connection to their ports, no
+  queries, and no agent of yours working. Data volumes are kept. Start one again when the work needs it: `supabase
+  start` (in the project), `docker compose up -d`, or `docker start NAME`. Never stop one yourself because a task
+  seems done; the user decides that, or this timer does. One that must stay up (a bot's database): add the label
+  `treehouse.keep=true`, or its stack name on a line of `~/.sharedbox/docker-keep`, only if the user wants that.
 - Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
 - `docker compose` works the same way.
 

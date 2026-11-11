@@ -3,7 +3,8 @@
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
   sharedbox-janitor t3-naps [--dry-run]              stop friends' T3 Code servers nobody is using (every few
-                                                     minutes; the T3 port stays open and wakes T3 on use)
+                                                     minutes; the T3 port stays open and wakes T3 on use), and
+                                                     everyone's idle Docker databases (DOCKER_NAP_MINUTES)
   sharedbox-janitor guard                            make friend processes first in line for the OOM killer
   sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
@@ -316,6 +317,30 @@ def cmd_t3_naps(cfg, a):
         state.pop(gone)
     if not a.dry_run:
         sb.write_json(NAP_STATE, state, mode=0o600)
+    docker_naps(cfg, users, a.dry_run)
+
+
+def docker_naps(cfg, users, dry_run):
+    """Stop idle Docker databases: every friend's and the owner's own (nobody gets to keep an idle database
+    running). The account's own `box _docker-nap` decides and stops only its own containers; see its comment."""
+    if sb.cfg_int(cfg, "DOCKER_NAP_MINUTES") <= 0 or dry_run:
+        return
+    names = set(users)
+    owner = sb.owner_account(cfg)
+    if owner:
+        names.add(owner.pw_name)
+    for name in sorted(names):
+        try:
+            pw = pwd.getpwnam(name)
+            if not os.path.exists(f"/run/user/{pw.pw_uid}/docker.sock"):
+                continue  # no Docker daemon running: nothing to check (and no process to start)
+            rep = user_pass(pw, {}, "_docker-nap",
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("stopped"), list))
+            if rep["stopped"]:
+                print(f"{name}: stopped idle Docker databases: {', '.join(map(str, rep['stopped']))[:300]}")
+                sb.log_event("docker_nap", user=name, stacks=[str(x)[:60] for x in rep["stopped"]][:20])
+        except Exception as e:  # one account's trouble must not stop the others
+            print(f"{name}: docker nap error: {str(e)[-500:]!r}", file=sys.stderr)
 
 
 # ---------- archive warnings ----------

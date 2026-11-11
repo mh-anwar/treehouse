@@ -32,7 +32,11 @@ to GitHub. `box help files` for the rest.
 
 ## Running things
 - Run `box status` before heavy work: usage, box load, projects about to be archived, reboots (it also shows when a session starts).
-- Docker works without sudo (rootless, your own daemon): `box help docker` before using it.
+- Docker works without sudo (rootless, your own daemon): `box help docker` before using it. Idle Docker databases are
+  {docker_nap} (data kept); if one you need is down, start it again (`supabase start`, `docker compose up -d`).
+- **Never turn things off on your own** (databases, servers, containers, T3, watchers) because a task looks finished
+  or to save resources: the user may reply any minute and expect it all still there. The box stops idle things
+  itself. Stop something only when the user asks, or it's broken or in the way of the current task.
 - Heavy builds/tests: `box heavy -- <cmd>`, one at a time, {jobs} parallel jobs max (`box help heavy`).
 - Never block the chat on a test or build longer than a minute: start it in the background (your agent's
   background-task feature), tell the user in a line what's running, keep working or answering, report when it ends.

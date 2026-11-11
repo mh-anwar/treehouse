@@ -111,6 +111,9 @@ DEFAULTS = {
     # instead (T3's relay only runs while T3 does, so a napping T3 is unreachable that way until a visit wakes it)
     "T3_NAP_MINUTES": "60",
     "T3_IDLE_DAYS": "3",
+    # a Docker database stack (Postgres, Supabase, Redis, ...) is stopped after this many minutes with no connection
+    # and no queries; everyone's, the owner's too. Volumes are kept: `supabase start` / `docker compose up -d`
+    "DOCKER_NAP_MINUTES": "60",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
     "DISK_CRITICAL_FREE_PCT": "10",
