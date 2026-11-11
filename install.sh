@@ -110,6 +110,11 @@ do_ rm -rf "$SHARE/skills"
 do_ cp -r "$SRC/share/skills" "$SHARE/skills"   # the shared skill catalog (`box skills`)
 do_ chmod -R u=rwX,go=rX "$SHARE/skills"
 do_ install -m 644 "$SRC/share/profile.sh" /etc/profile.d/sharedbox.sh
+# network tuning (see the file): additive, applied live, nothing restarted
+do_ install -m 644 "$SRC/etc/sysctl-net.conf" /etc/sysctl.d/60-sharedbox-net.conf
+do_ sh -c "printf 'tcp_bbr\n' > /etc/modules-load.d/sharedbox-bbr.conf"
+do_ sh -c "modprobe tcp_bbr 2>/dev/null; sysctl -q -p /etc/sysctl.d/60-sharedbox-net.conf" \
+    || warn "some network settings didn't apply (see /etc/sysctl.d/60-sharedbox-net.conf); the rest did"
 if [[ ! -e $ETC/sharedbox.conf ]]; then
     do_ install -m 644 "$SRC/etc/sharedbox.conf" "$ETC/sharedbox.conf"
     if [[ -n $ADMINS ]]; then do_ sed -i "s/^ADMIN_USERS=.*/ADMIN_USERS=$ADMINS/" "$ETC/sharedbox.conf"; fi
