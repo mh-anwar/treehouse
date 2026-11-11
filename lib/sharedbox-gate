@@ -331,6 +331,7 @@ def owner_t3(email):
             and str(email or "").strip().lower() in sb.owner_emails(CFG))
 
 
+DIRECT_COOKIE = "tb_direct"  # the person chose "open T3 directly": their bookmark skips the dashboard
 OPEN_COOKIE = "tb_open"  # set for a minute by /_box/app ("Open T3 in browser"): this load of / goes to T3
 
 
@@ -668,7 +669,8 @@ async def handle_request(reader, writer, head, peer):
         await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
         return False
     elif (CF and sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/"
-          and not has_cookie(headers, OPEN_COOKIE) and opened_from_outside(headers)):
+          and not has_cookie(headers, OPEN_COOKIE) and not has_cookie(headers, DIRECT_COOKIE)
+          and opened_from_outside(headers)):
         # treehouse is a dashboard first: a bookmark, typed URL or outside link lands there; "Open T3 Code" on it
         # (a same-site navigation) and everything inside T3 go to T3
         await respond(writer, 303, "", headers=[("Location", "/_box/me")])
