@@ -427,12 +427,12 @@ def bind_addresses(cfg):
     out = []
     for item in [x.strip() for x in cfg["TRAP_BIND"].split(",") if x.strip()]:
         if item == "lan":
-            for line in open("/proc/net/route").read().splitlines()[1:]:
-                f = line.split()
-                if f[1] == "00000000" and f[0] != "tailscale0":
-                    r = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", f[0]], capture_output=True, text=True)
-                    out += re.findall(r"inet (\S+)/", r.stdout)
-                    break
+            # `ip route`, not /proc/net/route: the unit's ProcSubset=pid hides /proc/net
+            r = subprocess.run(["ip", "-o", "-4", "route", "show", "default"], capture_output=True, text=True)
+            devs = [d for d in re.findall(r"\bdev (\S+)", r.stdout) if d != "tailscale0"]
+            if devs:
+                r = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", devs[0]], capture_output=True, text=True)
+                out += re.findall(r"inet (\S+)/", r.stdout)
         elif item == "tailscale":
             r = subprocess.run(["ip", "-o", "addr", "show", "dev", "tailscale0"], capture_output=True, text=True)
             out += [a for a in re.findall(r"inet6? (\S+)/", r.stdout) if not a.startswith("fe80")]
