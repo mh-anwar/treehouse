@@ -1259,6 +1259,18 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         else:
             out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
                        "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
+    if "t3connect" in logins:
+        linked = logins["t3connect"]["ok"]
+        out.append(f"<h2>Use the T3 app on your laptop {done(linked)}</h2>")
+        if linked:
+            out.append(f"<p>Linked. Install T3 Code from <a href='https://t3.codes' target='_blank' rel='noopener'>"
+                       f"t3.codes</a> on your laptop and sign in with the same T3 account: <b>{e(HOST)}</b> shows up "
+                       "in the app, from anywhere. No Tailscale needed.</p>")
+        else:
+            out.append("<p>The app on your laptop is the best way to use the box. Link it once with your T3 account "
+                       "(you'll get a code to approve), then sign in to the T3 Code app with the same account. "
+                       "Linking restarts your T3 Code here, so do it when no agent is mid-task.</p>"
+                       + btn("login", "Link my T3 account", "t3connect"))
     if dash:
         out.append(dash)
     if st.get("updates") in ("auto", "manual"):
@@ -1536,7 +1548,7 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.send(200, portal_page(ip, who, name, rec, dict(res, _view=action, key=key)))
         actions = ("t3", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
-        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh")
+        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
             return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
         if action == "add-key":
