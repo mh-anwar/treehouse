@@ -1031,7 +1031,7 @@ def features_page(owner=False):
             "Environment-aware: they know about group servers, restarts, limits and where files go."
             + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
         row("Skills", "Shared agent skills you can pull, like council and full-send."),
-        row("Failure reporting", "Agents report what slowed them down.", "The owner sees it and fixes the box."),
+        row("Failure reporting", "Agents report what slowed them down.", "An agent picks these up weekly and fixes the box."),
         "</div><h3 class='fg'>Servers</h3><div class='flist'>",
         row("Your servers", "Servers that run 24/7.", "Self-healing, with controls + a private link."),
         row("Group servers", "One shared copy of a bot for the whole group."),
