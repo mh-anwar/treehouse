@@ -516,7 +516,8 @@ class HelpTopic(unittest.TestCase):
         self.assertIn("connect", topics)
         fields = {k: "X" for k in ("portal", "user", "host", "connect", "project_ttl", "warn", "cache_ttl",
                                    "artifact_ttl", "tmp_ttl", "slots", "jobs", "updates", "reboot_time",
-                                   "reboot_days", "ports", "shared_dir", "shared_ports")}
+                                   "reboot_days", "ports", "shared_dir", "shared_ports",
+                                   "serve_public", "shared_public")}
         for name, body in topics.items():
             body.format(**fields)  # no stray braces
 
