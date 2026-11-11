@@ -524,6 +524,8 @@ def process_spool(cfg):
                     answer(rid, handle_join, req)
                 elif req.get("action") in GATE_ACTIONS:
                     answer(rid, handle_gate, req)  # quick, and must not race (single-use tokens)
+                elif req.get("action") == "owner-pair":
+                    running.add(pool.submit(answer, rid, handle_owner_pair, req))
                 else:
                     running.add(pool.submit(answer, rid, handle_portal, req))
             time.sleep(0.2)
@@ -763,6 +765,37 @@ def box_portal(pw, args, input_text=None):
         if isinstance(out, dict):
             return out
     return {"ok": False, "error": "internal error; ask the owner"}
+
+
+def owner_t3_user(cfg):
+    name = (cfg.get("OWNER_T3_USER") or "").strip() or next(iter(sb.admin_users(cfg)), "")
+    try:
+        return pwd.getpwnam(name)
+    except KeyError:
+        return None
+
+
+def handle_owner_pair(cfg, rid, req):
+    """The owner opened the public site in a new browser: mint a one-time pairing token for their own T3 Code
+    (OWNER_T3_PORT), so they go straight in instead of seeing T3's "paste a pairing token" screen."""
+    email = cf_email(cfg, req.get("cf_jwt")) if cf_mode(cfg) else None
+    if not email or email not in sb.owner_emails(cfg) or not cfg.get("OWNER_T3_PORT", "").strip().isdigit():
+        return {"ok": False, "error": "not the owner"}
+    pw = owner_t3_user(cfg)
+    if not pw:
+        return {"ok": False, "error": "OWNER_T3_USER doesn't exist"}
+    # the owner's own T3 runtime (newest), else the system one
+    bins = sorted(glob.glob(os.path.join(pw.pw_dir, ".t3/runtime/versions/*/t3")), key=os.path.getmtime)
+    t3 = bins[-1] if bins else "/usr/local/bin/t3"
+    try:
+        r = as_user(pw, [t3, "pair", "--ttl", "10m", "--label", "owner (treehouse)"], timeout=60)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "pairing took too long"}
+    m = re.search(r"Pairing URL:\s*(\S+)", r.stdout or "")
+    if not m:
+        return {"ok": False, "error": "pairing failed: " + (r.stderr or r.stdout or "")[-200:]}
+    sb.log_event("owner_paired", pw.pw_name)
+    return {"ok": True, "pair_url": m.group(1)}
 
 
 def handle_portal(cfg, rid, req):

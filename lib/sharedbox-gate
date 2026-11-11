@@ -456,7 +456,7 @@ async def handle_request(reader, writer, head, peer):
     elif sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and welcome_pending(sess[0]):
         await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
         return False
-    elif (CF and sess and sess[0] != OWNER and method == "GET" and not upgrade
+    elif (CF and sess and method == "GET" and not upgrade
           and target.split("?", 1)[0] == "/" and not has_t3_session(headers)):
         # this browser isn't paired with their T3 yet: pair it for them (sharedbox-web /_box/open)
         await respond(writer, 303, "", headers=[("Location", "/_box/open")])

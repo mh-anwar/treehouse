@@ -1317,6 +1317,14 @@ class GateHandler(Handler):
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
         who = self.who()
+        if kind == "open" and not who and CF and self.cf_email() in sb.owner_emails(CFG):
+            # the owner's own T3: root checks the Access token itself and mints the pairing token
+            if self.limited("open:owner", 10):
+                return self.send(429, landing(self.cf_email()))
+            res = spool_call({"action": "owner-pair", "cf_jwt": self.headers.get("X-Sharedbox-Cf-Jwt") or ""}, wait=60)
+            if res.get("ok") and res.get("pair_url"):
+                return self.redirect(public_pair(res)["pair_url"])
+            return self.send(502, page("Couldn't open your T3", f"<p>{html.escape(res.get('error') or 'try again')}</p>"))
         if kind == "open" and who:
             # the gate sends a browser here when it has no T3 session yet: pair it and go straight in,
             # instead of leaving them on T3's "paste a pairing token" screen
