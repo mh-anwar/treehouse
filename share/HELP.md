@@ -45,7 +45,7 @@ Never ask for passwords or tokens in chat.
 - Manage: `box serve ls`, `box serve logs <name>`, `box serve restart|stop|start|rm <name>`.
 - The user also sees and controls these on their page {portal}.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
-- Others on the tailnet reach it at `http://{host}:<port>`.
+- Others on the tailnet reach it at `http://{host}:<port>`.{serve_public}
 
 @@ shared
 Group servers belong to everyone: one shared copy of a bot/tool instead of each friend running their own.
@@ -65,7 +65,7 @@ Group servers belong to everyone: one shared copy of a bot/tool instead of each 
   `sg sbshared -c '<command>'`, or it fixes itself after the next login/reboot.
 - After copying files in: `chmod -R g+w {shared_dir}/NAME`. Git "dubious ownership":
   `git config --global --add safe.directory {shared_dir}/NAME`.
-- Never cleaned by the janitor; doesn't count toward your disk budget.
+- Never cleaned by the janitor; doesn't count toward your disk budget.{shared_public}
 
 @@ browsers
 Headless browsers work without root (system libraries are installed). Never ask for sudo/admin for one.

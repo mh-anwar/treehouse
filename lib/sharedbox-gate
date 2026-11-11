@@ -7,6 +7,9 @@ Tailscale Funnel terminates TLS for https://<box>.<tailnet>.ts.net and forwards 
   /i/<token>        invite signup        \\
   /login/<token>    one-time device login  > sharedbox-web (private unix socket), which renders the pages
   /_box/...         the friend's portal   /  and asks root to verify tokens / mint sessions
+  /s/NAME/...       a group server (box shared), for any signed-in friend or the owner      \\  reverse proxy with
+  /p/PORT/...       one of the signed-in friend's own `box serve` ports (their range), or a  > the prefix stripped
+                    group server's port                                                    /  (X-Forwarded-Prefix)
   anything else     logged in: reverse proxy (HTTP + WebSocket) to that friend's own T3 Code
                     logged out: a landing page ("ask your friend for an invite link")
 
@@ -32,6 +35,7 @@ from collections import deque
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbshared  # noqa: E402  (read side only: the registry root writes, 0644)
 
 CFG = sb.load_config()
 PUBLIC = sb.public_url(CFG)
@@ -75,6 +79,7 @@ _sessions = {}     # sha256 -> (checked_at, (user, record, hash) | None)
 _refreshing = {}   # sha256 -> monotonic time of the last refresh request
 _rate = {}         # bucket -> deque[timestamps]
 _cf_tokens = {}    # sha256(jwt) -> (checked_at, claims | None)
+_shared = (0.0, {})
 
 
 def users():
@@ -113,6 +118,132 @@ def backend_for(user):
         return None, None
     lo, _ = sb.port_range(CFG, rec["uid"])
     return backend_host(), lo
+
+
+# ---------- public links to friends' servers: /s/NAME/ (group) and /p/PORT/ (own) ----------
+
+APP_PATH = re.compile(r"/([sp])/([^/?]*)(/[^?]*)?(\?.*)?", re.S)
+SHARED_NAME = re.compile(r"[a-z][a-z0-9-]{1,30}")
+APP_PORT = re.compile(r"[1-9][0-9]{0,4}")
+# cookies an app behind /s/ or /p/ never sees or sets: ours, Cloudflare's, and the visitor's T3 Code session
+APP_COOKIE_DENY = re.compile(r"(?i)(t3|cf_|__cf|__host-sbgate$)")
+# headers an app could use to reach outside its own prefix on this shared origin
+APP_RESP_DENY = {"service-worker-allowed", "clear-site-data"}
+
+
+def shared_servers():
+    """Group servers: name -> port (int), from the registry root writes. Cached briefly."""
+    global _shared
+    if time.monotonic() - _shared[0] > SESSION_CACHE_SECS:
+        reg = sbshared.registry()
+        _shared = (time.monotonic(), {n: r["port"] for n, r in reg.items()
+                                      if isinstance(r.get("port"), int) and not isinstance(r["port"], bool)
+                                      and 0 < r["port"] < 65536})
+    return _shared[1]
+
+
+def app_route(target):
+    """("s"|"p", key, prefix, rest) for /s/NAME/... or /p/PORT/... (rest = path+query to forward, or None
+    when the trailing slash is missing), ("bad", ...) for a malformed key under /s/ or /p/, else None."""
+    m = APP_PATH.fullmatch(target)
+    if not m:
+        return None
+    kind, key, rest, query = m.groups()
+    if not (SHARED_NAME if kind == "s" else APP_PORT).fullmatch(key):
+        return ("bad", key, None, None)
+    prefix = f"/{kind}/{key}"
+    return (kind, key, prefix, None if rest is None else rest + (query or ""))
+
+
+def app_port(kind, key, user, owner):
+    """(port, None) if this identity may open /s/NAME or /p/PORT, else (None, (code, title, text)).
+    Group servers: any active friend or the owner. A port: the friend's own range except its first port
+    (their T3 Code, which has its own front door at /), or any group server's port."""
+    e = key  # keys are [a-z0-9-] only (checked by app_route): safe in HTML as is
+    group = shared_servers()
+    if kind == "s":
+        if key not in group:
+            return None, (404, "No such server", f"There's no group server called <b>{e}</b>. "
+                          "See <a href='/_box/me'>your page</a> for the list.")
+        if not (user or owner):
+            return None, (403, "Not allowed", "Group servers are for members of this box. "
+                          "Ask your friend for an invite link.")
+        return group[key], None
+    port = int(key)
+    if port in group.values() and (user or owner):
+        return port, None
+    if user and user != OWNER:
+        rec = users().get(user)
+        if rec:
+            lo, hi = sb.port_range(CFG, rec["uid"])
+            if lo < port <= hi:
+                return port, None
+            if port == lo:
+                return None, (403, "Not here", "That's your T3 Code's port: open it at <a href='/'>the start page</a>.")
+    return None, (403, "Not yours", f"Port {e} isn't one of your servers, so you can't open it here. "
+                  "Your own servers and the group's are listed on <a href='/_box/me'>your page</a>.")
+
+
+def app_cookies(headers):
+    """The visitor's cookies an app may see: none of ours, Cloudflare's or T3 Code's."""
+    return "; ".join(p.strip() for v in values(headers, "cookie") for p in v.split(";")
+                     if p.strip() and not APP_COOKIE_DENY.match(p.strip().partition("=")[0].strip()))
+
+
+def app_location(v, prefix, port):
+    """Keep an app's redirects inside its prefix: "/x" -> "/s/NAME/x"; absolute URLs to this site or to the
+    app's own backend address become prefixed public URLs. Anything else (another site) is left alone."""
+    v = v.strip()
+    try:
+        u = urllib.parse.urlsplit(v)
+    except ValueError:
+        return v
+    if u.scheme or u.netloc:
+        hosts = {PUBLIC_HOST, PUBLIC_HOST + ":443", f"{backend_host()}:{port}", f"127.0.0.1:{port}",
+                 f"localhost:{port}"}
+        if u.scheme not in ("http", "https", "") or u.netloc.lower() not in hosts:
+            return v
+        path = u.path or "/"
+        if not (path == prefix or path.startswith(prefix + "/")):
+            path = prefix + path
+        return PUBLIC + urllib.parse.urlunsplit(("", "", path, u.query, u.fragment))
+    if v.startswith("/") and not v.startswith("//") and not (v == prefix or v.startswith((prefix + "/", prefix + "?"))):
+        return prefix + v
+    return v
+
+
+def app_set_cookie(v, prefix):
+    """An app's Set-Cookie, confined to its prefix (Path forced under it, no Domain), or None to drop it."""
+    parts = [p.strip() for p in v.split(";")]
+    name = parts[0].partition("=")[0].strip()
+    if not name or APP_COOKIE_DENY.match(name) or name.lower().startswith(("__host-", "__secure-")):
+        return None  # __Host- demands Path=/; never let an app shadow a site-wide cookie
+    path, attrs = "/", []
+    for p in parts[1:]:
+        k, _, val = p.partition("=")
+        if k.strip().lower() == "path":
+            path = val.strip() if val.strip().startswith("/") else "/"
+        elif k.strip().lower() != "domain" and p:
+            attrs.append(p)
+    if not (path == prefix or path.startswith(prefix + "/")):
+        path = prefix + path
+    return "; ".join([parts[0], f"Path={path}"] + attrs)
+
+
+def app_resp_headers(rheaders, prefix, port):
+    out = []
+    for n, v in rheaders:
+        ln = n.lower()
+        if ln in APP_RESP_DENY:
+            continue
+        if ln in ("location", "content-location"):
+            v = app_location(v, prefix, port)
+        elif ln == "set-cookie":
+            v = app_set_cookie(v, prefix)
+            if v is None:
+                continue
+        out.append((n, v))
+    return out
 
 
 def session_for(secret):
@@ -348,7 +479,7 @@ async def copy_to_eof(reader, writer):
 
 # ---------- responses made by the gate itself ----------
 
-REASONS = {200: "OK", 303: "See Other", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+REASONS = {200: "OK", 303: "See Other", 308: "Permanent Redirect", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
            421: "Misdirected Request",
            429: "Too Many Requests", 431: "Request Header Fields Too Large", 501: "Not Implemented",
            502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout"}
@@ -456,12 +587,33 @@ async def handle_request(reader, writer, head, peer):
         secret, other_cookies = split_cookies(headers)
         sess = session_for(secret)
     kind = reserved(target.split("?", 1)[0])
+    app = None if kind else app_route(target)
+    fwd_target, prefix, app_kind = target, None, None
 
     if kind == "token" and (rate_limited("tok:" + client_ip, 30) or rate_limited("tok:*", 600)):
         await respond(writer, 429, page("Slow down", "Too many tries. Wait a few minutes and try again."))
         return False
     if kind:
         dest = ("unix", WEB_SOCK)
+    elif app:
+        app_kind, key, prefix, rest = app
+        if app_kind == "bad":
+            await respond(writer, 404, page("No such server", "That link doesn't point at a server. "
+                                            "See <a href='/_box/me'>your page</a> for your servers' links."))
+            return False
+        owner = (sess and sess[0] == OWNER) or bool(CF and claims["email"] in sb.owner_emails(CFG))
+        user = sess[0] if sess else None
+        port, err = app_port(app_kind, key, user, owner)
+        if err:
+            await respond(writer, err[0], page(err[1], err[2]))
+            return False
+        if rest is None:  # /s/NAME -> /s/NAME/ so the app's relative links resolve under the prefix
+            q = target.partition("?")
+            await respond(writer, 308, "", headers=[("Location", prefix + "/" + q[1] + q[2])])
+            return False
+        host = backend_host()
+        dest = ("tcp", host or "127.0.0.1", port)
+        fwd_target = rest
     elif sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and welcome_pending(sess[0]):
         await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
         return False
@@ -502,6 +654,10 @@ async def handle_request(reader, writer, head, peer):
             out += [("X-Sharedbox-Cf-Email", claims["email"]), ("X-Sharedbox-Cf-Jwt", cf_jwt)]
         elif sess:
             out.append(("X-Sharedbox-Session", secret))
+    elif prefix:
+        if app_cookies(headers):
+            out.append(("Cookie", app_cookies(headers)))  # not ours, not Cloudflare's, not T3 Code's
+        out.append(("X-Forwarded-Prefix", prefix))
     elif other_cookies:
         out.append(("Cookie", other_cookies))  # T3's own cookies; never ours
     out += [("X-Forwarded-For", client_ip), ("X-Forwarded-Proto", "https"), ("X-Forwarded-Host", PUBLIC_HOST)]
@@ -518,16 +674,32 @@ async def handle_request(reader, writer, head, peer):
         if to_web:
             br, bw = await asyncio.wait_for(asyncio.open_unix_connection(dest[1], limit=MAX_HEAD), CONNECT_TIMEOUT)
         else:
-            br, bw = await asyncio.wait_for(asyncio.open_connection(dest[1], dest[2], limit=MAX_HEAD),
-                                            CONNECT_TIMEOUT)
+            try:
+                br, bw = await asyncio.wait_for(asyncio.open_connection(dest[1], dest[2], limit=MAX_HEAD),
+                                                CONNECT_TIMEOUT)
+            except ConnectionRefusedError:
+                if not prefix or dest[1] == "127.0.0.1":
+                    raise
+                # a server that listens on loopback only
+                br, bw = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", dest[2], limit=MAX_HEAD),
+                                                CONNECT_TIMEOUT)
     except (OSError, asyncio.TimeoutError):
-        msg = ("The box is busy. Try again in a minute." if to_web else
-               "Your T3 Code isn't running right now. Open <a href='/_box/me'>your page</a> and click "
-               "<b>Open my T3 Code</b> to start it.")
+        if to_web:
+            msg = "The box is busy. Try again in a minute."
+        elif app_kind == "s":
+            msg = (f"The group server <b>{prefix[3:]}</b> isn't running (or isn't listening on its port, "
+                   f"{dest[2]}). Start or restart it under <b>Group servers</b> on <a href='/_box/me'>your page</a>, "
+                   "or with <code>box shared start NAME</code>.")
+        elif app_kind == "p":
+            msg = (f"Nothing is listening on port {dest[2]}. Start the server under <b>Your servers</b> on "
+                   "<a href='/_box/me'>your page</a>, or with <code>box serve start NAME</code>.")
+        else:
+            msg = ("Your T3 Code isn't running right now. Open <a href='/_box/me'>your page</a> and click "
+                   "<b>Open my T3 Code</b> to start it.")
         await respond(writer, 502, page("Not running", msg))
         return False
     try:
-        bw.write((f"{method} {target} HTTP/1.1\r\n" + "".join(f"{n}: {v}\r\n" for n, v in out) + "\r\n")
+        bw.write((f"{method} {fwd_target} HTTP/1.1\r\n" + "".join(f"{n}: {v}\r\n" for n, v in out) + "\r\n")
                  .encode("latin-1"))
         if "100-continue" in tokens(headers, "expect") and framing != "none":
             writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")  # we answer it; the backend gets the body directly
@@ -559,6 +731,8 @@ async def handle_request(reader, writer, head, peer):
                 continue  # informational: drop
             break
         rheaders = parse_headers(rlines[1:])
+        if prefix:
+            rheaders = app_resp_headers(rheaders, prefix, dest[2])
 
         if code == 101:
             if not (upgrade and not to_web):
@@ -572,13 +746,15 @@ async def handle_request(reader, writer, head, peer):
             writer.write(("\r\n".join(resp) + "\r\n\r\n").encode("latin-1"))
             await writer.drain()
             if CF:
-                exp, email, user = float(claims["exp"]), claims["email"], sess[0]
+                exp, email, user = float(claims["exp"]), claims["email"], sess[0] if sess else None
 
                 def still_ok():
-                    return time.time() < exp + 60 and cf_identity(email) == user
+                    return (time.time() < exp + 60 and cf_identity(email) == user
+                            and (not prefix or app_port(app_kind, key, user, owner)[0] == dest[2]))
             else:
                 def still_ok():
-                    return session_for(secret)
+                    s = session_for(secret)
+                    return s and (not prefix or app_port(app_kind, key, s[0], False)[0] == dest[2])
             await tunnel(reader, writer, br, bw, still_ok)
             return False
 
