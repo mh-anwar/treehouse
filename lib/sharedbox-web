@@ -186,11 +186,12 @@ def portal_call(ip, who, action, **kw):
 
 # ---------- html ----------
 
-def page(title, body, gate=False):
+def page(title, body, gate=False, member=True):
     # "treehouse · sietchtabr": the product first, this machine second
     mark = f'▣ {html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
-    nav = (f'<a href="/_box/me" class="brand">{mark}</a><nav><a href="/_box/me">Dashboard</a>'
-           '<a href="/_box/features">Features</a><a href="/_box/app">T3 Code</a></nav>'
+    nav = (f'<a href="/_box/me" class="brand">{mark}</a>' + (
+           '<nav><a href="/_box/me">Dashboard</a><a href="/_box/features">Features</a>'
+           '<a href="/_box/app">T3 Code</a></nav>' if member else "")
            if gate else
            f'<a href="/" class="brand">{mark}</a>\n<nav><a href="/">dashboard</a><a href="/join">join</a></nav>')
     full = f"{title} · {BRAND} · {HOST}" if title and title != HOST else f"{BRAND} · {HOST}"
@@ -224,7 +225,7 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
 th{font-size:12px;color:var(--mut);font-weight:600}tr:last-child td{border-bottom:0}
 td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
+.pill{display:inline-block;white-space:nowrap;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
 .pill.ok{color:var(--ok);border-color:var(--okb)}.pill.warn{color:var(--warn);border-color:var(--warnb)}
 .pill.bad{color:var(--bad);border-color:var(--badb)}
 .mini{width:100%;min-width:90px}.mini .bar{margin-top:3px}
@@ -273,7 +274,8 @@ background:var(--panel);padding:0 3px;border-radius:3px;line-height:1.3}.plot .y
 .people li:last-child{border:0}.people .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .people svg{width:90px;height:22px;flex:none}.people .c{min-width:70px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
 pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:11.5px}
-@media (max-width:560px){main{padding:16px}header{padding:12px 16px}.charts{grid-template-columns:1fr}
+nav a{white-space:nowrap}
+@media (max-width:560px){main{padding:16px}header{padding:12px 16px;gap:12px}.brand .host{display:none}nav a{margin-left:12px}.charts{grid-template-columns:1fr}
 .people .c{min-width:56px;font-size:12px}.people svg{width:56px}}
 """
 
@@ -581,12 +583,13 @@ def friend_limits(rec):
 SAFE_EVENTS = ("user_created", "tools_updated", "skill_shared", "balance")
 
 
-def box_feed(n=6):
-    """Recent box-wide happenings, worded for friends. Never shows emails or logins."""
+def box_feed(n=6, me=None):
+    """Recent box-wide happenings, worded for friends. Never shows emails or logins. Skips `me`'s own events
+    (they're under "Your activity" already)."""
     out = []
     for ev in reversed(sb.recent_events(80)):
         k, user = ev.get("kind"), str(ev.get("user") or "")
-        if k not in SAFE_EVENTS:
+        if k not in SAFE_EVENTS or (me and user == me):
             continue
         if k == "user_created":
             txt = f"<b>{html.escape(user)}</b> joined the box"
@@ -641,7 +644,7 @@ def friend_dashboard(name, rec, rng="24h", base=""):
     gap = max(3 * step, 2.5 * RANGES[rng] / 240)  # bridge bucket-sized steps; break on real outages
     lim = friend_limits(rec)
     owner = bool((rec or {}).get("owner"))
-    out = [f"""<div class="dash-h" id="dash"><h2>{"Your account" if owner else "Your corner of"} {e(HOST)}</h2><span class="seg">"""
+    out = [f"""<div class="dash-h" id="dash"><h2>{"Your account on" if owner else "Your corner of"} {e(HOST)}</h2><span class="seg">"""
            + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
            + "</span></div>"]
     # -- box health tiles
@@ -752,7 +755,7 @@ def friend_dashboard(name, rec, rng="24h", base=""):
             f'<b>{e(n)}</b>{" <span class=mut>(you)</span>" if n == name else ""}</span>{spark(cb, t0, t1, 2 * gap)}'
             f'<span class="c">{fmt_cores(cn) if cn >= 0.01 else "idle"}</span></li>'
             for cn, n, cb, _ in people) + "</ul>")
-    feed = [] if owner else box_feed()  # the owner's Box section has the full event log instead
+    feed = [] if owner else box_feed(me=name)  # the owner's Box section has the full event log instead
     mine = [] if owner else own_events(name)
     if mine:
         out.append("<h2>Your activity</h2><ul class='ev'>" + "".join(mine) + "</ul>")
@@ -761,8 +764,9 @@ def friend_dashboard(name, rec, rng="24h", base=""):
     return "".join(out)
 
 
-def servers_section(st, shared, btn, base=""):
-    """Your own `box serve` servers and the group's shared ones, with start/stop/restart and logs."""
+def servers_section(st, shared, btn, base="", own_public=True):
+    """Your own `box serve` servers and the group's shared ones, with start/stop/restart and logs.
+    own_public=False (the owner): the gate only opens friends' port blocks at /p/PORT, so no public links."""
     e = html.escape
 
     def acts(kind, s, group=False):
@@ -806,11 +810,11 @@ def servers_section(st, shared, btn, base=""):
         out.append('<div class="srv">' + "".join(
             f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
             f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
-            f'<div class="sub">{link(s.get("port"))}</div>{acts("serve", s)}</div>'
+            f'<div class="sub">{link(s.get("port"), public=own_public)}</div>{acts("serve", s)}</div>'
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
         out.append("<p class='sub'>" + ("Public links open only for you, behind your usual login. Apps that "
                    "expect to live at <code>/</code> may need a base-path setting (Vite <code>base</code>, Next "
-                   "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC else
+                   "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC and own_public else
                    "Links work from devices on Tailscale.") + "</p>")
     if shared.get("unavailable"):
         return "".join(out)
@@ -948,8 +952,8 @@ def event_text(ev, show_email=True):
     e = html.escape
     kind = str(ev.get("kind") or "?")
     if kind == "balance":
-        return ("the box got busy: everyone's limits went down for a while" if ev.get("cpu_busy") or ev.get("mem_tight")
-                else "the box is quiet again: limits went back up")
+        return ("The box got busy: everyone's limits went down for a while" if ev.get("cpu_busy") or ev.get("mem_tight")
+                else "The box is quiet again: limits went back up")
     tpl = EVENT_TEXT.get(kind)
     fields = {k: (" ".join(map(str, v)) if isinstance(v, list) else str(v)) for k, v in ev.items()
               if k not in ("ts", "kind") and v not in (None, "", [], {})}
@@ -1030,7 +1034,9 @@ def own_events(name, n=8):
     """This person's own activity (their account, their servers, their sign-ins), newest first."""
     out, last_sig = [], None
     for ev in reversed(sb.recent_events(300)):
-        if isinstance(ev, dict) and ev.get("user") == name and ev.get("kind") not in ("admin_drop_refused",):
+        # only kinds with a plain sentence: anything else is box-internal detail
+        if isinstance(ev, dict) and ev.get("user") == name and (ev.get("kind") in EVENT_TEXT or ev.get("kind") == "balance") \
+                and ev.get("kind") not in ("admin_drop_refused", "shared_drop_refused", "janitor_error"):
             sig = {k: v for k, v in ev.items() if k != "ts"}
             if out and sig == last_sig:
                 continue
@@ -1063,7 +1069,9 @@ def requests_section(btn=None):
             what = "install <b>" + e(" ".join(map(str, r.get("packages") or []))) + "</b>" \
                 + (f" <span class='mut'>for {e(str(r['why']))}</span>" if r.get("why") else "")
         else:
-            what = e(str(r.get("text") or ""))
+            what = (f"<span style='white-space:pre-wrap;overflow-wrap:anywhere'>"
+                    f"{e(''.join(c if c.isprintable() or c == chr(10) else ' ' for c in str(r.get('text') or '')).strip()[:600])}"
+                    "</span>")
         why = f"<div class='sub'>{e(str(r['reason']))}</div>" if r.get("reason") else ""
         acts = ""
         if btn and r.get("state") in ("waiting", "new", "queued"):
@@ -1071,16 +1079,17 @@ def requests_section(btn=None):
                     + btn("request-done", "Done", rid, small=True, primary=r.get("kind") != "install") + " "
                     + btn("request-decline", "Decline", rid, small=True, primary=False))
         note = ("" if r.get("kind") == "install" else
-                f"<div class='sub'>Ask your agent: <b>handle {e(str(r.get('user')))}'s request</b>, "
-                "then click Done.</div>")
+                f"<div class='sub'>To handle it, tell your agent <b>handle the request from {e(str(r.get('user')))}"
+                "</b>, then click Done.</div>")
         trs.append(f"<tr><td><b>{e(str(r.get('user') or '?'))}</b></td><td>{what}{why}{note}</td>"
                    f"<td class='num'>{e(ago_text(r.get('ts', 0)))}</td>"
                    f"<td><span class='pill {'warn' if r.get('state') == 'waiting' else ''}'>"
-                   f"{e(REQUEST_STATE_TEXT.get(r.get('state'), str(r.get('state'))))}</span></td><td>{acts}</td></tr>")
-    out.append('<div style="overflow-x:auto"><table><thead><tr><th>who</th><th>asked for</th><th>when</th>'
+                   f"{e(REQUEST_STATE_TEXT.get(r.get('state'), str(r.get('state'))))}</span></td>"
+                   f"<td style='white-space:nowrap'>{acts}</td></tr>")
+    out.append('<div style="overflow-x:auto"><table style="min-width:620px"><thead><tr><th>who</th><th>asked for</th><th>when</th>'
                '<th>state</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
-    out.append("<p class='sub'>Approve installs a package (even one on the REQUEST_DENY list). "
-               "Done: you or your agent handled it. Either way their agent is told.</p>")
+    out.append("<p class='sub'>Approve installs it, even if it's on the box's blocked list. "
+               "Done means you or your agent took care of it. Either way, their agent is told.</p>")
     return "".join(out)
 
 
@@ -1182,8 +1191,8 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
     base = "/_box"
     btn = portal_btn(token_for(ip, who["id"]), base)
     st, shared = status_and_shared(ip, who)
-    out = [f"<h2>Hi, owner</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
-           f"This page shows your account <b>{e(name)}</b> on {e(HOST)}.</p>"]
+    out = [f"<h2>Hi {e(name)}</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
+           f"You're the owner of {e(HOST)}: your own account first, then the whole box.</p>"]
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
         out.append('<p><a class="btn" href="/_box/app">Open my T3 Code</a></p>')
     if result:
@@ -1192,7 +1201,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
         out.append(friend_dashboard(name, rec, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
-    out.append(servers_section(st, shared, btn, base))
+    out.append(servers_section(st, shared, btn, base, own_public=False))
     try:
         out.append(box_section(btn=btn))
     except Exception as ex:  # noqa: BLE001
@@ -1224,7 +1233,9 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
 
     out = []
     if welcome:
-        out.append(f"<h2>Welcome, {e(name)} 🎉</h2><p>Two quick steps and you're building.</p>")
+        out.append(f"<h2>Welcome, {e(name)}</h2><p>Two quick steps and you're building.</p>")
+    elif who["display"] == name:
+        out.append(f"<h2>Hi {e(name)}</h2>")
     else:
         out.append(f"<h2>Hi {e(who['display'])}</h2><p class='mut'>Your account on {e(HOST)} is "
                    f"<b>{e(name)}</b>.</p>")
@@ -1271,8 +1282,10 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     if not t3:
         out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
     else:
-        out.append("<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
-                   "It keeps running when you close the tab.</p>" + t3_btn + " " + sleeping
+        on_top = ai_ok and not welcome  # the button is already at the top of the page: don't repeat it
+        out.append(("" if on_top else
+                    "<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
+                    "It keeps running when you close the tab.</p>" + t3_btn + " " + sleeping)
                    + (f"<p class='sub'>Bookmark <b>{e(PUBLIC)}</b>: it opens this page, and T3 is one click away.</p>"
                       if CF and gate else
                       f"<p class='sub'>Already opened it on this device? Just go to "
@@ -1291,9 +1304,10 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         out.append("<h2 id='t3app'>Use the T3 app on your laptop</h2><p>The T3 Code app is the best way to use the box. Get it at "
                    "<a href='https://t3.codes' target='_blank' rel='noopener'>t3.codes</a>, then connect it:</p>")
         if app_url and on_tailnet:
-            out.append(f"<h3>On Tailscale</h3><p>In the app, add an environment with <code>{e(app_url)}</code>, "
-                       "then paste a pairing link from here (it works once, for 30 minutes).</p>"
-                       + btn("t3app", "Get a pairing link for the app", primary=False))
+            out.append(f"<h3>On Tailscale</h3><p>In the app, add this box by its address, <code>{e(app_url)}</code>. "
+                       "When it asks for a code, paste the one-time code from this button "
+                       "(it works once, for 30 minutes).</p>"
+                       + btn("t3app", "Get a code for the app", primary=False))
         if "t3connect" in logins:
             linked = logins["t3connect"]["ok"]
             out.append(f"<h3>From anywhere {done(linked)}</h3>")
@@ -1387,8 +1401,8 @@ def portal_result(res, btn, base=""):
         return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
     if res.get("app_pair"):
         u = str(res["app_pair"])
-        return (f"<div class='card'><h3>Pairing link for the T3 app</h3><p>In the app: add the environment, then paste "
-                f"this when it asks (works once, for 30 minutes):</p><p><code style='word-break:break-all'>{e(u)}</code>"
+        return (f"<div class='card'><h3>Code for the T3 app</h3><p>Paste this into the app when it asks "
+                f"(it works once, for 30 minutes):</p><p><code style='word-break:break-all'>{e(u)}</code>"
                 "</p></div>")
     if res.get("login_url"):
         url = safe_url(res["login_url"], ("https://",))
@@ -1660,16 +1674,16 @@ def landing(email=None):
         return page(HOST, f"""<div class="box"><h2>{e(HOST)}</h2>
 <p>This is a private coding machine shared between friends.</p>
 <p>You're signed in as <b>{e(email or '?')}</b>{"" if owner else ", but there's no account for that email here"}.</p>
-{"<p>You're the owner, but this box couldn't find your own account (OWNER_T3_USER in sharedbox.conf, "
- "default: the first ADMIN_USERS). Ask your agent on the box to check it.</p>" if owner else
+{"<p>You're the owner, but this box couldn't find your own account on the computer. Ask your agent on the box "
+ "to check which account the owner's login should open.</p>" if owner else
  "<p>To get in, <b>ask your friend for an invite link</b> for this email address.</p>"}
 <p class="mut">Wrong email? <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the one your friend
-invited.</p></div>""", gate=True)
+invited.</p></div>""", gate=True, member=False)
     return page(HOST, f"""<div class="box"><h2>{html.escape(HOST)}</h2>
 <p>This is a private coding machine shared between friends.</p>
 <p>To get in, <b>ask your friend for an invite link</b>.</p>
 <p class="mut">Already have an account? Open the login link from your other device
-(on the page you use there: "Add a device"), or ask your friend for one.</p></div>""", gate=True)
+(on the page you use there: "Add a device"), or ask your friend for one.</p></div>""", gate=True, member=False)
 
 
 def invite_page(tok, err=None, form=None, email=None):
@@ -1678,12 +1692,12 @@ def invite_page(tok, err=None, form=None, email=None):
     inv = sb.gate_lookup("invites", tok)[0]
     if not inv:
         return page("invite", """<div class="box"><h2>This invite link doesn't work</h2>
-<p>It was already used or it has expired. Ask your friend for a new one.</p></div>""", gate=True)
+<p>It was already used or it has expired. Ask your friend for a new one.</p></div>""", gate=True, member=False)
     if CF and str(inv.get("email") or "").lower() != (email or ""):
         return page("invite", f"""<div class="box"><h2>This invite is for a different email</h2>
 <p>You're signed in as <b>{e(email or '?')}</b>, but this invite was made for another address.
 <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the email your friend invited, or ask them for an
-invite for this one.</p></div>""", gate=True)
+invite for this one.</p></div>""", gate=True, member=False)
     ftok = token_for("gate", "invite:" + sb.token_hash(tok))
     email_field = (f"<p class='mut'>Signed in as <b>{e(email)}</b>. That's your login from now on.</p>" if CF else
                    f"""<label>Email (optional; only used to warn you if something on your account looks unsafe)</label>
@@ -1703,7 +1717,7 @@ invite for this one.</p></div>""", gate=True)
 {e(CFG['DISK_BUDGET_GB'])}G of disk.</li>
 <li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are archived (restorable for {e(CFG['ARCHIVE_DAYS'])} days).
 Use git. Nothing here is backed up.</li>
-</ul></div>""", gate=True)
+</ul></div>""", gate=True, member=False)
 
 
 def login_page(tok, err=None):
@@ -1712,7 +1726,7 @@ def login_page(tok, err=None):
     if not rec:
         return page("log in", f"""<div class="box"><h2>This login link doesn't work</h2>
 <p>{e(err or "It was already used or it has expired.")}
-Get a new one on your other device ("Add a device"), or ask your friend.</p></div>""", gate=True)
+Get a new one on your other device ("Add a device"), or ask your friend.</p></div>""", gate=True, member=False)
     ftok = token_for("gate", "login:" + sb.token_hash(tok))
     # a button, not an automatic login: link previews in chat apps must not use up the link
     return page("log in", f"""<div class="box"><h2>Log in to {e(BRAND)} on {e(HOST)}</h2>
@@ -1720,7 +1734,7 @@ Get a new one on your other device ("Add a device"), or ask your friend.</p></di
 {f'<p class="err">{e(err)}</p>' if err else ''}
 <form method="post" action="/login/{e(tok)}"><input type="hidden" name="token" value="{ftok}">
 <button type="submit">Log in</button></form>
-<p class="sub">Didn't ask for this? Close the page; the link expires on its own.</p></div>""", gate=True)
+<p class="sub">Didn't ask for this? Close the page; the link expires on its own.</p></div>""", gate=True, member=False)
 
 
 # ---------- the friend's own laptop agent: SSH through Cloudflare (sbconnect), key registration API ----------
@@ -1831,7 +1845,8 @@ class GateHandler(Handler):
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(data)
+        if data:  # a redirect has no body; the gate may already have hung up after reading the head
+            self.wfile.write(data)
 
     def redirect(self, where, headers=()):
         self.send(303, "", "text/plain", [("Location", where), *headers])

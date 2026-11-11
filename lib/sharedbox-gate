@@ -103,9 +103,9 @@ def t3_seen(user):
         pass
 
 
-def users():
+def users(max_age=SESSION_CACHE_SECS):
     global _users
-    if time.monotonic() - _users[0] > SESSION_CACHE_SECS:
+    if time.monotonic() - _users[0] > max_age:
         _users = (time.monotonic(), sb.friend_users())
     return _users[1]
 
@@ -363,8 +363,15 @@ def cf_user(email):
 
 
 def cf_identity(email):
-    """The friend account for this email, else OWNER for the owner's own T3 (T3's pairing is the second lock)."""
-    return cf_user(email) or (OWNER if owner_t3(email) else None)
+    """The friend account for this email, else OWNER for the owner's own T3 (T3's pairing is the second lock).
+    An unknown email re-reads the registry: someone who just signed up through an invite is sent straight to their
+    dashboard and may click "Open my T3 Code" before the cache would expire. (Only emails Cloudflare Access lets in
+    get here, so this is rare and cheap.)"""
+    user = cf_user(email) or (OWNER if owner_t3(email) else None)
+    if not user:
+        users(max_age=0)
+        user = cf_user(email)
+    return user
 
 
 def rate_limited(bucket, n, window=600):
