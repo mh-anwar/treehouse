@@ -373,6 +373,68 @@ def install_cloudflared(dry=False, fam=None):
         raise RuntimeError("cloudflared didn't install; see the messages above")
 
 
+# Third-party packages that friends' requests may install automatically, each from its vendor's official apt repo,
+# pinned to that repo with signed-by and checked against the vendor key's fingerprint before it is trusted.
+VETTED = {
+    "google-chrome-stable": {
+        "key_url": "https://dl.google.com/linux/linux_signing_key.pub",
+        "fingerprints": ["EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796"],  # Google Inc. (Linux Packages Signing Authority)
+        "keyring": "/etc/apt/keyrings/google-chrome.gpg",
+        "list": "/etc/apt/sources.list.d/google-chrome.list",
+        "repo": "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ "
+                "stable main\n",
+        "arch": "amd64",
+    },
+}
+
+
+def _key_fingerprints(armored):
+    """Primary-key fingerprints in an (armored) OpenPGP key, via gpg --show-keys (reads nothing else)."""
+    r = subprocess.run(["gpg", "--batch", "--with-colons", "--show-keys"], input=armored, capture_output=True,
+                       timeout=30)
+    out, fps, want = r.stdout.decode(errors="replace").splitlines(), [], False
+    for ln in out:
+        f = ln.split(":")
+        if f[0] == "pub":
+            want = True
+        elif f[0] == "fpr" and want:
+            fps.append(f[9].upper())
+            want = False
+    return fps
+
+
+def ensure_vetted_source(pkg, fam=None):
+    """Add pkg's vendor repo if it's in VETTED and not set up yet. True if the package can now be looked up."""
+    fam = fam or current()
+    v = VETTED.get(pkg)
+    if not v or fam != "debian":
+        return False
+    if os.path.exists(v["list"]) or any(os.path.exists(v["list"].rsplit(".", 1)[0] + x) for x in (".sources",)):
+        return True
+    arch = subprocess.run(["dpkg", "--print-architecture"], capture_output=True, text=True).stdout.strip()
+    if v.get("arch") and arch != v["arch"]:
+        return False
+    import urllib.request
+    req = urllib.request.Request(v["key_url"], headers={"User-Agent": "sharedbox"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        key = r.read(1 << 20)
+    if not set(_key_fingerprints(key)) & set(v["fingerprints"]):
+        raise RuntimeError(f"{pkg}: the vendor's signing key didn't match the pinned fingerprint; not adding it")
+    dearm = subprocess.run(["gpg", "--batch", "--dearmor"], input=key, capture_output=True, timeout=30)
+    if dearm.returncode != 0 or not dearm.stdout:
+        raise RuntimeError(f"{pkg}: couldn't read the vendor's signing key")
+    os.makedirs(os.path.dirname(v["keyring"]), mode=0o755, exist_ok=True)
+    for path, data, mode in ((v["keyring"], dearm.stdout, "wb"), (v["list"], v["repo"], "w")):
+        with open(path + ".tmp", mode) as f:
+            f.write(data)
+        os.chmod(path + ".tmp", 0o644)
+        os.replace(path + ".tmp", path)
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
+    _run(["apt-get", "update", "-o", f"Dir::Etc::sourcelist={v['list']}",
+          "-o", "Dir::Etc::sourceparts=-", "-o", "APT::Get::List-Cleanup=0"], False, env=env)
+    return True
+
+
 # ---------------------------------------------------------------- read-only checks (audit, health)
 
 def _capture(cmd, timeout=120, stderr=False):
