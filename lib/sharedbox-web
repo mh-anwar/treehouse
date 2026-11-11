@@ -247,7 +247,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn{margin-top:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -974,7 +974,7 @@ def event_text(ev, show_email=True):
     return f"<b>{e(fields['user'])}</b> · {e(kind.replace('_', ' '))}" + (" · " + ", ".join(bits) if bits else "")
 
 
-def features_page():
+def features_page(owner=False):
     """What the box does, in the dashboard's own style: one column, plain headings and short text."""
     e = html.escape
 
@@ -997,21 +997,22 @@ def features_page():
     out = [
         "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The best way to talk to your agents.</p>"
         "<ol class='steps'><li><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code"
-        "</a></li><li><a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my "
-        "T3 account</a></li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
+        "</a></li><li>" + ("In the app, add your own T3 on this box (over Tailscale)." if owner else
+        "<a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my T3 account</a>")
+        + "</li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
         "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
-            "Auto-updated, and set up to know the box they're running on."
+            "Auto-updated, with environment awareness."
             + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
         row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
-            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. Checked every minute. "
+            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. "
             f"Right now it's {'busy' if busy else 'quiet'}."),
         row("Your servers", "Servers that run 24/7.", "Back after reboots, with controls and a private link."),
         row("Group servers", "One shared copy of a bot for the whole group."),
-        row("Skills", "A shared shelf of agent skills, like council and full-send.",
-            "Starts with Theo's tstack set, and anyone can add their own."),
+        row("Skills", "A shared shelf of agent skills, like council and full-send."),
         row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
+        row("Docker", "Docker works, no admin needed."),
         row("Reboots", "Your servers and T3 come back on their own.",
             "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
             "to finish."),
@@ -1294,23 +1295,29 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         tail = urllib.parse.urlsplit(str((st.get("t3") or {}).get("url") or ""))  # the tailnet address, not PUBLIC
         app_url = f"http://{HOST}:{tail.port}" if tail.port else ""
         on_tailnet = bool((rec or {}).get("ts_id")) or not CF
-        out.append("<h2 id='t3app'>Use the T3 app on your laptop</h2><p>The T3 Code app is the best way to use the box. Get it at "
-                   "<a href='https://t3.codes' target='_blank' rel='noopener'>t3.codes</a>, then connect it:</p>")
-        if app_url and on_tailnet:
-            out.append(f"<h3>On Tailscale</h3><p>In the app, add this box by its address, <code>{e(app_url)}</code>. "
-                       "When it asks for a code, paste the one-time code from this button "
-                       "(it works once, for 30 minutes).</p>"
-                       + btn("t3app", "Get a code for the app", primary=False))
+        out.append("<h2 id='t3app'>Use the T3 app on your laptop</h2><p>The app on your laptop is the best way to "
+                   "use the box.</p>")
+        dl = "<li>Download T3 Code from <a href='https://t3.codes' target='_blank' rel='noopener'>t3.codes</a>.</li>"
         if "t3connect" in logins:
             linked = logins["t3connect"]["ok"]
-            out.append(f"<h3>From anywhere {done(linked)}</h3>")
+            out.append(f"<h3>From anywhere {done(linked)}</h3><ol class='steps'>" + dl)
             if linked:
-                out.append(f"<p>Linked. Sign in to the app with the same T3 account and <b>{e(HOST)}</b> shows up, "
-                           "no Tailscale needed.</p>")
+                out.append("<li>Linked. ✓</li>")
             else:
-                out.append("<p>Link this box to your T3 account once (you approve a code), then sign in to the app "
-                           "with the same account. No Tailscale needed. It restarts your T3 Code here, so do it when "
-                           "no agent is mid-task.</p>" + btn("login", "Link my T3 account", "t3connect", primary=False))
+                out.append("<li>" + btn("login", "Link my T3 account", "t3connect", primary=False)
+                           + " and approve the code it shows you.</li>")
+            out.append("<li>In the app, sign in with the same T3 account.</li>"
+                       f"<li>Go to <b>Settings → Environments</b> and click <b>Add</b> next to <b>{e(HOST)}</b>.</li>"
+                       "</ol>")
+            if not linked:
+                out.append("<p class='sub'>Linking restarts your T3 here, so do it when no agent is in the middle of "
+                           "something.</p>")
+        if app_url and on_tailnet:
+            out.append("<h3>On Tailscale</h3><ol class='steps'>" + dl
+                       + "<li>In the app, go to <b>Settings → Environments → Add environment</b> and enter "
+                         f"<code>{e(app_url)}</code>.</li>"
+                         "<li>When it asks for a code: " + btn("t3app", "Get a code for the app", primary=False)
+                       + " and paste it in. Each code works once, for 30 minutes.</li></ol>")
     if dash:
         out.append(dash)
     if st.get("updates") in ("auto", "manual"):
@@ -1394,8 +1401,8 @@ def portal_result(res, btn, base=""):
         return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
     if res.get("app_pair"):
         u = str(res["app_pair"])
-        return (f"<div class='card'><h3>Code for the T3 app</h3><p>Paste this into the app when it asks "
-                f"(it works once, for 30 minutes):</p><p><code style='word-break:break-all'>{e(u)}</code>"
+        return (f"<div class='card'><h3>Your code for the T3 app</h3><p>Paste this into the app when it asks "
+                f"(works once, for 30 minutes):</p><p><code style='word-break:break-all'>{e(u)}</code>"
                 "</p></div>")
     if res.get("login_url"):
         url = safe_url(res["login_url"], ("https://",))
@@ -1904,7 +1911,7 @@ class GateHandler(Handler):
                 return self.redirect(res["pair_url"])
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], res))
         if kind == "features":
-            return self.send(200, features_page())
+            return self.send(200, features_page(owner=not self.who() and CF and self.cf_email() in sb.owner_emails(CFG)))
         if kind == "me" and who:
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q,
                                               rng=(q.get("range") or ["24h"])[0]))
