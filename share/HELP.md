@@ -157,6 +157,9 @@ Typical waste:
   the wait isn't needed: Postgres `ALTER SYSTEM SET synchronous_commit = off;` then `SELECT pg_reload_conf();` (a
   crash loses the last second of writes, never corrupts). Only on databases the user treats as scratch; ask first
   otherwise. Scratch files for builds and tests go in /tmp when `df /tmp` says tmpfs (memory).
+- Agent helpers (MCP servers) start with every agent session, one copy per session: launched as `npx -y PKG@latest`
+  or `uvx PKG@latest` they ask the registry for a new version each time (~0.5-1.5 s, measured). Pin a version, and
+  suggest removing ones the user doesn't use (each Python/Node helper is ~50-100 MB per open session).
 - Slow shell start: agents start a shell for every command, so `time bash -lc true` should stay under ~30 ms.
   After installing anything that hooks into the shell (nvm, conda, pyenv, rbenv, prompt tools) check it; for nvm run
   `box tune shell`, for the others use their lazy or minimal init instead of the eager one their installer adds.
