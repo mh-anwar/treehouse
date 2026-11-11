@@ -70,19 +70,30 @@ def fmt_ts(ts):
 
 # ---------- status ----------
 
-def gather():
+def gather(sample=0.5):
+    """sample: seconds to measure CPU over. Session start (every agent session waits for it) uses a short one;
+    throttling there also comes from the kernel's own 10-second pressure average, so nothing is missed."""
     st = sb.read_json(STATUS_FILE, {}) or {}
     cg = sb.read_cgroup(sb.slice_path(ME.pw_uid))
     if cg:  # sample CPU over a short window
-        time.sleep(0.5)
+        time.sleep(sample)
         cg2 = sb.read_cgroup(sb.slice_path(ME.pw_uid))
         dt = cg2["t"] - cg["t"]
         cg2["cpu_pct"] = round((cg2["cpu_usec"] - cg["cpu_usec"]) / 1e6 / dt * 100) if dt else 0
-        cg2["throttled"] = cg2["throttled_usec"] > cg["throttled_usec"]
+        cg2["throttled"] = cg2["throttled_usec"] > cg["throttled_usec"] or cpu_pressure() > 10
         cg = cg2
     return {"user": ME.pw_name, "friend": is_friend(), "ports": ports(),
             "limits": my_limits() if is_friend() else None, "live": cg,
             "box": sb.box_load(), "janitor": st}
+
+
+def cpu_pressure():
+    """% of the last 10 s some of this account's processes waited for CPU (throttled at the quota, or a busy box)."""
+    try:
+        with open(os.path.join(sb.slice_path(ME.pw_uid), "cpu.pressure")) as f:
+            return float(f.readline().split("avg10=")[1].split()[0])
+    except (OSError, IndexError, ValueError):
+        return 0.0
 
 
 def reboot_days():
@@ -174,7 +185,7 @@ def cmd_status(a):
             auto_issues()
         except Exception:  # never break session start
             pass
-    g = gather()
+    g = gather(0.1 if a.agent else 0.5)
     if a.json:
         g["advice"] = advice(g)
         print(json.dumps(g, indent=2))
