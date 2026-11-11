@@ -134,7 +134,8 @@ def valid_reply(rep):
 # (T3 app, a T3 tab), or agents working under it: CPU used by anything in its cgroup besides T3's own processes
 # since the last check (agent turns and their tools, even ones that already ended), an agent using CPU right
 # now, or something started from T3 that listens on a port (a dev server, a bot). Agents that merely sit there
-# waiting don't count.
+# waiting don't count. Last word goes to the friend's own `box _t3-nap`, which reads T3's database: an agent
+# turn still running (even a quiet one, waiting on a download or CI) or scheduled tasks turned on keep T3 up.
 
 def t3_cgroup(uid):
     """(cgroup dir, PIDs) of the friend's sb-t3.service (T3 and every agent it started); (None, []) if not running."""
@@ -289,8 +290,11 @@ def cmd_t3_naps(cfg, a):
                 print(f"{name}: would nap T3 Code")
                 continue
             rep = user_pass(pw, {}, "_t3-nap",
-                            check=lambda r: isinstance(r, dict) and isinstance(r.get("t3_stopped"), bool))
-            if rep["t3_stopped"]:
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("t3_stopped"), bool)
+                            and isinstance(r.get("busy", False), bool))
+            if rep.get("busy"):  # an agent turn still running, or scheduled tasks on: the quiet hour starts over
+                st["t3_busy"] = now
+            elif rep["t3_stopped"]:
                 st.pop("t3_other_cpu", None)
                 st["napped"] = now
         except Exception as e:  # one friend's trouble must not stop the others
