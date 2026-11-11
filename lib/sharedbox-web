@@ -35,7 +35,29 @@ import sbconnect  # noqa: E402
 import sbqr  # noqa: E402
 
 CFG = sb.load_config()
-SECRET = secrets.token_bytes(32)
+def _form_key():
+    """The key that signs form tokens. Kept in the web service's own spool folder so open pages keep working
+    across restarts (updates restart this service); a fresh random key if that folder isn't writable."""
+    path = os.path.join(sb.SPOOL, ".form-key")
+    try:
+        with open(path, "rb") as f:
+            key = f.read()
+        if len(key) == 32:
+            return key
+    except OSError:
+        pass
+    key = secrets.token_bytes(32)
+    try:
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+    return key
+
+
+SECRET = _form_key()
 HOST = socket.gethostname()
 BRAND = sb.brand(CFG)
 SELF_IP = None
