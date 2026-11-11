@@ -739,6 +739,19 @@ def handle_portal(cfg, rid, req):
         if key not in ("auto", "manual"):
             return {"ok": False, "error": "unknown choice"}
         return box_portal(pw, ["updates-set", key])
+    if action in ("serve-ls", "shared-ls"):
+        return box_portal(pw, [action])
+    if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
+        # `box _portal` checks again (and only touches sb-* units the friend made); never pass a leading "-"
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", key) \
+                or (action.startswith("serve-") and key == "t3"):
+            return {"ok": False, "error": "no such server"}
+        if action.endswith("-logs"):
+            return box_portal(pw, [action, key])
+        op = req.get("op")
+        if op not in ("start", "stop", "restart"):
+            return {"ok": False, "error": "unknown action"}
+        return box_portal(pw, [action, key, op])
     if key not in PORTAL_KEYS:
         return {"ok": False, "error": "unknown login"}
     if action == "login":
