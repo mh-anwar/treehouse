@@ -168,6 +168,7 @@ DEFAULTS = {
     "CF_SEAT_LIMIT": "40",
     # port of the owner's own T3 Code on GATE_BACKEND_HOST; set it to let CF_OWNER_EMAILS open it on the public site
     "OWNER_T3_PORT": "",
+    "OWNER_T3_USER": "",   # account that runs that T3 (default: the first ADMIN_USERS)
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
     "CF_SESSION_HOURS": "720",
