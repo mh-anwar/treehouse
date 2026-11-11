@@ -1112,8 +1112,7 @@ def requests_section(btn=None):
                    f"<td style='white-space:nowrap'>{acts}</td></tr>")
     out.append('<div style="overflow-x:auto"><table style="min-width:620px"><thead><tr><th>who</th><th>asked for</th><th>when</th>'
                '<th>state</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
-    out.append("<p class='sub'>Approve installs it, even if it's on the box's blocked list. "
-               "Done means you or your agent took care of it. Either way, their agent is told.</p>")
+    out.append("<p class='sub'>Approve installs it. Done means it's handled. Their agent is told either way.</p>")
     return "".join(out)
 
 
@@ -1162,8 +1161,7 @@ def box_section(n_events=30, btn=None):
         color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
         tiles.append(("Cloudflare allow list", f"{n}<small> of {limit}</small>",
                       f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>'
-                      '<div class="sub" style="margin-top:6px">counted from accounts and invites; for the exact list, '
-                      'ask your agent: <b>show the Cloudflare allow list</b> (<code>box friends access</code>)</div>'))
+                      '<div class="sub" style="margin-top:6px">free up to 50</div>'))
     out.append('<div class="tiles">' + "".join(
         f'<div class="tile"><h3>{e(h)}</h3><div class="v">{v}</div>'
         + (sub if sub.startswith("<") else f'<div class="sub">{e(sub)}</div>') + "</div>"
@@ -1308,9 +1306,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         if t3:
             out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
                        "<a href='#t3app'>set it up</a>."
-                       + (" Use the browser a lot? <a href='/_box/direct-on'>Open T3 straight away next time</a> "
-                          "(this page stays at <b>/_box/me</b>; <a href='/_box/direct-off'>undo</a>)." if CF and gate
-                          else "") + "</p>")
+                       + (" <a href='/_box/direct-on'>Skip this page next time</a>." if CF and gate else "") + "</p>")
         out.append(dash)
         out.append("<h2 style='margin-top:34px'>Setup</h2>")
         dash = ""
@@ -1328,9 +1324,9 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             out.append(btn("login", "Log in with ChatGPT (Codex)", "codex") + " ")
         out.append("</p>")
         if "claude" in logins:
-            out.append("<p class='sub'>Pay for Claude by API key (Anthropic Console) instead? "
-                       + btn("login", "Console login", "claude",
-                             '<input type="hidden" name="console" value="1">', primary=False) + "</p>")
+            out.append("<p class='sub'>Using a Claude API key instead? "
+                       + btn("login", "Log in with the Console", "claude",
+                             '<input type="hidden" name="console" value="1">', primary=False, small=True) + "</p>")
     out.append(f"<h2>2. Open T3 {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
     if not t3:
         out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
@@ -1426,7 +1422,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     out.append(f"""<h2>Good to know</h2><ul>
 <li>Projects untouched for {e(CFG['PROJECT_TTL_DAYS'])} days are archived, and can be restored for
 {e(CFG['ARCHIVE_DAYS'])} days (ask your agent). Ask it to put them on GitHub to be safe.</li>
-<li>Bookmark this page. Come back here any time to log in again or get a new T3 link.</li>
+<li>Your dashboard is always at <b>{e(PUBLIC + "/_box/me" if PUBLIC else f"http://{HOST}:{CFG['WEB_PORT']}/me")}</b>"""
+ + (" (<a href='/_box/direct-off'>show it first again</a>)" if CF else "") + """.</li>
 <li>Stuck? Ask your agent in T3 Code. It knows how this machine works.</li></ul>""")
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
