@@ -92,7 +92,8 @@ with open(os.path.join(TMP, "sharedbox.conf"), "w") as f:
     f.write(f"PUBLIC_URL={PUBLIC}\nPUBLIC_MODE=cloudflare\nCF_TEAM_DOMAIN=x.cloudflareaccess.com\n"
             f"CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nCF_OWNER_EMAILS=owner@x.io\n"
             f"PORT_BASE={PORT_BASE}\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT={OWNER_T3_PORT}\n"
-            f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nSHARED_PUBLIC_LINKS=yes\nBRAND=treehouse\n")
+            f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nSHARED_PUBLIC_LINKS=yes\nBRAND=treehouse\n"
+            "UPDATE_SOURCE=https://github.com/example/treehouse\n")
 sock_dir = tempfile.mkdtemp(prefix="sbw-", dir="/tmp" if len(TMP) > 60 else None)  # AF_UNIX path limit
 os.environ.update(SHAREDBOX_CONF=os.path.join(TMP, "sharedbox.conf"), SHAREDBOX_LIB=os.path.join(WT, "lib"),
                   SHAREDBOX_STATE=STATE, SHAREDBOX_WEB_SOCK=os.path.join(sock_dir, "gate.sock"),
@@ -153,6 +154,7 @@ for i in range(7 * 288, 0, -1):
     lines.append(json.dumps({"ts": ts, "cpu": 20 + (i % 40), "load1": 1.5, "mem": 45.0, "disk_free": 61.0,
                              "disk_free_b": 300 * 2**30, "temp": 55, "users": users}))
 write("health/metrics.jsonl", "\n".join(lines) + "\n")
+write("update.json", {"state": "done", "finished": NOW - 7200, "commit": "abc1234", "subject": "Fix things"})
 write("balance.json", {"cpu_busy": False, "mem_tight": False})
 write("usage.json", {"generated": NOW - 600, "users": {
     "alice": {"disk": 3 * 2**30, "budget": 40 * 2**30, "projects": 4, "services": [{"name": "blog", "state": "running"}],
@@ -256,8 +258,11 @@ def _fake_root(req):
         PAIR_TOKENS.add(tok)
         return {"ok": True, "pair_url": f"http://100.64.0.5:{OWNER_T3_PORT}/pair#token={tok}"}
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
-                                "request-approve", "request-done", "request-decline"):
+                                "request-approve", "request-done", "request-decline", "self-update"):
         return {"ok": False, "error": "not available for the owner's account"}
+    if action == "self-update":
+        write("update.json", {"state": "running", "started": int(time.time())})
+        return {"ok": True, "message": "Updating treehouse. This page may blink for a few seconds; refresh in a minute."}
     reg = sb.registry()
     if not owner and (reg["users"].get(name) or {}).pop("welcome", None):
         save_registry(reg)
