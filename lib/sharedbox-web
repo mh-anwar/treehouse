@@ -179,9 +179,10 @@ def spool_call(req, wait=30):
     rid = secrets.token_hex(12)
     sb.write_json(os.path.join(sb.SPOOL, f"req-{rid}.json"), dict(req, ts=int(time.time())), mode=0o600)
     res_path = os.path.join(sb.SPOOL, f"res-{rid}.json")
-    deadline = time.time() + wait
+    deadline, nap = time.time() + wait, 0.02
     while time.time() < deadline:
-        time.sleep(0.25)
+        time.sleep(nap)
+        nap = min(0.25, nap * 1.5)  # most answers take ~0.1-0.3 s: look often at first, then back off
         res = sb.read_json(res_path)
         if res is not None:
             try:
