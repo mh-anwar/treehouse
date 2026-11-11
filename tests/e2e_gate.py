@@ -251,6 +251,17 @@ def run_tests():
     c, h, b = req("/draft/abc", "A", extra=[T3C])
     check("deep T3 link (reload inside T3) -> T3, not dashboard", c == 200 and json.loads(b).get("path") == "/draft/abc", (c, b[:200]))
 
+    # ---- T3's content-hashed build files may be cached by the browser; nothing else is ----
+    c, h, b = req("/assets/utils-D8OUUT-k.js", "A", extra=[T3C])
+    check("T3 hashed asset -> immutable", c == 200 and hv(h, "cache-control") == ["private, max-age=31536000, immutable"], h)
+    c, h, b = req("/assets/main-Ben-HoR5.css?v=1", "A", extra=[T3C])
+    check("T3 hashed css with query -> immutable", hv(h, "cache-control") == ["private, max-age=31536000, immutable"], h)
+    for path in ("/assets/main.js", "/index.html", "/assets/sub/x-D8OUUT-k.js", "/assets/x-D8OUUT-k.html"):
+        c, h, b = req(path, "A", extra=[T3C])
+        check(f"not cached forever: {path}", "immutable" not in " ".join(hv(h, "cache-control")), h)
+    c, h, b = req("/s/web/assets/utils-D8OUUT-k.js", "A")
+    check("friend's app asset not touched", c == 200 and not hv(h, "cache-control"), h)
+
 
 
 async def main():
