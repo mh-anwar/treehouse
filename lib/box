@@ -438,6 +438,11 @@ def render_rules(notices=()):
     return tpl.format(**rule_fields(tl, extras, nt))
 
 
+BASE_PATH_NOTE = ("It's served under that path (prefix stripped, `X-Forwarded-Prefix` set), so an app that "
+                  "expects to live at `/` may need a base-path setting (Vite `base`, Next `basePath`, Streamlit "
+                  "`--server.baseUrlPath`).")
+
+
 def rule_fields(tl="", extras=(), nt=""):
     """Values for the {placeholders} in AGENTS.md (always loaded) and HELP.md (`box help`, on demand)."""
     lim = my_limits()
@@ -454,6 +459,10 @@ def rule_fields(tl="", extras=(), nt=""):
         reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
                      "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
+        serve_public=(f"\n- Public link (behind the box's login, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
+                      f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
+        shared_public=(f"\n- Public link (behind the box's login, for every member): `{sb.public_url(CFG)}/s/NAME/`."
+                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
         shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
                                     sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
 
