@@ -319,6 +319,12 @@ def opened_from_outside(headers):
     return not site or site[0].strip().lower() in ("none", "cross-site")
 
 
+def opened_as_page(headers):
+    """A top-level page load (not an API call or asset fetch from inside T3)."""
+    dest = values(headers, "sec-fetch-dest")
+    return not dest or dest[0].strip().lower() == "document"
+
+
 def has_t3_session(headers):
     """Does the browser carry a T3 Code session cookie (t3_session_<id>)? Without one T3 asks for a pairing token."""
     return any(p.strip().startswith("t3_session_") for v in values(headers, "cookie") for p in v.split(";"))
@@ -638,8 +644,8 @@ async def handle_request(reader, writer, head, peer):
     elif sess:
         host, port = backend_for(sess[0])
         if not host:
-            await respond(writer, 502, page("Not available", "The box can't reach your T3 Code right now "
-                                            "(Tailscale is down on it?). Try again in a minute."))
+            await respond(writer, 502, page("Not available", "The box can't reach your T3 Code right now. "
+                                            "Try again in a minute; if it keeps happening, tell the owner."))
             return False
         dest = ("tcp", host, port)
         if not CF and maybe_refresh(secret, sess):
@@ -701,8 +707,12 @@ async def handle_request(reader, writer, head, peer):
             msg = (f"Nothing is listening on port {dest[2]}. Start the server under <b>Your servers</b> on "
                    "<a href='/_box/me'>your page</a>, or with <code>box serve start NAME</code>.")
         else:
-            msg = ("Your T3 Code isn't running right now. Open <a href='/_box/me'>your page</a> and click "
-                   "<b>Open my T3 Code</b> to start it.")
+            if CF and method == "GET" and not upgrade and opened_as_page(headers):
+                # T3 is stopped (idle, crashed, after a reboot): /_box/open starts it and pairs this browser again
+                await respond(writer, 303, "", headers=[("Location", "/_box/open")])
+                return False
+            msg = ("Your T3 Code isn't running right now. Open <a href='/_box/open'>this link</a> to start it, "
+                   "or use <a href='/_box/me'>your page</a>.")
         await respond(writer, 502, page("Not running", msg))
         return False
     try:

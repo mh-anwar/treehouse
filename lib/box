@@ -484,6 +484,9 @@ def help_topics():
 
 def cmd_help(a):
     topics = help_topics()
+    if not topics:
+        sys.exit("box help: the help file is missing on this box (HELP.md). Tell the owner; "
+                 "meanwhile `box rules` has the basics.")
     if a.topic and a.topic in topics:
         print(topics[a.topic])
         return
@@ -1534,7 +1537,9 @@ def tail(screen, n=4):
 
 
 def portal_url():
-    return f"http://{socket.gethostname()}:{CFG['WEB_PORT']}/me"
+    """The user's dashboard: the public site when there is one (works anywhere), else the tailnet page."""
+    pub = sb.public_url(CFG)
+    return f"{pub}/_box/me" if pub else f"http://{socket.gethostname()}:{CFG['WEB_PORT']}/me"
 
 
 # servers from the web page: the friend's own `box serve` units, and the group's `box shared` ones

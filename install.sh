@@ -101,6 +101,7 @@ for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sha
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
 done
 do_ install -m 644 "$SRC/share/AGENTS.md" "$SHARE/AGENTS.md"
+do_ install -m 644 "$SRC/share/HELP.md" "$SHARE/HELP.md"
 do_ install -m 755 "$SRC/share/cloudflare-setup.sh" "$SHARE/cloudflare-setup.sh"
 do_ rm -rf "$SHARE/skel"
 do_ cp -r "$SRC/share/skel" "$SHARE/skel"
