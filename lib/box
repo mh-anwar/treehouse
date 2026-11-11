@@ -9,6 +9,7 @@
   box shared ls | create NAME | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
                                    servers the whole group owns (code in /srv/shared/NAME); add --json
   box clean [--dry-run]            clean caches/old tmp/idle build outputs now
+  box restore [NAME]               put an archived project back in ~/projects (lists archives without NAME)
   box rules                        the rules your agents are given
   box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
   box setup [--check]              guided setup: git identity, GitHub, agent logins
@@ -42,6 +43,7 @@ AGENT_FILES = [".claude/CLAUDE.md", ".codex/AGENTS.md", ".gemini/GEMINI.md",
                ".config/opencode/AGENTS.md", "AGENTS.md"]
 
 CFG = sb.load_config()
+BRAND = sb.brand(CFG)
 ME = pwd.getpwuid(os.getuid())
 HOME = os.environ.get("HOME") or ME.pw_dir
 STATUS_FILE = os.path.join(HOME, ".sharedbox", "status.json")
@@ -81,42 +83,12 @@ def gather():
             "box": sb.box_load(), "janitor": st}
 
 
-def scheduled_reboot():
-    """Epoch seconds of a pending `shutdown -r`, or None."""
-    try:
-        with open("/run/systemd/shutdown/scheduled") as f:
-            kv = dict(l.strip().split("=", 1) for l in f if "=" in l)
-        if kv.get("MODE", "reboot") == "reboot" and kv.get("USEC"):
-            return int(kv["USEC"]) / 1e6
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
 def reboot_days():
-    return [d.strip()[:3].title() for d in CFG.get("SCHEDULED_REBOOT_DAYS", "").split(",")
-            if d.strip()[:3].title() in DAYS]
+    return sb.reboot_days(CFG)
 
 
-def next_weekly_reboot(now=None):
-    """Epoch seconds of the next SCHEDULED_REBOOT_DAYS reboot, or None."""
-    days = reboot_days()
-    try:
-        hh, mm = (int(x) for x in CFG.get("REBOOT_TIME", "04:00").split(":")[:2])
-    except ValueError:
-        return None
-    now = now or time.time()
-    for i in range(8):
-        t = time.localtime(now + i * 86400)
-        if DAYS[t.tm_wday] not in days:
-            continue
-        ts = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, hh, mm, 0, 0, 0, -1))
-        if ts > now:
-            return ts
-    return None
+def archive_until_text():
+    return f"restorable for {CFG['ARCHIVE_DAYS']} days with `box restore NAME`"
 
 
 def advice(g):
@@ -133,14 +105,19 @@ def advice(g):
     for n in agent_notices():
         out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
                    f"({n['why']}). Mention it to the user if they ask why a tool changed.")
-    rb = scheduled_reboot()
-    wk = next_weekly_reboot()
-    if wk and wk - time.time() < 12 * 3600 and not (rb and abs(rb - wk) < 3600):
-        out.append(f"The box will REBOOT on {fmt_ts(wk)} (scheduled weekly reboot). Only `box serve` "
-                   "services and `box t3` come back by themselves. Save work and finish long jobs before then.")
-    if rb:
-        out.append(f"The box will REBOOT on {fmt_ts(rb)} for security updates. Only `box serve` "
-                   "services and `box t3` come back by themselves. Save work and finish long jobs before then.")
+    rb = sb.reboot_info(CFG)
+    sched = rb["schedule"]
+    back = ("Only `box serve` services, group servers and T3 Code come back by themselves. Save work and finish "
+            "long jobs before then.")
+    if rb["postponed"]:
+        out.append(f"The box is about to REBOOT (its scheduled reboot, {sched}). It's waiting for agents to finish "
+                   f"their current turn, until {fmt_ts(rb['latest'])} at the latest. Wrap up now; don't start "
+                   f"long jobs. {back}")
+    elif rb["at"] and rb["why"] == "updates":
+        out.append(f"The box will REBOOT on {fmt_ts(rb['at'])} for security updates. {back}")
+    elif rb["at"] and rb["at"] - time.time() < 12 * 3600:
+        out.append(f"The box will REBOOT on {fmt_ts(rb['at'])}: its scheduled reboot, {rb['schedule']}. If an agent "
+                   f"is mid-turn it waits up to 2 hours. {back}")
     b = g["box"]
     if b["level"] == "busy":
         out.append("The box is BUSY right now. Postpone heavy builds/tests if possible; "
@@ -161,8 +138,18 @@ def advice(g):
                    else "You are OVER your disk budget. Free space now.")
     for p in j.get("projects", []):
         if p.get("delete_on"):
-            out.append(f"Project ~/projects/{p['name']} will be DELETED on {fmt_ts(p['delete_on'])} "
-                       f"(idle {p['idle_days']}d). Touch/commit to keep it, or push it to git.")
+            out.append(f"Project ~/projects/{p['name']} will be ARCHIVED on {fmt_ts(p['delete_on'])} "
+                       f"(idle {p['idle_days']}d; then {archive_until_text()}). Touch it to keep it, or push it to git.")
+    try:  # live from disk (a restore shows up right away); the janitor's last report otherwise
+        import sbclean
+        arch = [{"name": x["name"], "until": x["until"]}
+                for x in sbclean.list_archives(HOME, sb.cfg_int(CFG, "ARCHIVE_DAYS")) if os.path.isdir(x["path"])]
+    except (ImportError, OSError, ValueError):
+        arch = j.get("archives", [])
+    arch = [a for a in arch if a.get("until", 0) > time.time()]
+    if arch:
+        out.append("ARCHIVED projects (" + archive_until_text() + "): "
+                   + ", ".join(f"{a['name']} (until {fmt_ts(a['until'])})" for a in arch[:8]) + ".")
     if b["disk_free"] < b["disk_total"] * 0.1:
         out.append("The machine's disk is almost full. Avoid large downloads.")
     return out
@@ -197,7 +184,7 @@ def cmd_status(a):
     for ad in advice(g):
         lines.append(("- " if a.agent else "! ") + ad)
     if a.agent and lim:
-        lines.append("Rules: use ~/projects (auto-deleted when idle), ~/services, ~/keep; prefix heavy "
+        lines.append("Rules: use ~/projects (archived when idle), ~/services, ~/keep; prefix heavy "
                      "jobs with `box heavy --`; servers via `box serve`; log anything about this machine that "
                      "slows you down or fails with `box issue \"...\"`. Full rules: `box rules`.")
     print("\n".join(lines))
@@ -221,7 +208,7 @@ def port_in_use(p):
 def cmd_ports(a):
     r = ports()
     if not r:
-        sys.exit("you are not a sharedbox friend account; any free port is fine")
+        sys.exit(f"you are not a {BRAND} friend account; any free port is fine")
     used = [p for p in range(r[0], r[1] + 1) if port_in_use(p)]
     print(f"your ports: {r[0]}-{r[1]}  ({r[0]} is reserved for your T3 Code server)")
     print("in use: " + (", ".join(map(str, used)) or "none"))
@@ -397,6 +384,44 @@ def cmd_clean(a):
     print(f"total: {sb.human(rep['freed'])}")
 
 
+# ---------- restore (archived projects) ----------
+
+def cmd_restore(a):
+    import sbclean
+    days = sb.cfg_int(CFG, "ARCHIVE_DAYS")
+    arch = [x for x in sbclean.list_archives(HOME, days) if os.path.isdir(x["path"])]
+    if not a.name:
+        if a.json:
+            print(json.dumps([{k: x[k] for k in ("name", "path", "archived_at", "until", "git_remote")} for x in arch],
+                             indent=2))
+            return
+        if not arch:
+            print(f"No archived projects. (Projects untouched for {CFG['PROJECT_TTL_DAYS']} days are archived here "
+                  f"and kept {days} days.)")
+            return
+        print(f"Archived projects ({archive_until_text()}):")
+        for x in arch:
+            print(f"  {x['name']:<24} archived {fmt_ts(x['archived_at'])}, deleted after {fmt_ts(x['until'])}")
+        return
+    want = a.name.strip().rstrip("/").removeprefix("~/projects/")
+    hits = [x for x in arch if want in (x["name"], os.path.basename(x["dir"]))]
+    if not hits:
+        sys.exit(f"box restore: no archived project called {want!r}. `box restore` lists them.")
+    x = hits[0]  # newest
+    dest = os.path.join(HOME, "projects", x["name"])
+    if os.path.lexists(dest):
+        sys.exit(f"box restore: ~/projects/{x['name']} exists again. Rename or remove it first, or copy what you "
+                 f"need from {x['path']}")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    os.rename(x["path"], dest)
+    os.utime(dest)  # touched: the janitor gives it a fresh PROJECT_TTL_DAYS
+    shutil.rmtree(x["dir"], ignore_errors=True)
+    if a.json:
+        print(json.dumps({"ok": True, "name": x["name"], "path": dest}))
+    else:
+        print(f"Restored ~/projects/{x['name']}.")
+
+
 # ---------- agent rules ----------
 
 def render_rules(notices=()):
@@ -456,8 +481,9 @@ def rule_fields(tl="", extras=(), nt=""):
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
         cache_ttl=CFG["CACHE_TTL_DAYS"], artifact_ttl=CFG["ARTIFACT_TTL_DAYS"],
         tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], updates=updates_text(),
-        reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
-                     "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
+        reboot_days=(f"It also reboots {sb.reboot_schedule_text(CFG)}, whether or not there are updates; that "
+                     "reboot waits up to 2 hours while an agent is mid-turn.") if reboot_days() else "",
+        archive_days=CFG["ARCHIVE_DAYS"], t3_idle=CFG["T3_IDLE_DAYS"], brand=BRAND, slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
         serve_public=(f"\n- Public link (behind the box's login, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
@@ -555,6 +581,19 @@ def cmd_rules(a):
 # ---------- T3 Code (web UI for agents) ----------
 
 T3_UNIT = "sb-t3.service"
+T3_SLEEPING = os.path.join(HOME, ".sharedbox", "t3-sleeping")  # stopped for being unused (T3_IDLE_DAYS)
+
+
+def t3_sleep():
+    """Stop and disable T3 Code after T3_IDLE_DAYS unused (the janitor decides, this runs as the user). Disabled,
+    so a reboot doesn't wake it either; the next visit (the gate's /_box/open, the T3 button, `box t3`)
+    re-enables and starts it."""
+    r = sctl("disable", "--now", T3_UNIT, capture=True)
+    if r.returncode == 0:
+        os.makedirs(os.path.dirname(T3_SLEEPING), exist_ok=True)
+        with open(T3_SLEEPING, "w") as f:
+            f.write(f"{int(time.time())}\n")
+    return r.returncode == 0
 
 
 def t3_env():
@@ -586,6 +625,10 @@ def listening(host, port):
 
 def t3_ensure(host, port, env, quiet=False):
     """Write the T3 user unit and make sure it's enabled and started. Doesn't wait for it."""
+    try:
+        os.unlink(T3_SLEEPING)  # awake again
+    except OSError:
+        pass
     os.makedirs(os.path.join(HOME, "projects"), exist_ok=True)
     os.makedirs(UNIT_DIR, exist_ok=True)
     unit = ["[Unit]", "Description=T3 Code (box t3)", "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
@@ -620,7 +663,9 @@ def cmd_t3(a):
         os.execvp("journalctl", ["journalctl", "--user", "-u", T3_UNIT, "-n", "200", "--no-pager"])
     if a.action == "status":
         up = listening(host, port)
-        print(f"T3 Code: {'running' if up else 'not running'} at http://{host}:{port}/")
+        state = "running" if up else ("sleeping (unused for a while; opening it starts it)"
+                                      if os.path.exists(T3_SLEEPING) else "not running")
+        print(f"T3 Code: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open my T3 Code")
         return
     # start (if needed) + pair
     t3_ensure(host, port, env)
@@ -640,8 +685,8 @@ Open this link in your browser within 30 minutes to pair it:
 
   {url}
 
-Need another device later? Run `box t3 pair` for a fresh link.
-First time? Log in to your agent at {portal_url()} (or `box setup` in a terminal); T3 uses that login.
+Easiest from now on: open {portal_url()} on any device and click "Open my T3 Code".
+First time? Log in to your agent on that page too; T3 uses that login.
 T3_PAIR_URL={url}""")
 
 
@@ -758,15 +803,18 @@ def cmd_agents(a):
     tv = tools()
     _, _, info = agent_info()
     mine = {b: ag.get("mine") for ag in info.values() for b in ag.get("bins") or [] if ag.get("mine")}
+    web = {k for k in PORTAL_LOGINS}
     print(f"{'agent':<14}{'version':<12}{'logged in':<11}how to log in")
     for name, label, _, files, envs, how in AGENTS:
         if not shutil.which(name):
             print(f"{label:<14}{'-':<12}{'':<11}not installed (ask the owner: box request \"install {name}\")")
             continue
         ver = mine.get(name) or tv.get(name, {}).get("version", "?")
-        print(f"{label:<14}{ver:<12}{'yes' if logged_in(files, envs) else 'NO':<11}{how}")
+        print(f"{label:<14}{ver:<12}{'yes' if logged_in(files, envs) else 'NO':<11}"
+              + ("on your page (below)" if name in web else how))
     print(f"{'GitHub (gh)':<14}{tv.get('gh', {}).get('version', '-'):<12}{'yes' if gh_ok() else 'NO':<11}"
-          "run `gh auth login --web` then `gh auth setup-git`")
+          "on your page (below)")
+    print(f"\nLog in with a click, no terminal needed: {portal_url()}")
 
 
 def ask(q, default=True):
@@ -834,7 +882,8 @@ def cmd_setup(a):
 All set. Tips:
   • Start agents inside tmux so they keep running when you disconnect:  tmux new -A -s main
     (detach: Ctrl-b d · come back later: tmux attach)
-  • Work in ~/projects/<name>. Projects idle for {CFG['PROJECT_TTL_DAYS']} days are deleted, so push to git.
+  • Work in ~/projects/<name>. Projects idle for {CFG['PROJECT_TTL_DAYS']} days are archived ({archive_until_text()}),
+    so push to git.
   • `box` shows your usage · `box agents` shows agent logins · `box rules` shows what your agents are told
   • `box updates` shows whether your agents update nightly
 """)
@@ -848,14 +897,14 @@ def cmd_welcome(a):
     have = ", ".join(t["label"] for k, t in sorted(tv.items())
                      if k in ("claude", "codex", "gemini", "opencode")) or "see `box agents`"
     print(f"""
-Welcome to {socket.gethostname()}, {ME.pw_name}!
+Welcome to {BRAND} on {socket.gethostname()}, {ME.pw_name}!
 
   Agents installed:  {have}
   Your ports:        {f'{r[0]}-{r[1]}' if r else 'any'}
-  Get started:       {portal_url()}   (log in to your agent + GitHub in the browser)
-                     or `box setup` here in the terminal
-  Web UI:            box t3        (your own T3 Code; prints a link to open in your browser)
+  Your page:         {portal_url()}
+                     log in to your agent + GitHub with a click, then "Open my T3 Code"
   Or terminal:       tmux new -A -s main   →   cd ~/projects && mkdir myapp && cd myapp && claude
+                     (`box setup` does the logins here instead)
 
 Your agents already know the house rules (limits, where files go, how to run builds and servers).
 """)
@@ -904,7 +953,7 @@ def cmd_invite(a):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
+        sys.exit(f"could not reach the box's provisioner ({e}). Is {BRAND} installed and up to date?")
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
     # creating the account (and, in cloudflare mode, updating the Access allow list) takes a while
     wait = 30 if a.no_create and not a.email else 120
@@ -948,7 +997,7 @@ def shared_request(req, wait=60):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        return {"ok": False, "error": f"could not reach the box's provisioner ({e}). Is sharedbox installed "
+        return {"ok": False, "error": f"could not reach the box's provisioner ({e}). Is {BRAND} installed "
                                       "and up to date (shared servers need the latest install.sh)?"}
     reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
@@ -1169,7 +1218,7 @@ def admin_request(req, wait):
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
     sys.exit(f"no answer from the provisioner after {wait} s (is sharedbox-provision.path running, "
-             "and is sharedbox up to date? `box skills share` needs the latest install.sh)")
+             f"and is {BRAND} up to date? `box skills share` needs the latest install.sh)")
 
 
 # ---------- issues (agents log friction; the owner reads everyone's) ----------
@@ -1388,11 +1437,14 @@ def portal_status():
     for key, (label, cmd, _) in PORTAL_LOGINS.items():
         if shutil.which(cmd[0]):
             out["logins"][key] = {"label": label, "ok": portal_logged_in(key)}
+            if out["logins"][key]["ok"]:
+                mark_setup_done(key)  # also covers friends who logged in before setup-done was written here
     if out["logins"].get("gh", {}).get("ok") and not all(git_ident()):
         gh_finish()
     r, host = ports(), sb.tailscale_ip4()
     if r and host and shutil.which("t3"):
         out["t3"] = {"url": f"http://{host}:{r[0]}/", "running": listening(host, r[0])}
+        out["t3"]["sleeping"] = not out["t3"]["running"] and os.path.exists(T3_SLEEPING)
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
     out["ssh"] = bool(ssh_keys())
@@ -1466,6 +1518,17 @@ def portal_add_key(key):
     return {"ok": True, "key_added": True}
 
 
+def mark_setup_done(key):
+    """A browser login to an AI worked: the friend is set up, so SSH logins show `box status`, not the welcome."""
+    if key == "gh":
+        return
+    try:
+        os.makedirs(os.path.join(HOME, ".sharedbox"), exist_ok=True)
+        open(os.path.join(HOME, ".sharedbox", "setup-done"), "a").close()
+    except OSError:
+        pass
+
+
 def portal_login_start(key, console=False):
     label, cmd, paste = PORTAL_LOGINS[key]
     if not shutil.which(cmd[0]):
@@ -1473,6 +1536,7 @@ def portal_login_start(key, console=False):
     if portal_logged_in(key):
         if key == "gh":
             gh_finish()
+        mark_setup_done(key)
         return {"ok": True, "done": True}
     if key == "claude" and console:
         cmd = cmd + ["--console"]
@@ -1497,6 +1561,7 @@ def portal_login_start(key, console=False):
             return {"ok": True, "url": urls[0], "code": codes[0] if codes else None, "paste": paste}
         if "[login exited" in screen:
             if portal_logged_in(key):
+                mark_setup_done(key)
                 return {"ok": True, "done": True}
             break
     return {"ok": False, "error": f"{label} login didn't start: " + tail(login_screen(key))}
@@ -1521,11 +1586,13 @@ def portal_login_wait(key, seconds):
             if key == "gh":
                 gh_finish()
             tmux("kill-session", "-t", key)
+            mark_setup_done(key)
             return {"ok": True, "done": True}
         if "[login exited" in login_screen(key):
             break
         time.sleep(1)
     if portal_logged_in(key):
+        mark_setup_done(key)
         return {"ok": True, "done": True}
     return {"ok": False, "error": f"{label} login hasn't finished: " + tail(login_screen(key))}
 
@@ -1709,6 +1776,58 @@ def cmd_portal(a):
     print(json.dumps(out))
 
 
+CLAUDE_HOOK = "box status --agent"
+CLAUDE_HOOK_MARK = os.path.join(HOME, ".sharedbox", "claude-hook-added")
+
+
+def sync_claude_hook():
+    """Existing accounts get the SessionStart hook new ones get from skel (~/.claude/settings.json), once:
+    merged in without touching anything else; a file that isn't valid JSON is left alone, and if the user
+    removes the hook later it stays removed."""
+    if os.path.exists(CLAUDE_HOOK_MARK):
+        return
+    path = os.path.join(HOME, ".claude", "settings.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    except (OSError, ValueError):
+        return
+    if not isinstance(cfg, dict):
+        return
+    hooks = cfg.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return
+    start = hooks.setdefault("SessionStart", [])
+    if not isinstance(start, list):
+        return
+    have = any(isinstance(g, dict) and any(isinstance(h, dict) and str(h.get("command", "")).startswith(CLAUDE_HOOK)
+                                           for h in (g.get("hooks") or []) if isinstance(g.get("hooks"), list))
+               for g in start)
+    if not have:
+        start.append({"hooks": [{"type": "command", "command": CLAUDE_HOOK}]})
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp-{os.getpid()}"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        try:
+            os.chmod(tmp, os.stat(path).st_mode & 0o777)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    os.makedirs(os.path.dirname(CLAUDE_HOOK_MARK), exist_ok=True)
+    open(CLAUDE_HOOK_MARK, "a").close()
+
+
+def sync_hooks():
+    try:
+        sync_claude_hook()
+    except OSError:
+        pass  # a broken ~/.claude must never stop rules from syncing
+
+
 def cmd_init_home(a):
     key = sys.stdin.read().strip()
     os.umask(0o077)
@@ -1732,9 +1851,10 @@ def cmd_init_home(a):
             with open(dst, "w") as f:
                 f.write(txt)
     sync_agent_files()
+    sync_hooks()
 
 
-NOTICE_KEYS = ("SECURITY", "DELETED", "OVER", "REBOOT")
+NOTICE_KEYS = ("SECURITY", "DELETED", "ARCHIVED", "OVER", "REBOOT")
 
 
 def rule_notices(box=None, janitor=None):
@@ -1747,22 +1867,27 @@ def rule_notices(box=None, janitor=None):
 
 def cmd_sync_rules(a):
     sync_agent_files(rule_notices())
+    sync_hooks()
 
 
 def cmd_pass(a):
     import sbclean
     plan = json.load(sys.stdin)
     rep = sbclean.run_pass(plan)
+    if plan.get("t3_sleep") and not plan.get("dry_run"):
+        rep["t3_stopped"] = t3_sleep()
     rep["services"] = list_services()
     status = {"measured": int(time.time()), "disk": plan.get("usage"),
               "budget": plan.get("budget"), "over_budget": plan.get("over"),
               "over_budget_deadline": plan.get("over_deadline"),
               "projects": rep["projects"], "services": rep["services"],
+              "archives": rep.get("archives", []), "last_archived": rep.get("archived", []),
               "last_deleted": rep["deleted"][-20:]}
     if not plan.get("dry_run"):
         os.makedirs(os.path.dirname(STATUS_FILE), exist_ok=True)
         sb.write_json(STATUS_FILE, status, mode=0o600)
         sync_agent_files(rule_notices(plan.get("box"), status))
+        sync_hooks()
     json.dump(rep, sys.stdout)
 
 
@@ -1787,6 +1912,8 @@ def main():
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_shared)
     x = s.add_parser("clean"); x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_clean)
+    x = s.add_parser("restore", help="put an archived project back in ~/projects (lists them without NAME)")
+    x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
     x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
     x.set_defaults(fn=cmd_setup)

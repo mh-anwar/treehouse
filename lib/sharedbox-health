@@ -338,6 +338,12 @@ def build_report(cfg, g, findings, new_ids, resolved):
         us.append("New friends: " + ", ".join(e["user"] for e in ev["user_created"]))
     if ev.get("deleted"):
         us.append(f"Janitor deleted {len(ev['deleted'])} item(s)")
+    if ev.get("archived"):
+        us.append(f"Projects archived (restorable with box restore): {len(ev['archived'])}")
+    if ev.get("t3_idle_stopped"):
+        us.append("Idle T3 Code servers put to sleep: " + ", ".join(sorted({e.get("user") or "" for e in ev["t3_idle_stopped"]})))
+    if ev.get("reboot_postponed"):
+        us.append(f"Scheduled reboots that waited for agents to finish: {len(ev['reboot_postponed'])}")
     for k in ("over_budget", "user_suspended", "janitor_error", "disk_pressure"):
         if ev.get(k):
             us.append(f"{k.replace('_', ' ')}: {len(ev[k])}x " + ", ".join(sorted({e.get('user') or '' for e in ev[k]})))
