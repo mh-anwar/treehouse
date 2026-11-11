@@ -14,6 +14,11 @@ fi
 
 systemctl disable --now sharedbox-cloudflared.service sharedbox-gate.service sharedbox-web.service sharedbox-provision.path \
     sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer sharedbox-reboot.timer 2>/dev/null || true
+# shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
+for u in /etc/systemd/system/sb-shared-*.service; do
+    [[ -e $u ]] && systemctl disable --now "$(basename "$u")" 2>/dev/null || true
+done
+rm -f /etc/systemd/system/sb-shared-*.service /etc/systemd/system/sharedbox-shared.slice
 rm -f /etc/systemd/system/sharedbox-*.{service,timer,path}
 rm -rf /etc/systemd/system/sharedbox-gate.service.d
 # apt timer drop-ins exist only on Debian/Ubuntu (install.sh adds nothing like it on Arch); no-ops elsewhere
@@ -28,4 +33,4 @@ rm -f /usr/local/bin/box /usr/local/sbin/sharedbox-admin /usr/local/sbin/sharedb
     /etc/profile.d/sharedbox.sh
 echo "if you turned on the public front door: sudo tailscale funnel --https=443 off   (not done here; tailscaled is never touched)"
 echo "Cloudflare mode: the tunnel, DNS record and Access app stay in your Cloudflare account (delete them in the dashboard); cloudflared stays installed"
-echo "removed. Kept: system packages and agents installed by sharedbox-tools, /etc/sharedbox, /var/lib/sharedbox (archives, registry), friend accounts and their limit drop-ins."
+echo "removed. Kept: system packages and agents installed by sharedbox-tools, /etc/sharedbox, /var/lib/sharedbox (archives, registry), friend accounts and their limit drop-ins, shared servers' code in /srv/shared and the sbshared user."
