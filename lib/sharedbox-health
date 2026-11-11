@@ -416,6 +416,25 @@ def cmd_report(cfg, a):
         print(f"Subject: {subject}\n\n{text}")
 
 
+def cloudflare_usage(cfg):
+    """Zero Trust Free is 50 users at $0. Warn early (CF_SEAT_LIMIT) so the owner never has to pay."""
+    if sb.public_mode(cfg) != "cloudflare":
+        return []
+    try:
+        import sbcloudflare
+        c = sbcloudflare.client(cfg)
+        seats = sbcloudflare.seats_in_use(cfg, c)
+        allowed = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, c))
+    except Exception as e:  # noqa: BLE001 - an API hiccup is not an emergency
+        return [("red", f"couldn't check Cloudflare usage: {str(e)[:120]}")] if "seat" in str(e).lower() else []
+    limit = sb.cfg_int(cfg, "CF_SEAT_LIMIT") or 40
+    out = []
+    if len(seats) >= limit or len(allowed) > limit:
+        out.append(("red", f"Cloudflare usage: {len(seats)} seats in use, {len(allowed)} emails allowed "
+                           f"(warning level {limit}; the free plan stops at 50 and never bills by itself)"))
+    return out
+
+
 def cmd_check(cfg, a):
     """Hourly: email only about urgent things that weren't already reported."""
     since = time.time() - 2 * 3600
@@ -426,6 +445,7 @@ def cmd_check(cfg, a):
     stale = (time.time() - os.path.getmtime(METRICS)) / 60 if os.path.exists(METRICS) else None
     if stale and stale > 30:
         urgent.append(("red", f"metrics sampling stopped {stale:.0f} min ago"))
+    urgent += cloudflare_usage(cfg)
     state = sb.read_json(ALERT_STATE, {}) or {}
     now = time.time()
     fresh = [m for _, m in urgent if now - state.get(m, 0) > 24 * 3600]   # same alert at most daily

@@ -465,8 +465,8 @@ def update_policy(cfg, c, add=(), remove=()):
         return sorted(seen)
 
 
-def set_seat_expiry(cfg, c, hours="730h"):
-    """Free the Access seat of anyone who hasn't logged in for `hours` (default ~1 month), so seats never pile up."""
+def set_seat_expiry(cfg, c, hours="2190h"):
+    """Free the Access seat of anyone who hasn't logged in for `hours` (default ~3 months), so seats never pile up."""
     acct = cfg.get("CF_ACCOUNT_ID", "")
     org = c.get(f"/accounts/{acct}/access/organizations", need="access")
     if org.get("user_seat_expiration_inactive_time") == hours:
@@ -475,3 +475,10 @@ def set_seat_expiry(cfg, c, hours="730h"):
     body["user_seat_expiration_inactive_time"] = hours
     c.call("PUT", f"/accounts/{acct}/access/organizations", body, need="access")
     return True
+
+
+def seats_in_use(cfg, c):
+    """Emails currently holding a Zero Trust seat (each one counts toward the free plan's 50)."""
+    acct = cfg.get("CF_ACCOUNT_ID", "")
+    return [u.get("email") for u in c.all(f"/accounts/{acct}/access/users", need="access")
+            if u.get("access_seat") or u.get("gateway_seat")]
