@@ -29,6 +29,17 @@ CACHE_DIRS = [
     ".rustup/downloads", ".rustup/tmp",
 ]
 
+# caches whose children are separate things that age on their own: one entry per browser build, so an old
+# Playwright revision goes once nothing has used it for CACHE_TTL_DAYS, even though the folder itself is in use
+CACHE_NESTED = [".cache/ms-playwright", ".cache/puppeteer"]
+
+# content-addressed caches that are used every day (so never stale as a whole) and grow forever: their own tool
+# removes what nothing refers to any more. (tool, args, cache dir it cleans)
+NATIVE_PRUNERS = [
+    ("uv", ["cache", "prune"], ".cache/uv"),
+    ("pnpm", ["store", "prune"], ".local/share/pnpm/store"),
+]
+
 # directory name -> marker files; empty tuple = always a build artifact
 ARTIFACTS = {
     "node_modules": (), ".next": (), ".nuxt": (), ".turbo": (), ".parcel-cache": (),
@@ -356,21 +367,38 @@ def archive_project(home, path, name, now, idle_days, archive_days, dry_run):
     return dest, size
 
 
-def run_pass(plan):
-    home = os.path.expanduser("~")
-    now = time.time()
-    dry = plan.get("dry_run", False)
-    ttl = plan["project_ttl_days"] * DAY
-    art_ttl = plan["artifact_ttl_days"] * DAY
+def _tool(home, name):
+    """The user's own copy of a tool (the janitor runs us with a bare PATH): ~/.local/bin, nvm, pnpm's home."""
+    import glob
+    path = os.pathsep.join([os.path.join(home, ".local", "bin"), os.path.join(home, ".local", "share", "pnpm"),
+                            *sorted(glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "bin")),
+                                    reverse=True), "/usr/local/bin", "/usr/bin", "/bin"])
+    return shutil.which(name, path=path), path
+
+
+def _tool_running(name):
+    """One of my processes is that tool (an install in progress): don't prune under it."""
+    me = os.getuid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != me:
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = f.read(4096).split(b"\0")[:2]
+        except OSError:
+            continue
+        if any(os.path.basename(a.decode(errors="replace")) == name for a in argv):
+            return True
+    return False
+
+
+def clean_caches(plan, home, now, cwds, over, dry):
+    """Caches: stale entries always, everything when over budget; then native prunes. Returns deleted rows."""
     cache_ttl = plan["cache_ttl_days"] * DAY
     tmp_ttl = plan["tmp_ttl_days"] * DAY
-    warn = plan["warn_days"] * DAY
-    usage = plan.get("usage", 0)
-    budget = plan.get("budget")
-    over = budget is not None and usage > budget
     deleted = []
-    cwds = my_paths()
-    pinned = service_paths(home)
 
     def rm(path, reason):
         try:
@@ -381,8 +409,8 @@ def run_pass(plan):
         deleted.append({"path": path, "bytes": n, "reason": reason})
         return n
 
-    # 1. caches: stale entries always; everything when over budget
-    for rel in CACHE_DIRS:
+    nested = {os.path.join(home, r) for r in CACHE_NESTED}
+    for rel in CACHE_DIRS + CACHE_NESTED:
         d = os.path.join(home, rel)
         if not _is_real_dir(d):
             continue
@@ -391,10 +419,28 @@ def run_pass(plan):
         except OSError:
             continue
         for e in entries:
+            if e.path in nested and not over:
+                continue  # judged entry by entry below
             if _inside(e.path, cwds):  # a running build/daemon (e.g. ~/.gradle/daemon) is using it
                 continue
             if over or plan.get("force_caches") or now - last_used(e.path) > cache_ttl:
                 rm(e.path, "cache" + (" (over budget)" if over else ""))
+
+    for name, args, rel in NATIVE_PRUNERS:
+        d = os.path.join(home, rel)
+        exe, path = _tool(home, name)
+        if dry or not exe or not _is_real_dir(d) or _tool_running(name):
+            continue
+        before = tree_size(d)
+        try:
+            subprocess.run([exe, *args], cwd=home, env={**os.environ, "PATH": path, "UV_LOCK_TIMEOUT": "10"}, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600, check=False)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            deleted.append({"path": d, "bytes": 0, "reason": f"{name} prune", "error": str(e)[:200]})
+            continue
+        freed = max(0, before - tree_size(d))
+        if freed:
+            deleted.append({"path": d, "bytes": freed, "reason": f"{name} prune (entries nothing uses)"})
 
     # 2. /tmp and /var/tmp leftovers owned by me
     me = os.getuid()
@@ -421,6 +467,42 @@ def run_pass(plan):
         for e in vers[2:]:
             if not any(x.startswith(e.path + "/") for x in exes):
                 rm(e.path, "old T3 Code version")
+
+    return deleted
+
+
+def run_cache_pass(plan):
+    """Owner accounts: caches, tmp leftovers and old T3 versions only. Their projects are never archived and they
+    have no enforced budget, but caches that nothing uses still go."""
+    home = os.path.expanduser("~")
+    deleted = clean_caches(plan, home, time.time(), my_paths(), False, plan.get("dry_run", False))
+    return {"deleted": deleted, "freed": sum(d["bytes"] for d in deleted), "dry_run": plan.get("dry_run", False)}
+
+
+def run_pass(plan):
+    home = os.path.expanduser("~")
+    now = time.time()
+    dry = plan.get("dry_run", False)
+    ttl = plan["project_ttl_days"] * DAY
+    art_ttl = plan["artifact_ttl_days"] * DAY
+    warn = plan["warn_days"] * DAY
+    usage = plan.get("usage", 0)
+    budget = plan.get("budget")
+    over = budget is not None and usage > budget
+    deleted = []
+    cwds = my_paths()
+    pinned = service_paths(home)
+
+    def rm(path, reason):
+        try:
+            n = remove(path, dry)
+        except OSError as e:
+            deleted.append({"path": path, "bytes": 0, "reason": reason, "error": str(e)})
+            return 0
+        deleted.append({"path": path, "bytes": n, "reason": reason})
+        return n
+
+    deleted += clean_caches(plan, home, now, cwds, over, dry)
 
     # 3. projects
     projects = []

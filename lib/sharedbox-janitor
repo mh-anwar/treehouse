@@ -484,12 +484,38 @@ def cmd_run(cfg, a):
             # events.jsonl is world-readable: keep the friend-controlled error text in the journal only
             sb.log_event("janitor_error", name, error=type(e).__name__)
             print(f"{name}: error: {str(e)[-1000:]!r}", file=sys.stderr)
+    owner_cache_passes(cfg, users, a)
     if not a.dry_run:
         sb.write_json(STATE, state, mode=0o600)
         sb.write_json(sb.USAGE, usage_out, mode=0o644)
     else:
         print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "services"}
                           for k, v in usage_out["users"].items()}, indent=2))
+
+
+def owner_cache_passes(cfg, users, a):
+    """The owner's own accounts get no budget and no project archiving, but caches nothing has used for
+    CACHE_TTL_DAYS (and what uv/pnpm can prune) still go: they otherwise grow without end."""
+    names = set(sb.admin_users(cfg))
+    owner = sb.owner_account(cfg)
+    if owner:
+        names.add(owner.pw_name)
+    plan = {"cache_ttl_days": sb.cfg_int(cfg, "CACHE_TTL_DAYS"), "tmp_ttl_days": sb.cfg_int(cfg, "TMP_TTL_DAYS"),
+            "dry_run": a.dry_run}
+    for name in sorted(names - set(users)):
+        if a.user and name != a.user:
+            continue
+        try:
+            rep = user_pass(pwd.getpwnam(name), plan, "_cache-pass",
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("deleted"), list))
+            for d in rep["deleted"]:
+                if a.dry_run:
+                    print(f"{name}: would delete {sb.human(d.get('bytes', 0)):>8} {sb.printable(str(d.get('path')))}  "
+                          f"({sb.printable(str(d.get('reason')))})")
+            if rep.get("freed", 0) > 50 << 20 and not a.dry_run:
+                sb.log_event("caches_pruned", name, bytes=rep["freed"])
+        except Exception as e:  # one account's trouble must not stop the rest of the pass
+            print(f"{name}: cache pass error: {str(e)[-500:]!r}", file=sys.stderr)
 
 
 def cmd_guard(cfg, a):
