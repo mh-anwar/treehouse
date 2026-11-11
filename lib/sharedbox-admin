@@ -1508,7 +1508,7 @@ REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedb
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-approve", "friends-deny", "friends-update")
+                   "friends-approve", "friends-deny", "friends-update", "tune-service")
 
 
 def friend_record(cfg, name):
@@ -1808,9 +1808,42 @@ def friends_action(cfg, by, req):
             return signup_approve(cfg, str(req.get("id") or "")[:64], by=by)
         if act == "friends-deny":
             return signup_deny(cfg, str(req.get("id") or "")[:64], by=by)
+        if act == "tune-service":
+            return tune_service(str(req.get("op") or ""), str(req.get("unit") or "")[:80], by=by)
     except FriendError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": False, "error": "unknown request"}
+
+
+TUNE_STATE = os.path.join(sb.STATE_DIR, "tune.json")
+
+
+def tune_service(op, unit, by):
+    """`box tune disable|enable NAME` (owner only, after the owner said yes): a service from sharedbox-tune's
+    fixed list of ones a server rarely needs. Never anything else; reversible with enable; logged."""
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("sbtune", os.path.join(sb.LIB_DIR, "sharedbox-tune"))
+    tune = importlib.util.module_from_spec(importlib.util.spec_from_loader("sbtune", loader))
+    loader.exec_module(tune)
+    unit = unit if unit.endswith(".service") else unit + ".service"
+    if op not in ("disable", "enable"):
+        raise FriendError("use: box tune disable NAME  or  box tune enable NAME")
+    if unit not in tune.SWITCHABLE:
+        raise FriendError(f"{sb.printable(unit)[:60]} isn't on the list treehouse may switch "
+                          f"({', '.join(sorted(u.removesuffix('.service') for u in tune.SWITCHABLE))})")
+    if op == "disable" and unit == "wpa_supplicant.service" and tune.wireless_in_use():
+        raise FriendError("a Wi-Fi link is up: the box may be using wpa_supplicant for its network, so it stays on")
+    r = run(["systemctl", f"{op}", "--now", unit], check=False, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise FriendError(f"systemctl {op} {unit} failed: {(r.stderr or '').strip()[-300:]}")
+    st = sb.read_json(TUNE_STATE, {}) or {}
+    st.setdefault("services", {})[unit] = {"state": op + "d", "by": by, "ts": int(time.time())}
+    sb.write_json(TUNE_STATE, st, mode=0o644)
+    sb.log_event("tune_service", by, unit=unit, op=op)
+    return {"ok": True, "message": f"{unit.removesuffix('.service')} {op}d"
+            + (" (turn it back on any time: box tune enable " + unit.removesuffix(".service") + ")"
+               if op == "disable" else "")}
 
 
 # ---------- `box request`: friends ask, root installs packages itself or asks the owner ----------

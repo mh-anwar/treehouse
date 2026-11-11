@@ -171,6 +171,14 @@ def advice(g):
                    + ", ".join(f"{a['name']} (until {fmt_ts(a['until'])})" for a in arch[:8]) + ".")
     if b["disk_free"] < b["disk_total"] * 0.1:
         out.append("The machine's disk is almost full. Avoid large downloads.")
+    try:
+        slow_shell = eager_nvm_files()
+    except OSError:
+        slow_shell = []
+    if slow_shell:
+        out.append("This account's shell loads nvm the slow way (" + ", ".join("~/" + f for f in slow_shell) + "): "
+                   "~100 ms added to every command agents run. Run `box tune shell` now (keeps a backup, undoes itself "
+                   "if Node would change) and tell the user in a line.")
     naps = recent_docker_naps()
     if naps:
         out.append("Idle Docker databases were stopped to free memory: " + ", ".join(
@@ -827,8 +835,135 @@ def cmd_docker_nap(a):
     print(json.dumps(res))
 
 
+# ---------- fast shell start ----------
+# Agents (Codex, OpenCode, ...) start a login shell for every command they run, so shell start-up is paid
+# hundreds of times a turn. The usual culprit is nvm sourced eagerly from ~/.bashrc (~100 ms, often twice).
+# `box tune shell` swaps those lines for a block that puts nvm's default Node on PATH directly (a few ms) and loads
+# the real nvm the first time someone types `nvm`. It keeps a backup and undoes itself if `node` changes.
+
+SHELL_FILES = (".bashrc", ".bash_profile", ".profile")
+NVM_LINE_RE = re.compile(r"nvm\.sh|NVM_DIR/bash_completion|^\s*export\s+NVM_DIR=|^\s*nvm\s+use\b")
+FAST_NVM_BEGIN = "# >>> treehouse: fast nvm (box tune shell) >>>"
+FAST_NVM_END = "# <<< treehouse: fast nvm <<<"
+FAST_NVM = FAST_NVM_BEGIN + """
+# nvm's default Node goes on PATH right away; the full nvm (slow to load) loads the first time you type `nvm`.
+export NVM_DIR="$HOME/.nvm"
+_tb_nvm_default() {
+  local a=default n=0 v d
+  while [ $n -lt 6 ] && [ -f "$NVM_DIR/alias/$a" ]; do read -r v < "$NVM_DIR/alias/$a"; a=$v; n=$((n+1)); done
+  case $a in node|stable|lts/*|"") a=v ;; v*) ;; *) a=v$a ;; esac
+  [ -d "$NVM_DIR/versions/node/$a" ] && { echo "$NVM_DIR/versions/node/$a"; return; }
+  for d in "$NVM_DIR/versions/node/$a"*; do [ -d "$d" ] && echo "$d"; done | sort -V | tail -n 1
+}
+_tb_d=$(_tb_nvm_default)
+if [ -n "$_tb_d" ]; then
+  case ":$PATH:" in *":$_tb_d/bin:"*) ;; *) PATH="$_tb_d/bin:$PATH" ;; esac
+  export NVM_BIN="$_tb_d/bin"
+fi
+unset _tb_d; unset -f _tb_nvm_default
+nvm() { unset -f nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; nvm "$@"; }
+""" + FAST_NVM_END
+
+
+def eager_nvm_files(home=None):
+    """Shell files of this account that load nvm the slow way."""
+    out = []
+    for name in SHELL_FILES:
+        try:
+            with open(os.path.join(home or HOME, name)) as f:
+                text = f.read()
+        except OSError:
+            continue
+        body = re.sub(re.escape(FAST_NVM_BEGIN) + r".*?" + re.escape(FAST_NVM_END), "", text, flags=re.S)
+        if re.search(r"^[^#\n]*nvm\.sh", body, re.M):
+            out.append(name)
+    return out
+
+
+def shell_probe(home=None):
+    """(median ms of `bash -lc true`, what `node` is in a login shell)."""
+    env = dict(os.environ, HOME=home or HOME)
+    times = []
+    for _ in range(3):
+        t = time.monotonic()
+        subprocess.run(["bash", "-lc", "true"], capture_output=True, timeout=30, cwd=env["HOME"], env=env)
+        times.append((time.monotonic() - t) * 1000)
+    r = subprocess.run(["bash", "-lc", "command -v node && node --version"], capture_output=True, text=True,
+                       timeout=30, cwd=env["HOME"], env=env)
+    return sorted(times)[1], " ".join(r.stdout.split())
+
+
+def fast_nvm_rewrite(text, block=True):
+    """(text with every eager nvm line removed and, if block, one FAST_NVM block where the first one was, changed?)"""
+    text = re.sub(r"\n?" + re.escape(FAST_NVM_BEGIN) + r".*?" + re.escape(FAST_NVM_END), "", text, flags=re.S)
+    out, placed = [], False
+    for ln in text.split("\n"):
+        if not ln.lstrip().startswith("#") and NVM_LINE_RE.search(ln):
+            if block and not placed:
+                out.append(FAST_NVM)
+            placed = True
+            continue
+        out.append(ln)
+    return "\n".join(out), placed
+
+
+def tune_shell(home=None):
+    """Rewrite slow nvm loading; returns a message. Undoes itself if `node` would change."""
+    home = home or HOME
+    files = eager_nvm_files(home)
+    before_ms, before_node = shell_probe(home)
+    if not files:
+        return True, (f"Shell start: {before_ms:.0f} ms. No slow nvm loading found."
+                      + ("" if before_ms < 60 else " Something else is slow: find it with `bash -lxc true 2>&1 | less` "
+                         "(conda/pyenv/rbenv init, big completions) and load it lazily."))
+    backup = os.path.join(home, ".sharedbox", "backup", time.strftime("shell-%Y%m%d-%H%M%S"))
+    os.makedirs(backup, exist_ok=True)
+    originals = {}
+    for name in files:
+        path = os.path.join(home, name)
+        with open(path) as f:
+            originals[name] = f.read()
+        shutil.copy2(path, os.path.join(backup, name))
+    first = True
+    for name in SHELL_FILES:  # one block in total, in the first file that had nvm; the others only lose the lines
+        if name in originals:
+            new, _ = fast_nvm_rewrite(originals[name], block=first)
+            first = False
+            with open(os.path.join(home, name), "w") as f:
+                f.write(new)
+    after_ms, after_node = shell_probe(home)
+    if after_node != before_node:
+        for name, text in originals.items():
+            with open(os.path.join(home, name), "w") as f:
+                f.write(text)
+        return False, (f"undone: `node` would have changed ({before_node or 'none'} -> {after_node or 'none'}). "
+                       "Your files are back as they were.")
+    return True, (f"Shell start: {before_ms:.0f} ms -> {after_ms:.0f} ms (every command an agent runs pays this). "
+                  f"Same Node: {after_node or 'none'}. Changed: {', '.join('~/' + f for f in files)}; backup in {backup}.")
+
+
+def cmd_tune_shell():
+    ok, msg = tune_shell()
+    if not ok:
+        sys.exit("box tune shell: " + msg)
+    print(msg)
+
+
 def cmd_tune(a):
-    """The box's own efficiency (kernel, memory, disk, network): read-only report from sharedbox-tune."""
+    """The box's own efficiency (kernel, memory, disk, network): read-only report from sharedbox-tune.
+    `box tune disable|enable NAME`: the owner's accounts switch a service from sharedbox-tune's fixed list."""
+    if a.op == "shell":
+        return cmd_tune_shell()
+    if a.op:
+        if a.op not in ("disable", "enable") or not a.unit:
+            sys.exit("usage: box tune [--json]  |  box tune shell  |  box tune disable NAME  |  box tune enable NAME")
+        if ME.pw_name not in sb.admin_users(CFG):
+            sys.exit("box tune: only the box owner's accounts can switch services. Suggest it to the owner.")
+        res = admin_request({"action": "tune-service", "op": a.op, "unit": a.unit}, 180)
+        if not isinstance(res, dict) or not res.get("ok"):
+            sys.exit(f"box tune: {(res or {}).get('error') or 'failed'}")
+        print(res.get("message", "done"))
+        return
     os.execv(sys.executable, [sys.executable, "-I", os.path.join(sb.LIB_DIR, "sharedbox-tune"), "check"]
              + (["--json"] if a.json else []))
 
@@ -2543,6 +2678,8 @@ def main():
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
     x = s.add_parser("tune", help="how efficient the box itself is (kernel, memory, disk, network); read-only")
+    x.add_argument("op", nargs="?", help="shell (speed up your shell start) | disable|enable NAME (owner only)")
+    x.add_argument("unit", nargs="?")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_tune)
     x = s.add_parser("setup"); x.add_argument("--check", action="store_true")

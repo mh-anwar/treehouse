@@ -152,6 +152,9 @@ Typical waste:
 - No limits: compose `mem_limit:`, `org.gradle.jvmargs=-Xmx2g`, `--max-workers` from `box help heavy`, slim images.
 - Leaks: test browsers (Playwright, Puppeteer) not closed in teardown, 300+ MB each; background jobs your own runs
   started and forgot.
+- Slow shell start: agents start a shell for every command, so `time bash -lc true` should stay under ~30 ms.
+  After installing anything that hooks into the shell (nvm, conda, pyenv, rbenv, prompt tools) check it; for nvm run
+  `box tune shell`, for the others use their lazy or minimal init instead of the eager one their installer adds.
 
 @@ tune
 The box itself (kernel, memory, disk, network) should be so efficient nobody feels it, even when everyone is busy.
