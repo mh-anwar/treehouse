@@ -450,6 +450,11 @@ def update_policy(cfg, c, add=(), remove=()):
                 seen.add(e)
         if not new:
             raise CFError("refusing to write an empty Access policy (nobody could log in)")
+        limit = sb.cfg_int(cfg, "CF_SEAT_LIMIT")
+        if limit and len(seen) > limit and add - set(policy_emails(pol)):
+            # Zero Trust Free is 50 seats; staying well under means the owner never gets a bill
+            raise CFError(f"refusing to allow more than CF_SEAT_LIMIT={limit} emails (Cloudflare's free plan is 50 "
+                          "users). Remove someone first: sharedbox-admin access remove EMAIL")
         if new != include:
             body = {k: pol[k] for k in POLICY_FIELDS if k in pol and pol[k] is not None}
             body["include"] = new
@@ -458,3 +463,15 @@ def update_policy(cfg, c, add=(), remove=()):
             if not (add | owners) <= now or now & remove:
                 raise CFError("the Access policy didn't take the change; check it in the Zero Trust dashboard")
         return sorted(seen)
+
+
+def set_seat_expiry(cfg, c, hours="730h"):
+    """Free the Access seat of anyone who hasn't logged in for `hours` (default ~1 month), so seats never pile up."""
+    acct = cfg.get("CF_ACCOUNT_ID", "")
+    org = c.get(f"/accounts/{acct}/access/organizations", need="access")
+    if org.get("user_seat_expiration_inactive_time") == hours:
+        return False
+    body = {k: org[k] for k in ("name", "auth_domain") if org.get(k)}
+    body["user_seat_expiration_inactive_time"] = hours
+    c.call("PUT", f"/accounts/{acct}/access/organizations", body, need="access")
+    return True
