@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbconnect  # noqa: E402
 import sbqr  # noqa: E402
 
 CFG = sb.load_config()
@@ -908,6 +909,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             out.append(f"<h2>Use it without Tailscale</h2><p>Ask the owner to link your email to this account "
                        f"(<code>sudo sharedbox-admin access add YOUR-EMAIL --user {e(name)}</code>). Then open "
                        f"<b>{e(PUBLIC)}</b> on any device and sign in with that email.</p>")
+    if CF and gate:
+        out.append(connect_section(name))
     elif PUBLIC:  # one-time login links: a new device for gateway users, the way off Tailscale for the rest
         if gate:
             out.append("<h2>Add a device</h2><p>Use T3 Code on your phone or another computer: get a one-time "
@@ -1265,6 +1268,95 @@ Get a new one on your other device ("Add a device"), or ask your friend.</p></di
 <p class="sub">Didn't ask for this? Close the page; the link expires on its own.</p></div>""", gate=True)
 
 
+# ---------- the friend's own laptop agent: SSH through Cloudflare (sbconnect), key registration API ----------
+
+def live_ssh_host():
+    """SSH_HOST as it is now (`sharedbox-admin cloudflare ssh` writes it while we run), "" when SSH is off."""
+    return sb.ssh_host(sb.load_config())
+
+
+def connect_section(name):
+    """Dashboard card: a ready prompt for the agent on their own computer (Claude Code, Codex, ...)."""
+    e = html.escape
+    ssh_host = live_ssh_host()
+    text = sbconnect.connect_text(name, PUBLIC, ssh_host)
+    if not ssh_host:
+        return ("<h2>Use the box from your own computer's agent</h2><p class='mut'>Not turned on yet: ask the "
+                "owner to run <code>sudo sharedbox-admin cloudflare ssh</code>.</p>")
+    return f"""<h2>Use the box from your own computer's agent</h2>
+<p>Have Claude Code or Codex on your laptop? Paste this into it and it sets everything up by itself
+(you only type one emailed code). Afterwards you can say "run X on my treehouse box", use
+<code>ssh -t treehouse claude</code>, or open the box in VS Code / Cursor (Remote-SSH, host <b>treehouse</b>).</p>
+<textarea id="connect-prompt" readonly style="height:150px">{e(text)}</textarea>
+<p><button type="button" class="sm" id="connect-copy">Copy instructions</button>
+<span class="sub">Same text: <a href="/_box/connect.md">{e(PUBLIC)}/_box/connect.md</a></span></p>
+<script>document.getElementById("connect-copy").addEventListener("click",async function(){{
+const t=document.getElementById("connect-prompt");try{{await navigator.clipboard.writeText(t.value)}}
+catch(x){{t.select();document.execCommand("copy")}}this.textContent="Copied ✓"}});</script>"""
+
+
+AGENT_GET = ("/_box/api/whoami", "/_box/connect.md")
+AGENT_KEY_PATH = "/_box/api/ssh-key"
+
+
+def agent_identity(handler):
+    """(who, None) for a friend, else (None, (status, error)) for the JSON API (cloudflare mode only)."""
+    if not CF:
+        return None, (404, "this needs the box's Cloudflare login (PUBLIC_MODE=cloudflare)")
+    who = handler.who()
+    if who and who.get("name") and who.get("cf_jwt"):
+        return who, None
+    email = handler.cf_email() or ""
+    if email in sb.owner_emails(CFG):
+        return None, (403, f"{email} is the owner's login and has no friend account here. SSH in as yourself "
+                           "the usual way, or link an account: sudo sharedbox-admin access add EMAIL --user NAME")
+    return None, (403, f"no account on this box for {email or 'this login'}; ask your friend for an invite")
+
+
+def agent_origin_ok(headers, strict=True):
+    """No cross-site use of the visitor's cookie: an Origin, if sent, must be this site exactly; for writes
+    (strict) a browser's Sec-Fetch-Site must say same-origin too. CLI clients send neither."""
+    origin = headers.get("Origin")
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    return (origin is None or origin == PUBLIC) and (not strict or site in ("", "none", "same-origin"))
+
+
+def agent_whoami(who):
+    try:
+        lo, hi = sb.port_range(CFG, pwd.getpwnam(who["name"]).pw_uid)
+        ports = f"{lo}-{hi}"
+    except (KeyError, ValueError):
+        ports = ""
+    ssh_host = live_ssh_host()
+    return {"ok": True, "user": who["name"], "email": who.get("login", ""), "ssh_host": ssh_host,
+            "ssh_enabled": bool(ssh_host), "ports": ports, "dashboard": PUBLIC + "/_box/me", "site": PUBLIC}
+
+
+def agent_add_key(who, body):
+    """Register one SSH public key for `who` (root re-verifies the Access token and the key). (status, json)."""
+    if "PRIVATE KEY" in body:
+        return 400, {"ok": False, "error": "that's a PRIVATE key: never send it anywhere. Send the .pub file."}
+    text = body.strip()
+    if text.startswith("{"):
+        try:
+            text = str(json.loads(text).get("key") or "")
+        except (ValueError, AttributeError):
+            text = ""
+    key, err = sb.validate_pubkey(text)
+    if err:
+        return 400, {"ok": False, "error": err}
+    res = portal_call("gate", who, "add-key", sshkey=key)
+    if not res.get("ok"):
+        return (403 if res.get("relogin") else 400), {"ok": False, "error": res.get("error") or "couldn't add the key"}
+    ssh_host = live_ssh_host()
+    out = {"ok": True, "user": who["name"], "ssh_host": ssh_host,
+           "ssh_config": sbconnect.ssh_config_block(who["name"], ssh_host) if ssh_host else ""}
+    if not ssh_host:
+        out["note"] = ("key added, but SSH through Cloudflare isn't on yet: ask the owner to run "
+                       "sudo sharedbox-admin cloudflare ssh")
+    return 200, out
+
+
 class GateHandler(Handler):
     """Requests relayed by sharedbox-gate over the unix socket. The gate has already stripped every
     client-supplied X-Sharedbox-* header and only passes a session token it found in the cookie."""
@@ -1311,6 +1403,8 @@ class GateHandler(Handler):
         return "landing", path
 
     def do_GET(self):
+        if urllib.parse.urlsplit(self.path).path in AGENT_GET:
+            return self.agent_get(urllib.parse.urlsplit(self.path).path)
         kind, arg = self.route()
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         if kind == "healthz":
@@ -1348,6 +1442,48 @@ class GateHandler(Handler):
             return self.send(404, landing(self.cf_email()))
         return self.send(200, landing(self.cf_email()))
 
+    def send_json(self, code, obj):
+        return self.send(code, json.dumps(obj) + "\n", "application/json")
+
+    def agent_get(self, path):
+        """GET /_box/api/whoami (JSON) and /_box/connect.md (the prompt as plain text) for CLI agents.
+        Top-level navigations arrive cross-site after the Cloudflare login, so only a foreign Origin is refused;
+        other sites can't read the answers anyway (no CORS)."""
+        if not agent_origin_ok(self.headers, strict=False):
+            return self.send_json(403, {"ok": False, "error": "cross-site request refused"})
+        who, err = agent_identity(self)
+        if path == "/_box/connect.md":
+            if err:
+                return self.send(err[0], err[1] + "\n", "text/plain; charset=utf-8")
+            return self.send(200, sbconnect.connect_text(who["name"], PUBLIC, live_ssh_host()),
+                             "text/plain; charset=utf-8")
+        if err:
+            return self.send_json(err[0], {"ok": False, "error": err[1]})
+        return self.send_json(200, agent_whoami(who))
+
+    def agent_post(self):
+        """POST /_box/api/ssh-key: the body is one public key line. Needs X-Treehouse-Agent: 1 (a header no
+        HTML form or simple cross-site request can send) and no foreign Origin, so a page elsewhere can't add a
+        key with the visitor's Cloudflare cookie."""
+        if (self.headers.get("X-Treehouse-Agent") or "").strip() != "1":
+            return self.send_json(403, {"ok": False, "error": "send the header X-Treehouse-Agent: 1"})
+        if not agent_origin_ok(self.headers):
+            return self.send_json(403, {"ok": False, "error": "cross-site request refused"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if not 0 < n <= 16384:
+            return self.send_json(413 if n > 0 else 400, {"ok": False, "error": "send one public key line as the body"})
+        body = self.rfile.read(n).decode(errors="replace")
+        who, err = agent_identity(self)
+        if err:
+            return self.send_json(err[0], {"ok": False, "error": err[1]})
+        if self.limited("agent-key:" + who["id"], 10):
+            return self.send_json(429, {"ok": False, "error": "too many tries; wait a few minutes"})
+        code, res = agent_add_key(who, body)
+        return self.send_json(code, res)
+
     def limited(self, bucket, n=10, window=600):
         q = rate.setdefault(bucket, deque(maxlen=n + 1))
         now = time.time()
@@ -1357,6 +1493,8 @@ class GateHandler(Handler):
         return False
 
     def do_POST(self):
+        if urllib.parse.urlsplit(self.path).path == AGENT_KEY_PATH:
+            return self.agent_post()
         kind, arg = self.route()
         try:
             n = int(self.headers.get("Content-Length") or 0)

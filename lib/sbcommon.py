@@ -172,6 +172,10 @@ DEFAULTS = {
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
     "CF_SESSION_HOURS": "720",
+    # SSH through Cloudflare (friends' laptops: `ssh treehouse` via `cloudflared access ssh`, no VPN). Written by
+    # `sharedbox-admin cloudflare setup|ssh`; set SSH_HOST before that to pick the hostname, or "off".
+    "SSH_HOST": "",
+    "CF_SSH_APP_ID": "",
     # group-owned shared servers (box shared): code in SHARED_DIR/NAME, every friend and admin may edit and
     # run it; each runs as SHARED_USER (no login, not in FRIENDS_GROUP/SSH_GROUP) in one slice capped below
     "SHARED_USER": "sbshared",
@@ -572,6 +576,14 @@ def public_mode(cfg):
     if not public_url(cfg):
         return ""
     return "cloudflare" if (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare" else "funnel"
+
+
+def ssh_host(cfg):
+    """The hostname friends' laptops SSH to through Cloudflare, or "" when that isn't turned on."""
+    h = (cfg.get("SSH_HOST") or "").strip().lower()
+    if public_mode(cfg) != "cloudflare" or not cfg.get("CF_SSH_APP_ID") or h == "off":
+        return ""
+    return h if re.fullmatch(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", h) else ""
 
 
 def owner_emails(cfg):

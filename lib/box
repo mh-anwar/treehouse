@@ -454,8 +454,21 @@ def rule_fields(tl="", extras=(), nt=""):
         reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
                      "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
+        connect=connect_text(),
         shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
                                     sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
+
+
+def connect_text():
+    """`box help connect`: how this user's laptop agent connects (SSH through Cloudflare), or why it can't yet."""
+    pub, ssh_host = sb.public_url(CFG), sb.ssh_host(CFG)
+    if not ssh_host:
+        return ("SSH through Cloudflare isn't turned on for this box"
+                + (f" (the owner turns it on with `sudo sharedbox-admin cloudflare ssh`; the site is {pub})" if pub
+                   else " (it needs the Cloudflare login; until then they connect over Tailscale)") + ".")
+    return (f"It's on: their laptop reaches this account with `ssh {ME.pw_name}@{ssh_host}` through "
+            f"`cloudflared access ssh`. The ready prompt for their agent is on {pub}/_box/me (\"Use the box from "
+            f"your own computer's agent\", a Copy button) and at {pub}/_box/connect.md (behind their login).")
 
 
 def help_topics():
