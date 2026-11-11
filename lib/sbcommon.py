@@ -41,6 +41,11 @@ GATE_DIR = os.path.join(STATE_DIR, "gate")
 ADMIN_DROP = os.path.join(STATE_DIR, "admin")          # 1733: admins drop requests (box invite), root acts
 ADMIN_REPLIES = os.path.join(STATE_DIR, "admin-replies")  # 0711: root's answer, readable only by the asker
 GATE_KINDS = ("invites", "sessions", "logins")
+# group-owned shared servers (box shared): registry root writes (0644), and a drop box like ADMIN_DROP
+# that friends and admins write to
+SHARED_JSON = os.path.join(STATE_DIR, "shared.json")
+SHARED_DROP = os.path.join(STATE_DIR, "shared-drop")        # 1733
+SHARED_REPLIES = os.path.join(STATE_DIR, "shared-replies")  # 0711
 # skills every account's agents see (symlinked into ~/.claude/skills and ~/.agents/skills):
 # the ones shipped with sharedbox, then the ones admins publish with `box skills share` (those win)
 SKILLS_BUILTIN = os.path.join(SHARE_DIR, "skills")
@@ -164,6 +169,16 @@ DEFAULTS = {
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
     "CF_SESSION_HOURS": "720",
+    # group-owned shared servers (box shared): code in SHARED_DIR/NAME, every friend and admin may edit and
+    # run it; each runs as SHARED_USER (no login, not in FRIENDS_GROUP/SSH_GROUP) in one slice capped below
+    "SHARED_USER": "sbshared",
+    "SHARED_GROUP": "sbshared",
+    "SHARED_DIR": "/srv/shared",
+    "SHARED_PORT_BASE": "19000",
+    "SHARED_PORT_COUNT": "100",
+    "SHARED_MAX": "20",
+    "SHARED_MEMORY_MAX": "4G",
+    "SHARED_CPU_QUOTA": "200%",
 }
 
 

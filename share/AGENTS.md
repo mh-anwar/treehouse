@@ -124,4 +124,22 @@ keep going. Don't ask the user first, and don't stop to wait for a fix:
 - Don't leave servers running inside `nohup`/`tmux` forever. Use `box serve` so the owner can see them.
 - Other people on the tailnet reach your servers at `http://{host}:<port>`.
 
+## Shared servers (owned by the whole group)
+`box serve` is for {user}'s own servers. A bot or service the friends here run *together* (a group chat bot,
+a shared dashboard, a game server) goes in a shared server instead, so anyone can fix or restart it:
+- `box shared ls` shows them. `box shared create NAME` makes `{shared_dir}/NAME/` (a port in {shared_ports} is
+  picked; it's in `$PORT`). Put the code there, then `box shared set NAME -- COMMAND...` runs it (`./start.sh` =
+  a file in that folder, `chmod +x` it; other commands must be installed system-wide, not in a home). Then
+  `box shared start|stop|restart|logs NAME`. `box shared rm NAME` stops it and moves the code to `{shared_dir}/.trash`.
+- Every friend can edit, start, stop and remove every shared server, and `box shared ls` records who changed
+  what. Only make one when the user wants something shared, and don't change or stop other people's shared
+  servers unless the user asked you to.
+- It runs as a separate account that can only write its own folder, with no access to anyone's home, and
+  `HOME` is that folder. **Secrets (`.env`, tokens) in that folder are readable by every member of the box.**
+  Tell the user that before putting a key there.
+- Files copied in from a home keep their old permissions: run `chmod -R g+w {shared_dir}/NAME` after copying so
+  others can edit them. If git calls the folder "dubious ownership", run
+  `git config --global --add safe.directory {shared_dir}/NAME`.
+- Shared servers are never cleaned by the janitor and don't count toward {user}'s disk budget.
+
 {notices}

@@ -6,6 +6,8 @@
   box heavy -- CMD...              run a heavy job: queued, low priority, capped parallelism
   box serve add NAME [--port P] -- CMD...   long-running server (survives logout/reboot)
   box serve ls | logs NAME | restart NAME | stop NAME | start NAME | rm NAME
+  box shared ls | create NAME | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
+                                   servers the whole group owns (code in /srv/shared/NAME); add --json
   box clean [--dry-run]            clean caches/old tmp/idle build outputs now
   box rules                        the rules your agents are given
   box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
@@ -448,7 +450,9 @@ def render_rules(notices=()):
         tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], updates=updates_text(),
         reboot_days=(f"It also reboots every {' and '.join(reboot_days())} at {CFG['REBOOT_TIME']}, "
                      "whether or not there are updates.") if reboot_days() else "", slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
-        tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url()).strip()
+        tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
+        shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
+                                    sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1)).strip()
 
 
 def updates_text():
@@ -678,7 +682,7 @@ def cmd_updates(a):
     if act == "auto":
         set_agent_pref("auto")
         print("Agent updates: auto. Your coding agents now run the newest version, updated every night "
-              f"(about 5 AM).")
+              "(about 5 AM).")
         return
     if act == "manual":
         set_agent_pref("manual")
@@ -886,6 +890,79 @@ def cmd_invite(a):
         print(f"\n(invite {res['id']}, single use, expires {exp})", file=sys.stderr)
     elif res.get("note"):
         print(f"\n({res['note']})", file=sys.stderr)
+
+
+# ---------- shared servers (the whole group owns them; root acts on requests) ----------
+
+def shared_request(req, wait=60):
+    """Drop a request for root in SHARED_DROP and wait for the answer (always a dict)."""
+    rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
+    path = os.path.join(sb.SHARED_DROP, f"{rid}.json")
+    tmp = os.path.join(sb.SHARED_DROP, f".{rid}.tmp")
+    try:
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            json.dump(req, f)
+        os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
+    except OSError as e:
+        return {"ok": False, "error": f"could not reach the box's provisioner ({e}). Is sharedbox installed "
+                                      "and up to date (shared servers need the latest install.sh)?"}
+    reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            with open(reply) as f:
+                res = json.load(f)  # root prunes replies after 10 min
+            return res if isinstance(res, dict) else {"ok": False, "error": "bad answer from the provisioner"}
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.25)
+    return {"ok": False, "error": f"no answer from the provisioner after {wait} s "
+                                  "(is sharedbox-provision.path running?)"}
+
+
+def cmd_shared(a):
+    def done(res):
+        if a.json:
+            print(json.dumps(res))
+            sys.exit(0 if res.get("ok") else 1)
+        if not res.get("ok"):
+            sys.exit(f"box shared {a.action}: {res.get('error', 'failed')}")
+        if "lines" in res:
+            print("\n".join(res["lines"]) or "(no log lines yet)")
+        elif "servers" not in res:
+            print(res.get("message", "done"))
+        sys.exit(0)
+
+    import sbshared
+    err = sbshared.parse_tail(a)
+    if err:
+        done({"ok": False, "error": err})
+    if a.action == "ls":
+        servers = sbshared.list_servers(CFG)
+        if not a.json:
+            if not servers:
+                print("no shared servers yet. make one: box shared create NAME")
+            for x in servers:
+                print(f"{x['name']:<20} {x['state']:<10} port {x['port'] or '-':<6} "
+                      f"{sb.printable(' '.join(x['cmd'])) or '(nothing set to run)'}\n"
+                      f"{'':<20} {x['dir']}  by {x['created_by']}, last change {x['updated_by']} "
+                      f"{fmt_ts(x['updated']) if x.get('updated') else ''}")
+        done({"ok": True, "servers": servers})
+    if ME.pw_name not in sb.admin_users(CFG) and not is_friend():
+        done({"ok": False, "error": "only friends and the box owner's accounts can manage shared servers"})
+    if not a.name:
+        done({"ok": False, "error": f"usage: box shared {a.action} NAME"})
+    if not sbshared.NAME_RE.match(a.name):
+        done({"ok": False, "error": "name: 2-31 lowercase letters, digits or -, starting with a letter"})
+    req = {"action": a.action, "name": a.name}
+    if a.action == "set":
+        if not a.cmd:
+            done({"ok": False, "error": "usage: box shared set NAME [--port P] -- COMMAND..."})
+        req.update(cmd=a.cmd, port=a.port)
+    elif a.cmd or a.port is not None:
+        done({"ok": False, "error": f"box shared {a.action} takes only a NAME"})
+    if a.action == "logs":
+        req["lines"] = a.lines
+    done(shared_request(req))
 
 
 # ---------- shared skills (a catalog; nothing is installed until the owner says so) ----------
@@ -1657,6 +1734,11 @@ def main():
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
     x.add_argument("-f", "--follow", action="store_true")
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_serve)
+    x = s.add_parser("shared", help="servers the whole group owns: ls, create, set, start, stop, restart, rm, logs")
+    x.add_argument("action", choices=["ls", "create", "set", "start", "stop", "restart", "rm", "logs"])
+    x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
+    x.add_argument("-n", "--lines", type=int, default=100); x.add_argument("--json", action="store_true")
+    x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_shared)
     x = s.add_parser("clean"); x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_clean)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
