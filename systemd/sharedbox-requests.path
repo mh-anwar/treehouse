@@ -1,0 +1,9 @@
+[Unit]
+Description=sharedbox: watch for friends' `box request`s
+
+[Path]
+PathExistsGlob=/var/lib/sharedbox/requests/*.txt
+PathExistsGlob=/var/lib/sharedbox/requests/*.json
+
+[Install]
+WantedBy=multi-user.target

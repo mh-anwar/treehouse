@@ -119,6 +119,10 @@ def next_weekly_reboot(now=None):
     return None
 
 
+REBOOT_BACK = ("Comes back by itself: `box serve` services, group servers (`box shared`), T3 Code. "
+               "Everything else stops (tmux, nohup, running builds): save work and finish long jobs before then.")
+
+
 def advice(g):
     out = []
     al = sb.security_alert(ME.pw_name)
@@ -133,14 +137,14 @@ def advice(g):
     for n in agent_notices():
         out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
                    f"({n['why']}). Mention it to the user if they ask why a tool changed.")
+    for n in other_notices(3):
+        out.append(f"{fmt_ts(n['ts'])}: {sb.printable(n['text'])} Tell the user if it's what they were waiting for.")
     rb = scheduled_reboot()
     wk = next_weekly_reboot()
     if wk and wk - time.time() < 12 * 3600 and not (rb and abs(rb - wk) < 3600):
-        out.append(f"The box will REBOOT on {fmt_ts(wk)} (scheduled weekly reboot). Only `box serve` "
-                   "services and `box t3` come back by themselves. Save work and finish long jobs before then.")
+        out.append(f"The box will REBOOT on {fmt_ts(wk)} (scheduled weekly reboot). {REBOOT_BACK}")
     if rb:
-        out.append(f"The box will REBOOT on {fmt_ts(rb)} for security updates. Only `box serve` "
-                   "services and `box t3` come back by themselves. Save work and finish long jobs before then.")
+        out.append(f"The box will REBOOT on {fmt_ts(rb)} for security updates. {REBOOT_BACK}")
     b = g["box"]
     if b["level"] == "busy":
         out.append("The box is BUSY right now. Postpone heavy builds/tests if possible; "
@@ -423,12 +427,14 @@ def render_rules(notices=()):
     if ME.pw_name in sb.admin_users(CFG) and sb.public_mode(CFG) == "cloudflare":
         extras.append("- This is the box OWNER's account. Invite a friend: `box invite --email <their email> "
                       "--note \"<who>\"` (no sudo), then give the owner the message it prints. It creates the account "
-                      "and lets that email through Cloudflare, so the friend just signs in with it.")
+                      "and lets that email through Cloudflare, so the friend just signs in with it. "
+                      "Manage friends, their requests and signups with `box friends` (no sudo; `box help friends`).")
     elif ME.pw_name in sb.admin_users(CFG):
         extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
                       "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
                       "asked you to. With a public link it creates their account right away and the link logs them "
-                      "straight in (once). `box invite --json` gives `username`, `link`, `expires`.")
+                      "straight in (once). `box invite --json` gives `username`, `link`, `expires`. "
+                      "Manage friends, their requests and signups with `box friends` (no sudo; `box help friends`).")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
                       "(`box help logins`).")
@@ -623,7 +629,26 @@ def t3_ensure(host, port, env, quiet=False):
         sctl("enable", "--now", T3_UNIT, capture=quiet)
 
 
+def owner_t3():
+    """(host, port) of the owner's own T3 Code (OWNER_T3_PORT) when this is the owner's account, else None."""
+    pw, port = sb.owner_account(CFG), CFG.get("OWNER_T3_PORT", "").strip()
+    if not pw or pw.pw_uid != ME.pw_uid or not port.isdigit():
+        return None
+    host = CFG.get("GATE_BACKEND_HOST") or "tailscale"
+    return (sb.tailscale_ip4() or "127.0.0.1") if host == "tailscale" else host, int(port)
+
+
 def cmd_t3(a):
+    own = owner_t3() if not is_friend() else None
+    if own:  # the owner's account: their own T3 Code runs on OWNER_T3_PORT, not under `box t3`
+        host, port = own
+        up = listening(host, port) or listening("127.0.0.1", port)
+        if a.action == "status":
+            pub = f"; on the public site: {sb.public_url(CFG)}/" if sb.public_url(CFG) else ""
+            print(f"T3 Code (the owner's own): {'running' if up else 'NOT running'} on port {port}{pub}")
+            return
+        sys.exit(f"box t3 {a.action}: this is the owner's account; its T3 Code is the owner's own on port "
+                 f"{port} ({'running' if up else 'not running'}), not managed by `box t3`.")
     if not shutil.which("t3"):
         sys.exit('T3 Code is not installed on this box. Ask the owner: box request "install t3 (npm)"')
     host, port, env = t3_env()
@@ -718,10 +743,23 @@ def agent_info():
     return mode, pending, out
 
 
-def agent_notices(days=7):
+def all_notices(days=7):
     path = os.path.join(sb.AGENT_PINS, ME.pw_name, "notices.json")
-    return [n for n in (sb.read_json(path, []) or []) if isinstance(n, dict)
-            and time.time() - n.get("ts", 0) < days * 86400]
+    try:
+        items = sb.read_json(path, []) or []
+    except OSError:
+        items = []
+    return [n for n in items if isinstance(n, dict) and time.time() - n.get("ts", 0) < days * 86400]
+
+
+def agent_notices(days=7):
+    """Forced agent updates (written by sharedbox-tools; they have no "kind")."""
+    return [n for n in all_notices(days) if "kind" not in n]
+
+
+def other_notices(days=7):
+    """Notices root writes for this user with a "kind", e.g. "request-done" (the owner closed a `box request`)."""
+    return [n for n in all_notices(days) if isinstance(n.get("kind"), str) and isinstance(n.get("text"), str)]
 
 
 def set_agent_pref(mode):
@@ -874,21 +912,101 @@ Your agents already know the house rules (limits, where files go, how to run bui
 """)
 
 
-def cmd_request(a):
-    text = " ".join(a.text).strip()
-    if not text:
-        sys.exit('usage: box request "install ffmpeg (system package) for video thumbnails"')
-    if len(text) > 1000:
-        sys.exit("keep it under 1000 characters")
-    path = os.path.join(sb.REQUESTS, f"{ME.pw_name}-{int(time.time())}-{os.getpid()}.txt")
+PKG_RE = re.compile(r"[a-z0-9][a-z0-9@._+-]{0,99}")  # = sbdistro.PKG_NAME_RE (root checks again)
+REQ_SENT = os.path.join(HOME, ".sharedbox", "requests-sent.json")
+REQ_FINAL = ("installed", "done", "declined")
+
+
+def my_requests():
+    """My requests as root last recorded them, plus ones root hasn't picked up yet (state "sent")."""
     try:
-        # 0600: other friends can't list the directory but could guess names
-        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
-            f.write(text + "\n")
+        theirs = (sb.read_json(os.path.join(sb.AGENT_PINS, ME.pw_name, "requests.json"), {}) or {}).get("requests") or []
+    except OSError:
+        theirs = []
+    known = {r.get("id") for r in theirs}
+    sent = [dict(r, state="sent") for r in (sb.read_json(REQ_SENT, []) or [])
+            if isinstance(r, dict) and r.get("id") not in known and time.time() - r.get("ts", 0) < 86400]
+    return [r for r in theirs if isinstance(r, dict)] + sent
+
+
+def request_line(r):
+    what = ("install " + " ".join(r.get("packages") or []) if r.get("kind") == "install" else r.get("text") or "")
+    state = {"sent": "sent, not picked up yet", "new": "received", "queued": "queued", "installing": "installing",
+             "approved": "approved by the owner, installing", "waiting": "waiting for the owner",
+             "installed": "installed", "done": "done", "declined": "declined"}.get(r.get("state"), r.get("state"))
+    return (f"{fmt_ts(r['ts']) if r.get('ts') else '?'}  [{state}] {sb.printable(what)}"
+            + (f"  ({sb.printable(r['reason'])})" if r.get("reason") else ""))
+
+
+def cmd_request(a):
+    words = list(a.text or [])
+    if words == ["status"]:
+        mine = my_requests()
+        if a.json:
+            print(json.dumps({"ok": True, "requests": mine}))
+            return
+        if not mine:
+            print("no requests in the last 30 days")
+        for r in mine:
+            print(request_line(r))
+        return
+    pkgs = None
+    if len(words) >= 2 and words[0] == "install":
+        pkgs = [w.strip().lower() for w in words[1:]]
+        if not all(PKG_RE.fullmatch(p) for p in pkgs) or len(pkgs) > 20:
+            pkgs = None  # "install ffmpeg (system package) for ..." as separate words: free text
+    text = " ".join(words).strip()
+    if not text:
+        sys.exit('usage: box request install PKG [PKG...] [--why "what it is for"]\n'
+                 '       box request "anything else, in plain words"\n       box request status')
+    if len(text) > 1000 or len(a.why or "") > 300:
+        sys.exit("keep it under 1000 characters (--why: 300)")
+    rid = f"{ME.pw_name}-{int(time.time())}-{os.getpid()}"
+    body = json.dumps({"install": pkgs, "why": a.why or ""}) if pkgs else \
+        (text + (f" (why: {a.why})" if a.why else "")) + "\n"
+    path = os.path.join(sb.REQUESTS, rid + (".json" if pkgs else ".txt"))
+    tmp = os.path.join(sb.REQUESTS, f".{rid}.tmp")
+    try:
+        # 0600: other friends can't list the directory but could guess names; written to a dotfile first,
+        # so root never picks up half a request
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            f.write(body)
+        os.rename(tmp, path)
     except OSError as e:
-        sys.exit(f"could not file the request: {e}")
-    print("request sent to the box owner. Meanwhile, most tools install without sudo: "
-          "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
+        sys.exit(provisioner_trouble(f"couldn't file the request ({e.strerror or e})"))
+    sent = [r for r in (sb.read_json(REQ_SENT, []) or []) if isinstance(r, dict)
+            and time.time() - r.get("ts", 0) < 86400][-50:]
+    sent.append({"id": rid, "ts": int(time.time()), "kind": "install" if pkgs else "text",
+                 **({"packages": pkgs} if pkgs else {"text": text})})
+    os.makedirs(os.path.dirname(REQ_SENT), exist_ok=True)
+    sb.write_json(REQ_SENT, sent, mode=0o600)
+    rec = None
+    if pkgs:  # most package requests are installed within a minute: wait for the outcome
+        deadline = time.time() + (a.wait if a.wait is not None else 90)
+        while time.time() < deadline:
+            rec = next((r for r in my_requests() if r.get("id") == rid), None)
+            if rec and rec.get("state") in REQ_FINAL + ("waiting",):
+                break
+            time.sleep(2)
+    rec = rec or {"id": rid, "state": "sent"}
+    if a.json:
+        print(json.dumps({"ok": True, "id": rid, "request": rec}))
+        return
+    st = rec.get("state")
+    if st == "installed":
+        print(f"installed: {' '.join(pkgs)}" + (f" ({rec['reason']})" if rec.get("reason") else ""))
+    elif st == "waiting":
+        print(f"sent to the owner (not installed automatically: {rec.get('reason') or 'needs their OK'}). "
+              "Your agent sees the answer in `box status` and `box request status`.")
+    elif st == "declined":
+        print("the owner declined it" + (f": {rec['reason']}" if rec.get("reason") else ""))
+    elif pkgs:
+        print("request received, still working on it; check `box request status` in a minute.")
+    else:
+        print("request sent to the box owner; you'll see the answer in `box status` / `box request status`. "
+              "Meanwhile, most tools install without sudo: "
+              "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
+
 
 
 # ---------- invite (box owner/admins, no sudo) ----------
@@ -917,7 +1035,7 @@ def cmd_invite(a):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
+        sys.exit(provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})"))
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
     # creating the account (and, in cloudflare mode, updating the Access allow list) takes a while
     wait = 30 if a.no_create and not a.email else 120
@@ -930,7 +1048,7 @@ def cmd_invite(a):
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
     else:
-        sys.exit(f"no answer from the provisioner after {wait} s (is sharedbox-provision.path running?)")
+        sys.exit(provisioner_trouble(f"the box didn't answer within {wait} seconds"))
     if a.json:
         print(json.dumps(res))
         return
@@ -940,13 +1058,130 @@ def cmd_invite(a):
     if res.get("username"):
         what = (f"login link {res['id']} works once until "
                 f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(res['expires']))}; " if res.get("id") else "")
-        print(f"\n(account {res['username']} created; {what}undo: sudo sharedbox-admin remove {res['username']})",
+        print(f"\n(account {res['username']} created; {what}undo: box friends remove {res['username']})",
               file=sys.stderr)
     elif res.get("id"):
         exp = time.strftime("%Y-%m-%d %H:%M", time.localtime(res["expires"]))
         print(f"\n(invite {res['id']}, single use, expires {exp})", file=sys.stderr)
     elif res.get("note"):
         print(f"\n({res['note']})", file=sys.stderr)
+
+
+# ---------- friends (box owner/admins, no sudo): root acts on admin-drop requests ----------
+
+FRIENDS_USAGE = """usage: box friends [--json]                      list friends (+ signups waiting for approval)
+       box friends remove NAME [--archive]       delete the account (--archive: keep a tarball of the home first)
+       box friends suspend NAME | resume NAME    lock out / let back in (files kept)
+       box friends email NAME EMAIL              link an email to NAME and let it through Cloudflare Access
+       box friends access                        the exact Cloudflare allow list + seats in use
+       box friends requests [--all]              what friends asked for with `box request` (--all: closed too)
+       box friends requests approve|done|decline ID [--why TEXT]
+                                                 approve = install it (REQUEST_DENY aside); done = handled it
+       box friends issues [--days N]             what everyone's agents logged with `box issue`
+       box friends approve ID | deny ID          signups waiting for approval (JOIN_MODE=approve)"""
+
+
+def friends_ago(ts):
+    if not ts:
+        return "-"
+    d = max(0, time.time() - float(ts))
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= n:
+            return f"{int(d // n)}{unit} ago"
+    return "just now"
+
+
+def cmd_friends(a):
+    """Owner self-serve: list/remove/suspend friends, link emails, requests, issues, signups. Root does the work;
+    only ADMIN_USERS accounts get an answer (the drop file's owner is the identity)."""
+    def fail(msg):
+        if a.json:
+            print(json.dumps({"ok": False, "error": msg}))
+            sys.exit(1)
+        sys.exit(f"box friends: {msg}")
+
+    if ME.pw_name not in sb.admin_users(CFG):
+        fail("only the box owner's accounts can manage friends. Ask the owner.")
+    act, args = a.action or "list", list(a.args or [])
+    need = {"remove": 1, "suspend": 1, "resume": 1, "email": 2, "approve": 1, "deny": 1}
+    if act in need and len(args) != need[act]:
+        fail(FRIENDS_USAGE)
+    if act == "requests" and args and (args[0] not in ("approve", "done", "decline") or len(args) != 2):
+        fail(FRIENDS_USAGE)
+    if act in ("list", "access", "issues") and args:
+        fail(FRIENDS_USAGE)
+    req, wait = {"action": "friends-" + act}, 60
+    if act in ("remove", "suspend", "resume"):
+        req["name"] = args[0]
+        wait = 900 if a.archive else 180
+        if a.archive:
+            req["archive"] = True
+    elif act == "email":
+        req.update(name=args[0], email=args[1])
+    elif act in ("approve", "deny"):
+        req["id"] = args[0]
+        wait = 180
+    elif act == "requests" and args:
+        req = {"action": "friends-request", "op": args[0], "id": args[1], "reason": (a.why or "")[:200]}
+    elif act == "requests":
+        req["all"] = a.all
+    elif act == "issues":
+        req["days"] = a.days
+    res = admin_request(req, wait)
+    if not isinstance(res, dict):
+        fail("bad answer from the box")
+    if a.json:
+        print(json.dumps(res))
+        sys.exit(0 if res.get("ok") else 1)
+    if not res.get("ok"):
+        fail(res.get("error") or "failed")
+    P = sb.printable
+    for w in res.get("warnings") or []:
+        print(f"warning: {P(w)}", file=sys.stderr)
+    if act == "list":
+        rows = res.get("friends") or []
+        if not rows:
+            print("no friends yet. invite one: box invite --email THEIR-EMAIL --note \"who\"")
+        else:
+            print(f"{'USERNAME':<16}{'STATUS':<11}{'JOINED':<12}{'DISK':>8}  {'LAST ACTIVE':<12} EMAIL")
+        for r in rows:
+            joined = time.strftime("%Y-%m-%d", time.localtime(r["joined"])) if r.get("joined") else "?"
+            disk = sb.human(r["disk"]) if r.get("disk") is not None else "-"
+            over = " (over budget)" if r.get("over_budget") else ""
+            print(f"{P(r['username']):<16}{P(r['status']):<11}{joined:<12}{disk:>8}  "
+                  f"{friends_ago(r.get('last_active')) if r.get('last_active') else 'not this week':<12} "
+                  f"{P(r.get('email') or '-')}{over}")
+        for p in res.get("pending_signups") or []:
+            print(f"\nwaiting for approval: {P(p.get('username'))} ({P(p.get('login') or '?')}), "
+                  f"{friends_ago(p.get('ts'))}: box friends approve {p['id']}  |  box friends deny {p['id']}")
+        if res.get("open_requests"):
+            print(f"\n{res['open_requests']} open request(s): box friends requests")
+    elif act == "access":
+        for r in res.get("emails") or []:
+            print(f"{P(r['email']):<40} {P(r['who'])}")
+        print(f"\n{res.get('used')} of {res.get('limit')} seats in use (CF_SEAT_LIMIT). "
+              "Link one to a friend: box friends email NAME EMAIL")
+    elif act == "requests" and not args:
+        reqs = res.get("requests") or []
+        if not reqs:
+            print("no open requests")
+        for r in reqs:
+            print(f"{P(r['id'])}  {friends_ago(r['ts'])}  {P(r['user'])}: {request_line(r).split('  ', 1)[1]}")
+        if reqs:
+            print("\nanswer: box friends requests approve ID (installs a package request) | done ID (it's handled) "
+                  "| decline ID [--why TEXT]")
+    elif act == "issues":
+        groups = res.get("groups") or []
+        if not groups:
+            print(f"no agent-reported issues in the last {res.get('days')} days")
+        else:
+            print(f"{res.get('total')} issue(s) from {res.get('users')} user(s), {len(groups)} distinct, "
+                  f"last {res.get('days')} days (most widespread first):\n")
+        for g in groups:
+            print(f"{g['count']:>3}x [{g['kind']}]{' auto' if g.get('auto') else ''} {P(g['text'])}\n"
+                  f"      {', '.join(map(P, g['users']))} · last {friends_ago(g['last'])} · {P(g['agent'])}")
+    else:
+        print(P(res.get("message") or "done"))
 
 
 # ---------- shared servers (the whole group owns them; root acts on requests) ----------
@@ -961,8 +1196,7 @@ def shared_request(req, wait=60):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        return {"ok": False, "error": f"could not reach the box's provisioner ({e}). Is sharedbox installed "
-                                      "and up to date (shared servers need the latest install.sh)?"}
+        return {"ok": False, "error": provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})")}
     reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -972,8 +1206,7 @@ def shared_request(req, wait=60):
             return res if isinstance(res, dict) else {"ok": False, "error": "bad answer from the provisioner"}
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
-    return {"ok": False, "error": f"no answer from the provisioner after {wait} s "
-                                  "(is sharedbox-provision.path running?)"}
+    return {"ok": False, "error": provisioner_trouble(f"the box didn't answer within {wait} seconds")}
 
 
 def cmd_shared(a):
@@ -1162,6 +1395,17 @@ def pack_skill(src):
     return {"action": "share-skill", "name": name, "files": files}
 
 
+def provisioner_trouble(what):
+    """Plain words for "root's helper didn't answer". Logged as an issue, so the owner really is told."""
+    try:  # a repeat within 10 minutes is deduplicated, but it was logged the first time
+        log_issue(f"box: {what} (sharedbox-provision.path / process-spool)", kind="broken", auto=True)
+        told = True
+    except Exception:  # noqa: BLE001 - never hide the real error behind a logging one
+        told = False
+    return f"{what}. Try again in a minute; " + ("the owner has been told." if told else
+                                                 "if it keeps happening, tell the owner.")
+
+
 def admin_request(req, wait):
     """Drop a request for root (owner-only actions without sudo) and wait for its answer."""
     rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
@@ -1172,7 +1416,7 @@ def admin_request(req, wait):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        sys.exit(f"could not reach the box's provisioner ({e}). Is sharedbox installed and up to date?")
+        sys.exit(provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})"))
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -1181,8 +1425,7 @@ def admin_request(req, wait):
                 return json.load(f)
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
-    sys.exit(f"no answer from the provisioner after {wait} s (is sharedbox-provision.path running, "
-             "and is sharedbox up to date? `box skills share` needs the latest install.sh)")
+    sys.exit(provisioner_trouble(f"the box didn't answer within {wait} seconds"))
 
 
 # ---------- issues (agents log friction; the owner reads everyone's) ----------
@@ -1810,7 +2053,11 @@ def main():
                                            choices=["start", "pair", "status", "stop", "logs"])
     x.set_defaults(fn=cmd_t3)
     s.add_parser("welcome").set_defaults(fn=cmd_welcome)
-    x = s.add_parser("request"); x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_request)
+    x = s.add_parser("request", help="ask for a system package (install PKG...), anything else, or: status")
+    x.add_argument("text", nargs="*"); x.add_argument("--why", help="what it's for (shown to the owner)")
+    x.add_argument("--json", action="store_true")
+    x.add_argument("--wait", type=int, help="seconds to wait for an install's outcome (default 90)")
+    x.set_defaults(fn=cmd_request)
     x = s.add_parser("issue"); x.add_argument("--kind", "-k", default="other", choices=sb.ISSUE_KINDS)
     x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_issue)
     x = s.add_parser("issues"); x.add_argument("--days", type=int, default=14)
@@ -1826,6 +2073,14 @@ def main():
     x.add_argument("--no-create", action="store_true",
                    help="old style: an invite link and the friend picks a username on a signup form")
     x.set_defaults(fn=cmd_invite)
+    x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues, signups")
+    x.add_argument("action", nargs="?", default="list",
+                   choices=["list", "remove", "suspend", "resume", "email", "access", "requests", "issues",
+                            "approve", "deny"])
+    x.add_argument("args", nargs="*"); x.add_argument("--archive", action="store_true")
+    x.add_argument("--days", type=int, default=7); x.add_argument("--json", action="store_true")
+    x.add_argument("--all", action="store_true"); x.add_argument("--why", help="decline: the reason they see")
+    x.set_defaults(fn=cmd_friends)
     x = s.add_parser("skills", help="shared skill catalog: ls, show NAME, add NAME, rm NAME, share DIR (admins)")
     x.add_argument("action", nargs="?", default="ls", choices=["ls", "show", "add", "rm", "share", "unshare"])
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true")

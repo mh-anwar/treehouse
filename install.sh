@@ -188,8 +188,8 @@ for u in "$SRC"/systemd/*; do do_ install -m 644 "$u" "/etc/systemd/system/$(bas
 do_ systemctl daemon-reload
 # shared servers: slice limits, folder owners, SHARED_GROUP = friends + admins (never starts/stops a server)
 do_ "$LIB/sharedbox-admin" shared-sync
-do_ systemctl enable --now sharedbox-provision.path sharedbox-janitor.timer sharedbox-guard.timer \
-    sharedbox-tools-update.timer
+do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path sharedbox-janitor.timer \
+    sharedbox-guard.timer sharedbox-tools-update.timer
 do_ systemctl restart sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
 do_ systemctl enable sharedbox-web.service

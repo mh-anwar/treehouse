@@ -1,0 +1,8 @@
+[Unit]
+Description=sharedbox: handle friends' requests (install packages that pass the checks, ask the owner otherwise)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-admin process-requests
+# package installs can be slow; each one is capped in sharedbox-admin too
+TimeoutStartSec=2h

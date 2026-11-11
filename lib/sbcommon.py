@@ -113,6 +113,21 @@ DEFAULTS = {
     "AGENT_UPDATES_DEFAULT": "auto",
     "AGENT_FORCE_SEVERITY": "high",
     "ANDROID_SDK_ROOT": "/opt/android-sdk",
+    # `box request install PKG`: install a requested system package right away (no owner needed) when it's in
+    # the distro's repos, not installed yet, matches none of REQUEST_DENY (globs, also checked against every
+    # package it would pull in) and pulls in at most REQUEST_MAX_DEPS new packages; at most REQUEST_DAILY_LIMIT
+    # auto-installed packages per friend per day. Everything else waits for the owner (email + dashboard).
+    "REQUEST_AUTO_INSTALL": "yes",
+    "REQUEST_DENY": ("sudo doas polkit* pkexec openssh-server *-server *server *-server-* *-daemon nginx* apache2* "
+                     "httpd* postgresql postgresql-[0-9]* mysql-server* mysql-[0-9]* mariadb mariadb-server* redis "
+                     "valkey memcached mongodb* docker* containerd* podman* runc lxc* lxd* incus* qemu-system* "
+                     "virtualbox* libvirt* linux linux-lts linux-zen linux-hardened linux-image* linux-headers* "
+                     "linux-modules* kernel* firmware* linux-firmware* grub* systemd* network* ufw iptables* nftables "
+                     "firewalld tailscale* cloudflared wireguard* openvpn* cron* cronie at snapd flatpak libpam* "
+                     "apparmor* selinux* sssd* samba* avahi* cups* bind9* dnsmasq* postfix* exim* sendmail* vsftpd* "
+                     "proftpd* xinetd shadow passwd login"),
+    "REQUEST_MAX_DEPS": "150",
+    "REQUEST_DAILY_LIMIT": "20",
     # email (weekly health report + urgent alerts)
     "MAIL_TO": "",
     "MAIL_FROM": "",
