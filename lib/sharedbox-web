@@ -554,10 +554,11 @@ def nice_max(peak_v, limit, floor):
 def friend_limits(rec):
     """Live cgroup limits (they move with the box's busy/quiet balance), falling back to the config."""
     c = sb.read_cgroup(sb.slice_path(rec["uid"])) if rec and rec.get("uid") is not None else None
-    lim = sb.user_limits(CFG, rec)
-    cfg_mem = sb.parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
+    owner = bool((rec or {}).get("owner"))  # the owner isn't under the friends' limits: only real cgroup ones
+    lim = sb.user_limits(CFG, None if owner else rec)
+    cfg_mem = sb.parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") and not owner else None
     try:
-        cfg_cpu = float(str(lim["CPU_QUOTA"]).rstrip("%")) / 100
+        cfg_cpu = None if owner else float(str(lim["CPU_QUOTA"]).rstrip("%")) / 100
     except (KeyError, ValueError):
         cfg_cpu = None
     return {"cpu": (c or {}).get("cpu_quota_cores") or cfg_cpu,
@@ -612,7 +613,8 @@ def friend_dashboard(name, rec, rng="24h", base=""):
     step = sample_step(rows)
     gap = max(3 * step, 2.5 * RANGES[rng] / 240)  # bridge bucket-sized steps; break on real outages
     lim = friend_limits(rec)
-    out = [f"""<div class="dash-h" id="dash"><h2>Your corner of {e(HOST)}</h2><span class="seg">"""
+    owner = bool((rec or {}).get("owner"))
+    out = [f"""<div class="dash-h" id="dash"><h2>{"Your account" if owner else "Your corner of"} {e(HOST)}</h2><span class="seg">"""
            + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
            + "</span></div>"]
     # -- box health tiles
@@ -626,7 +628,8 @@ def friend_dashboard(name, rec, rng="24h", base=""):
     ncpu = os.cpu_count() or 1
     tiles = [
         ("Box right now", f'<span class="dot {"warn" if busy else "ok"}"></span>{"Busy" if busy else "Quiet"}',
-         (f"Limits are lower while it's busy: {busy_txt}." if busy else f"You get the roomy limits: {quiet_txt}.")),
+         (f"Friends get {busy_txt if busy else quiet_txt} right now." if owner else
+          f"Limits are lower while it's busy: {busy_txt}." if busy else f"You get the roomy limits: {quiet_txt}.")),
     ]
     if last:
         tiles += [
@@ -676,24 +679,28 @@ def friend_dashboard(name, rec, rng="24h", base=""):
         out.append("<p class='mut'>No usage history yet. Check back in a few minutes.</p>")
     # -- disk and ports
     u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
-    budget = u.get("budget") or sb.cfg_int(CFG, "DISK_BUDGET_GB") << 30
+    budget = u.get("budget") or (None if owner else sb.cfg_int(CFG, "DISK_BUDGET_GB") << 30)
     disk = u.get("disk")
     pct = min(100, 100 * (disk or 0) / budget) if budget else 0
     pend = [str(p) for p in (u.get("pending_deletions") or [])]
     color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
-    lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None else None
-    out.append('<div class="tiles">'
-               f'<div class="tile" style="grid-column:span 2"><h3>Your disk</h3><div class="v">'
-               f'{e(sb.human(disk)) if disk is not None else "–"}<small> of {e(sb.human(budget))}</small></div>'
-               f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>'
-               + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be deleted soon (untouched '
-                  f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Touch them or push to GitHub.</div>'
-                  if pend else f'<div class="sub" style="margin-top:6px">{int(u.get("projects") or 0)} project(s). '
-                  f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are cleaned up.</div>')
-               + "</div>"
-               + (f'<div class="tile"><h3>Your ports</h3><div class="v" style="font-size:17px">{lo_hi[0]}–{lo_hi[1]}'
-                  f'</div><div class="sub">for your servers</div></div>' if lo_hi else "")
-               + "</div>")
+    lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None and not owner else None
+    if owner and not u:
+        pass  # nothing measured for the owner's account: no disk tile rather than a made-up budget
+    else:
+        out.append('<div class="tiles">'
+                   f'<div class="tile" style="grid-column:span 2"><h3>Your disk</h3><div class="v">'
+                   f'{e(sb.human(disk)) if disk is not None else "–"}'
+                   + (f'<small> of {e(sb.human(budget))}</small></div>'
+                      f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>' if budget else "</div>")
+                   + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be deleted soon (untouched '
+                      f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Touch them or push to GitHub.</div>'
+                      if pend else f'<div class="sub" style="margin-top:6px">{int(u.get("projects") or 0)} project(s). '
+                      f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are cleaned up.</div>')
+                   + "</div>"
+                   + (f'<div class="tile"><h3>Your ports</h3><div class="v" style="font-size:17px">{lo_hi[0]}–{lo_hi[1]}'
+                      f'</div><div class="sub">for your servers</div></div>' if lo_hi else "")
+                   + "</div>")
     # -- who's around: names, a sparkline, CPU now. No emails, no details.
     people = []
     users = sorted((last.get("users") or {}).keys())
@@ -709,7 +716,7 @@ def friend_dashboard(name, rec, rng="24h", base=""):
             f'<b>{e(n)}</b>{" <span class=mut>(you)</span>" if n == name else ""}</span>{spark(cb, t0, t1, 2 * gap)}'
             f'<span class="c">{fmt_cores(cn) if cn >= 0.01 else "idle"}</span></li>'
             for cn, n, cb, _ in people) + "</ul>")
-    feed = box_feed()
+    feed = [] if owner else box_feed()  # the owner's Box section has the full event log instead
     if feed:
         out.append("<h2>Recently on the box</h2><ul class='ev'>" + "".join(feed) + "</ul>")
     return "".join(out)
@@ -798,28 +805,194 @@ def logs_card(res, btn):
 <script>(function(){{var p=document.getElementById("logpre");if(p)p.scrollTop=p.scrollHeight}})();</script>"""
 
 
-def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
-    """The friend's home page: open T3, log in to an AI and GitHub. No terminal anywhere."""
-    e = html.escape
-    tok = token_for(ip, who["id"])
-    gate = bool(who.get("session") or who.get("cf_jwt"))
-    base = "/_box" if gate else ""
-    shared = {}  # the group's servers come from a second (slower) call; fetch both at once
+def status_and_shared(ip, who):
+    """Root's `status` and `shared-ls` answers. The group's servers are a second (slower) call: fetch both at once."""
+    shared = {}
     th = threading.Thread(target=lambda: shared.update(portal_call(ip, who, "shared-ls")), daemon=True)
     th.start()
     st = portal_call(ip, who, "status")
     th.join(35)
-    shared = dict(shared) or {"ok": False, "error": "no answer in time"}
-    logins, t3 = st.get("logins") or {}, st.get("t3")
-    if gate and t3:
-        t3 = dict(t3, url=PUBLIC + "/")
+    return st, dict(shared) or {"ok": False, "error": "no answer in time"}
 
+
+def portal_btn(tok, base):
     def btn(action, label, key="", extra="", primary=True, small=False, attrs=""):
+        e = html.escape
         cls = ' class="sm' + ('' if primary else ' secondary') + '"' if small else ""
         style = "" if primary or small else ' style="background:var(--btn2);color:var(--fg)"'
         return f"""<form method="post" action="{base}/me" style="display:inline"{attrs}>
 <input type="hidden" name="token" value="{tok}"><input type="hidden" name="action" value="{e(action)}">
 <input type="hidden" name="key" value="{e(key)}">{extra}<button{cls}{style}>{e(label)}</button></form>"""
+    return btn
+
+
+# ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
+
+OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs")  # root allows only these (+ the lists)
+
+
+def last_active(rows, name, step, floor=0.05):
+    """ts of the newest sample where `name` used at least `floor` cores, else None."""
+    cpu, _ = user_series(rows, name, step)
+    return next((ts for ts, v in reversed(cpu) if v is not None and v >= floor), None)
+
+
+def allowed_emails():
+    """Emails Cloudflare Access lets in, as far as this box knows without asking Cloudflare: the owners,
+    every account's email and every invite's (expired invites stay allowed until the janitor drops them)."""
+    out = set(sb.owner_emails(CFG))
+    out |= {str(r.get("email")).strip().lower() for r in (sb.registry().get("users") or {}).values()
+            if isinstance(r, dict) and r.get("email")}
+    out |= {str(r.get("email")).strip().lower() for _, r in sb.gate_records("invites") if r.get("email")}
+    return out
+
+
+def event_text(ev):
+    """One events.jsonl line for the owner: kind, who, and its other fields."""
+    e = html.escape
+    bits = []
+    for k, v in ev.items():
+        if k in ("ts", "kind", "user") or v in (None, "", [], {}):
+            continue
+        if isinstance(v, list):
+            v = " ".join(map(str, v))
+        elif isinstance(v, dict):
+            v = json.dumps(v, separators=(",", ":"))
+        bits.append(f"<span class='mut'>{e(str(k))}</span> {e(sb.printable(str(v))[:120])}")
+    return (f"<b>{e(str(ev.get('user') or 'box'))}</b> · {e(str(ev.get('kind') or '?')).replace('_', ' ')}"
+            + (" · " + " · ".join(bits) if bits else ""))
+
+
+def box_section(n_events=30):
+    """Friends, invites, Cloudflare seats, everything that happened. Only ever rendered for the owner;
+    read from world-readable state files (and the gate's invite records, which this process may read)."""
+    e = html.escape
+    now = time.time()
+    out = ['<div class="dash-h" id="box"><h2>The box</h2><span class="sub">only you see this</span></div>']
+    users = sb.registry().get("users") or {}
+    usage = (sb.read_json(sb.USAGE, {}) or {}).get("users") or {}
+    rows = metrics_tail(RANGES["7d"])
+    step = sample_step(rows)
+    # -- tiles: people, invites, Cloudflare seats
+    inv_dir = os.path.join(sb.GATE_DIR, "invites")
+    can_read = os.access(inv_dir, os.R_OK | os.X_OK)
+    open_inv = sum(1 for _, r in sb.gate_records("invites") if float(r.get("expires", 0) or 0) > now)
+    active = sum(1 for r in users.values() if isinstance(r, dict) and r.get("status", "active") == "active")
+    tiles = [("Friends", f"{len(users)}", f"{active} active" if active != len(users) else "all active"),
+             ("Open invites", f"{open_inv}" if can_read else "?", "unused, not expired" if can_read else
+              "can't read the invite records")]
+    if CF:
+        limit = sb.cfg_int(CFG, "CF_SEAT_LIMIT")
+        n = len(allowed_emails())
+        pct = min(100, 100 * n / limit) if limit else 0
+        color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
+        tiles.append(("Cloudflare allow list", f"{n}<small> of {limit}</small>",
+                      f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>'
+                      '<div class="sub" style="margin-top:6px">counted from accounts and invites; exact list: '
+                      '<code>sudo sharedbox-admin access list</code></div>'))
+    out.append('<div class="tiles">' + "".join(
+        f'<div class="tile"><h3>{e(h)}</h3><div class="v">{v}</div>'
+        + (sub if sub.startswith("<") else f'<div class="sub">{e(sub)}</div>') + "</div>"
+        for h, v, sub in tiles) + "</div>")
+    # -- friends
+    if users:
+        trs = []
+        for name in sorted(users):
+            r = users[name] if isinstance(users[name], dict) else {}
+            u = usage.get(name) or {}
+            stt = str(r.get("status") or "active")
+            seen = last_active(rows, name, step)
+            if seen and now - seen < 3 * max(step, 60):
+                on = '<span class="dot ok"></span>active now'
+            elif seen:
+                on = f'<span class="dot"></span>{e(ago_text(seen))}'
+            else:
+                on = '<span class="dot"></span><span class="mut">not this week</span>'
+            svcs = [x for x in u.get("services") or [] if isinstance(x, dict)]
+            running = sum(1 for x in svcs if x.get("state") == "running")
+            disk = (e(sb.human(u["disk"])) + (f' <span class="mut">/ {e(sb.human(u["budget"]))}</span>'
+                                               if u.get("budget") else "")) if u.get("disk") is not None else "–"
+            try:
+                joined = time.strftime("%b %d, %Y", time.localtime(float(r.get("created"))))
+            except (TypeError, ValueError):
+                joined = "?"
+            over = ' <span class="pill bad">over disk budget</span>' if u.get("over") else ""
+            trs.append(f'<tr><td><b>{e(name)}</b>{over}'
+                       f'</td><td class="mut">{e(str(r.get("email") or "–"))}</td><td class="num">{e(joined)}</td>'
+                       f'<td><span class="pill {"ok" if stt == "active" else "bad"}">{e(stt)}</span></td>'
+                       f'<td class="num">{disk}</td><td class="num">{len(svcs)}'
+                       f'{f" <span class=mut>({running} running)</span>" if svcs else ""}</td>'
+                       f'<td class="num">{on}</td></tr>')
+        out.append('<div style="overflow-x:auto"><table><thead><tr><th>username</th><th>email</th><th>joined</th>'
+                   '<th>status</th><th>disk</th><th>services</th><th>online</th></tr></thead><tbody>'
+                   + "".join(trs) + "</tbody></table></div>")
+    else:
+        out.append("<p class='mut'>Nobody has joined yet.</p>")
+    out.append('<p class="sub">To invite someone, ask your agent: <b>invite sam@example.com</b> (it runs '
+               '<code>box invite --email sam@example.com</code> and gives you a message to send them).</p>')
+    # -- every event, newest first; runs of the same kind+user fold into one line
+    evs, folded = list(reversed(sb.recent_events(200))), []
+    for ev in evs:
+        if not isinstance(ev, dict):
+            continue
+        key = (ev.get("kind"), ev.get("user"))
+        if folded and folded[-1][0] == key and ev.get("kind") in ("balance", "janitor_error"):
+            folded[-1][2] += 1
+            continue
+        folded.append([key, ev, 1])
+        if len(folded) >= n_events:
+            break
+    out.append("<h2>Box events</h2><ul class='ev'>" + ("".join(
+        f"<li><span class='mut'>{e(ago_text(ev.get('ts', 0)))}</span> · {event_text(ev)}"
+        + (f" <span class='pill'>×{cnt}</span>" if cnt > 1 else "") + "</li>" for _, ev, cnt in folded)
+        or "<li class='mut'>nothing yet</li>") + "</ul>")
+    return "".join(out)
+
+
+def owner_page(ip, who, name, rec, result=None, rng="24h"):
+    """The owner's /_box/me: the friends' dashboard for their own account, a way into their own T3 Code,
+    and the box section. No setup steps: their logins and T3 are set up on the box itself."""
+    e = html.escape
+    base = "/_box"
+    btn = portal_btn(token_for(ip, who["id"]), base)
+    st, shared = status_and_shared(ip, who)
+    out = [f"<h2>Hi, owner</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
+           f"This page shows your account <b>{e(name)}</b> on {e(HOST)}.</p>"]
+    if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
+        out.append('<p><a href="/_box/app"><button>Open my T3 Code</button></a></p>')
+    if result:
+        out.append(portal_result(result, btn, base))
+    try:
+        out.append(friend_dashboard(name, rec, rng, base))
+    except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
+        print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
+    out.append(servers_section(st, shared, btn, base))
+    try:
+        out.append(box_section())
+    except Exception as ex:  # noqa: BLE001
+        print(f"box section: {ex!r}", file=sys.stderr, flush=True)
+        out.append("<p class='err'>Couldn't load the box section.</p>")
+    if st.get("ok") is False and st.get("error"):
+        out.append(f"<p class='err'>{e(st['error'])}</p>")
+    out.append('<p style="margin-top:30px"><a href="/cdn-cgi/access/logout"><button style="background:var(--btn2);'
+               'color:var(--fg)">Log out of this browser</button></a></p>')
+    return page("you", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
+
+
+def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
+    """The friend's home page: open T3, log in to an AI and GitHub. No terminal anywhere."""
+    if who.get("owner"):
+        return owner_page(ip, who, name, rec, result, rng)
+    e = html.escape
+    tok = token_for(ip, who["id"])
+    gate = bool(who.get("session") or who.get("cf_jwt"))
+    base = "/_box" if gate else ""
+    st, shared = status_and_shared(ip, who)
+    logins, t3 = st.get("logins") or {}, st.get("t3")
+    if gate and t3:
+        t3 = dict(t3, url=PUBLIC + "/")
+
+    btn = portal_btn(tok, base)
 
     def done(ok):
         return '<span class="pill ok">done ✓</span>' if ok else '<span class="pill warn">to do</span>'
@@ -1138,6 +1311,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(429, portal_page(ip, who, name, rec,
                                                   {"ok": False, "error": "too many tries; wait a few minutes"}))
             q.append(now)
+        if who.get("owner") and action not in OWNER_ACTIONS:
+            return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
         if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
             op = form.get("op", "")
             if not SERVER_RE.fullmatch(key) or (action.startswith("serve-") and key == "t3") \
@@ -1189,6 +1364,20 @@ def cf_who(email, jwt):
         return None
     return {"id": "cf:" + sb.token_hash(email)[:32], "display": name, "login": email, "node": "",
             "cf_jwt": jwt, "name": name, "rec": frec}
+
+
+def cf_owner_who(email, jwt):
+    """The owner (CF_OWNER_EMAILS, with no friend account on that email) as the owner's own account
+    (OWNER_T3_USER, default the first ADMIN_USERS). Root re-checks the token and the email for every action."""
+    email = (email or "").strip().lower()
+    if not email or not jwt or email not in sb.owner_emails(CFG) or sb.email_taken(email):
+        return None
+    pw = sb.owner_account(CFG)
+    if not pw:
+        return None
+    return {"id": "cf:" + sb.token_hash(email)[:32], "display": pw.pw_name, "login": email, "node": "",
+            "cf_jwt": jwt, "name": pw.pw_name, "owner": True,
+            "rec": {"uid": pw.pw_uid, "status": "active", "owner": True, "home": pw.pw_dir}}
 
 
 def landing(email=None):
@@ -1289,9 +1478,10 @@ class GateHandler(Handler):
     def cf_email(self):
         return (self.headers.get("X-Sharedbox-Cf-Email") or "").lower() if CF else None
 
-    def who(self):
+    def who(self, owner=True):
         if CF:  # the gate verified the token and strips any client-sent X-Sharedbox-* header
-            return cf_who(self.cf_email(), self.headers.get("X-Sharedbox-Cf-Jwt"))
+            jwt = self.headers.get("X-Sharedbox-Cf-Jwt")
+            return cf_who(self.cf_email(), jwt) or (cf_owner_who(self.cf_email(), jwt) if owner else None)
         return session_who(self.headers.get("X-Sharedbox-Session"))
 
     def route(self):
@@ -1310,14 +1500,14 @@ class GateHandler(Handler):
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         if kind == "healthz":
             return self.send(200, "ok", "text/plain")
-        if CF and kind in ("invite", "login") and self.who():
+        if CF and kind in ("invite", "login") and self.who(owner=False):
             return self.redirect("/_box/me")  # already has an account: nothing to sign up or log in to
         if kind == "invite":
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
         who = self.who()
-        if kind == "open" and not who and CF and self.cf_email() in sb.owner_emails(CFG):
+        if kind == "open" and (not who or who.get("owner")) and CF and self.cf_email() in sb.owner_emails(CFG):
             # the owner's own T3: root checks the Access token itself and mints the pairing token
             if self.limited("open:owner", 10):
                 return self.send(429, landing(self.cf_email()))
@@ -1364,7 +1554,7 @@ class GateHandler(Handler):
         ua = (self.headers.get("User-Agent") or "")[:200]
         if kind == "invite":
             cfm = self.cf_email()
-            if CF and self.who():
+            if CF and self.who(owner=False):
                 return self.redirect("/_box/me")
             if not hmac.compare_digest(form.get("token", ""), token_for("gate", "invite:" + sb.token_hash(arg))):
                 return self.send(400, invite_page(arg, "form expired, please submit again", form, cfm))
