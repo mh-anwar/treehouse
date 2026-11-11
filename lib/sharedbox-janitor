@@ -3,9 +3,11 @@
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
   sharedbox-janitor guard                            make friend processes first in line for the OOM killer
+  sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
+                                                     to 2 hours while a friend's agent is mid-turn, then reboots
 
-Root only *reads* (du) and decides. Every deletion runs as the friend via setpriv.
-Scope: friends' homes and their own files in /tmp, /var/tmp. Never SHARED_DIR (box shared code).
+Root only *reads* (du, /proc) and decides. Every deletion, archive move and T3 stop runs as the friend via
+setpriv. Scope: friends' homes and their own files in /tmp, /var/tmp. Never SHARED_DIR (box shared code).
 """
 
 import argparse
@@ -23,6 +25,9 @@ import sbcommon as sb  # noqa: E402
 STATE = os.path.join(sb.STATE_DIR, "janitor-state.json")
 PASS_TIMEOUT = 900          # per user; a friend must not stall the whole run
 PASS_MAX_OUT = 4 << 20      # reply cap; root never buffers more than this from a friend
+REBOOT_WAIT_MAX = 2 * 3600  # a scheduled reboot waits at most this long for agents to finish their turn
+CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
+T3_BUSY_USEC = 60_000_000   # CPU used under a T3 (besides T3 itself) between two runs that counts as "in use"
 
 
 def du(path):
@@ -103,7 +108,148 @@ def valid_reply(rep):
     return (isinstance(rep, dict) and _is_int(rep.get("freed")) and rep["freed"] >= 0
             and _rows(rep.get("deleted"), {"path": is_str, "reason": is_str, "bytes": _is_int})
             and _rows(rep.get("projects"), {"name": is_str})
-            and _rows(rep.get("services", []), {"name": is_str, "state": is_str}))
+            and _rows(rep.get("services", []), {"name": is_str, "state": is_str})
+            and _rows(rep.get("archived", []), {"name": is_str, "path": is_str, "bytes": _is_int})
+            and _rows(rep.get("archives", []), {"name": is_str, "until": _is_int})
+            and isinstance(rep.get("t3_stopped", False), bool))
+
+
+# ---------- idle T3 Code servers ----------
+# A friend's T3 (sb-t3.service in their systemd --user, ~450 MB) nobody used for T3_IDLE_DAYS is stopped by
+# the friend's own `box _pass`; the gate's /_box/open (and `box t3`, and the T3 button on /me) start it again.
+# "Used" = opened through the public gate (it touches T3_SEEN/<user>), an open TCP connection to its port
+# (Tailscale and desktop users, or a T3 tab still open), or agents working under it: CPU used by anything in
+# its cgroup besides the T3 server itself since the last run (agent turns and their tools, even ones that
+# already ended), or an agent using CPU right now. Agents that merely sit there waiting don't count.
+
+def t3_cgroup(uid):
+    """(cgroup dir, PIDs) of the friend's sb-t3.service (T3 and every agent it started); (None, []) if not running."""
+    base = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
+    for cg in (f"{base}/app.slice/sb-t3.service", f"{base}/sb-t3.service"):
+        if not os.path.isdir(cg):
+            continue
+        pids = []
+        for root, _, files in os.walk(cg):
+            if "cgroup.procs" in files:
+                try:
+                    with open(os.path.join(root, "cgroup.procs")) as f:
+                        pids += [int(x) for x in f.read().split()]
+                except (OSError, ValueError):
+                    pass
+        return cg, pids
+    return None, []
+
+
+def cgroup_cpu_usec(cg):
+    try:
+        with open(os.path.join(cg, "cpu.stat")) as f:
+            return next(int(l.split()[1]) for l in f if l.startswith("usage_usec "))
+    except (OSError, ValueError, StopIteration):
+        return 0
+
+
+def proc_cpu_usec(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            st = f.read().rsplit(")", 1)[1].split()
+        return (int(st[11]) + int(st[12])) * 1_000_000 // CLK_TCK
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def port_connections(port):
+    """Established TCP connections to local `port` (IPv4 and IPv6)."""
+    n = 0
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                next(f, None)
+                for line in f:
+                    parts = line.split()
+                    if len(parts) > 3 and parts[3] == "01" and int(parts[1].rsplit(":", 1)[1], 16) == port:
+                        n += 1
+        except (OSError, ValueError):
+            pass
+    return n
+
+
+def proc_started(pid):
+    """Epoch seconds a process started, or 0."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+        with open("/proc/stat") as f:
+            btime = next(int(l.split()[1]) for l in f if l.startswith("btime "))
+        return btime + ticks / CLK_TCK
+    except (OSError, ValueError, StopIteration, IndexError):
+        return 0
+
+
+def t3_should_sleep(cfg, name, rec, st, now):
+    """True if this friend's running T3 has been unused for T3_IDLE_DAYS. Remembers the last busy moment in `st`."""
+    try:
+        days = float(cfg.get("T3_IDLE_DAYS") or 0)
+    except ValueError:
+        days = 0
+    owner = sb.owner_account(cfg)
+    if days <= 0 or name in sb.admin_users(cfg) or (owner and owner.pw_name == name):
+        return False
+    cg, pids = t3_cgroup(rec["uid"])
+    if not pids:
+        st.pop("t3_other_cpu", None)
+        return False
+    started = {p: proc_started(p) for p in pids}
+    main = min(pids, key=lambda p: started[p] or now)
+    other = max(0, cgroup_cpu_usec(cg) - proc_cpu_usec(main))  # agents + their tools, exited ones included
+    prev = st.get("t3_other_cpu")
+    working = ((isinstance(prev, int) and (other < prev or other - prev >= T3_BUSY_USEC))
+               or bool(sb.busy_agents(pids=pids, seconds=2)))
+    st["t3_other_cpu"] = other
+    connected = port_connections(sb.port_range(cfg, rec["uid"])[0]) > 0
+    if working or connected:
+        st["t3_busy"] = now
+    try:
+        seen = os.lstat(os.path.join(sb.T3_SEEN, name)).st_mtime
+    except OSError:
+        seen = 0
+    last = max(seen, started[main], st.get("t3_busy", 0))
+    return not working and not connected and now - last > days * 86400
+
+
+# ---------- archive warnings ----------
+
+def archive_warning(cfg, name, rec, st, projects, dry):
+    """Email the friend once per project when it's WARN_DAYS from being archived."""
+    due = {p["name"]: p["delete_on"] for p in projects if p.get("delete_on")}
+    warned = {k: v for k, v in (st.get("warned") or {}).items() if k in due and abs(due[k] - v) < 86400}
+    new = sorted((n for n in due if n not in warned), key=lambda n: due[n])
+    email = str((rec or {}).get("email") or "").strip()
+    if not new or not email or "@" not in email:
+        st["warned"] = warned
+        return
+    days = sb.cfg_int(cfg, "ARCHIVE_DAYS")
+    lines = "\n".join(f"  - ~/projects/{n}  (on {time.strftime('%a %b %d', time.localtime(due[n]))})" for n in new)
+    who = sb.brand_host(cfg)
+    body = (f"Hi {name},\n\nThese projects on {who} haven't been touched in a while, so they'll be archived soon:\n\n"
+            f"{lines}\n\nNothing is lost right away: archived projects can be restored for {days} days (ask your "
+            f"agent: \"restore my project NAME\", or run `box restore NAME`). After that they're deleted.\n\n"
+            "To keep one where it is, open it in T3 Code and ask your agent anything about it, or ask it to push the "
+            "project to GitHub.\n")
+    if dry:
+        print(f"{name}: would email {email}: archive warning for {', '.join(new)}")
+        return
+    try:
+        import sbmail
+        if sbmail.configured(cfg):
+            sbmail.send(cfg, f"Your projects on {sb.brand(cfg)} will be archived soon", body, to=email)
+            sb.log_event("archive_warned", name, projects=new)
+        else:
+            return  # not marked as warned: they get the email once mail is set up
+    except Exception as e:  # mail trouble must not stop the cleanup
+        print(f"{name}: archive warning email failed: {e!r}", file=sys.stderr)
+        return
+    warned.update({n: due[n] for n in new})
+    st["warned"] = warned
 
 
 def cmd_run(cfg, a):
@@ -148,9 +294,23 @@ def cmd_run(cfg, a):
                 "cache_ttl_days": sb.cfg_int(cfg, "CACHE_TTL_DAYS") * scale,
                 "tmp_ttl_days": sb.cfg_int(cfg, "TMP_TTL_DAYS"),
                 "warn_days": sb.cfg_int(cfg, "WARN_DAYS"),
+                "archive_days": sb.cfg_int(cfg, "ARCHIVE_DAYS"),
+                "t3_sleep": t3_should_sleep(cfg, name, rec, st, now),
                 "dry_run": a.dry_run, "box": box,
             }
             rep = user_pass(pw, plan)
+            if plan["t3_sleep"]:
+                if a.dry_run:
+                    print(f"{name}: would stop T3 Code (unused for {cfg['T3_IDLE_DAYS']} days)")
+                elif rep.get("t3_stopped"):
+                    sb.log_event("t3_idle_stopped", name, idle_days=sb.cfg_int(cfg, "T3_IDLE_DAYS"))
+                    st.pop("t3_other_cpu", None)
+            for d in rep.get("archived", []):
+                if a.dry_run:
+                    print(f"{name}: would archive {sb.human(d['bytes']):>8} ~/projects/{sb.printable(d['name'])}")
+                else:
+                    sb.log_event("archived", name, project=d["name"], bytes=d["bytes"])
+            archive_warning(cfg, name, rec, st, rep["projects"], a.dry_run)
             if rep["freed"]:
                 used = max(0, used - rep["freed"]) if not a.dry_run else used
             for d in rep["deleted"]:
@@ -163,6 +323,7 @@ def cmd_run(cfg, a):
                 "disk": used, "budget": budget, "over": over, "over_deadline": deadline,
                 "projects": len(rep["projects"]),
                 "pending_deletions": [p["name"] for p in rep["projects"] if p.get("delete_on")],
+                "archives": rep.get("archives", []),
                 "services": rep.get("services", []), "freed": rep["freed"],
             }
         except Exception as e:  # one broken home (or hostile reply) must not stop the others
@@ -199,6 +360,45 @@ def cmd_guard(cfg, a):
                     f.write(str(adj))
         except (OSError, ValueError):
             pass
+
+
+# ---------- scheduled reboot ----------
+
+def cmd_reboot(cfg, a):
+    """The SCHEDULED_REBOOT_DAYS reboot. While a friend's agent is mid-turn (claude/codex/opencode using CPU) it
+    waits, up to REBOOT_WAIT_MAX, then reboots anyway with 5 minutes' warning. Reboots that security updates
+    need are unattended-upgrades' and never wait here."""
+    start = time.time()
+    deadline = start + REBOOT_WAIT_MAX
+    uids = {rec["uid"]: n for n, rec in sb.friend_users().items()}
+    told = False
+    while True:
+        busy = sb.busy_agents(set(uids), seconds=5) if uids else {}
+        if not busy or time.time() >= deadline:
+            break
+        users = sorted({uids.get(u, "?") for u, _ in busy.values()})
+        if not told:
+            sb.log_event("reboot_postponed", None, users=users, until=int(deadline))
+            if not a.dry_run:
+                sb.write_json(sb.REBOOT_STATE, {"state": "waiting", "since": int(start), "deadline": int(deadline),
+                                                "users": len(users)}, mode=0o644)
+            print(f"waiting for agents to finish ({', '.join(users)}), until "
+                  f"{time.strftime('%H:%M', time.localtime(deadline))} at the latest", flush=True)
+            told = True
+        if a.dry_run:
+            break
+        time.sleep(60)
+    sched = sb.reboot_schedule_text(cfg)
+    msg = (f"{sb.brand(cfg)}: scheduled reboot in 5 minutes" + (f"; it reboots {sched}" if sched else "")
+           + ". Your servers (box serve) and T3 Code come back by themselves.")
+    cmd = ["/sbin/shutdown", "-r", "+5", msg]
+    if a.dry_run:
+        print("would run: " + " ".join(cmd))
+        return
+    sb.write_json(sb.REBOOT_STATE, {"state": "rebooting", "since": int(start), "ts": int(time.time()),
+                                    "waited": int(time.time() - start)}, mode=0o644)
+    sb.log_event("reboot_scheduled", None, waited_min=int((time.time() - start) // 60))
+    sys.exit(subprocess.run(cmd).returncode)
 
 
 # ---------- dynamic balancing ----------
@@ -274,6 +474,7 @@ def main():
     x = s.add_parser("run"); x.add_argument("--dry-run", action="store_true")
     x.add_argument("--user"); x.set_defaults(fn=cmd_run)
     s.add_parser("guard").set_defaults(fn=cmd_guard)
+    x = s.add_parser("reboot"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_reboot)
     a = p.parse_args()
     a.fn(cfg, a)
 

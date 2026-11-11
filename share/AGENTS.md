@@ -26,11 +26,12 @@ Details for any topic below: `box help <topic>` (`box help` lists topics). Read 
 {extras}
 
 ## Files (the janitor deletes things)
-Work in `~/projects/<name>/` (deleted after {project_ttl} days untouched), servers' code in `~/services/<name>/`,
-must-keep files in `~/keep/`. Nothing is backed up: offer to push work to GitHub. `box help files` for the rest.
+Work in `~/projects/<name>/` (archived after {project_ttl} days untouched; `box restore NAME` within {archive_days}
+days), servers' code in `~/services/<name>/`, must-keep files in `~/keep/`. Nothing is backed up: offer to push work
+to GitHub. `box help files` for the rest.
 
 ## Running things
-- Run `box status` at session start and before heavy work (usage, box load, **pending deletions**, reboots).
+- Run `box status` at session start and before heavy work (usage, box load, **projects about to be archived**, reboots).
 - Heavy builds/tests: `box heavy -- <cmd>`, one at a time, {jobs} parallel jobs max (`box help heavy`).
 - Anything long-running: `box serve add <name> -- <cmd>` (survives logout and reboots; `box help servers`).
   Never leave servers in `nohup`/`tmux`/`&`: the box reboots at {reboot_time} (`box help reboots`).

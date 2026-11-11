@@ -138,6 +138,9 @@ done
 [[ -e $STATE/users.json ]] || do_ sh -c "echo '{\"users\": {}}' > $STATE/users.json"
 [[ -e $STATE/events.jsonl ]] || do_ install -m 644 /dev/null "$STATE/events.jsonl"
 do_ install -d -m 755 "$STATE/health"
+# when each friend last opened their T3 Code through the gate (it touches t3-seen/<user>; the janitor puts
+# T3 servers nobody used for T3_IDLE_DAYS to sleep)
+do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/t3-seen"
 do_ install -d -m 755 "$STATE/skills"   # skills admins publish with `box skills share`
 do_ install -d -m 700 "$STATE/audit"
 do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/trap"
