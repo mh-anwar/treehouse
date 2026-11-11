@@ -270,7 +270,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.fg{margin:28px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--acc)}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -1024,22 +1024,28 @@ def features_page(owner=False):
         "<a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my T3 account</a>")
         + "</li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
         "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
-        "<div class='flist'>",
+        "<h3 class='fg'>Agents</h3><div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
-            "Auto-updated, with environment awareness."
+            "Environment-aware: they know about group servers, restarts, limits and where files go."
             + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
-        row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
-            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. "
-            f"Right now it's {'busy' if busy else 'quiet'}."),
+        row("Skills", "A shared shelf of agent skills, like council and full-send.", "Pull any of them into your agent."),
+        row("Failure reporting", "Agents report what slowed them down.", "The owner sees it and fixes the box."),
+        "</div><h3 class='fg'>Servers</h3><div class='flist'>",
         row("Your servers", "Servers that run 24/7.", "Self-healing, with controls + a private link."),
         row("Group servers", "One shared copy of a bot for the whole group."),
-        row("Skills", "A shared shelf of agent skills, like council and full-send."),
-        row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
         row("Docker", "Docker works, no admin needed."),
+        "</div><h3 class='fg'>Resources</h3><div class='flist'>",
+        row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
+            f"Dynamic resource allocation: {e(small_c)} cores and {e(small_m)} each when it's busy. "
+            f"Right now it's {'busy' if busy else 'quiet'}."),
+        row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
+        "</div><h3 class='fg'>Upkeep and safety</h3><div class='flist'>",
+        row("Auto updates", "Security fixes for the box and your agents, installed for you."),
         row("Reboots", "Your servers and T3 come back on their own.",
             "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
             "to finish."),
-        row("Old projects", f"Archived after {e(ttl)} days untouched, not deleted."),
+        row("Janitor", "Cleans up caches and leftovers so the disk never fills.",
+            f"Projects untouched for {e(ttl)} days get archived, not deleted."),
         row("Tripwire", "You get an email if an agent goes rogue.",
             "Fake passwords are planted on the box, and anything that reads them sets it off."),
         "</div>",
