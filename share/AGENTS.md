@@ -37,6 +37,9 @@ to GitHub. `box help files` for the rest.
 - **Never turn things off on your own** (databases, servers, containers, T3, watchers) because a task looks finished
   or to save resources: the user may reply any minute and expect it all still there. The box stops idle things
   itself. Stop something only when the user asks, or it's broken or in the way of the current task.
+- **Keep what you build lean**: the box is shared, and roomy today doesn't mean roomy tomorrow. In anything you set up
+  or work on, find what uses memory or CPU without earning it and fix it in config (e.g. Supabase realtime left on but
+  unused: hundreds of MB), telling the user in a line. `box help lean` first.
 - Heavy builds/tests: `box heavy -- <cmd>`, one at a time, {jobs} parallel jobs max (`box help heavy`).
 - Never block the chat on a test or build longer than a minute: start it in the background (your agent's
   background-task feature), tell the user in a line what's running, keep working or answering, report when it ends.
