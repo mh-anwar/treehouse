@@ -697,7 +697,7 @@ def flow_open_t3(browser, persona, token, t3_port, cookie=False):
     page.goto(url("/"))
     if urllib.parse.urlsplit(page.url).path != "/_box/me":
         fail(persona, "open /", f"typed URL should land on the dashboard, got {page.url}")
-    btn = page.get_by_role("link", name=re.compile("Open my T3 Code"))
+    btn = page.get_by_role("link", name=re.compile("Open my T3 Code|Open T3 in browser"))
     if not btn.count():
         fail(persona, "dashboard", "no 'Open my T3 Code' button")
         s.close()
@@ -712,7 +712,7 @@ def flow_open_t3(browser, persona, token, t3_port, cookie=False):
         if f"T3 on {t3_port}" not in page.inner_text("body"):
             fail(persona, "Open my T3 Code", f"reached the wrong T3: {page.inner_text('body')[:80]}")
     page.goto(url("/_box/me"))
-    page.get_by_role("link", name=re.compile("Open my T3 Code")).first.click()
+    page.get_by_role("link", name=re.compile("Open my T3 Code|Open T3 in browser")).first.click()
     page.wait_for_load_state("load")
     if page.title() != "Fake T3 Code":
         fail(persona, "Open my T3 Code (already paired)", f"got {page.url} '{page.title()}'")

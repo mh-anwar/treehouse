@@ -191,7 +191,7 @@ def page(title, body, gate=False, member=True):
     mark = f'▣ {html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
     nav = (f'<a href="/_box/me" class="brand">{mark}</a>' + (
            '<nav><a href="/_box/me">Dashboard</a><a href="/_box/features">Features</a>'
-           '<a href="/_box/app">T3 Code</a></nav>' if member else "")
+           '<a href="/_box/app">T3 in browser</a></nav>' if member else "")
            if gate else
            f'<a href="/" class="brand">{mark}</a>\n<nav><a href="/">dashboard</a><a href="/join">join</a></nav>')
     full = f"{title} · {BRAND} · {HOST}" if title and title != HOST else f"{BRAND} · {HOST}"
@@ -247,7 +247,7 @@ a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-rad
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
 .seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.feat{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:14px}.feat .tile{padding:16px 18px}.feat .ft{font-size:15px;text-transform:none;letter-spacing:0;color:var(--fg);margin:0 0 6px}.feat p{margin:0;font-size:14px;line-height:1.55}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn{margin-top:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
 .tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
@@ -974,39 +974,8 @@ def event_text(ev, show_email=True):
     return f"<b>{e(fields['user'])}</b> · {e(kind.replace('_', ' '))}" + (" · " + ", ".join(bits) if bits else "")
 
 
-def feature_cards():
-    """(title, one line). Short on purpose: people skim."""
-    cpu = CFG.get("BURST_CPU_QUOTA", "500%")
-    try:
-        cpu = f"{float(str(cpu).rstrip('%')) / 100:g}"
-    except ValueError:
-        pass
-    mem = CFG.get("BURST_MEMORY_HIGH", "15G").replace("G", " GB")
-    cards = [
-        ("Agents that know the box", "Claude, Codex and opencode come set up and already know how everything here works."),
-        ("Burst mode", f"Dynamic resource allocation: burst to {cpu} cores and {mem} when the box is quiet, "
-                       "scaled back fairly when it's busy. Rebalances every minute."),
-        ("Group servers", "One shared copy of a bot for the whole group. Anyone can restart it or fix it."),
-        ("Always on", "Your servers keep running after you close your laptop and come back after restarts."),
-        ("T3 from anywhere", "Best on the T3 Code app on your laptop. For your phone or someone else's "
-                             "computer, the same T3 runs in any browser as a backup. Unused for "
-                             f"{CFG.get('T3_IDLE_DAYS', '3')} days, it naps and wakes up when you open it."),
-    ]
-    if live_ssh_host():
-        cards.append(("Your laptop's agent too", "Paste one prompt into Claude Code on your laptop and it connects itself."))
-    cards += [
-        ("Ask for any tool", "Most system tools install by themselves in about a minute. Your agent asks for you."),
-        ("Tripwire", "If anything goes snooping for passwords, you get an email in seconds."),
-        ("Never loses your work", f"Old projects get packed away, not deleted. {CFG.get('ARCHIVE_DAYS', '14')} days "
-                                  "to grab them back (box restore)."),
-        ("Painless restarts", "Scheduled restarts wait (up to 2 hours) for your agent to finish, and your servers "
-                              "and T3 come back on their own."),
-    ]
-    return cards
-
-
 def features_page():
-    """What the box does for you, in plain words, with this box's real numbers."""
+    """What the box does, in the dashboard's own style: one column, plain headings and short text."""
     e = html.escape
 
     def cores(v):
@@ -1014,20 +983,44 @@ def features_page():
             return f"{float(str(v).rstrip('%')) / 100:g}"
         except ValueError:
             return str(v)
+    big_c, big_m = cores(CFG["BURST_CPU_QUOTA"]), str(CFG["BURST_MEMORY_HIGH"]).replace("G", " GB")
+    small_c, small_m = cores(CFG["CPU_QUOTA"]), str(CFG["MEMORY_HIGH"]).replace("G", " GB")
     bal = sb.read_json(os.path.join(sb.STATE_DIR, "balance.json"), {}) or {}
     busy = bal.get("cpu_busy") or bal.get("mem_tight")
-    big = f"{cores(CFG['BURST_CPU_QUOTA'])} cores and {CFG['BURST_MEMORY_HIGH']} of memory"
-    small = f"{cores(CFG['CPU_QUOTA'])} cores and {CFG['MEMORY_HIGH']}"
-    now = (f"The box is busy right now, so everyone's on {e(small)}." if busy else
-           f"The box is quiet right now, so you've got the full {e(big)}.")
-    body_cards = feature_cards()
-    body = (f"<div class='box'><h2>What you get on {e(HOST)}</h2>"
-            f"<p class='mut'>{now}</p><div class='feat'>"
-            + "".join(f"<div class='tile'><h3 class='ft'>{e(t)}</h3><p>{e(d)}</p></div>"
-                      for t, d in body_cards)
-            + "</div><p style='margin-top:24px'><a class='btn' href='/_box/app'>Open T3 Code</a> "
-              "<a class='btn' href='/_box/me' style='background:var(--btn2);color:var(--fg)'>Dashboard</a></p></div>")
-    return page("Features", body, gate=True)
+    days = " and ".join({"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday",
+                         "Sat": "Saturday", "Sun": "Sunday"}.get(d, d)
+                        for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split())
+    ttl = CFG.get("PROJECT_TTL_DAYS", "7")
+    def row(label, lead, more=""):
+        return (f"<div class='frow'><div class='fl'>{label}</div><div><p class='fp'>{lead}</p>"
+                + (f"<p class='fm'>{more}</p>" if more else "") + "</div></div>")
+    out = [
+        "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The best way to talk to your agents.</p>"
+        "<ol class='steps'><li><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code"
+        "</a></li><li><a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my "
+        "T3 account</a></li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
+        "<p class='fm'>On a phone? Use <a href='/_box/app'>T3 in the browser</a>.</p></div>",
+        "<div class='flist'>",
+        row("Your agents", "Claude Code, Codex and opencode, ready to go.",
+            "Auto-updated, and set up to know the box they're running on."
+            + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
+        row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
+            f"When it's busy everyone gets {e(small_c)} cores and {e(small_m)}. Checked every minute. "
+            f"Right now it's {'busy' if busy else 'quiet'}."),
+        row("Your servers", "Servers that run 24/7.", "Back after reboots, with controls and a private link."),
+        row("Group servers", "One shared copy of a bot for the whole group."),
+        row("Skills", "A shared shelf of agent skills, like council and full-send.",
+            "Starts with Theo's tstack set, and anyone can add their own."),
+        row("System tools", "Your agent can install what it needs.", "Unusual installs get checked by the owner first."),
+        row("Reboots", "Your servers and T3 come back on their own.",
+            "Security updates" + (f" and {e(days)} nights" if days else "") + ". A busy agent gets up to 2 hours "
+            "to finish."),
+        row("Old projects", f"Archived after {e(ttl)} days untouched, not deleted."),
+        row("Tripwire", "You get an email if an agent goes rogue.",
+            "Fake passwords are planted on the box, and anything that reads them sets it off."),
+        "</div>",
+    ]
+    return page("Features", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
 def own_events(name, n=8):
@@ -1194,7 +1187,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
     out = [f"<h2>Hi {e(name)}</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
            f"You're the owner of {e(HOST)}: your own account first, then the whole box.</p>"]
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
-        out.append('<p><a class="btn" href="/_box/app">Open my T3 Code</a></p>')
+        out.append('<p><a class="btn" href="/_box/app">Open T3 in browser</a></p>')
     if result:
         out.append(portal_result(result, btn, base))
     try:
@@ -1250,8 +1243,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         dash = ""
     dash += servers_section(st, shared, btn, base)
     # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
-    t3_btn = ("<a class='btn' href='/_box/app'>Open my T3 Code</a>" if CF and gate
-              else btn("t3", "Open my T3 Code"))
+    t3_btn = ("<a class='btn' href='/_box/app'>Open T3 in browser</a>" if CF and gate
+              else btn("t3", "Open T3 in browser"))
     sleeping = ("<span class='sub'>T3 sleeping (unused for a while): it opens on click, give it a minute.</span>"
                 if t3 and t3.get("sleeping") else "")
     if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
@@ -1278,7 +1271,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             out.append("<p class='sub'>Pay for Claude by API key (Anthropic Console) instead? "
                        + btn("login", "Console login", "claude",
                              '<input type="hidden" name="console" value="1">', primary=False) + "</p>")
-    out.append(f"<h2>2. Open T3 Code {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
+    out.append(f"<h2>2. Open T3 {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
     if not t3:
         out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
     else:
@@ -1414,7 +1407,7 @@ def portal_result(res, btn, base=""):
 <p class="sub">Anyone who has this link can log in as you until it's used, so don't share it.</p></div>"""
     if res.get("pair_url"):
         return f"""<div class="card"><h3>Your T3 Code is ready</h3>
-<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 Code →</a></p>
+<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in browser →</a></p>
 <p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
@@ -1889,7 +1882,7 @@ class GateHandler(Handler):
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
-        if kind == "app":  # "Open my T3 Code": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
+        if kind == "app":  # "Open T3 in browser": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
             # tells the gate this is the button, not a bookmark (browsers' Sec-Fetch-Site may not survive Cloudflare)
             return self.redirect("/", [("Set-Cookie", "tb_open=1; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Lax")])
         who = self.who()

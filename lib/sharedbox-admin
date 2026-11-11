@@ -1056,7 +1056,7 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
         message = f"""{hello}
 
 Open {pub}/ on any device, enter {email}, and type the code Cloudflare emails you. That's it.
-The first time, it walks you through logging in to your AI, then "Open my T3 Code". Your username is {username}.
+The first time, it walks you through logging in to your AI, then "Open T3 in browser". Your username is {username}.
 Stuck? Ask the agent, or text me."""
         return {"ok": True, "message": message, "username": username, "link": f"{pub}/", "id": "",
                 "email": email, "expires": None,
@@ -1070,7 +1070,7 @@ Stuck? Ask the agent, or text me."""
 
 1. Open this link. It logs you straight in (it works once, for the next {days} days):
    {link}
-2. Tap "Log in", then click through: log in to your AI, then "Open my T3 Code". That's it.
+2. Tap "Log in", then click through: log in to your AI, then "Open T3 in browser". That's it.
 
 Later, just open {pub}/ in the same browser. On a new device, open {pub}/_box/ on the old one and
 tap "Add a device". Stuck? Ask the agent, or text me."""
@@ -1114,7 +1114,7 @@ builds things for you in your browser and keeps running when you close your lapt
 1. Open this link (it works once, for the next {days} days):
    {pub}/i/{tok}
 2. It asks for your email: use {email}. You'll get a code by email; type it in.
-3. Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
+3. Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
 
 Later, on any device, just open {pub}/ and sign in with {email} again. Stuck? Ask the agent, or text me.""",
                 h, int(time.time()) + days * 86400)
@@ -1124,7 +1124,7 @@ builds things for you in your browser and keeps running when you close your lapt
 
 1. Open this link (it works once, for the next {days} days):
    {pub}/i/{tok}
-2. Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
+2. Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
 
 Later, just open {pub}/ in the same browser. On a new device, open {pub}/_box/ on the old one and
 tap "Add a device". Stuck? Ask the agent, or text me.""", h, int(time.time()) + days * 86400)
@@ -1146,7 +1146,7 @@ builds things for you in your browser and keeps running when you close your lapt
 1. Install Tailscale and sign in: https://tailscale.com/download
 2. Accept the "shared machine" invite I sent you (check your email), using that same Tailscale account.
 3. Open {url}
-   Pick a username, then click through: log in to your AI, then "Open my T3 Code". That's it.
+   Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
 
 Bookmark {url.replace('/join', '/me')} for later. Stuck? Ask the agent, or text me."""
 
