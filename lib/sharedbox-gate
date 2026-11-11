@@ -538,7 +538,7 @@ async def respond(writer, code, body, keep=False, headers=()):
     data = body.encode()
     head = [f"HTTP/1.1 {code} {REASONS.get(code, 'Error')}", "Content-Type: text/html; charset=utf-8",
             f"Content-Length: {len(data)}", "Cache-Control: no-store", "X-Frame-Options: DENY",
-            "Referrer-Policy: no-referrer", f"Connection: {'keep-alive' if keep else 'close'}"]
+            "Referrer-Policy: same-origin", f"Connection: {'keep-alive' if keep else 'close'}"]
     head += [f"{k}: {v}" for k, v in headers]
     writer.write(("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + data)
     await writer.drain()
