@@ -75,7 +75,7 @@ Headless browsers work without root (system libraries are installed). Never ask 
 - Always launch with `--no-sandbox` (this kernel blocks Chrome's sandbox for normal users) and headless
   (`--headless=new` for Selenium); add `--disable-dev-shm-usage`. `xvfb-run` if something insists on a display.
 - Reuse one browser and close pages; leaked Chrome processes eat your RAM limit.
-- If Chrome still won't start, `ldd <chrome> | grep "not found"` and `box request` those exact packages.
+- If Chrome still won't start, `ldd <chrome> | grep "not found"` and `box request install` those exact packages.
 
 @@ skills
 The box has a catalog of agent skills: `box skills` lists, `box skills show NAME` prints one. None are active until
@@ -86,3 +86,27 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed and updated by the owner. `box updates` shows
 whether this user's agents update nightly (`auto`) or stay put (`manual`; `box updates now` moves up). Change it
 only when the user asks. Serious security fixes are applied to everyone.
+
+@@ requests
+- A system package (apt/pacman) you can't install into your home: `box request install PKG [PKG...] --why "<why>"`.
+  Most are installed automatically within a minute (the command waits and says so). Use the distro's package
+  name; check it first (`apt-cache policy PKG` / `pacman -Si PKG`).
+- Some need the owner's OK (servers/daemons, system tools, very large installs, over the daily limit): the
+  command says "sent to the owner". Tell the user and keep working around it; don't ask again.
+- Anything else (a config change, more disk, a service): `box request "<plain words>"`. The owner sees it.
+- `box request status` lists yours with their state. When the owner answers, `box status` shows it.
+
+@@ friends
+Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` to any of these.
+- `box friends`: every friend (username, email, status, joined, disk, last active), signups waiting for
+  approval, open requests. `box friends approve ID` / `box friends deny ID` for signups.
+- `box friends remove NAME [--archive]` deletes the account and its files (--archive keeps a tarball first);
+  `box friends suspend NAME` / `resume NAME` locks them out / lets them back (files kept). Confirm with the
+  owner before remove. The owner's own accounts can't be changed here.
+- `box friends email NAME EMAIL`: link an email to an account and let it through Cloudflare Access.
+  `box friends access`: the exact Cloudflare allow list and seats in use.
+- `box friends requests [--all]`: friends' `box request`s that need the owner. `box friends requests approve ID`
+  installs a package request (even a REQUEST_DENY one); `done ID` once it's handled (e.g. a setting the owner
+  changed for them); `decline ID --why "..."`. Free-text requests are emailed to the owner too.
+  The friend's agent is told either way.
+- `box friends issues [--days N]`: what everyone's agents logged with `box issue`, most widespread first.

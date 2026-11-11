@@ -123,9 +123,9 @@ def api_state():
         pending = len(os.listdir(sb.PENDING))
     except OSError:
         pass
-    try:
-        requests = len([f for f in os.listdir(sb.REQUESTS) if f.endswith(".txt")])
-    except OSError:
+    try:  # root keeps the open ones here (friends' request files are picked up within seconds)
+        requests = len((sb.read_json(os.path.join(sb.STATE_DIR, "requests.json"), {}) or {}).get("requests") or [])
+    except (OSError, AttributeError):
         pass
     tv = (sb.read_json(sb.TOOLS_JSON, {}) or {}).get("tools", {})
     events = [e for e in sb.recent_events(40) if e.get("kind") != "janitor_error"]
@@ -839,7 +839,9 @@ def portal_btn(tok, base):
 
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
-OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs")  # root allows only these (+ the lists)
+OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs",  # root allows only these (+ the lists)
+                 "request-approve", "request-done", "request-decline")
+REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
 def last_active(rows, name, step, floor=0.05):
@@ -874,7 +876,49 @@ def event_text(ev):
             + (" · " + " · ".join(bits) if bits else ""))
 
 
-def box_section(n_events=30):
+REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # root writes it: open `box request`s
+REQUEST_STATE_TEXT = {"new": "just in", "queued": "queued", "installing": "installing…",
+                      "approved": "approved, installing…", "waiting": "needs you"}
+
+
+def requests_section(btn=None):
+    """Friends' open `box request`s with Approve / Done / Decline (owner only)."""
+    e = html.escape
+    reqs = [r for r in (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") or [] if isinstance(r, dict)]
+    out = ['<h2 id="requests">Requests</h2>']
+    if not reqs:
+        out.append("<p class='mut'>No open requests. Package requests that pass the checks install "
+                   "automatically; the rest show up here.</p>")
+        return "".join(out)
+    trs = []
+    for r in reqs:
+        rid = str(r.get("id") or "")
+        if r.get("kind") == "install":
+            what = "install <b>" + e(" ".join(map(str, r.get("packages") or []))) + "</b>" \
+                + (f" <span class='mut'>for {e(str(r['why']))}</span>" if r.get("why") else "")
+        else:
+            what = e(str(r.get("text") or ""))
+        why = f"<div class='sub'>{e(str(r['reason']))}</div>" if r.get("reason") else ""
+        acts = ""
+        if btn and r.get("state") in ("waiting", "new", "queued"):
+            acts = ((btn("request-approve", "Approve", rid, small=True) + " " if r.get("kind") == "install" else "")
+                    + btn("request-done", "Done", rid, small=True, primary=r.get("kind") != "install") + " "
+                    + btn("request-decline", "Decline", rid, small=True, primary=False))
+        note = ("" if r.get("kind") == "install" else
+                f"<div class='sub'>Ask your agent: <b>handle {e(str(r.get('user')))}'s request</b>, "
+                "then click Done.</div>")
+        trs.append(f"<tr><td><b>{e(str(r.get('user') or '?'))}</b></td><td>{what}{why}{note}</td>"
+                   f"<td class='num'>{e(ago_text(r.get('ts', 0)))}</td>"
+                   f"<td><span class='pill {'warn' if r.get('state') == 'waiting' else ''}'>"
+                   f"{e(REQUEST_STATE_TEXT.get(r.get('state'), str(r.get('state'))))}</span></td><td>{acts}</td></tr>")
+    out.append('<div style="overflow-x:auto"><table><thead><tr><th>who</th><th>asked for</th><th>when</th>'
+               '<th>state</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
+    out.append("<p class='sub'>Approve installs a package (even one on the REQUEST_DENY list). "
+               "Done: you or your agent handled it. Either way their agent is told.</p>")
+    return "".join(out)
+
+
+def box_section(n_events=30, btn=None):
     """Friends, invites, Cloudflare seats, everything that happened. Only ever rendered for the owner;
     read from world-readable state files (and the gate's invite records, which this process may read)."""
     e = html.escape
@@ -899,8 +943,8 @@ def box_section(n_events=30):
         color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
         tiles.append(("Cloudflare allow list", f"{n}<small> of {limit}</small>",
                       f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>'
-                      '<div class="sub" style="margin-top:6px">counted from accounts and invites; exact list: '
-                      '<code>sudo sharedbox-admin access list</code></div>'))
+                      '<div class="sub" style="margin-top:6px">counted from accounts and invites; for the exact list, '
+                      'ask your agent: <b>show the Cloudflare allow list</b> (<code>box friends access</code>)</div>'))
     out.append('<div class="tiles">' + "".join(
         f'<div class="tile"><h3>{e(h)}</h3><div class="v">{v}</div>'
         + (sub if sub.startswith("<") else f'<div class="sub">{e(sub)}</div>') + "</div>"
@@ -940,7 +984,12 @@ def box_section(n_events=30):
     else:
         out.append("<p class='mut'>Nobody has joined yet.</p>")
     out.append('<p class="sub">To invite someone, ask your agent: <b>invite sam@example.com</b> (it runs '
-               '<code>box invite --email sam@example.com</code> and gives you a message to send them).</p>')
+               '<code>box invite --email sam@example.com</code> and gives you a message to send them). '
+               'To remove, suspend or link an email, ask it too (<code>box friends</code>).</p>')
+    try:
+        out.append(requests_section(btn))
+    except Exception as ex:  # noqa: BLE001
+        print(f"requests section: {ex!r}", file=sys.stderr, flush=True)
     # -- every event, newest first; runs of the same kind+user fold into one line
     evs, folded = list(reversed(sb.recent_events(200))), []
     for ev in evs:
@@ -979,7 +1028,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
     out.append(servers_section(st, shared, btn, base))
     try:
-        out.append(box_section())
+        out.append(box_section(btn=btn))
     except Exception as ex:  # noqa: BLE001
         print(f"box section: {ex!r}", file=sys.stderr, flush=True)
         out.append("<p class='err'>Couldn't load the box section.</p>")
@@ -1086,11 +1135,11 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         elif mail:
             out.append(f"<h2>Use it without Tailscale</h2><p>On your phone or any computer, open <b>{e(PUBLIC)}</b> "
                        f"and sign in with <b>{e(mail)}</b>. Same account, same projects. If it says you're not "
-                       f"allowed, ask the owner to run <code>sudo sharedbox-admin access add {e(mail)} --user "
-                       f"{e(name)}</code>.</p>")
+                       f"allowed, ask the owner to let it in (their agent does it: <code>box friends email {e(name)} "
+                       f"{e(mail)}</code>).</p>")
         else:
             out.append(f"<h2>Use it without Tailscale</h2><p>Ask the owner to link your email to this account "
-                       f"(<code>sudo sharedbox-admin access add YOUR-EMAIL --user {e(name)}</code>). Then open "
+                       f"(their agent does it: <code>box friends email {e(name)} YOUR-EMAIL</code>). Then open "
                        f"<b>{e(PUBLIC)}</b> on any device and sign in with that email.</p>")
     elif PUBLIC:  # one-time login links: a new device for gateway users, the way off Tailscale for the rest
         if gate:
@@ -1142,7 +1191,7 @@ def portal_result(res, btn, base=""):
     view = str(res.get("_view") or "")
     if view.endswith("-logs"):
         return logs_card(res, btn)
-    if view.endswith("-ctl"):
+    if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
         return f"<div class='card'><p><span class='pill ok'>✓</span> {e(sb.printable(msg)[:300])}</p></div>"
     if res.get("login_url"):
@@ -1329,6 +1378,11 @@ class Handler(BaseHTTPRequestHandler):
             q.append(now)
         if who.get("owner") and action not in OWNER_ACTIONS:
             return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "unknown action"}))
+        if who.get("owner") and action.startswith("request-"):
+            if not REQUEST_ID_RE.fullmatch(key):
+                return self.send(400, portal_page(ip, who, name, rec, {"ok": False, "error": "no such request"}))
+            res = portal_call(ip, who, action, key=key)
+            return self.send(200, portal_page(ip, who, name, rec, dict(res, _view=action)))
         if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
             op = form.get("op", "")
             if not SERVER_RE.fullmatch(key) or (action.startswith("serve-") and key == "t3") \
@@ -1402,9 +1456,9 @@ def landing(email=None):
         owner = email and email in sb.owner_emails(CFG)
         return page(HOST, f"""<div class="box"><h2>{e(HOST)}</h2>
 <p>This is a private coding machine shared between friends.</p>
-<p>You're signed in as <b>{e(email or '?')}</b>, but there's no account for that email here.</p>
-{"<p>You're the owner. Your own accounts aren't served through this page; invite friends with "
- "<code>box invite --email THEIR-EMAIL</code>.</p>" if owner else
+<p>You're signed in as <b>{e(email or '?')}</b>{"" if owner else ", but there's no account for that email here"}.</p>
+{"<p>You're the owner, but this box couldn't find your own account (OWNER_T3_USER in sharedbox.conf, "
+ "default: the first ADMIN_USERS). Ask your agent on the box to check it.</p>" if owner else
  "<p>To get in, <b>ask your friend for an invite link</b> for this email address.</p>"}
 <p class="mut">Wrong email? <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the one your friend
 invited.</p></div>""", gate=True)
@@ -1545,6 +1599,8 @@ class GateHandler(Handler):
         if kind == "me" and who:
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], welcome="welcome" in q,
                                               rng=(q.get("range") or ["24h"])[0]))
+        if kind == "landing" and who and who.get("owner"):
+            return self.redirect("/_box/me")  # the owner always has a page: their dashboard
         if kind == "landing" and arg not in ("/", "/_box/me", "/_box/", "/_box"):
             return self.send(404, landing(self.cf_email()))
         return self.send(200, landing(self.cf_email()))
