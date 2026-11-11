@@ -19,7 +19,7 @@ shared_json = os.path.join(TMP, "shared.json")
 with open(conf, "w") as f:
     f.write("PUBLIC_URL=https://treehouse.test\nPUBLIC_MODE=cloudflare\nCF_TEAM_DOMAIN=x.cloudflareaccess.com\n"
             "CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nCF_OWNER_EMAILS=owner@x.io\n"
-            "PORT_BASE=31000\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT=31005\nSHARED_PUBLIC_LINKS=yes\n")
+            "PORT_BASE=31000\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT=31018\nSHARED_PUBLIC_LINKS=yes\n")
 with open(shared_json, "w") as f:
     json.dump({"web": {"port": 31100}, "down": {"port": 31101}, "BAD": {"port": 1}}, f)
 os.environ.update(SHAREDBOX_CONF=conf, SHAREDBOX_LIB=os.path.join(WT, "lib"), SHAREDBOX_STATE=TMP)
@@ -241,7 +241,7 @@ def run_tests():
     c, h, b = req("/", "A", extra=["Cookie: tb_open=1"])
     check("/ with marker but browser not paired -> /_box/open", c == 303 and hv(h, "location") == ["/_box/open"], (c, h))
     c, h, b = req("/", "O", extra=["Cookie: t3_session_9=s; tb_open=1"])
-    check("owner + marker -> owner's own T3", c == 200 and json.loads(b).get("port") == 31005, (c, b[:200]))
+    check("owner + marker -> owner's own T3", c == 200 and json.loads(b).get("port") == 31018, (c, b[:200]))
     c, h, b = req("/", "O", extra=["Cookie: t3_session_9=s"])
     check("owner bookmark -> dashboard", c == 303 and hv(h, "location") == ["/_box/me"], (c, h))
     c, h, b = req("/", "N", extra=["Cookie: tb_open=1"])
@@ -252,7 +252,7 @@ def run_tests():
 
 
 async def main():
-    for p in (31000, 31001, 31005, 31011, 31100):
+    for p in (31000, 31001, 31011, 31018, 31100):
         serve_http(p)
     ws = await asyncio.start_server(ws_echo, "127.0.0.1", 31002)
     srv = await asyncio.start_server(g.client, "127.0.0.1", GATE, limit=g.MAX_HEAD)
