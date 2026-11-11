@@ -953,11 +953,16 @@ def features_page():
     now = (f"Right now the box is <b>busy</b>, so everyone is on {e(small)}." if busy else
            f"Right now the box is <b>quiet</b>, so everyone gets the big version: {e(big)}.")
     reboot = " and ".join(d for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split()) or ""
+    ttl, arch = CFG.get("PROJECT_TTL_DAYS", "7"), CFG.get("ARCHIVE_DAYS", "14")
+    idle = CFG.get("T3_IDLE_DAYS", "3")
+    ssh_on = bool(live_ssh_host())
+    auto_pkgs = sb.cfg_bool(CFG, "REQUEST_AUTO_INSTALL") if "REQUEST_AUTO_INSTALL" in CFG else True
     cards = [
         ("🤖", "Agents that already know the place",
          "Claude Code, Codex and opencode are installed and kept up to date for you. Every agent you start already "
          "knows how this box works: where to put things, how to keep a server running, how to share one with the "
-         "group, what to do before a restart. You just tell it what you want."),
+         "group, what to do before a restart. It gets a quick status check every time it starts, so it knows if the "
+         "box is busy or a restart is coming. You just tell it what you want."),
         ("⚡", "Power that stretches when it's quiet",
          f"Nobody gets a tiny fixed slice. When the box is quiet you get up to {e(big)}; when lots of people are busy, "
          f"everyone drops to {e(small)} so it stays fair. It rebalances every minute, automatically. {now}"),
@@ -971,20 +976,32 @@ def features_page():
          "that only you can open, from anywhere."),
         ("💻", "Work from any browser",
          "T3 Code runs right in your browser, phone included, with nothing to install. Close the tab and your agents "
-         "keep working; come back later and pick up where you left off."),
+         f"keep working. If you don't use it for {e(idle)} days it naps to free up memory, and wakes up the moment "
+         "you open it again."),
+    ]
+    if ssh_on:
+        cards.append(("🧑‍💻", "Bring your own agent",
+                      "Prefer the Claude Code or Codex on your own laptop? Copy one prompt from your dashboard into it and "
+                      "it connects itself to the box: no VPN, nothing to configure, you just type one emailed code. Then "
+                      "say \"run this on my treehouse box\", or open the box in VS Code or Cursor."))
+    cards += [
+        ("📦", "Need a tool? Just ask",
+         ("Your agent installs most things into your own space by itself. For system-level tools (like ffmpeg or "
+          "a database driver), it just asks the box: normal ones install automatically within a minute, and anything "
+          "unusual goes to the owner for a one-click OK.") if auto_pkgs else
+         "Your agent installs most things into your own space by itself. For the rare system-level tool, it asks the "
+         "owner for you."),
         ("🔐", "Built-in tripwire",
          "The box is full of fake passwords and keys that nothing legit ever touches. If a sketchy package or a "
          "confused agent goes snooping, you and the owner get an email within seconds."),
-        ("🧹", "Tidies up after itself",
+        ("🧹", "Tidies up, but never loses your work",
          f"Caches and leftovers get cleaned automatically, so the disk never fills up. Projects nobody has touched for "
-         f"{e(CFG['PROJECT_TTL_DAYS'])} days are cleaned up too, with a warning first, so keep anything important on "
-         "GitHub (your agent can do that for you)."),
+         f"{e(ttl)} days get packed away (you get an email first) and stay restorable for {e(arch)} more days; your "
+         "agent can bring one back with one command. Keep important stuff on GitHub too."),
         ("🔁", "Restarts that don't hurt",
          "The box restarts itself for security updates" + (f" and on {e(reboot)} nights" if reboot else "")
-         + ". Your servers and T3 Code come back on their own, and agents get a heads-up so they can save their work."),
-        ("📦", "Need a tool? Just ask",
-         "Your agent can install almost anything into your own space without bugging anyone. For the rare system-level "
-         "thing, it asks the owner for you."),
+         + ". If an agent is in the middle of something, it waits for it to finish. Your servers and T3 Code come back "
+           "on their own."),
     ]
     body = (f"<div class='box'><h2>What {e(HOST)} does for you</h2>"
             "<p class='mut'>A shared computer for you and your friends' AI agents. The short version: tell your agent "
