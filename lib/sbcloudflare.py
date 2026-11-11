@@ -235,12 +235,53 @@ def ensure_tunnel(c, acct, name, log):
     return t["id"]
 
 
-def set_ingress(c, acct, tid, host, port, log):
-    cfg = {"config": {"ingress": [
-        {"hostname": host, "service": f"http://127.0.0.1:{int(port)}", "originRequest": {}},
-        {"service": "http_status:404"}]}}
-    c.call("PUT", f"/accounts/{acct}/cfd_tunnel/{tid}/configurations", cfg, need="tunnel")
-    log(f"tunnel ingress: {host} -> http://127.0.0.1:{port}, everything else 404")
+def ssh_hostname(cfg, host, zone):
+    """The SSH hostname (cloudflared access ssh -> tunnel -> sshd on localhost:22). SSH_HOST wins when set
+    ("off" = no SSH through Cloudflare). Otherwise one that Cloudflare's free Universal SSL certificate covers
+    (apex + one level of subdomain): ssh.<host> when <host> is the zone itself, else <first label>-ssh.<rest>
+    (treehouse.example.org -> treehouse-ssh.example.org; ssh.treehouse.example.org would need a paid certificate)."""
+    want = (cfg.get("SSH_HOST") or "").strip().lower()
+    if want == "off":
+        return ""
+    if want:
+        return normalize_host(want)
+    if host == zone:
+        return "ssh." + host
+    first, rest = host.split(".", 1)
+    return normalize_host(f"{first}-ssh.{rest}")
+
+
+def ingress_rules(host, port, ssh_host=""):
+    """Our rules, in order: SSH first (when on), then the website. set_ingress adds the final 404."""
+    rules = [{"hostname": ssh_host, "service": "ssh://localhost:22", "originRequest": {}}] if ssh_host else []
+    return rules + [{"hostname": host, "service": f"http://127.0.0.1:{int(port)}", "originRequest": {}}]
+
+
+def set_ingress(c, acct, tid, rules, log):
+    """PUT the tunnel's ingress: `rules` (ingress_rules()), then any rule for some OTHER hostname the owner
+    added by hand (kept as it was), then the catch-all 404. Rewriting is idempotent; nothing changes if equal."""
+    path = f"/accounts/{acct}/cfd_tunnel/{tid}/configurations"
+    try:
+        cur = (c.get(path, need="tunnel") or {}).get("config") or {}
+    except CFError as e:
+        if "refused" in str(e):
+            raise
+        cur = {}  # a brand-new tunnel has no configuration yet
+    ours = {r["hostname"] for r in rules}
+    keep = [r for r in (cur.get("ingress") or []) if isinstance(r, dict) and r.get("hostname")
+            and str(r["hostname"]).lower() not in ours]
+    new = list(rules) + keep + [{"service": "http_status:404"}]
+    for r in rules:
+        log(f"tunnel ingress: {r['hostname']} -> {r['service']}")
+    if keep:
+        log("tunnel ingress: kept " + ", ".join(str(r["hostname"]) for r in keep) + " (added by hand)")
+    if cur.get("ingress") == new:
+        log("tunnel ingress: already up to date, everything else 404")
+        return False
+    body = {"config": dict({k: v for k, v in cur.items() if k != "ingress"}, ingress=new)}
+    c.call("PUT", path, body, need="tunnel")
+    log("tunnel ingress: saved, everything else 404")
+    return True
 
 
 def ensure_dns(c, zone, host, tid, log):
@@ -378,14 +419,16 @@ def setup(cfg, c, host, owners, log=print):
     zone, zname = find_zone(c, acct, host)
     log(f"zone: {zname}")
     tid = ensure_tunnel(c, acct, f"treehouse-{host}", log)
-    set_ingress(c, acct, tid, host, port, log)
+    ssh_host = ssh_hostname(cfg, host, zname)
+    set_ingress(c, acct, tid, ingress_rules(host, port, ssh_host), log)
     ensure_dns(c, zone, host, tid, log)
     idps = login_methods(c, acct, log)
     pid = ensure_policy(c, acct, host, owners, hours, log)
     app_id, aud = ensure_app(c, acct, host, pid, idps, hours, log)
+    ssh_updates = ssh_pieces(c, acct, zone, ssh_host, tid, pid, idps, hours, log)
     updates = {"PUBLIC_URL": f"https://{host}", "PUBLIC_MODE": "cloudflare", "CF_ACCOUNT_ID": acct,
                "CF_TEAM_DOMAIN": team, "CF_ACCESS_AUD": aud, "CF_TUNNEL_ID": tid, "CF_ACCESS_APP_ID": app_id,
-               "CF_ACCESS_POLICY_ID": pid, "CF_OWNER_EMAILS": ",".join(owners)}
+               "CF_ACCESS_POLICY_ID": pid, "CF_OWNER_EMAILS": ",".join(owners), **ssh_updates}
     # the owner is always in, even if the policy existed before with other owners
     update_policy(dict(cfg, **updates), c, add=owners)
     write_secret(cfg["CF_TUNNEL_ENV"], "TUNNEL_TOKEN=" + tunnel_token(c, acct, tid))
@@ -394,6 +437,71 @@ def setup(cfg, c, host, owners, log=print):
     sb.set_config(updates)
     log(f"wrote CF_* settings to {sb.CONF_PATH}")
     return updates
+
+
+def ssh_pieces(c, acct, zone, ssh_host, tid, policy_id, idps, hours, log):
+    """DNS + Access app for the SSH hostname, on the SAME allow-list policy as the website (so invites and
+    removals cover both). A problem here never blocks the website: it's logged, and SSH stays off."""
+    if not ssh_host:
+        log("SSH through Cloudflare: off (SSH_HOST=off)")
+        return {}
+    try:
+        ensure_dns(c, zone, ssh_host, tid, log)
+        app_id, _ = ensure_app(c, acct, ssh_host, policy_id, idps, hours, log)
+    except CFError as e:
+        log(f"warning: SSH through Cloudflare isn't set up ({str(e).splitlines()[0]}). Fix that, then run: "
+            "sudo sharedbox-admin cloudflare ssh")
+        return {}
+    log(f"SSH through Cloudflare: ssh {ssh_host} (cloudflared access ssh) -> sshd on localhost:22")
+    return {"SSH_HOST": ssh_host, "CF_SSH_APP_ID": app_id}
+
+
+def setup_ssh(cfg, c, log=print):
+    """Turn on SSH through Cloudflare on a box that's already in cloudflare mode. Idempotent. Returns the
+    config updates (SSH_HOST, CF_SSH_APP_ID) and writes them."""
+    if sb.public_mode(cfg) != "cloudflare":
+        raise CFError("PUBLIC_MODE isn't cloudflare yet: run sudo sharedbox-admin cloudflare setup first")
+    host = normalize_host(sb.public_url(cfg))
+    acct, tid, pid = (cfg.get(k, "") for k in ("CF_ACCOUNT_ID", "CF_TUNNEL_ID", "CF_ACCESS_POLICY_ID"))
+    if not all(ID_RE.fullmatch(x or "") for x in (acct, tid, pid)):
+        raise CFError("CF_ACCOUNT_ID / CF_TUNNEL_ID / CF_ACCESS_POLICY_ID aren't set: "
+                      "run sudo sharedbox-admin cloudflare setup")
+    hours = max(1, min(int(cfg.get("CF_SESSION_HOURS") or 720), 8760))
+    zone, zname = find_zone(c, acct, host)
+    ssh_host = ssh_hostname(cfg, host, zname)
+    if not ssh_host:
+        raise CFError(f"SSH_HOST=off in {sb.CONF_PATH}; set it to a hostname (or empty for the default) first")
+    set_ingress(c, acct, tid, ingress_rules(host, sb.cfg_int(cfg, "GATE_PORT"), ssh_host), log)
+    idps = login_methods(c, acct, log)
+    ensure_dns(c, zone, ssh_host, tid, log)
+    app_id, _ = ensure_app(c, acct, ssh_host, pid, idps, hours, log)
+    updates = {"SSH_HOST": ssh_host, "CF_SSH_APP_ID": app_id}
+    sb.set_config(updates)
+    log(f"wrote SSH_HOST={ssh_host} to {sb.CONF_PATH}")
+    return updates
+
+
+def ssh_status(cfg, c):
+    """[(ok, text)] for `cloudflare status`: the SSH hostname's Access app and tunnel rule."""
+    ssh_host, app_id, acct = cfg.get("SSH_HOST", ""), cfg.get("CF_SSH_APP_ID", ""), cfg.get("CF_ACCOUNT_ID", "")
+    if not ssh_host or ssh_host == "off":
+        return [(True, "SSH through Cloudflare: off (turn it on: sudo sharedbox-admin cloudflare ssh)")]
+    out = []
+    if app_id:
+        app = c.get(f"/accounts/{acct}/access/apps/{app_id}", need="access")
+        pols = [p.get("id") for p in (app.get("policies") or []) if isinstance(p, dict)]
+        good = str(app.get("domain", "")).lower() == ssh_host and cfg.get("CF_ACCESS_POLICY_ID") in pols
+        out.append((good, f"SSH Access app {app.get('domain')}: "
+                    + ("same allow list as the website" if good else "NOT on the website's allow-list policy")))
+    else:
+        out.append((False, "SSH Access app: CF_SSH_APP_ID is empty (run: sudo sharedbox-admin cloudflare ssh)"))
+    if cfg.get("CF_TUNNEL_ID"):
+        conf = c.get(f"/accounts/{acct}/cfd_tunnel/{cfg['CF_TUNNEL_ID']}/configurations", need="tunnel") or {}
+        rules = (conf.get("config") or {}).get("ingress") or []
+        hit = any(isinstance(r, dict) and r.get("hostname") == ssh_host and r.get("service") == "ssh://localhost:22"
+                  for r in rules)
+        out.append((hit, f"tunnel: {ssh_host} -> ssh://localhost:22" + ("" if hit else " MISSING")))
+    return out
 
 
 # ---------------------------------------------------------------- the managed allow list

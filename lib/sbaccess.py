@@ -1,7 +1,8 @@
 """Cloudflare Access JWT verification (RS256), stdlib only.
 
 With PUBLIC_MODE=cloudflare every request reaching sharedbox-gate went through Cloudflare Access, which adds
-a signed JWT (the Cf-Access-Jwt-Assertion header, and the CF_Authorization cookie). Checking it here is the
+a signed JWT (the Cf-Access-Jwt-Assertion header, and the CF_Authorization cookie; CLI clients send it
+themselves as cf-access-token). Checking it here is the
 second lock: without it, anyone who can reach 127.0.0.1:GATE_PORT (every local account) could skip Access.
 
   - RS256 only. The header's alg must be exactly "RS256": no "none", no HS256 (alg confusion), no others.
@@ -266,11 +267,14 @@ class Verifier:
 
 
 def token_from_headers(headers):
-    """The Access JWT from (name, value) header pairs: Cf-Access-Jwt-Assertion, else the CF_Authorization
-    cookie. When the header is there it wins (cloudflared always sets it), even if the cookie differs."""
-    hdr = [v for n, v in headers if n.lower() == "cf-access-jwt-assertion"]
-    if hdr:
-        return hdr[0].strip() if len(hdr) == 1 else None  # two different headers: refuse
+    """The Access JWT from (name, value) header pairs: Cf-Access-Jwt-Assertion, else cf-access-token (what
+    `cloudflared access curl` / a CLI agent sends: the same app token, in case the edge doesn't turn it into
+    the assertion header), else the CF_Authorization cookie. When the assertion header is there it wins
+    (cloudflared always sets it), even if the others differ. Every source is verified the same way."""
+    for name in ("cf-access-jwt-assertion", "cf-access-token"):
+        hdr = [v for n, v in headers if n.lower() == name]
+        if hdr:
+            return hdr[0].strip() if len(hdr) == 1 else None  # two different headers: refuse
     for n, v in headers:
         if n.lower() == "cookie":
             for part in v.split(";"):

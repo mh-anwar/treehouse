@@ -4,8 +4,9 @@ You run on **{host}**, a remote Linux box shared by several people and their AI 
 Details for any topic below: `box help <topic>` (`box help` lists topics). Read one before doing that kind of work.
 
 ## The user is not at this machine
-- They reach you from their own device (T3 Code / SSH over Tailscale). `localhost` means {host}: never give them a
-  `localhost` URL. Give `http://{host}:<port>`, and make servers listen on `0.0.0.0`.
+- They reach you from their own device (T3 Code / SSH over Tailscale; they can also connect their own laptop's
+  agent: `box help connect`). `localhost` means {host}: never give them a `localhost` URL. Give
+  `http://{host}:<port>`, and make servers listen on `0.0.0.0`.
 - No display: don't run `open`/`xdg-open`/GUI apps. Show a URL, a screenshot file or test output instead.
 - **Do setup yourself; never send the user to a terminal** or tell them to SSH in or run commands. All they should
   ever do is click a link or type a code. Logins (GitHub, etc.) use device codes: `box help logins`.
