@@ -2,14 +2,24 @@
 so a symlink planted in a home directory can never make root delete the wrong thing.
 
 Input: a plan dict from the janitor. Output: a report dict.
+
+Expired projects aren't deleted: they move to ~/.sharedbox/archive/<name>-<date>/<name>/ (with a note,
+ARCHIVED.txt), `box restore NAME` puts one back, and archives are deleted ARCHIVE_DAYS later (or first,
+when the user is over the disk budget).
 """
 
+import json
 import os
+import re
 import shutil
 import stat
+import subprocess
 import time
 
 DAY = 86400
+ARCHIVE_REL = os.path.join(".sharedbox", "archive")
+ARCHIVE_META = "archived.json"
+ARCHIVE_NOTE = "ARCHIVED.txt"
 
 CACHE_DIRS = [
     ".cache", ".npm/_cacache", ".npm/_npx", ".gradle/caches", ".gradle/wrapper/dists",
@@ -246,6 +256,106 @@ def remove(path, dry_run):
     return size
 
 
+# ---------- archive ----------
+
+def archive_root(home):
+    return os.path.join(home, ARCHIVE_REL)
+
+
+def list_archives(home, archive_days=14):
+    """[{name, dir, path, archived_at, until}] for every archived project, newest first."""
+    out = []
+    root = archive_root(home)
+    if not _is_real_dir(root):
+        return out
+    for e in os.scandir(root):
+        if not _is_real_dir(e.path):
+            continue
+        meta = {}
+        try:
+            with open(os.path.join(e.path, ARCHIVE_META)) as f:
+                meta = json.loads(f.read(1 << 16))
+        except (OSError, ValueError):
+            pass
+        meta = meta if isinstance(meta, dict) else {}
+        name = str(meta.get("name") or re.sub(r"-\d{4}-\d{2}-\d{2}(-\d+)?$", "", e.name))
+        try:
+            at = float(meta.get("archived_at") or _lstat(e.path).st_mtime)
+        except (TypeError, ValueError, AttributeError):
+            at = 0.0
+        out.append({"name": name, "dir": e.path, "path": os.path.join(e.path, name), "archived_at": at,
+                    "until": int(at + archive_days * DAY), "git_remote": meta.get("git_remote")})
+    out.sort(key=lambda a: -a["archived_at"])
+    return out
+
+
+def git_remote(path):
+    """The project's first git remote URL (credentials stripped), or None."""
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return None
+    try:
+        r = subprocess.run(["git", "-C", path, "remote"], capture_output=True, text=True, timeout=20)
+        names = r.stdout.split()
+        if not names:
+            return None
+        name = "origin" if "origin" in names else names[0]
+        r = subprocess.run(["git", "-C", path, "remote", "get-url", name], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    url = re.sub(r"//[^/@\s]*@", "//", r.stdout.strip())
+    return url[:300] or None
+
+
+_gh = None
+
+
+def github_connected():
+    """`gh auth status` succeeds for this user (asked once per pass)."""
+    global _gh
+    if _gh is None:
+        try:
+            _gh = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=30).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _gh = False
+    return _gh
+
+
+def archive_project(home, path, name, now, idle_days, archive_days, dry_run):
+    """Move ~/projects/NAME into the archive. Returns (archive dir, bytes)."""
+    size = tree_size(path)
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    root = archive_root(home)
+    dest, n = os.path.join(root, f"{name}-{day}"), 2
+    while os.path.lexists(dest):
+        dest, n = os.path.join(root, f"{name}-{day}-{n}"), n + 1
+    if dry_run:
+        return dest, size
+    remote = git_remote(path)
+    gh = bool(remote) and github_connected()
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    os.mkdir(dest, 0o700)
+    try:
+        os.rename(path, os.path.join(dest, name))
+    except OSError:
+        os.rmdir(dest)
+        raise
+    until = time.strftime("%a %b %d", time.localtime(now + archive_days * DAY))
+    note = (f"~/projects/{name} was archived on {time.strftime('%a %b %d %Y', time.localtime(now))}: nothing in it "
+            f"was used for {idle_days:g} days.\n\nRestore it until {until}: box restore {name}\n"
+            f"(or ask your agent: \"restore my project {name}\"). After that it's deleted for good.\n")
+    if remote:
+        note += (f"\nIt's a git repository with a remote ({remote}). "
+                 + ("Your GitHub login is connected here, so everything you pushed is also on GitHub."
+                    if gh else "Anything you pushed is also there; commits you didn't push are only in this archive.")
+                 + "\n")
+    with open(os.path.join(dest, ARCHIVE_NOTE), "w") as f:
+        f.write(note)
+    with open(os.path.join(dest, ARCHIVE_META), "w") as f:
+        json.dump({"name": name, "from": path, "archived_at": int(now), "bytes": size, "idle_days": idle_days,
+                   "git_remote": remote, "github": gh}, f)
+    return dest, size
+
+
 def run_pass(plan):
     home = os.path.expanduser("~")
     now = time.time()
@@ -324,21 +434,45 @@ def run_pass(plan):
                              "idle_days": round(idle / DAY, 1), "active": active,
                              "artifacts": arts, "newest": newest})
 
+    # 3b. archives past ARCHIVE_DAYS are deleted
+    archive_days = plan.get("archive_days", 14)
+    archives = list_archives(home, archive_days)
+    for a in list(archives):
+        if now > a["until"]:
+            rm(a["dir"], f"archived project {a['name']} expired ({archive_days}d)")
+            archives.remove(a)
+
     freed = sum(d["bytes"] for d in deleted)
+    archived = []
     for p in projects:
         if p["active"]:
             continue
         if p["idle_days"] * DAY > ttl:
+            # moved, not deleted: `box restore NAME` for ARCHIVE_DAYS. Build outputs go now (regenerable).
+            for apath, _ in p["artifacts"]:
+                freed += rm(apath, "build artifacts of archived project")
+            try:
+                dest, n = archive_project(home, p["path"], p["name"], now, p["idle_days"], archive_days, dry)
+            except OSError as e:
+                deleted.append({"path": p["path"], "bytes": 0, "reason": "archive failed", "error": str(e)})
+                continue
             p["deleted"] = True
-            freed += rm(p["path"], f"project idle {p['idle_days']}d (ttl {plan['project_ttl_days']}d)")
+            archived.append({"name": p["name"], "path": dest, "bytes": n})
+            archives.insert(0, {"name": p["name"], "dir": dest, "path": os.path.join(dest, p["name"]),
+                                "archived_at": now, "until": int(now + archive_days * DAY)})
             continue
         if over or p["idle_days"] * DAY > art_ttl:
             for apath, _ in p["artifacts"]:
                 freed += rm(apath, "build artifacts of idle project")
 
-    # 4. still over budget after the grace period: oldest idle projects go first
+    # 4. still over budget after the grace period: archives go first (oldest first), then the oldest idle projects
     if over and plan.get("over_budget_delete"):
         est = usage - freed
+        for a in sorted(archives, key=lambda a: a["archived_at"]):
+            if est <= budget:
+                break
+            est -= rm(a["dir"], f"over disk budget, archived project {a['name']}")
+            archives.remove(a)
         for p in sorted(projects, key=lambda p: -p["idle_days"]):
             if est <= budget:
                 break
@@ -356,5 +490,6 @@ def run_pass(plan):
             r["delete_on"] = int(p["newest"] + ttl)
         report_projects.append(r)
 
-    return {"projects": report_projects, "deleted": deleted,
+    return {"projects": report_projects, "deleted": deleted, "archived": archived,
+            "archives": [{"name": a["name"], "until": int(a["until"])} for a in archives],
             "freed": sum(d["bytes"] for d in deleted), "dry_run": dry}

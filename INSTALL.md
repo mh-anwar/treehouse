@@ -44,6 +44,11 @@ Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python
    - **Private (Tailscale only):** nothing is exposed at all. Each friend installs Tailscale and the owner
      shares the machine with them in the Tailscale admin console. Good for a few technical friends; free
      Tailscale limits how many people you can add.
+4. **Who can join:** "only people you invite" (recommended; you or your agent run `box invite`), "anyone
+   you've shared the machine with on Tailscale, after you approve them", or "anyone you've shared it with".
+   This is `JOIN_MODE` = `closed` / `approve` / `open`; it only affects Tailscale self-signup at `/join`
+   (invites always work, and self-signups must give an email). With the Cloudflare login it defaults to
+   `closed` when unset.
 
 ## 2. Prerequisites
 - `git`: install it with the system package manager if missing (`apt-get install -y git` or
@@ -62,12 +67,15 @@ sudo ./install.sh            # dry run
 ```
 Summarize what the dry run will do in 5–8 plain bullets (accounts and groups it creates, services,
 limits, cleanup policy; it also adds an `sbshared` system account and `/srv/shared` for servers the
-whole group owns, `box shared`). Mention the parts that matter on a machine already in use: the janitor deletes
-projects untouched for 7 days in *friends'* homes, and the scheduled reboot is Wed/Sun at 04:00. Then ask
-for the OK, and run:
+whole group owns, `box shared`). Mention the parts that matter on a machine already in use: the janitor
+archives projects untouched for 7 days in *friends'* homes (restorable for 14 days), friends' idle T3 Code
+servers sleep after 3 days, and the scheduled reboot is twice a week (Wed and Sun at 04:00; it waits up to 2
+hours for agents that are mid-turn). Then ask for the OK, and run:
 ```
 sudo ./install.sh --apply --admins <admins> [--mail-to <email>]
 ```
+Then write the owner's answer to "who can join" (question 4) into the config, so it doesn't depend on a default:
+`sudo sed -i 's/^#\?JOIN_MODE=.*/JOIN_MODE=<closed|approve|open>/' /etc/sharedbox/sharedbox.conf && sudo systemctl restart sharedbox-web`
 Installing the coding agents and toolchains takes a few minutes. Run it in the background and poll.
 If it fails, read the error, fix the cause if you can (missing package, old Python), and re-run. It is
 idempotent.
