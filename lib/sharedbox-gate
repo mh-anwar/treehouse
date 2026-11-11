@@ -172,6 +172,15 @@ def owner_t3(email):
             and str(email or "").strip().lower() in sb.owner_emails(CFG))
 
 
+def opened_from_outside(headers):
+    """A top-level page load that didn't come from this site (typed URL, bookmark, link elsewhere)."""
+    dest = values(headers, "sec-fetch-dest")
+    site = values(headers, "sec-fetch-site")
+    if dest and dest[0].strip().lower() != "document":
+        return False
+    return not site or site[0].strip().lower() in ("none", "cross-site")
+
+
 def has_t3_session(headers):
     """Does the browser carry a T3 Code session cookie (t3_session_<id>)? Without one T3 asks for a pairing token."""
     return any(p.strip().startswith("t3_session_") for v in values(headers, "cookie") for p in v.split(";"))
@@ -455,6 +464,12 @@ async def handle_request(reader, writer, head, peer):
         dest = ("unix", WEB_SOCK)
     elif sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and welcome_pending(sess[0]):
         await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
+        return False
+    elif (CF and sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/"
+          and opened_from_outside(headers)):
+        # treehouse is a dashboard first: a bookmark, typed URL or outside link lands there; "Open T3 Code" on it
+        # (a same-site navigation) and everything inside T3 go to T3
+        await respond(writer, 303, "", headers=[("Location", "/_box/me")])
         return False
     elif (CF and sess and method == "GET" and not upgrade
           and target.split("?", 1)[0] == "/" and not has_t3_session(headers)):
