@@ -159,6 +159,61 @@ class RequestLoop(unittest.TestCase):
         self.assertEqual(adm.request_act({}, r["id"], "approve")["state"], "approved")
 
 
+class QuietInstall(unittest.TestCase):
+    """A requested package's system services are switched off; nothing else is touched."""
+
+    def setUp(self):
+        self.calls = []
+        for name in ("sbdistro", "run", "POLICY_RC_D"):
+            self.addCleanup(setattr, adm, name, getattr(adm, name))
+        self.addCleanup(setattr, adm.sb, "log_event", adm.sb.log_event)
+        adm.sb.log_event = lambda *a, **k: None
+        adm.POLICY_RC_D = os.path.join(TMP, "policy-rc.d")
+        test = self
+
+        class D(FakeDistro):
+            sets = [{"base"}, {"base", "postgresql", "postgresql-18"}]
+
+            def current(self):
+                return "debian"
+
+            def installed_set(self):
+                return self.sets.pop(0)
+
+            def installed(self, p):
+                return True
+
+            def system_units(self, pkgs):
+                test.asked = pkgs
+                return ["postgresql.service"]
+
+        adm.sbdistro = lambda: D(None)
+
+        def run(cmd, **k):
+            self.calls.append(cmd)
+            if "sharedbox-tools" in cmd[0]:
+                self.during = os.path.exists(adm.POLICY_RC_D)
+            return type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+        adm.run = run
+
+    def test_services_off(self):
+        ok, note = adm.req_install(["postgresql"])
+        self.assertTrue(ok)
+        self.assertTrue(self.during)  # services couldn't start during the install
+        self.assertFalse(os.path.exists(adm.POLICY_RC_D))  # and the guard is gone afterwards
+        self.assertEqual(self.asked, ["postgresql", "postgresql-18"])  # only the newly installed packages
+        self.assertIn(["systemctl", "disable", "--now", "postgresql.service"], self.calls)
+        self.assertIn("run it as yourself", note)
+
+    def test_existing_policy_rc_d_left_alone(self):
+        with open(adm.POLICY_RC_D, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        adm.req_install(["postgresql"])
+        with open(adm.POLICY_RC_D) as f:
+            self.assertEqual(f.read(), "#!/bin/sh\nexit 0\n")
+        os.unlink(adm.POLICY_RC_D)
+
+
 class Reviewer(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(dir=TMP)

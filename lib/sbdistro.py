@@ -236,6 +236,41 @@ def available(pkgs, fam=None):
     raise _unsupported(fam, "look up packages")
 
 
+def installed_set(fam=None):
+    """Names of every installed package (for a before/after diff), or an empty set if it can't tell."""
+    fam = fam or current()
+    cmd = (["dpkg-query", "-W", "-f=${Package}\n"] if fam == "debian" else ["pacman", "-Qq"] if fam == "arch" else None)
+    if not cmd:
+        return set()
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
+
+
+SYSTEMD_UNIT_RE = re.compile(r"/systemd/system/([^/]+\.(?:service|socket|timer|path))$")
+
+
+def system_units(pkgs, fam=None):
+    """systemd system units (service/socket/timer/path) shipped by these installed packages."""
+    fam = fam or current()
+    units = []
+    for p in pkgs:
+        cmd = ["dpkg", "-L", p] if fam == "debian" else ["pacman", "-Qlq", "--", p] if fam == "arch" else None
+        if not cmd:
+            break
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for ln in r.stdout.splitlines():
+            m = SYSTEMD_UNIT_RE.search(ln.strip())
+            if m and "@." not in m.group(1) and m.group(1) not in units:  # templates can't run by themselves
+                units.append(m.group(1))
+    return units
+
+
 def describe(pkgs, fam=None):
     """{name: one-line summary} from the package manager, for the request reviewer. Missing ones are left out."""
     fam = fam or current()
