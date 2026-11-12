@@ -159,5 +159,43 @@ class RequestLoop(unittest.TestCase):
         self.assertEqual(adm.request_act({}, r["id"], "approve")["state"], "approved")
 
 
+class Reviewer(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp(dir=TMP)
+        self.pw = type("pw", (), {"pw_dir": self.home})()
+        for name in ("review_openrouter", "review_claude", "sbdistro"):
+            self.addCleanup(setattr, adm, name, getattr(adm, name))
+        self.addCleanup(setattr, adm.sb, "owner_account", adm.sb.owner_account)
+        adm.sb.owner_account = lambda cfg: self.pw
+        adm.sbdistro = lambda: FakeDistro(None)
+        FakeDistro.describe = lambda self, names: {}
+
+    def opencode_login(self, key):
+        os.makedirs(os.path.join(self.home, ".local/share/opencode"))
+        with open(os.path.join(self.home, ".local/share/opencode/auth.json"), "w") as f:
+            f.write(f'{{"openrouter": {{"type": "api", "key": "{key}"}}}}')
+
+    def test_key_from_opencode_login(self):
+        self.opencode_login("sk-or-v1-" + "a" * 40)
+        self.assertEqual(adm.openrouter_key({"OPENROUTER_KEY_FILE": "/nonexistent"}, self.pw), "sk-or-v1-" + "a" * 40)
+
+    def test_junk_key_ignored(self):
+        self.opencode_login("not a key")
+        self.assertIsNone(adm.openrouter_key({"OPENROUTER_KEY_FILE": "/nonexistent"}, self.pw))
+
+    def test_openrouter_first_then_claude(self):
+        self.opencode_login("sk-or-v1-" + "b" * 40)
+        calls = []
+        adm.review_openrouter = lambda cfg, key, prompt: calls.append("or") or {}
+        adm.review_claude = lambda cfg, pw, prompt: calls.append("claude") or {"decision": "install", "reason": "ok"}
+        cfg = {"OPENROUTER_KEY_FILE": "/nonexistent"}
+        self.assertEqual(adm.ai_review(cfg, {"user": "u"}, ["x"], [], "held"), ("install", "ok"))
+        self.assertEqual(calls, ["or", "claude"])
+
+    def test_no_answer_returns_none(self):
+        adm.review_claude = lambda cfg, pw, prompt: {"decision": "maybe"}
+        self.assertIsNone(adm.ai_review({"OPENROUTER_KEY_FILE": "/nonexistent"}, {"user": "u"}, ["x"], [], "held"))
+
+
 if __name__ == "__main__":
     unittest.main()
