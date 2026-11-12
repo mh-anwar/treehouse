@@ -150,11 +150,14 @@ DEFAULTS = {
                      "firewalld tailscale* cloudflared wireguard* openvpn* cron* cronie at snapd flatpak libpam* "
                      "apparmor* selinux* sssd* samba* avahi* cups* bind9* dnsmasq* postfix* exim* sendmail* vsftpd* "
                      "proftpd* xinetd shadow passwd login"),
-    # who answers a request the rules above don't auto-install: "ai" = Claude reviews it as the owner's account
-    # (no tools, structured answer; the owner only gets an hourly FYI), "owner" = email the owner to approve.
-    # If the AI can't answer (not logged in, timeout) it falls back to the owner.
+    # who answers a request the rules above don't auto-install: "ai" = an AI reviewer (the owner only gets an
+    # hourly FYI), "owner" = email the owner to approve. The AI is OpenRouter (REQUEST_REVIEW_MODEL, paid with
+    # the owner's OpenRouter key from OpenCode's login or OPENROUTER_KEY_FILE), else Claude Code as the owner's
+    # account (REQUEST_REVIEW_CLAUDE_MODEL, no tools); if neither answers, the owner is asked.
     "REQUEST_REVIEWER": "ai",
-    "REQUEST_REVIEW_MODEL": "claude-sonnet-5-5",
+    "REQUEST_REVIEW_MODEL": "~deepseek/deepseek-flash-latest",
+    "REQUEST_REVIEW_CLAUDE_MODEL": "claude-sonnet-5-5",
+    "OPENROUTER_KEY_FILE": "/etc/sharedbox/openrouter-key",
     # never installed on request, whatever the reviewer says (the box's own security: root, logins, network,
     # boot); also checked against every package they'd pull in. The owner can still approve one by hand.
     "REQUEST_NEVER": ("sudo doas polkit* pkexec openssh-server linux linux-lts linux-zen linux-hardened "
