@@ -1536,7 +1536,7 @@ def cmd_request(a):
     sb.write_json(REQ_SENT, sent, mode=0o600)
     rec = None
     if pkgs:  # most package requests are installed within a minute: wait for the outcome
-        deadline = time.time() + (a.wait if a.wait is not None else 90)
+        deadline = time.time() + (a.wait if a.wait is not None else 240)  # the AI reviewer can take a minute
         while time.time() < deadline:
             rec = next((r for r in my_requests() if r.get("id") == rid), None)
             if rec and rec.get("state") in REQ_FINAL + ("waiting",):

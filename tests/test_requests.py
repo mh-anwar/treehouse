@@ -67,7 +67,8 @@ class RequestLoop(unittest.TestCase):
         adm.write_request_views = lambda cfg, db=None: None
         adm.req_mail_owner = lambda cfg: None
         adm.req_mail_failed = lambda cfg, r, why: self.mails.append(why)
-        adm.denied = lambda cfg, pkgs: []
+        for name in ("ai_review", "req_install", "run"):
+            self.addCleanup(setattr, adm, name, getattr(adm, name))
         adm.auto_installed_today = lambda db, user: 0
         adm.add_notice = lambda *a, **k: None
         for name, fake in (("friend_users", lambda: []), ("log_event", lambda *a, **k: None),
@@ -82,15 +83,16 @@ class RequestLoop(unittest.TestCase):
         with open(path, "w") as f:
             json.dump(data, f)
 
-    def put(self, state):
+    def put(self, state, pkg="webkit2gtk-driver"):
         rid = f"pippin-{int(time.time())}-1"
         adm.req_update(lambda db: db["requests"].__setitem__(rid, dict(
-            id=rid, user="pippin", kind="install", packages=["webkit2gtk-driver"], ts=int(time.time()),
+            id=rid, user="pippin", kind="install", packages=[pkg], ts=int(time.time()),
             state=state)))
         return rid
 
-    def run_worker(self):
-        adm.process_requests(dict(adm.sb.load_config(), REQUEST_AUTO_INSTALL="yes", REQUEST_DAILY_LIMIT="0", REQUEST_MAX_DEPS="0"))
+    def run_worker(self, **over):
+        adm.process_requests(dict(adm.sb.load_config(), **dict(dict(
+            REQUEST_AUTO_INSTALL="yes", REQUEST_DAILY_LIMIT="0", REQUEST_MAX_DEPS="0", REQUEST_DENY=""), **over)))
 
     def test_wrong_name_closes_without_mail(self):
         self.distro = FakeDistro((False, [], "E: Package 'webkit2gtk-driver' has no installation candidate"))
@@ -110,11 +112,51 @@ class RequestLoop(unittest.TestCase):
         self.assertNotIn(r["state"], adm.REQ_OPEN)
         self.assertEqual(len(self.mails), 1)
 
-    def test_unapproved_uninstallable_still_asks_owner(self):
+    def test_unapproved_uninstallable_asks_owner_when_reviewer_is_owner(self):
         self.distro = FakeDistro((False, [], "E: Unable to satisfy dependencies"))
         rid = self.put("new")
-        self.run_worker()
+        self.run_worker(REQUEST_REVIEWER="owner")
         self.assertEqual(adm.req_db()["requests"][rid]["state"], "waiting")
+
+    # ---- REQUEST_REVIEWER=ai: whatever the rules hold back is settled without the owner
+
+    def held(self, verdict, pkg="postgresql", sim=(True, ["postgresql"], "")):
+        """A request the auto rules hold back (REQUEST_DENY), reviewed by a fake AI answering `verdict`."""
+        self.distro = FakeDistro(sim)
+        self.reviews = []
+        adm.ai_review = lambda cfg, r, names, deps, why: self.reviews.append(names) or verdict
+        self.installs = []
+        adm.req_install = lambda names: self.installs.append(names) or (True, "")
+        rid = self.put("new", pkg)
+        self.run_worker(REQUEST_DENY="postgresql sudo")
+        return adm.req_db()["requests"][rid]
+
+    def test_ai_install(self):
+        r = self.held(("install", "fine"))
+        self.assertEqual((r["state"], self.installs), ("installed", [["postgresql"]]))
+
+    def test_ai_decline_reaches_agent_and_fyi(self):
+        r = self.held(("decline", "run it rootless with Docker"))
+        self.assertEqual((r["state"], r["by"], self.installs), ("declined", "auto", []))
+        self.assertIn("rootless", r["reason"])
+        self.assertEqual(adm.req_db()["fyi"][-1]["outcome"], "declined")
+
+    def test_ai_unavailable_falls_back_to_owner(self):
+        r = self.held(None)
+        self.assertEqual(r["state"], "waiting")
+
+    def test_never_list_skips_the_ai(self):
+        r = self.held(("install", "sure"), pkg="sudo", sim=(True, ["sudo"], ""))
+        self.assertEqual((r["state"], self.reviews, self.installs), ("declined", [], []))
+
+    def test_never_list_checks_dependencies(self):
+        r = self.held(("install", "sure"), sim=(True, ["postgresql", "systemd"], ""))
+        self.assertEqual((r["state"], self.reviews), ("declined", []))
+
+    def test_owner_can_approve_an_auto_declined_request(self):
+        r = self.held(("decline", "no"))
+        adm.run = lambda *a, **k: None
+        self.assertEqual(adm.request_act({}, r["id"], "approve")["state"], "approved")
 
 
 if __name__ == "__main__":
