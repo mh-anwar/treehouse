@@ -236,6 +236,25 @@ def available(pkgs, fam=None):
     raise _unsupported(fam, "look up packages")
 
 
+def describe(pkgs, fam=None):
+    """{name: one-line summary} from the package manager, for the request reviewer. Missing ones are left out."""
+    fam = fam or current()
+    out = {}
+    for p in pkgs:
+        cmd = (["apt-cache", "show", "--no-all-versions", p] if fam == "debian" else
+               ["pacman", "-Si", "--", p] if fam == "arch" else None)
+        if not cmd:
+            break
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=dict(os.environ, LC_ALL="C"))
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        m = re.search(r"^(?:Description(?:-en)?|Description)\s*:\s*(.+)$", r.stdout, re.M)
+        if m:
+            out[p] = m.group(1).strip()[:200]
+    return out
+
+
 def install(pkgs, dry=False, fam=None):
     """Install packages by native name. Never upgrades the whole system, never refreshes the
     pacman sync database (no -Sy). Raises Unsupported on an unknown distro."""
