@@ -130,9 +130,10 @@ account, with no VPN: SSH goes through Cloudflare. {connect}
 - A system package (apt/pacman) you can't install into your home: `box request install PKG [PKG...] --why "<why>"`.
   Most are installed automatically within a minute (the command waits and says so). Use the distro's package
   name; check it first (`apt-cache policy PKG` / `pacman -Si PKG`).
-- The rest (servers/daemons, very large installs, over the daily limit) are decided by an AI reviewer in a few
-  seconds; a decline says why and what to do instead (often: run it rootless, e.g. with Docker). Follow that
-  instead of asking again. Packages that touch the box's security (sudo, SSH, firewall, kernel) are never
+- Servers and daemons install too, but their system service stays off: run the program as yourself (in your
+  home, on your own port, `box serve add` to keep it up). A few kinds (hacking/sniffing tools, privileged
+  container/VM engines, mail servers, huge installs) go to an AI reviewer for a few seconds; a decline says why
+  and what to do instead. Follow that instead of asking again. Packages that touch the box's security (sudo, SSH, firewall, kernel) are never
   installed on request. Rarely it says "sent to the owner": keep working around it; don't ask again.
 - Anything else (a config change, more disk, a service): `box request "<plain words>"`. The owner sees it.
 - `box request status` lists yours with their state. When the owner answers, `box status` shows it.

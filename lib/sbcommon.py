@@ -138,18 +138,17 @@ DEFAULTS = {
     # `box request install PKG`: install a requested system package right away (no owner needed) when it's in
     # the distro's repos, not installed yet, matches none of REQUEST_DENY (globs, also checked against every
     # package it would pull in) and pulls in at most REQUEST_MAX_DEPS new packages; at most REQUEST_DAILY_LIMIT
-    # auto-installed packages per friend per day. Everything else waits for the owner (email + dashboard).
+    # auto-installed packages per friend per day. Everything else goes to REQUEST_REVIEWER.
     "REQUEST_AUTO_INSTALL": "yes",
     # vetted third-party packages (sbdistro.VETTED: Google Chrome) may add their vendor repo by themselves
     "REQUEST_VETTED_SOURCES": "yes",
-    "REQUEST_DENY": ("sudo doas polkit* pkexec openssh-server *-server *server *-server-* *-daemon nginx* apache2* "
-                     "httpd* postgresql postgresql-[0-9]* mysql-server* mysql-[0-9]* mariadb mariadb-server* redis "
-                     "valkey memcached mongodb* docker* containerd* podman* runc lxc* lxd* incus* qemu-system* "
-                     "virtualbox* libvirt* linux linux-lts linux-zen linux-hardened linux-image* linux-headers* "
-                     "linux-modules* kernel* firmware* linux-firmware* grub* systemd* network* ufw iptables* nftables "
-                     "firewalld tailscale* cloudflared wireguard* openvpn* cron* cronie at snapd flatpak libpam* "
-                     "apparmor* selinux* sssd* samba* avahi* cups* bind9* dnsmasq* postfix* exim* sendmail* vsftpd* "
-                     "proftpd* xinetd shadow passwd login"),
+    # needs a second look (the AI reviewer) instead of installing right away: privileged container/VM
+    # engines, mail servers, system-wide app stores, hacking/sniffing/mining/anonymizing tools. Servers and
+    # daemons are fine: a requested package never starts or enables a system service.
+    "REQUEST_DENY": ("docker* containerd* runc lxc* lxd* incus* libvirt* virtualbox* snapd flatpak postfix* exim* "
+                     "sendmail* opensmtpd* nmap masscan zmap hydra* medusa john hashcat aircrack-ng ettercap* "
+                     "bettercap* sqlmap nikto metasploit* tcpdump wireshark* tshark dsniff macchanger xmrig* "
+                     "cpuminer* ethminer* tor torsocks proxychains* firmware* linux-firmware*"),
     # who answers a request the rules above don't auto-install: "ai" = an AI reviewer (the owner only gets an
     # hourly FYI), "owner" = email the owner to approve. The AI is OpenRouter (REQUEST_REVIEW_MODEL, paid with
     # the owner's OpenRouter key from OpenCode's login or OPENROUTER_KEY_FILE), else Claude Code as the owner's
@@ -164,8 +163,8 @@ DEFAULTS = {
                       "linux-image* linux-headers* linux-modules* kernel* grub* systemd systemd-* libpam* shadow "
                       "passwd login apparmor* selinux* sssd* ufw iptables* nftables firewalld network-manager* "
                       "netplan* tailscale* cloudflared wireguard* openvpn* cron cron-* cronie at"),
-    "REQUEST_MAX_DEPS": "150",
-    "REQUEST_DAILY_LIMIT": "20",
+    "REQUEST_MAX_DEPS": "500",
+    "REQUEST_DAILY_LIMIT": "200",
     # email (weekly health report + urgent alerts)
     "MAIL_TO": "",
     "MAIL_FROM": "",
