@@ -1999,8 +1999,12 @@ def auto_installed_today(db, user):
                if r.get("user") == user and r.get("auto") and r.get("updated", 0) > cut)
 
 
+NO_SUCH_PKG_RE = re.compile(r"Unable to locate package|has no installation candidate|target not found", re.I)
+
+
 def req_check(cfg, rec, db, owner_ok=False):
-    """Decide a package request: ("install", native names, "") / ("installed", [], why) / ("waiting", [], why).
+    """Decide a package request: ("install", native names, "") / ("installed", [], why) / ("waiting", [], why) /
+    ("unknown", [], why) when a named package doesn't exist (closed without bothering the owner).
     The owner's approval (owner_ok) skips REQUEST_DENY, the dependency cap and the daily limit, nothing else."""
     d = sbdistro()
     try:
@@ -2027,6 +2031,9 @@ def req_check(cfg, rec, db, owner_ok=False):
                     return "waiting", [], f"couldn't add the official source for {p}: {str(ex)[:150]}"
         ok, new, err = d.simulate_install(missing)
         if not ok:
+            if NO_SUCH_PKG_RE.search(err or ""):  # a wrong name: the owner's OK can't fix it, so don't ask them
+                return "unknown", [], (f"no such package in the distro's repos ({err}); check the exact name "
+                                       "(apt-cache search / pacman -Ss) and request that instead")
             return "waiting", [], f"not installable from the distro's repos: {err}"
         if not owner_ok:
             cap = sb.cfg_int(cfg, "REQUEST_MAX_DEPS")
@@ -2078,7 +2085,8 @@ def req_finish(cfg, rid, state, reason="", by=None, installed=None, auto=None):
     msg = {"installed": (f"{' '.join(r.get('packages') or [])} is installed now (your `box request`)"
                          + (f"; {reason}" if reason else "") + "."),
            "done": f"The owner marked your `box request` as done: {what}",
-           "declined": f"The owner declined your `box request`: {what}" + (f" ({reason})" if reason else ""),
+           "declined": (f"Your `box request` was not installed: {what} ({reason})" if by == "auto" else
+                        f"The owner declined your `box request`: {what}" + (f" ({reason})" if reason else "")),
            "failed": f"Your `box request` ({what}) failed: {reason}. The owner has been told."}.get(state)
     if msg and r.get("user") in sb.friend_users():
         add_notice(r["user"], "request-" + state, msg)
@@ -2164,6 +2172,19 @@ def req_mail_owner(cfg):
             print(f"request FYI mail failed: {e!r}", file=sys.stderr)
 
 
+def req_mail_failed(cfg, r, why):
+    """One FYI to the owner: they approved it, it couldn't be installed, the request is closed (no button to press)."""
+    import sbmail
+    if not sbmail.configured(cfg):
+        return
+    try:
+        sbmail.send(cfg, f"Couldn't install for {r['user']}: {' '.join(r.get('packages') or [])}"[:90],
+                    f"You approved {r['user']}'s request ({req_summary(r)}), but it can't be installed:\n  {why}\n\n"
+                    f"The request is closed and {r['user']}'s agent has been told why. Nothing to do.\n")
+    except Exception as e:  # noqa: BLE001 - mail trouble never blocks the provisioner
+        print(f"request mail failed: {e!r}", file=sys.stderr)
+
+
 def process_requests(cfg):
     """sharedbox-requests.service: ingest, decide, install (one at a time), tell everyone. Loops until idle."""
     with _Locked(REQ_WORKER_LOCK, block=False) as got:
@@ -2183,10 +2204,15 @@ def process_requests(cfg):
                 verdict, names, why = req_check(cfg, r, req_db(), owner_ok)
                 if verdict == "installed":
                     req_finish(cfg, r["id"], "installed", why, by=r.get("by"), installed=[], auto=not owner_ok)
+                elif verdict == "unknown":
+                    req_finish(cfg, r["id"], "declined", why, by="auto")
+                    if owner_ok:
+                        req_mail_failed(cfg, r, why)
                 elif verdict == "waiting":
-                    if owner_ok:  # the owner said yes but it can't be installed: they need to know why
-                        req_update(lambda db, rid=r["id"], why=why: db["requests"][rid].update(
-                            state="waiting", reason=why, mailed=0))
+                    if owner_ok:  # the owner said yes but it still can't be installed: close it and tell them
+                        # once. Putting it back to "waiting" re-emailed them on every approve, forever.
+                        req_finish(cfg, r["id"], "declined", f"approved, but it can't be installed: {why}", by="auto")
+                        req_mail_failed(cfg, r, why)
                     else:
                         req_update(lambda db, rid=r["id"], why=why: db["requests"][rid].update(
                             state="waiting", reason=why))
@@ -2196,6 +2222,9 @@ def process_requests(cfg):
                     ok, err = req_install(names)
                     if ok:
                         req_finish(cfg, r["id"], "installed", by=r.get("by"), installed=names, auto=not owner_ok)
+                    elif owner_ok:  # already approved once: approving again would fail the same way
+                        req_finish(cfg, r["id"], "declined", f"approved, but the install failed: {err}", by="auto")
+                        req_mail_failed(cfg, r, f"the install failed: {err}")
                     else:  # back to the owner, with the reason
                         req_update(lambda db, rid=r["id"], err=err: db["requests"][rid].update(
                             state="waiting", reason=f"the install failed: {err}", mailed=0))

@@ -1553,7 +1553,8 @@ def cmd_request(a):
         print(f"sent to the owner (not installed automatically: {rec.get('reason') or 'needs their OK'}). "
               "Your agent sees the answer in `box status` and `box request status`.")
     elif st == "declined":
-        print("the owner declined it" + (f": {rec['reason']}" if rec.get("reason") else ""))
+        print(("not installed" if rec.get("by") == "auto" else "the owner declined it")
+              + (f": {rec['reason']}" if rec.get("reason") else ""))
     elif pkgs:
         print("request received, still working on it; check `box request status` in a minute.")
     else:
