@@ -770,6 +770,16 @@ def tailscale_ip4():
         return None
 
 
+def tailscale_status():
+    """`tailscale status --json` (peers included) as a dict, or None. Read-only; works without root."""
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        d = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    return d if isinstance(d, dict) else None
+
+
 def tailscale_whois(ip):
     """Return {'login','id','node'} for a tailnet peer IP, or None."""
     try:

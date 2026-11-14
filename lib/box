@@ -1067,22 +1067,43 @@ def t3_db_state():
     return running, scheduled
 
 
-def t3_app_paired():
-    """Has the T3 app on a laptop actually connected? Its pairing is labelled "<user> T3 app" (portal_t3), and the
-    session it turned into keeps that label. A read-only look at T3's database; trouble = False."""
+def t3_app_sessions():
+    """The T3 apps (desktop, or paired by the setup prompt: "<user> T3 app", see portal_t3) that are connected to
+    this friend's T3 right now: not revoked, not expired (T3 sessions last 30 days). Newest first, as dicts with
+    os, ip (the laptop's Tailscale IP as the box saw it), version and last (date it last connected).
+    A read-only look at T3's database; trouble = []."""
     import sqlite3
     db = os.path.join(os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3"), "userdata", "statev2.sqlite")
     if not os.path.exists(db):
-        return False
+        return []
+    now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
     try:
         con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=5)
         try:
-            return bool(con.execute("SELECT 1 FROM auth_sessions WHERE client_label = ? AND revoked_at IS NULL "
-                                    "LIMIT 1", (f"{ME.pw_name} T3 app",)).fetchone())
+            cols = {r[1] for r in con.execute("PRAGMA table_info(auth_sessions)")}
+            want = [c for c in ("client_os", "client_ip_address", "client_app_version", "last_connected_at",
+                                "client_surface", "expires_at") if c in cols]
+            rows = con.execute(f"SELECT {', '.join(['client_label'] + want)} FROM auth_sessions "
+                               "WHERE revoked_at IS NULL", ()).fetchall()
         finally:
             con.close()
     except sqlite3.Error:
-        return False
+        return []
+    out = []
+    for row in rows:
+        r = dict(zip(["client_label"] + want, row))
+        if r["client_label"] != f"{ME.pw_name} T3 app" and r.get("client_surface") != "desktop":
+            continue
+        if r.get("expires_at") and r["expires_at"] <= now:
+            continue
+        out.append({"os": r.get("client_os") or "", "ip": r.get("client_ip_address") or "",
+                    "version": r.get("client_app_version") or "", "last": (r.get("last_connected_at") or "")[:10]})
+    return sorted(out, key=lambda a: a["last"], reverse=True)
+
+
+def t3_app_paired():
+    """Has the T3 app on a laptop actually connected (and is that session still valid)?"""
+    return bool(t3_app_sessions())
 
 
 def t3_busy():
@@ -1242,16 +1263,22 @@ def cmd_t3(a):
     if a.action == "app-link":  # for the T3 app on the human's laptop (over Tailscale): one click there
         url = t3_pair(host, port, t3_live_env(host, env), label=f"{ME.pw_name} T3 app")
         link = sbconnect.t3_app_link(url)
+        if getattr(a, "prompt", False):  # for an agent on the laptop: the dashboard's setup prompt (diagnose Tailscale, then pair)
+            print(app_setup_prompt(url))
+            return
         print(f"""
 The T3 Code app pairing link (works once, for 30 minutes). Give it to the human to open ON THE LAPTOP
 that has the T3 Code app (https://t3.codes) and Tailscale; the app asks "Add the backend at
-http://{host}:{port}?" and they click OK:
+http://{host}:{port}?" and they click Confirm:
 
   {link}
 
-If it doesn't open the app: in the T3 app, Settings, Connections, Add environment, pick Remote link, paste this into Host:
+If it doesn't open the app: in the T3 app, Settings, Environments, Add environment, pick Remote link, paste this into Host:
 
   {url}
+
+If that laptop can't reach the box, an agent there should follow `box t3 app-link --prompt` instead (it checks
+Tailscale first).
 
 T3_APP_LINK={link}
 T3_PAIR_URL={url}""")
@@ -2297,7 +2324,19 @@ def portal_t3(pair, app=False):
     if not url:
         return {"ok": False, "error": "pairing failed; try again, or ask the owner to check `box t3 logs`"}
     url = public_t3_url(url, host, port)
-    return {"ok": True, "pair_url": url, "app_link": sbconnect.t3_app_link(url), "url": f"http://{host}:{port}/"}
+    out = {"ok": True, "pair_url": url, "app_link": sbconnect.t3_app_link(url), "url": f"http://{host}:{port}/"}
+    if app:  # for the setup prompt: the apps already connected (the laptop agent can't read the app's settings)
+        out["apps"] = t3_app_sessions()
+    return out
+
+
+def app_setup_prompt(url):
+    """The setup prompt for the agent on the friend's laptop, with what the box knows (their Tailscale account,
+    T3 apps already connected): the same text as the dashboard's "Make my setup prompt"."""
+    rec = (sb.registry().get("users") or {}).get(ME.pw_name) or {}
+    ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
+    return sbconnect.app_prompt(url, portal_url(), socket.gethostname(), ts_login=ts["login"], ts_mode=ts["mode"],
+                                apps=t3_app_sessions())
 
 
 def t3_starter(env):
@@ -2810,6 +2849,7 @@ def main():
     x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
                                            choices=["start", "pair", "app-link", "status", "stop", "logs"])
+    x.add_argument("--prompt", action="store_true", help="app-link: print the setup steps for an agent on the laptop")
     x.set_defaults(fn=cmd_t3)
     s.add_parser("welcome").set_defaults(fn=cmd_welcome)
     x = s.add_parser("request", help="ask for a system package (install PKG...), anything else, or: status")

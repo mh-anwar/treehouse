@@ -1330,10 +1330,20 @@ def dashboard_url():
     return PUBLIC + "/_box/me" if PUBLIC else f"http://{box_ip()}:{CFG['WEB_PORT']}/me"
 
 
-def app_prompt_result(res):
-    """root's answer to `t3app` -> what the start card shows: the setup prompt, or the one failure line."""
+def ts_facts(rec):
+    """What this box's Tailscale says about the friend's account (login, sharee/member/...): for the setup prompt."""
+    return sbconnect.ts_facts(sb.tailscale_status(), rec) if rec else {"login": "", "mode": ""}
+
+
+def app_prompt_result(res, rec=None):
+    """root's answer to `t3app` -> what the start card shows: the setup prompt, or the one failure line.
+    `rec` (the friend's record) adds what the box knows about their Tailscale account; root's answer lists the T3
+    apps already connected."""
     pair = res.get("pair_url") if res.get("ok") else ""
-    prompt = sbconnect.app_prompt(pair, dashboard_url(), HOST) if pair else ""
+    ts = ts_facts(rec) if pair else {}
+    apps = [a for a in res.get("apps") or () if isinstance(a, dict)]
+    prompt = sbconnect.app_prompt(pair, dashboard_url(), HOST, ts_login=ts.get("login", ""),
+                                  ts_mode=ts.get("mode", ""), apps=apps) if pair else ""
     if not prompt:
         return {"ok": False, "error": PROMPT_FAIL, "_view": "t3prompt"}
     return {"ok": True, "app_prompt": prompt, "app_pair_url": pair, "app_link": sbconnect.t3_app_link(pair),
@@ -1349,7 +1359,7 @@ def prompt_body(res):
 <details class="byhand"><summary>Do it by hand</summary>
 <p class="sub">Install the app from <a href="https://t3.codes" target="_blank" rel="noopener">t3.codes</a>,
 then <a href="{e(res['app_link'])}">open this link in the T3 app</a>.</p>
-<p class="sub">If that doesn't open it: in the app, go to Settings, Connections, Add environment, pick Remote link,
+<p class="sub">If that doesn't open it: in the app, go to Settings, Environments, Add environment, pick Remote link,
 and paste this into Host:</p>
 <div class="copyrow"><input id="app-pair" readonly class="mono" value="{e(res['app_pair_url'])}" onclick="this.select()"
 aria-label="Pairing link"><button type="button" class="sm secondary" data-copy="app-pair">Copy</button></div>
@@ -1803,7 +1813,7 @@ class Handler(BaseHTTPRequestHandler):
             kw["code"] = form.get("code", "")[:1000]
         if action in ("t3prompt", "t3app"):  # the T3 app's setup prompt: keep the tailnet address (the app can't
             # go through Cloudflare); "t3app" is the older button's name, still on pages open in someone's browser
-            res = app_prompt_result(portal_call(ip, who, "t3app"))
+            res = app_prompt_result(portal_call(ip, who, "t3app"), rec)
             return self.after_post(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"])))
         res = portal_call(ip, who, action, **kw)
         if (who.get("session") or who.get("cf_jwt")) and res.get("pair_url"):

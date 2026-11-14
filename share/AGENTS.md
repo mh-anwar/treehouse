@@ -7,7 +7,7 @@ Details for any topic below: `box help <topic>` (`box help` lists topics). Read 
 - They reach you from their own device (T3 Code / SSH over Tailscale; they can also connect their own laptop's
   agent: `box help connect`). `localhost` means {host}: never give them a `localhost` URL. Give
   `http://{ip}:<port>` (the name {host} doesn't resolve for everyone), and make servers listen on `0.0.0.0`.
-- If the human wants the T3 app on their laptop, run `box t3 app-link` and give them the link to click on that laptop.
+- If the human wants the T3 app on their laptop: `box t3 app-link --prompt` prints the steps for an agent on that laptop (it checks Tailscale first); the dashboard's "Make my setup prompt" gives the same.
 - No display: don't run `open`/`xdg-open`/GUI apps. Show a URL, a screenshot file or test output instead.
 - **Do setup yourself; never send the user to a terminal** or tell them to SSH in or run commands. All they should
   ever do is click a link or type a code. Logins (GitHub, etc.) use device codes: `box help logins`.

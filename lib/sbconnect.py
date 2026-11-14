@@ -30,25 +30,97 @@ def app_origin(pair_url):
     return f"{u.scheme}://{u.netloc}" if u.scheme in ("http", "https") and u.netloc else ""
 
 
-def app_prompt(pair_url, dashboard, box="the box"):
-    """The prompt for the friend's own agent: install T3 Code, then open the pairing link on that computer.
-    `dashboard` is where they make a new one ({site}/_box/me); `box` is the box's name as Tailscale shows it."""
+def ts_facts(status, rec):
+    """What the box's own `tailscale status --json` says about a friend's Tailscale account, for the setup prompt.
+    Pure: `status` is that JSON (or None), `rec` their users.json record. Returns {"login", "mode"}:
+    mode "sharee" (the box is shared with them and has seen their devices), "member" (they are in the owner's
+    tailnet), "reverse" (only their own computer is shared INTO the owner's tailnet: the box can reach it, but the
+    box isn't shared back), "none" (no device of theirs seen) or "" (unknown)."""
+    rec = rec or {}
+    login, ts_id = rec.get("login") or "", str(rec.get("ts_id") or "")
+    if not isinstance(status, dict):
+        return {"login": login, "mode": ""}
+    users = status.get("User") or {}
+    if not ts_id:  # an email-invited friend: match their email against the logins the box knows
+        email = (rec.get("email") or "").lower()
+        ts_id = next((str(k) for k, u in users.items() if email and (u.get("LoginName") or "").lower() == email), "")
+    if not ts_id:
+        return {"login": login, "mode": ""}
+    login = (users.get(ts_id) or {}).get("LoginName") or login
+    suffix = "." + ((status.get("CurrentTailnet") or {}).get("MagicDNSSuffix") or status.get("MagicDNSSuffix") or "")
+    mine = [p for p in (status.get("Peer") or {}).values() if str(p.get("UserID")) == ts_id]
+    if any(p.get("ShareeNode") for p in mine):
+        mode = "sharee"
+    elif suffix != "." and any((p.get("DNSName") or "").rstrip(".").endswith(suffix.rstrip(".")) for p in mine):
+        mode = "member"
+    else:
+        mode = "reverse" if mine else "none"
+    return {"login": login, "mode": mode}
+
+
+def _facts(ts_login, ts_mode, apps):
+    """The "What the box knows" lines of the setup prompt (only facts the box really has)."""
+    out = []
+    if ts_login:
+        out.append({
+            "sharee": f"- The box is shared with the Tailscale account {ts_login}, and it has seen that account's devices.",
+            "member": f"- {ts_login} is a member of the box owner's tailnet.",
+            "reverse": f"- The box is NOT shared with the Tailscale account {ts_login} yet. (A computer of that account "
+                       f"is shared with the owner, which only lets the box reach it, not the other way round.)",
+            "none": f"- The box hasn't seen any device of the Tailscale account {ts_login} yet: the share may not be "
+                    f"accepted yet, or this computer uses another account.",
+        }.get(ts_mode, f"- My Tailscale account on the box's side is {ts_login}."))
+    for a in apps or ():
+        bits = ", ".join(b for b in (a.get("os"), a.get("ip") and "Tailscale IP " + a["ip"],
+                                     a.get("version") and "app " + a["version"]) if b)
+        when = f", last connected {a['last']}" if a.get("last") else ""
+        out.append(f"- A T3 app already connected to my T3 ({bits or 'details unknown'}{when}).")
+    return "\n".join(out)
+
+
+def app_prompt(pair_url, dashboard, box="the box", *, ts_login="", ts_mode="", apps=()):
+    """The prompt for the friend's own agent on their laptop: diagnose first, fix only what's broken (Tailscale,
+    then the T3 Code app), then open the one-time pairing link. `dashboard` is where they make a new one
+    ({site}/_box/me); `box` is the box's name (prose only: shared-in users can't resolve it, addresses use the IP).
+    Optional facts from the box: `ts_login`/`ts_mode` (ts_facts) and `apps`, the T3 app sessions already
+    connected (dicts with os, ip, version, last)."""
     origin = app_origin(pair_url)
     if not origin:
         return ""
-    return f"""Set up the T3 Code app on this computer and connect it to my account on treehouse, a shared Linux box. Do each step yourself. Only ask me when a step says to.
+    ip = urllib.parse.urlsplit(origin).hostname
+    facts = _facts(ts_login, ts_mode, apps)
+    facts = f"\nWhat the box knows:\n{facts}\n" if facts else ""
+    who = ts_login or "the account the owner shared the box with"
+    right = f" The box expects {ts_login}." if ts_login else ""
+    known = (" If the box says an app already connected from this computer's Tailscale IP (tailscale ip -4), ask me "
+             f"whether T3 on {box} works in the app; if yes, stop: it's done." if apps else "")
+    return f"""Connect the T3 Code desktop app on this computer to my T3 on treehouse ({box}), a shared Linux box, over Tailscale. Do the work yourself; I only sign in, approve permission prompts, click Confirm, or type this computer's password. Look before you change anything and stop as soon as it works. Never repeat a failing step blindly: retry once, only after fixing something. Don't set up T3 Connect, never sign out of or remove a Tailscale account, and don't change anything else on this computer.
 
-1. Check the box is reachable (on Windows, run curl.exe):
-   curl -sI --max-time 15 {origin}/
-   Any HTTP reply means it works. If it times out, this computer can't reach the box over Tailscale yet. If Tailscale isn't installed, install it from https://tailscale.com/download. Ask me to sign in to Tailscale with the account the owner shared the box with, then try again. If it still times out, stop and tell me: "Ask the owner to share {box} with your Tailscale account, then make a new prompt at {dashboard}."
-2. Check the T3 Code app is installed. If it isn't, download the right installer for this computer from https://t3.codes and install it. If you can't, ask me to install it and wait for me. If the app was just installed, open it once and wait for its first screen.
-3. Open this link with the system link opener: macOS: open, Linux: xdg-open, Windows: PowerShell's Start-Process (not cmd's start). Keep the single quotes:
+My T3: {origin} (always use this IP address; the name {box} doesn't resolve for shared devices).
+{facts}
+1. Look first, read-only. Work out the OS, then:
+   a. curl -sI --max-time 15 {origin}/   (Windows: curl.exe). Any HTTP reply means the box is reachable: go to step 3.
+   b. Find the Tailscale command: tailscale on PATH, else /Applications/Tailscale.app/Contents/MacOS/Tailscale (macOS), else "C:\\Program Files\\Tailscale\\tailscale.exe" (Windows). Run tailscale status --json and note BackendState, the signed-in account (LoginName of the User entry whose ID is Self.UserID), CurrentTailnet.Name, and whether a Peer has {ip} in TailscaleIPs.
+2. Fix Tailscale (only when 1a failed), by what 1b found:
+   - Not installed: macOS: brew install --cask tailscale-app (or the .pkg from https://tailscale.com/download); I type my password, open Tailscale and click Allow on its VPN/system extension prompt. Windows: winget install --id Tailscale.Tailscale -e (I click Yes). Linux: it needs root; if you can't get root without a password, give me ONE line to paste in a terminal that runs https://tailscale.com/install.sh, then tailscale set --operator=$USER as root, then tailscale up. Never install a second Tailscale next to an existing one.
+   - The command can't talk to Tailscale: start the app (macOS: open -a Tailscale; Windows: Tailscale from the Start menu; Linux: the tailscaled service, as root).
+   - Stopped: tailscale up.
+   - NeedsLogin: run tailscale up in the background, show me the login link it prints, and wait until BackendState is Running. Tell me to sign in as {who}, with the same Google/GitHub/Microsoft button as before.
+   - NeedsMachineAuth: an admin of that tailnet must approve this computer. Tell me and stop.
+   - Running, no peer {ip}: this account can't see the box.{right} If tailscale switch --list shows another account that should have it, ask me before switching, and say switching turns off my other Tailscale (for example work) until I switch back. Add an account only with tailscale login (keeps the old one), and only if I agree. Otherwise the share isn't accepted yet: ask me to open the email from Tailscale about {box} and accept it signed in as the account this computer uses (whichever account accepts gets the box; on a work tailnet only its admins can accept).
+   - Running, peer {ip} there, curl times out: tailscale ping --c 3 {ip}. No reply: the box or this computer is offline, or another VPN or a work tailnet's rules block it. Ask me before touching another VPN.
+   Then run the curl once more. If it still times out, stop and tell me: "Ask the owner to share {box} with my Tailscale account <login>, then make a new prompt at {dashboard}." (Put in the login from 1b: the owner shares with exactly that.) Meanwhile T3 works in the browser: {dashboard}, Open T3.
+3. The T3 Code app. If it isn't installed (macOS: /Applications/T3 Code*.app), install it: macOS brew install --cask t3-code, Windows winget install T3Tools.T3Code, Linux the .deb or AppImage for this CPU from https://t3.codes (not its install.sh: that is only the server). Older than 0.1.9: update it the same way. Open it once and wait for its first screen.{known}
+4. Open this link with the system link opener: macOS: open, Linux: xdg-open, Windows: PowerShell's Start-Process. Keep the single quotes:
    '{t3_app_link(pair_url)}'
-4. Tell me: "The T3 app should ask: Add the backend at {origin}? Click OK."
-5. If the link doesn't open the app, tell me: "In the T3 app, go to Settings, Connections, Add environment, pick Remote link, and paste this into Host: {pair_url}"
+   Windows: if reg query HKCU\\Software\\Classes\\t3code finds nothing, skip to step 5. Linux: if xdg-mime query default x-scheme-handler/t3code prints nothing, start the app once and check again; still nothing: step 5.
+   Tell me: "The T3 app should ask: Add the backend at {origin}? Click Confirm." It can take 10 seconds after the app starts. Success is "Backend added". Don't open the link a second time.
+   - "already saved": the app has {box} under an old address (like http://{ip}:<old port> or the name {box}). Tell me: "In the T3 app, go to Settings, Environments, open {box}, click Add route, paste this into Host and click Add route: {pair_url} Then click Remove route on the old address."
+   - "Update your app": update it (step 3), then ask me for a new prompt.
+5. If the link doesn't open the app, tell me: "In the T3 app, go to Settings, Environments, Add environment, pick Remote link, and paste this into Host: {pair_url}" (Older apps call Environments "Connections".)
 
-The link works once, for 30 minutes. If it fails or has expired, ask me to make a new prompt at {dashboard}.
-Don't change anything else on this computer.
+The link works once, for 30 minutes. Don't open it in a browser to test it: that uses it up. If it fails or has expired, ask me to make a new prompt at {dashboard}. Each computer needs its own prompt.
+At the end, tell me in one line: it works, or what blocks it and the Tailscale account this computer uses.
 """
 
 
@@ -153,6 +225,6 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
   group runs). Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
 - Heavy builds: `box heavy -- <command>`. `box help` lists more topics.
 
-To add the T3 app too: `ssh {alias} box t3 app-link` and open the t3code:// link it prints on this
-computer (the app needs Tailscale here).
+To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`
+and follow the steps it prints (it checks Tailscale first, then pairs the app).
 """

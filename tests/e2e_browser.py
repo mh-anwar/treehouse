@@ -986,7 +986,7 @@ def start_cards(browser):
     if not pair.startswith(f"http://{TS_IP}:{port}/pair#token=") or pair not in prompt:
         fail("alice", "setup prompt", f"pairing URL {pair!r} not in the prompt / not on the IP")
     for must in (f"Add the backend at http://{TS_IP}:{port}?", f"{PUBLIC}/_box/me", "https://t3.codes",
-                 "Settings, Connections, Add environment, pick Remote link", "Start-Process",
+                 "Settings, Environments, Add environment, pick Remote link", "Start-Process",
                  "If it still times out, stop and tell me"):
         if must not in prompt:
             fail("alice", "setup prompt", f"missing {must!r}")
