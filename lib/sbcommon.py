@@ -198,6 +198,7 @@ DEFAULTS = {
     # tripwire decoy secrets
     "CANARY_DIR": "/srv/backups/prod",
     "CANARY_ACTION": "alert",
+    "CANARY_ENABLED": "1",  # 0 = tripwire off (e.g. a hackathon); install.sh stops it, like TRAP_ENABLED=0
     # public front door (sharedbox-gate behind Tailscale Funnel); empty PUBLIC_URL = off
     "PUBLIC_URL": "",
     "GATE_PORT": "8091",
