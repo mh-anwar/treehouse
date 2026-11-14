@@ -140,7 +140,7 @@ this machine → **Share…**. `box invite` prints the matching message.
 
 ## 6. Check it works
 - `systemctl is-active sharedbox-web sharedbox-canary sharedbox-guard.timer sharedbox-janitor.timer`
-- `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/` prints `200`
+- `curl -s http://$(tailscale ip -4 | head -1):8090/healthz` prints `ok`
 - `sudo sharedbox-health report | head -40` reads sensibly
 - `box shared ls` runs (as the owner's account) and `sudo sharedbox-admin shared-sync` lists the friends and
   admins in `sbshared` (the group that may edit shared servers)

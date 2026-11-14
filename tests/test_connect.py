@@ -597,6 +597,131 @@ class Web(unittest.TestCase):
         self.assertNotIn("Link my T3 account", page)
 
 
+class Boxes(unittest.TestCase):
+    """The Boxes card: /api/box answers only boxes listed in BOXES, a dead box never slows the owner's page,
+    and the old tailnet page (/ and /api/state: everyone's usage) is for the owner only."""
+    OWNER = {"id": "111", "login": "me@github", "display": "Me", "node": "laptop"}
+    FRIEND = {"id": "222", "login": "sam@github", "display": "Sam", "node": "sam-laptop"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.w = load_script("sharedbox-web", "sbweb_boxes")
+
+    def setUp(self):
+        w = self.w
+        self._orig = (w.sb.load_config, w.peer_url, w.SELF_IP, w.OWNER_TS_ID, w.PEER_TIMEOUT)
+        w.SELF_IP, w.OWNER_TS_ID, w.PEER_TIMEOUT = "100.64.0.1", "111", 0.5
+        w.ALLOWED_HOSTS.add("100.64.0.1")
+        for x in (w.PEERS, w.BOX_LIST, w.PEER_IPS, w._box_cache):
+            x.clear()
+        self.servers = []
+
+    def tearDown(self):
+        w = self.w
+        w.sb.load_config, w.peer_url, w.SELF_IP, w.OWNER_TS_ID, w.PEER_TIMEOUT = self._orig
+        for x in (w.PEERS, w.BOX_LIST, w.PEER_IPS, w._box_cache):
+            x.clear()
+        for s in self.servers:
+            s.close()
+
+    def set_boxes(self, line):
+        cfg = dict(self.w.CFG, BOXES=line)
+        self.w.sb.load_config = lambda *a: dict(cfg)
+
+    def get(self, path, ip="100.64.0.9", who=None):
+        h = object.__new__(self.w.Handler)
+        h.client_address, h.path = (ip, 40000), path
+        h.headers = email_parser.parsestr("Host: 100.64.0.1:8090\r\n\r\n")
+        h.ident = lambda: (ip, who)
+        out = {}
+
+        def send(code, data, ctype="text/html; charset=utf-8", headers=()):
+            out.update(code=code, body=data, headers=dict(headers))
+        h.send = send
+        h.do_GET()
+        return out
+
+    def test_api_box_only_for_listed_boxes(self):
+        w = self.w
+        w.peer_url = lambda ip: "http://127.0.0.1:9/api/box"  # nothing listens: the fetch fails right away
+        self.set_boxes("here=100.64.0.1 other=100.64.0.2")
+        w.peers_tick()
+        r = self.get("/api/box", ip="100.64.0.2")
+        self.assertEqual(r["code"], 200)
+        self.assertEqual(set(json.loads(r["body"])), {"v", "name", "version", "ncpu", "load1", "level", "mem",
+                                                      "disk_free", "dashboard", "t3"})  # nothing per user
+        self.assertEqual(self.get("/api/box", ip="::ffff:100.64.0.2")["code"], 200)
+        self.assertEqual(self.get("/api/box", ip="100.64.0.3")["code"], 403)  # a friend's laptop on the tailnet
+        self.set_boxes("here=100.64.0.1")  # taken out of BOXES: refused from the next poll on, no restart
+        w.peers_tick()
+        self.assertEqual(self.get("/api/box", ip="100.64.0.2")["code"], 403)
+
+    def serve(self, code, body):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                data = body.encode()
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.servers.append(srv.socket)
+        return srv.server_port
+
+    def test_dead_box_never_slows_the_page(self):
+        import socket
+        import time
+        w = self.w
+        hole = socket.socket()  # accepts the connection (backlog) but never answers: the worst kind of dead box
+        hole.bind(("127.0.0.1", 0))
+        hole.listen(8)
+        self.servers.append(hole)
+        good = self.serve(200, json.dumps({"v": 1, "name": "good", "ncpu": 8, "load1": 0.5, "mem": 40, "disk_free": 70,
+                                           "version": "abc1234", "users": {"sam": [1, 2]},
+                                           "dashboard": "javascript:alert(1)", "t3": "http://100.64.0.3:3773"}))
+        ports = {"100.64.0.2": hole.getsockname()[1], "100.64.0.3": good, "100.64.0.4": self.serve(404, "no")}
+        w.peer_url = lambda ip: f"http://127.0.0.1:{ports[ip]}/api/box"
+        self.set_boxes("here=100.64.0.1 dead=100.64.0.2 good=100.64.0.3 old=100.64.0.4")
+        t0 = time.time()
+        w.peers_tick()
+        page = w.boxes_section()
+        self.assertLess(time.time() - t0, 0.3, "rendering waited for a peer")
+        self.assertIn("checking", page)
+        while any(p["busy"] for p in w.PEERS.values()) and time.time() - t0 < 5:
+            time.sleep(0.05)
+        self.assertLess(time.time() - t0, 2, "the dead box's fetch didn't time out")
+        w.peers_tick()  # the next poll: nothing piles up, the dead box is asked again
+        page = w.boxes_section()
+        rows = {m.group(1): m.group(0) for m in re.finditer(r"<tr><td><b>([a-z]+)</b>.*?</tr>", page)}
+        self.assertEqual(list(rows), ["here", "dead", "good", "old"])
+        self.assertIn("this box", rows["here"])
+        self.assertIn("offline", rows["dead"])
+        self.assertIn("not reachable", rows["dead"])
+        self.assertIn("online", rows["good"])
+        self.assertIn("0.50", rows["good"])
+        self.assertIn('href="http://100.64.0.3:3773"', rows["good"])
+        self.assertNotIn("javascript", page)
+        self.assertNotIn("sam", page)
+        self.assertIn("needs a treehouse update", rows["old"])
+
+    def test_old_tailnet_page_is_owner_only(self):
+        self.assertEqual(self.get("/api/state", who=self.FRIEND)["code"], 403)
+        self.assertEqual(self.get("/api/state", ip="100.64.0.1", who=None)["code"], 403)  # local users too
+        r = self.get("/", who=self.FRIEND)
+        self.assertEqual((r["code"], r["headers"].get("Location")), (303, "/me"))  # their own page instead
+        r = self.get("/api/state", who=self.OWNER)
+        self.assertEqual(r["code"], 200)
+        self.assertIn("rows", json.loads(r["body"]))
+        self.assertEqual(self.get("/", who=self.OWNER)["code"], 200)
+
+
 class AppLink(unittest.TestCase):
     def test_round_trip(self):
         for pair in ("http://100.105.248.23:20100/pair#token=AbC-12_x", "http://100.64.0.5:31000/pair#token=a%2Bb&c=d"):

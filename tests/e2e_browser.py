@@ -102,7 +102,8 @@ with open(os.path.join(TMP, "sharedbox.conf"), "w") as f:
             f"PORT_BASE={PORT_BASE}\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT={OWNER_T3_PORT}\n"
             f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nSHARED_PUBLIC_LINKS=yes\nBRAND=treehouse\n"
             "UPDATE_SOURCE=https://github.com/example/treehouse\n"
-            "SSH_HOST=treehouse-ssh.test.io\nCF_SSH_APP_ID=sshapp12345\n")
+            "SSH_HOST=treehouse-ssh.test.io\nCF_SSH_APP_ID=sshapp12345\n"
+            f"BOXES=treebox={TS_IP} peer=100.64.0.6 gone=100.64.0.7\n")
 sock_dir = tempfile.mkdtemp(prefix="sbw-", dir="/tmp" if len(TMP) > 60 else None)  # AF_UNIX path limit
 os.environ.update(SHAREDBOX_CONF=os.path.join(TMP, "sharedbox.conf"), SHAREDBOX_LIB=os.path.join(WT, "lib"),
                   SHAREDBOX_STATE=STATE, SHAREDBOX_WEB_SOCK=os.path.join(sock_dir, "gate.sock"),
@@ -425,6 +426,31 @@ for p in list(PORT_OF.values()) + [OWNER_T3_PORT]:
     serve(p, FakeT3)
 for p in (PORT_OF["alice"] + 3, SHARED_BASE):  # "blog" (running) and group "web"; "bot"/"down" stay closed
     serve(p, AppServer)
+
+
+
+class PeerBox(BaseHTTPRequestHandler):  # another treehouse box answering /api/box (the Boxes card)
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        data = json.dumps({"v": 1, "name": "peer", "version": "abc1234", "ncpu": 8, "load1": 1.25, "level": "calm",
+                           "mem": 42.0, "disk_free": 81.0, "dashboard": "http://100.64.0.6:8090/",
+                           "t3": ""}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+PEER_PORT = free_port()
+serve(PEER_PORT, PeerBox)
+w.peer_url = lambda ip: f"http://127.0.0.1:{PEER_PORT if ip == '100.64.0.6' else free_port()}/api/box"  # "gone": refused
+w.peers_tick()
+for _ in range(100):
+    if not any(p["busy"] for p in w.PEERS.values()):
+        break
+    time.sleep(0.05)
 
 threading.Thread(target=w.serve_gate, daemon=True).start()
 
@@ -1041,6 +1067,47 @@ def start_cards(browser):
     s.close()
 
 
+def boxes_card(browser):
+    """The owner's Boxes card: one row per box in BOXES (this one, a live peer, a dead one); friends don't get it."""
+    for width, scheme in ((1280, "dark"), (390, "light")):
+        s = Session(browser, "owner", "tok-owner", width=width, scheme=scheme)
+        s.page.goto(url("/_box/me"))
+        where = f"boxes card @{width}"
+        if SHOTS and s.page.locator("#boxes").count():
+            os.makedirs(SHOTS, exist_ok=True)
+            top, bottom = s.page.evaluate("""() => { const a = document.getElementById('boxes').getBoundingClientRect(),
+                b = document.querySelector('#boxes + div').getBoundingClientRect();
+                return [a.top + scrollY, b.bottom + scrollY] }""")
+            s.page.screenshot(path=os.path.join(SHOTS, f"owner-boxes-card-{width}-{scheme}.png"), full_page=True,
+                              clip={"x": 0, "y": top - 10, "width": width, "height": bottom - top + 20})
+        inspect(s, where)
+        rows = s.page.locator("#boxes + div tbody tr")
+        texts = [rows.nth(i).inner_text() for i in range(rows.count())]
+        if len(texts) != 3:
+            fail("owner", where, f"expected 3 box rows, got {texts}")
+        else:
+            this, peer, gone = texts
+            for row, musts in ((this, ["treebox", "online", "this box"]),
+                               (peer, ["peer", "100.64.0.6", "online", "1.25", "8 cores", "42% used", "81% free",
+                                       "abc1234", "Dashboard"]),
+                               (gone, ["gone", "offline", "not reachable"])):
+                for m in musts:
+                    if m not in row:
+                        fail("owner", where, f"row lacks {m!r}: {row!r}")
+        if not s.page.locator("#boxes + div a[href='http://100.64.0.6:8090/']").count():
+            fail("owner", where, "no link to the peer's dashboard")
+        if not s.page.locator("#boxes + div tbody .dot.ok").count() == 2:
+            fail("owner", where, "expected two green dots (this box and the peer)")
+        s.drain(where)
+        s.close()
+    s = Session(browser, "alice", "tok-alice")
+    s.page.goto(url("/_box/me"))
+    if s.page.locator("#boxes").count():
+        fail("alice", "boxes card", "a friend sees the owner's Boxes card")
+    s.drain("boxes card (alice)")
+    s.close()
+
+
 def tailnet_view():
     """The tailnet page (port 8090, gate=False): same start card, no device-link, no /_box/ links (404 there)."""
     alice = {"id": "nAlice1", "display": "Alice A", "login": "alice@github", "node": "laptop"}
@@ -1093,6 +1160,7 @@ def main():
             screenshots(browser)
         start_cards(browser)  # the start card's states, the setup prompt, the tailnet page: in every mode
         tailnet_view()
+        boxes_card(browser)
         w.portal_rate.clear()
         reg = sb.registry()  # bob's first visit (flow_login) must still see the welcome page
         reg["users"]["bob"]["welcome"] = True
