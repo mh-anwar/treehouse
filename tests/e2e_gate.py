@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import socket
+import socketserver
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -262,11 +263,43 @@ def run_tests():
     c, h, b = req("/s/web/assets/utils-D8OUUT-k.js", "A")
     check("friend's app asset not touched", c == 200 and not hv(h, "cache-control"), h)
 
+    # ---- sharedbox-web never sees cookies, only flags for the two it needs (the dashboard's start card) ----
+    c, h, b = req("/_box/me", "A", extra=["Cookie: tb_app=1; tb_direct=1; t3_session_1=secret",
+                                         "X-Sharedbox-Cf-Email: owner@x.io"])
+    hd = json.loads(b)["headers"] if c == 200 else {}
+    check("web gets X-Sharedbox-App/Direct from the cookies, no Cookie header",
+          hd.get("x-sharedbox-app") == "1" and hd.get("x-sharedbox-direct") == "1" and "cookie" not in hd
+          and hd.get("x-sharedbox-cf-email") == "alice@x.io", (c, hd))
+    c, h, b = req("/_box/me", "A", extra=["X-Sharedbox-App: 1", "X-Sharedbox-Direct: 1"])
+    hd = json.loads(b)["headers"] if c == 200 else {}
+    check("client-sent X-Sharedbox-App/Direct stripped", c == 200 and "x-sharedbox-app" not in hd
+          and "x-sharedbox-direct" not in hd, (c, hd))
+
+
+
+class UnixHTTP(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+class WebEcho(BaseHTTPRequestHandler):  # stands in for sharedbox-web on its unix socket: echoes the headers
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        body = json.dumps({"headers": {k.lower(): v for k, v in self.headers.items()}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 async def main():
     for p in (31000, 31001, 31011, 31018, 31100):
         serve_http(p)
+    g.WEB_SOCK = os.path.join(TMP, "web.sock")
+    web = UnixHTTP(g.WEB_SOCK, WebEcho)
+    threading.Thread(target=web.serve_forever, daemon=True).start()
     ws = await asyncio.start_server(ws_echo, "127.0.0.1", 31002)
     srv = await asyncio.start_server(g.client, "127.0.0.1", GATE, limit=g.MAX_HEAD)
     async with srv, ws:

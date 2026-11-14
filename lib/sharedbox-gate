@@ -340,6 +340,7 @@ def owner_t3(email):
 
 DIRECT_COOKIE = "tb_direct"  # the person chose "open T3 directly": their bookmark skips the dashboard
 OPEN_COOKIE = "tb_open"  # set for a minute by /_box/app ("Open T3 in browser"): this load of / goes to T3
+APP_COOKIE = "tb_app"  # set by the dashboard once they made a T3 app setup prompt: it then leads with "Open T3"
 
 
 def has_cookie(headers, name):
@@ -710,6 +711,10 @@ async def handle_request(reader, writer, head, peer):
     out.insert(0, ("Host", PUBLIC_HOST))
     if to_web:
         out.append(("X-Sharedbox-Client-IP", client_ip))
+        # sharedbox-web never sees cookies; it only needs to know about these two (client copies are stripped above)
+        for name, hdr in ((APP_COOKIE, "X-Sharedbox-App"), (DIRECT_COOKIE, "X-Sharedbox-Direct")):
+            if has_cookie(headers, name):
+                out.append((hdr, "1"))
         if CF:  # verified above; root re-verifies the token itself before acting on it
             out += [("X-Sharedbox-Cf-Email", claims["email"]), ("X-Sharedbox-Cf-Jwt", cf_jwt)]
         elif sess:
