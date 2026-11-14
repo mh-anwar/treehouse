@@ -97,6 +97,9 @@ class Trap:
         self.ip_logged = {}     # ip -> (hour, n)
         self.liars = {}         # ip -> until ts (fetched the robots-forbidden maze)
         self.bomb = None
+        # The box itself (T3 environment discovery, agents) and the owner's other boxes aren't scanners.
+        # The unit's sandbox can hide `ip`, so the addresses we bind are added explicitly.
+        self.own = sb.own_ips(cfg) | set(bind_addresses(cfg))
         self.stats = sb.read_json(STATS, {}) or {}
         self.stats.setdefault("days", {})
 
@@ -242,7 +245,7 @@ class Trap:
             return
         self.conns += 1
         start, action = time.monotonic(), "tarpit"
-        internal = is_internal(ip)
+        internal = is_internal(ip) and ip not in self.own
         try:
             try:
                 head = await asyncio.wait_for(reader.read(4096), timeout=3)
