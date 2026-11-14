@@ -270,7 +270,10 @@ def problems(cfg, g, findings):
     elif lu and time.time() - lu.get("ts", 0) > 3 * 86400:
         p.append(("yellow", "coding agents haven't updated in 3+ days (sharedbox-tools-update.timer)"))
     if g["disk_errors"]:
-        p.append(("red", f"{len(g['disk_errors'])} disk/filesystem error(s) in the kernel log"))
+        # No count in the text: the hourly alert dedups on the message, so a changing count
+        # re-sent the same alert every hour. Name the devices instead (a new device = new alert).
+        devs = sorted(set(re.findall(r"\b(sd[a-z]+|nvme\d+n\d+|dm-\d+|ata\d+)", "\n".join(g["disk_errors"]))))
+        p.append(("red", "disk/filesystem errors in the kernel log" + (f" ({', '.join(devs)})" if devs else "")))
     for dev, s in (g.get("smart") or {}).items():
         if not s.startswith(("PASSED", "OK")):
             p.append(("red", f"disk {dev} SMART health: {s}"))
