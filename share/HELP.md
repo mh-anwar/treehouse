@@ -88,6 +88,15 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 @@ updates
 Coding agents (`claude`, `codex`, `opencode`, `t3`) update automatically every night. `box updates` shows versions.
 
+@@ t3
+- T3 Code runs T3's nightly channel for everyone (the owner too), installed and updated by the box like the other
+  agents. Each account's T3 is `box t3` (status, logs, pair); friends' T3 naps when unused, the owner's never does.
+- On the owner's account T3 Code is `sb-t3.service`, run by the box. Don't run `t3 up`, `t3 update`, `t3 install`,
+  `t3 service ...` or `t3 doctor --fix` there: they reinstall T3's own `t3code.service`, which is kept off on purpose.
+  If T3 says a server was "started by hand" and to stop it and start it again, ignore that.
+- The owner's one-time move from `t3code.service` to the box: `box t3 switch` (waits until no agent is working,
+  restarts T3 once, puts the old one back if the new one doesn't answer). Progress: `box t3 status`.
+
 @@ connect
 The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this
 account, with no VPN: SSH goes through Cloudflare. {connect}

@@ -850,9 +850,14 @@ def handle_owner_pair(cfg, rid, req):
     pw = owner_t3_user(cfg)
     if not pw:
         return {"ok": False, "error": "OWNER_T3_USER doesn't exist"}
-    # the owner's own T3 runtime (newest), else the system one
-    bins = sorted(glob.glob(os.path.join(pw.pw_dir, ".t3/runtime/versions/*/t3")), key=os.path.getmtime)
-    t3 = bins[-1] if bins else "/usr/local/bin/t3"
+    # the version of the owner's T3 that is running now: another one could open (or migrate) its database under it.
+    # Else the owner's newest T3 runtime, else the system one.
+    rt = sb.read_json(os.path.join(pw.pw_dir, ".t3/userdata/server-runtime.json"), {}) or {}
+    ver = str(rt.get("serverVersion") or "") if isinstance(rt, dict) else ""
+    t3 = os.path.join(pw.pw_dir, ".t3/runtime/versions", ver, "t3")
+    if not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", ver) or not os.path.isfile(t3):
+        bins = sorted(glob.glob(os.path.join(pw.pw_dir, ".t3/runtime/versions/*/t3")), key=os.path.getmtime)
+        t3 = bins[-1] if bins else "/usr/local/bin/t3"
     try:
         r = as_user(pw, [t3, "pair", "--ttl", "10m", "--label", "owner (treehouse)"], timeout=60)
     except subprocess.TimeoutExpired:

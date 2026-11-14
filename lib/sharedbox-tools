@@ -178,9 +178,13 @@ def agent_specs(cfg):
 
 
 def vkey(v):
-    """Sortable key for a semver string; prereleases sort before the release."""
-    m = re.match(r"(\d+)\.(\d+)\.(\d+)(-.*)?", v or "")
-    return (tuple(int(x) for x in m.groups()[:3]), m.group(4) is None) if m else ((0, 0, 0), False)
+    """Sortable key for a semver string; prereleases sort before the release, and among themselves by their
+    dot-separated parts (numbers numerically): 0.1.10-nightly.20261113.4616 < 0.1.10-nightly.20261114.4682."""
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?", v or "")
+    if not m:
+        return ((0, 0, 0), False, ())
+    pre = tuple((0, int(x), "") if x.isdigit() else (1, 0, x) for x in (m.group(4) or "").split(".") if x)
+    return (tuple(int(x) for x in m.groups()[:3]), m.group(4) is None, pre)
 
 
 def agent_root(name):
