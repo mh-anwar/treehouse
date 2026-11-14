@@ -263,9 +263,13 @@ if [[ $(conf_get TRAP_ENABLED) != 0 ]]; then
 else
     do_ systemctl disable --now sharedbox-trap.service 2>/dev/null || true
 fi
-say "tripwire: decoy secrets in $(conf_get CANARY_DIR || true) (default /srv/backups/prod)"
-do_ systemctl enable sharedbox-canary.service
-do_ systemctl restart sharedbox-canary.service
+if [[ $(conf_get CANARY_ENABLED) != 0 ]]; then
+    say "tripwire: decoy secrets in $(conf_get CANARY_DIR || true) (default /srv/backups/prod)"
+    do_ systemctl enable sharedbox-canary.service
+    do_ systemctl restart sharedbox-canary.service
+else
+    do_ systemctl disable --now sharedbox-canary.service 2>/dev/null || true
+fi
 
 # ---------- nightly security updates ----------
 # Ubuntu installs security updates daily around 06:00-07:00 by default. Move that to the night so
