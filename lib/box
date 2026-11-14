@@ -2336,7 +2336,7 @@ def app_setup_prompt(url):
     rec = (sb.registry().get("users") or {}).get(ME.pw_name) or {}
     ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
     return sbconnect.app_prompt(url, portal_url(), socket.gethostname(), ts_login=ts["login"], ts_mode=ts["mode"],
-                                apps=t3_app_sessions())
+                                apps=t3_app_sessions(), expires=sbconnect.pair_expires(time.time()))
 
 
 def t3_starter(env):

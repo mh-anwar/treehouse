@@ -551,7 +551,8 @@ class Web(unittest.TestCase):
         finally:
             w.sb.tailscale_status = old_ts
         self.assertIn("hasn't seen any device of the Tailscale account sam@github", res["app_prompt"])
-        self.assertIn("A T3 app already connected to my T3 (Linux, last connected 2026-11-12)", res["app_prompt"])
+        self.assertIn("expires at ", res["app_prompt"])
+        self.assertIn("A T3 app paired with my T3 earlier (Linux, last connected 2026-11-12)", res["app_prompt"])
         res = w.app_prompt_result({"ok": True, "pair_url": pair})
         self.assertTrue(res["ok"])
         self.assertEqual(res["app_link"], "t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.5%3A31000%2Fpair%23token%3Dabc123")
@@ -610,7 +611,9 @@ class AppLink(unittest.TestCase):
         pair = "http://100.105.248.23:20100/pair#token=tok"
         p = sbconnect.app_prompt(pair, "https://treehouse.example.com/_box/me")
         self.assertIn("t3code://pair?pairingUrl=http%3A%2F%2F100.105.248.23%3A20100", p)
-        self.assertIn("curl -sI --max-time 15 http://100.105.248.23:20100/", p)
+        # reachability = T3's own unauthenticated descriptor, past any HTTP proxy (a proxy's 403 isn't "reachable")
+        self.assertIn("curl -s --noproxy '*' --max-time 15 http://100.105.248.23:20100/.well-known/t3/environment", p)
+        self.assertIn("environmentId", p)
         self.assertIn("Add the backend at http://100.105.248.23:20100? Click Confirm.", p)
         self.assertIn("Settings, Environments, Add environment, pick Remote link, and paste this into Host: " + pair, p)
         self.assertIn("Start-Process", p)
@@ -620,25 +623,65 @@ class AppLink(unittest.TestCase):
         self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
         self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")
         for must in ("tailscale status --json", "BackendState", "NeedsLogin", "NeedsMachineAuth", "tailscale switch",
-                     "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe",
-                     "tailscale ping", "my Tailscale account <login>", "Add route", "Remove route", "already saved",
-                     "Don't set up T3 Connect", "Open T3", "x-scheme-handler/t3code", "HKCU", "in one line"):
+                     "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "& 'C:\\Program Files\\Tailscale\\tailscale.exe'",
+                     "tailscale ping", "Add route", "Remove route", "already saved",
+                     "don't set up T3 Connect", "Open T3", "x-scheme-handler/t3code", "HKCU", "HKCR", "in one line",
+                     "Access denied", "--operator=$USER", "Tailscale-latest-macos.pkg", "releases/latest",
+                     "winget list --id T3Tools.T3Code", "dpkg -s t3-code", "lasts 30 minutes",
+                     "share the box with my Tailscale account <login>"):
             self.assertIn(must, p)
         self.assertNotIn("What the box knows", p)  # no facts given: none made up
-        self.assertNotIn("already connected from", p)
+        self.assertNotIn("paired with my T3 earlier", p)
+
+    def test_prompt_invariants(self):
+        pair = "http://100.105.248.23:20100/pair#token=tok"
+        p = sbconnect.app_prompt(pair, "https://t.example.com/_box/me", "sietchtabr")
+        # an app that already works: stop before touching anything
+        self.assertLess(p.index("0. Already working?"), p.index("1. Look, read-only"))
+        self.assertIn("If yes, stop: it's done, change nothing.", p)
+        self.assertIn("If that entry connects, stop: nothing to fix.", p)
+        # diagnose (read-only) before any install or change
+        first_change = min(p.index(c) for c in ("winget install", "curl -fLo", "tailscale up", "brew install"))
+        self.assertLess(p.index("tailscale status --json"), first_change)
+        self.assertLess(p.index("--max-time 15"), first_change)
+        # no blind retry loops; the fix chain re-diagnoses instead of re-curling
+        self.assertIn("Never repeat a step that failed unless you changed something since", p)
+        self.assertIn("after two rounds that change nothing, stop", p)
+        self.assertIn("then run 1b again and handle the new state", p)
+        # the agent can't see the app: it must ask what appeared, and never burn the token in a browser
+        self.assertIn("ask me what the app showed", p)
+        self.assertIn("Never open the link in a web browser", p)
+        self.assertIn("reopen the same link (a refused link isn't used up)", p)
+        # the owner is only asked to share when this account can't see the box, with the login that will be used
+        self.assertIn("Only when this account can't see the box and no share is waiting for me, add this for the "
+                      "owner: \"Please share sietchtabr with my Tailscale account <login>.\"", p)
+        self.assertIn("--reset", p)  # forbidden, not suggested
+        self.assertIn("never use --reset or --force-reauth", p)
+        # every address is the IP (or a public site), never the box's name
+        for url in re.findall(r"[a-z0-9]+://[^\s'\")]+", p):
+            self.assertNotIn("sietchtabr", urllib.parse.urlsplit(url).netloc, url)
+        for cmd in re.findall(r"curl [^\n(]*|tailscale ping [^\n.]*|'t3code://[^']*'", p):
+            self.assertNotIn("sietchtabr", cmd)
 
     def test_prompt_facts(self):
         pair = "http://100.105.248.23:20100/pair#token=tok"
         p = sbconnect.app_prompt(pair, "https://t.example.com/_box/me", "sietchtabr", ts_login="sam@github",
                                  ts_mode="reverse", apps=[dict(os="macOS", ip="100.68.1.2", version="0.1.9",
-                                                               last="2026-11-12")])
+                                                               last="2026-11-12")], expires="2026-11-14 18:42 UTC")
         self.assertIn("NOT shared with the Tailscale account sam@github", p)
-        self.assertIn("sign in as sam@github", p)
-        self.assertIn("A T3 app already connected to my T3 (macOS, Tailscale IP 100.68.1.2, app 0.1.9, "
+        self.assertNotIn("sign in as sam@github", p)  # not proven to have the box: don't push the human to it
+        self.assertIn("go straight to the message for the owner", p)
+        self.assertIn("A T3 app paired with my T3 earlier (macOS, Tailscale IP 100.68.1.2, app 0.1.9, "
                       "last connected 2026-11-12)", p)
-        self.assertIn("already connected from this computer's Tailscale IP", p)
+        self.assertIn("An app paired earlier (see above) makes this likely.", p)
+        self.assertIn("expires at 2026-11-14 18:42 UTC (check the clock with date -u)", p)
+        for mode in ("sharee", "member"):
+            q = sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode)
+            self.assertIn("sign in as x@y (the account that has the box)", q)
+            self.assertIn("if this computer's account is another one, that is the cause; tell me both", q)
         for mode, text in (("sharee", "is shared with the Tailscale account"), ("member", "is a member"),
-                           ("none", "hasn't seen any device"), ("", "My Tailscale account on the box's side")):
+                           ("none", "That's normal if Tailscale isn't set up on any computer yet"),
+                           ("", "may have shared the box with the Tailscale account x@y (not confirmed)")):
             self.assertIn(text, sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode))
         for q in (p, sbconnect.app_prompt(pair, "d", "sietchtabr")):
             self.assertIsNone(re.search(r"\{[^}]*\}", q))
@@ -646,6 +689,9 @@ class AppLink(unittest.TestCase):
             self.assertIsNone(re.search(r"//sietchtabr|@sietchtabr", q))  # addresses use the IP
             self.assertIsNone(re.search(r"\bsudo\b|\b(None|null|undefined|NaN)\b|Error:|Exception", q))
             self.assertTrue(q.isascii())
+
+    def test_pair_expires(self):
+        self.assertEqual(sbconnect.pair_expires(0), "1970-01-01 00:29 UTC")
 
     def test_ts_facts(self):
         st = {"CurrentTailnet": {"MagicDNSSuffix": "owner.ts.net"},

@@ -1343,7 +1343,8 @@ def app_prompt_result(res, rec=None):
     ts = ts_facts(rec) if pair else {}
     apps = [a for a in res.get("apps") or () if isinstance(a, dict)]
     prompt = sbconnect.app_prompt(pair, dashboard_url(), HOST, ts_login=ts.get("login", ""),
-                                  ts_mode=ts.get("mode", ""), apps=apps) if pair else ""
+                                  ts_mode=ts.get("mode", ""), apps=apps,
+                                  expires=sbconnect.pair_expires(time.time())) if pair else ""
     if not prompt:
         return {"ok": False, "error": PROMPT_FAIL, "_view": "t3prompt"}
     return {"ok": True, "app_prompt": prompt, "app_pair_url": pair, "app_link": sbconnect.t3_app_link(pair),
