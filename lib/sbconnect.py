@@ -30,9 +30,9 @@ def app_origin(pair_url):
     return f"{u.scheme}://{u.netloc}" if u.scheme in ("http", "https") and u.netloc else ""
 
 
-def app_prompt(pair_url, dashboard):
+def app_prompt(pair_url, dashboard, box="the box"):
     """The prompt for the friend's own agent: install T3 Code, then open the pairing link on that computer.
-    `dashboard` is where they make a new one ({site}/_box/me)."""
+    `dashboard` is where they make a new one ({site}/_box/me); `box` is the box's name as Tailscale shows it."""
     origin = app_origin(pair_url)
     if not origin:
         return ""
@@ -40,12 +40,12 @@ def app_prompt(pair_url, dashboard):
 
 1. Check the box is reachable (on Windows, run curl.exe):
    curl -sI --max-time 15 {origin}/
-   Any HTTP reply means it works. If it times out, this computer isn't on Tailscale. If Tailscale isn't installed, install it from https://tailscale.com/download. Then ask me to sign in to Tailscale with the account I used to accept the treehouse invite, and try again.
-2. Check the T3 Code app is installed. If it isn't, download the right installer for this computer from https://t3.codes and install it. If you can't, ask me to install it and wait for me.
-3. Open this link with the system link opener (macOS: open, Windows: start "" or Start-Process, Linux: xdg-open). Keep the quotes:
-   "{t3_app_link(pair_url)}"
+   Any HTTP reply means it works. If it times out, this computer can't reach the box over Tailscale yet. If Tailscale isn't installed, install it from https://tailscale.com/download. Ask me to sign in to Tailscale with the account the owner shared the box with, then try again. If it still times out, stop and tell me: "Ask the owner to share {box} with your Tailscale account, then make a new prompt at {dashboard}."
+2. Check the T3 Code app is installed. If it isn't, download the right installer for this computer from https://t3.codes and install it. If you can't, ask me to install it and wait for me. If the app was just installed, open it once and wait for its first screen.
+3. Open this link with the system link opener: macOS: open, Linux: xdg-open, Windows: PowerShell's Start-Process (not cmd's start). Keep the single quotes:
+   '{t3_app_link(pair_url)}'
 4. Tell me: "The T3 app should ask: Add the backend at {origin}? Click OK."
-5. If the link doesn't open the app, tell me: "In the T3 app, go to Settings, Environments, Add environment, and paste this into Host: {pair_url}"
+5. If the link doesn't open the app, tell me: "In the T3 app, go to Settings, Connections, Add environment, pick Remote link, and paste this into Host: {pair_url}"
 
 The link works once, for 30 minutes. If it fails or has expired, ask me to make a new prompt at {dashboard}.
 Don't change anything else on this computer.
