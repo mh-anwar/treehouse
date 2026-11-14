@@ -568,6 +568,9 @@ def url(path):
     return PUBLIC + path
 
 
+AGENT_TEXT_PAGES = ("/_box/connect.md", "/_box/api/whoami")
+
+
 def inspect(s, where, page=None, dashboard_link=True):
     """Content checks on whatever page is showing."""
     page = page or s.page
@@ -577,6 +580,8 @@ def inspect(s, where, page=None, dashboard_link=True):
     except Exception as ex:  # noqa: BLE001
         fail(s.persona, where, f"page didn't load: {ex}")
         return
+    if urllib.parse.urlsplit(page.url).path in AGENT_TEXT_PAGES:
+        return  # plain-text instructions for an agent: box rules (sudo etc.) belong there, no nav needed
     for rx, what in BAD_TEXT:
         m = rx.search(text)
         if m:
@@ -688,6 +693,7 @@ def crawl(browser, persona, token, start="/_box/me", depth=3, cookie=False, expe
             if not arrive():
                 break
             lw = f"{where} -> link '{text}' ({href})"
+            page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")  # a person opens it
             a = page.locator("a[href]").nth(i)
             try:
                 if target == "_blank":
