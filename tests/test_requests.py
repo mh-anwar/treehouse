@@ -153,6 +153,41 @@ class RequestLoop(unittest.TestCase):
         r = self.held(("install", "sure"), sim=(True, ["postgresql", "systemd"], ""))
         self.assertEqual((r["state"], self.reviews), ("declined", []))
 
+    # ---- REQUEST_OPEN_USERS: a hackathon opens requests for some users, never past REQUEST_NEVER
+
+    def opened(self, pkg="postgresql", sim=(True, ["postgresql"], ""), user="pippin", until=""):
+        self.distro = FakeDistro(sim)
+        self.reviews, self.installs = [], []
+        adm.ai_review = lambda cfg, r, names, deps, why: self.reviews.append(names) or ("decline", "no")
+        adm.req_install = lambda names: self.installs.append(names) or (True, "")
+        rid = self.put("new", pkg)
+        self.run_worker(REQUEST_DENY="postgresql sudo", REQUEST_MAX_DEPS="1", REQUEST_OPEN_USERS="krish " + user,
+                        REQUEST_OPEN_UNTIL=until)
+        return adm.req_db()["requests"][rid]
+
+    def test_open_user_skips_deny_and_dep_cap(self):
+        r = self.opened(sim=(True, ["postgresql", "libpq5"], ""))
+        self.assertEqual((r["state"], self.reviews, self.installs), ("installed", [], [["postgresql"]]))
+        self.assertTrue(r.get("auto"))
+
+    def test_open_user_still_blocked_by_never(self):
+        r = self.opened(pkg="sudo", sim=(True, ["sudo"], ""))
+        self.assertEqual((r["state"], self.installs), ("declined", []))
+        r = self.opened(sim=(True, ["postgresql", "systemd-timesyncd"], ""))
+        self.assertEqual((r["state"], self.installs), ("declined", []))
+
+    def test_other_users_not_opened(self):
+        r = self.opened(user="dave")
+        self.assertEqual((self.reviews, self.installs), ([["postgresql"]], []))
+
+    def test_open_window_expires(self):
+        r = self.opened(until="2000-01-01 00:00")
+        self.assertEqual(self.installs, [])
+        r = self.opened(until="2999-01-01 00:00")
+        self.assertEqual(self.installs, [["postgresql"]])
+        r = self.opened(until="tonight")
+        self.assertEqual(self.installs, [])  # a typo closes it
+
     def test_owner_can_approve_an_auto_declined_request(self):
         r = self.held(("decline", "no"))
         adm.run = lambda *a, **k: None
