@@ -905,6 +905,8 @@ def handle_portal(cfg, rid, req):
         return box_portal(pw, ["status"])
     if action == "t3":
         return box_portal(pw, ["t3-pair"])
+    if action == "t3app":  # the same pairing, labelled for the T3 app on their laptop (the dashboard's setup prompt)
+        return box_portal(pw, ["t3-pair", "app"])
     if action == "device-link":  # works for Tailscale friends too: their way off Tailscale
         url = mint_login_link(cfg, name)
         if not url:

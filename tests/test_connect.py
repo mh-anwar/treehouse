@@ -15,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import html
+import re
+import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib")
@@ -457,8 +460,10 @@ class Web(unittest.TestCase):
 
     def test_dashboard_section(self):
         out = self.web.connect_section("sam")
-        self.assertIn("Use the box from your own computer's agent", out)
+        self.assertIn("Reach the box from your laptop's terminal", out)
         self.assertIn('id="connect-copy"', out)
+        self.assertIn('data-copy="connect-prompt"', out)
+        self.assertIn('<textarea id="connect-prompt" readonly hidden>', out)  # copied, not shown inline
         self.assertIn("User sam", out)
         self.assertIn("/_box/connect.md", out)
         self.assertNotIn("<script>alert", out)
@@ -479,6 +484,129 @@ class Web(unittest.TestCase):
         who = w.cf_who("friend@example.com", "jwt")
         html_out = w.portal_page("gate", who, "sam", self.friend)
         self.assertIn("connect-prompt", html_out)
+
+
+    # ---- the start card on /_box/me ----
+
+    def render(self, logins, t3=True, ts_id="n1", app=False, result=None, welcome=False):
+        w = self.web
+        rec = dict(self.friend, **({"ts_id": ts_id} if ts_id else {}))
+
+        def portal_call(ip, who, action, **kw):
+            if action == "status":
+                return {"ok": True, "updates": "auto", "ssh": True, "servers": [],
+                        "logins": {k: {"label": k, "ok": v} for k, v in logins.items()},
+                        "t3": {"url": "http://100.64.0.5:31000/", "running": True} if t3 else None}
+            if action == "shared-ls":
+                return {"ok": True, "servers": []}
+            return {"ok": False, "error": "unexpected"}
+        w.portal_call = portal_call
+        who = dict(w.cf_who("friend@example.com", "jwt"), app=app)
+        return w.portal_page("gate", who, "sam", rec, result=result, welcome=welcome)
+
+    @staticmethod
+    def start_mains(page):
+        """The start card's main buttons: plain <button>s and a.btn links (not secondary, small or text-styled)."""
+        start = page[page.index("id='start'"):page.index("</section>")]
+        return re.findall(r"<button(?![^>]*class=)[^>]*>([^<]*)</button>|<a class='btn' [^>]*>([^<]*)</a>", start)
+
+    def test_start_states_one_main_button(self):
+        w = self.web
+        old = w.SELF_IP
+        w.SELF_IP = "100.64.0.5"
+        try:
+            cases = [  # (logins, t3, ts_id, app, main button, text)
+                ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this box yet"),
+                ({"claude": False, "codex": False}, True, "n1", False, "Log in with Claude", "Log in with ChatGPT"),
+                ({"claude": True}, True, "n1", False, "Make my setup prompt", "No agent on your laptop?"),
+                ({"claude": True}, True, "", False, "Open T3", "Ask the owner to add you to Tailscale"),
+                ({"claude": True}, True, "n1", True, "Open T3 in browser", "Make a new setup prompt"),
+            ]
+            for logins, t3, ts_id, app, main, text in cases:
+                page = self.render(logins, t3, ts_id, app)
+                mains = [a or b for a, b in self.start_mains(page)]
+                self.assertEqual(mains, [main] if main else [], (logins, t3, ts_id, app))
+                self.assertIn(text, page)
+                self.assertNotIn("Link my T3 account", page)  # T3 Connect stays hidden until it's tested
+                self.assertNotIn("→", page)
+                self.assertNotIn(f"@{w.HOST}<", page)
+                self.assertNotIn(f"//{w.HOST}:", page)
+            self.assertIn("Welcome, sam", self.render({"claude": False}, welcome=True))
+            self.assertIn("ssh sam@100.64.0.5", self.render({"claude": True}))
+        finally:
+            w.SELF_IP = old
+
+    def test_prompt_result(self):
+        w = self.web
+        pair = "http://100.64.0.5:31000/pair#token=abc123"
+        res = w.app_prompt_result({"ok": True, "pair_url": pair})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["app_link"], "t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.5%3A31000%2Fpair%23token%3Dabc123")
+        page = self.render({"claude": True}, result=res)
+        self.assertIn('id="app-prompt"', page)
+        self.assertIn(f'value="{pair}"', page)
+        self.assertIn('href="t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.5', page)
+        self.assertEqual([a or b for a, b in self.start_mains(page)], ["Copy prompt"])
+        bad = w.app_prompt_result({"ok": False, "error": "T3 Code is still starting"})
+        self.assertEqual(bad["error"], w.PROMPT_FAIL)
+        page = self.render({"claude": True}, result=bad)
+        self.assertIn(html.escape(w.PROMPT_FAIL), page)
+        self.assertIn("note bad", page)
+        self.assertNotIn("class='ic' aria-hidden='true'>!<", page)  # an SVG mark, not a font glyph
+
+    def test_prompt_sets_cookie_and_redirects(self):
+        w = self.web
+        w.portal_call = lambda ip, who, action, **kw: (
+            {"ok": True, "pair_url": "http://100.64.0.5:31000/pair#token=t"} if action == "t3app" else {"ok": False})
+        who = w.cf_who("friend@example.com", "jwt")
+        h = object.__new__(w.GateHandler)
+        h.headers = email_parser.parsestr("\r\n")
+        sent = {}
+        h.redirect = lambda where, headers=(): sent.update(where=where, headers=list(headers))
+        h.portal_post("gate", who, {"action": "t3prompt", "key": ""})
+        self.assertTrue(sent["where"].startswith("/_box/me?r=") and sent["where"].endswith("#start"), sent)
+        self.assertEqual(sent["headers"][0][0], "Set-Cookie")
+        self.assertTrue(sent["headers"][0][1].startswith("tb_app=1; Path=/_box; Max-Age="), sent)
+
+    def test_gate_flags(self):
+        r = self.request("GET", "/_box/features")  # any page: who() reads the gate's flags
+        self.assertEqual(r["code"], 200)
+        h = object.__new__(self.web.GateHandler)
+        h.headers = email_parser.parsestr("X-Sharedbox-Cf-Email: friend@example.com\r\nX-Sharedbox-Cf-Jwt: j\r\n"
+                                          "X-Sharedbox-App: 1\r\n\r\n")
+        who = h.who()
+        self.assertEqual((who["app"], who["direct"]), (True, False))
+
+    def test_features_hero(self):
+        page = self.web.features_page()
+        self.assertIn("href='/_box/me#start'>Set up the T3 app</a>", page)
+        self.assertIn("Your agent does it for you.", page)
+        self.assertNotIn("Link my T3 account", page)
+
+
+class AppLink(unittest.TestCase):
+    def test_round_trip(self):
+        for pair in ("http://100.64.0.10:20100/pair#token=AbC-12_x", "http://100.64.0.5:31000/pair#token=a%2Bb&c=d"):
+            link = sbconnect.t3_app_link(pair)
+            u = urllib.parse.urlsplit(link)
+            self.assertEqual((u.scheme, u.netloc), ("t3code", "pair"))
+            self.assertEqual(urllib.parse.parse_qs(u.query)["pairingUrl"], [pair])
+            self.assertNotIn("#", link)  # the token must not turn into the link's own fragment
+        self.assertEqual(sbconnect.t3_app_link(""), "")
+
+    def test_prompt(self):
+        pair = "http://100.64.0.10:20100/pair#token=tok"
+        p = sbconnect.app_prompt(pair, "https://treehouse.example.com/_box/me")
+        self.assertIn("t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.10%3A20100", p)
+        self.assertIn("curl -sI --max-time 15 http://100.64.0.10:20100/", p)
+        self.assertIn("Add the backend at http://100.64.0.10:20100? Click OK.", p)
+        self.assertIn("paste this into Host: " + pair, p)
+        self.assertIn("make a new prompt at https://treehouse.example.com/_box/me", p)
+        self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
+        self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")
+
+    def test_connect_text_mentions_app_link(self):
+        self.assertIn("ssh treehouse box t3 app-link", sbconnect.connect_text("sam", SITE, "treehouse-ssh.example.com"))
 
 
 email_parser = email.parser.Parser(_class=__import__("http.client").client.HTTPMessage)
@@ -514,7 +642,7 @@ class HelpTopic(unittest.TestCase):
             raw = f.read()
         topics = {c.partition("\n")[0].strip(): c.partition("\n")[2] for c in raw.split("@@ ")[1:]}
         self.assertIn("connect", topics)
-        fields = {k: "X" for k in ("portal", "user", "host", "connect", "project_ttl", "warn", "cache_ttl",
+        fields = {k: "X" for k in ("portal", "user", "host", "ip", "connect", "project_ttl", "warn", "cache_ttl",
                                    "artifact_ttl", "tmp_ttl", "slots", "jobs", "updates", "reboot_time",
                                    "reboot_days", "ports", "shared_dir", "shared_ports",
                                    "serve_public", "shared_public", "archive_days", "t3_idle", "t3_nap", "t3_ports", "docker_nap")}

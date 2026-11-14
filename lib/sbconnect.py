@@ -7,9 +7,49 @@ Access token (sharedbox-web -> spool -> root -> `box _portal add-key`).
 
 This module only renders text: the prompt the friend pastes into their agent (also served as
 /_box/connect.md), and the ~/.ssh/config block. Pure functions, no I/O; stdlib only.
+
+It also renders the T3 Code app's one-click pairing link (t3code://pair?pairingUrl=...) and the "setup prompt" a
+friend pastes into the agent on their laptop to install the app and connect it to their T3 on the box.
 """
 
+import urllib.parse
+
 ALIAS = "treehouse"
+
+
+def t3_app_link(pair_url):
+    """The T3 Code app's pairing link. The app asks "Add the backend at <origin>?" and pairs with the token.
+    Built from the pairing URL people connect to (the box's Tailscale IP and the friend's first port), never from
+    the "App link:" line `t3 pair` prints (that one carries T3's internal port)."""
+    return "t3code://pair?pairingUrl=" + urllib.parse.quote(pair_url, safe="") if pair_url else ""
+
+
+def app_origin(pair_url):
+    """http://<ip>:<port> of a pairing URL, or ""."""
+    u = urllib.parse.urlsplit(pair_url or "")
+    return f"{u.scheme}://{u.netloc}" if u.scheme in ("http", "https") and u.netloc else ""
+
+
+def app_prompt(pair_url, dashboard):
+    """The prompt for the friend's own agent: install T3 Code, then open the pairing link on that computer.
+    `dashboard` is where they make a new one ({site}/_box/me)."""
+    origin = app_origin(pair_url)
+    if not origin:
+        return ""
+    return f"""Set up the T3 Code app on this computer and connect it to my account on treehouse, a shared Linux box. Do each step yourself. Only ask me when a step says to.
+
+1. Check the box is reachable (on Windows, run curl.exe):
+   curl -sI --max-time 15 {origin}/
+   Any HTTP reply means it works. If it times out, this computer isn't on Tailscale. If Tailscale isn't installed, install it from https://tailscale.com/download. Then ask me to sign in to Tailscale with the account I used to accept the treehouse invite, and try again.
+2. Check the T3 Code app is installed. If it isn't, download the right installer for this computer from https://t3.codes and install it. If you can't, ask me to install it and wait for me.
+3. Open this link with the system link opener (macOS: open, Windows: start "" or Start-Process, Linux: xdg-open). Keep the quotes:
+   "{t3_app_link(pair_url)}"
+4. Tell me: "The T3 app should ask: Add the backend at {origin}? Click OK."
+5. If the link doesn't open the app, tell me: "In the T3 app, go to Settings, Environments, Add environment, and paste this into Host: {pair_url}"
+
+The link works once, for 30 minutes. If it fails or has expired, ask me to make a new prompt at {dashboard}.
+Don't change anything else on this computer.
+"""
 
 
 def ssh_config_block(user, ssh_host, cloudflared="cloudflared", alias=ALIAS):
@@ -112,4 +152,7 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
 - Anything long-running goes in `box serve add <name> -- <command>` (or `box shared` for something the whole
   group runs). Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
 - Heavy builds: `box heavy -- <command>`. `box help` lists more topics.
+
+To add the T3 app too: `ssh {alias} box t3 app-link` and open the t3code:// link it prints on this
+computer (the app needs Tailscale here).
 """

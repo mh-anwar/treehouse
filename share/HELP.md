@@ -27,7 +27,7 @@ Never ask for passwords or tokens in chat.
   it started still serving) to free memory. Its port stays open: opening T3 (app, browser, their page) wakes it in
   a few seconds. Linked to T3 Connect: it naps after {t3_idle} days instead. `box t3 status` shows which.
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
-  over a file: push it to git, serve it on a port, or give them `scp {user}@{host}:<absolute path> .`
+  over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
 - Nothing is backed up. Push to git often.
 
 @@ heavy
@@ -73,7 +73,7 @@ shallow 5 s / 18 MB.
 - The user also sees and controls these on their page {portal}.
 - Their T3 Code isn't one of these: it naps when unused and wakes when they open it. Ports {t3_ports} are its.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
-- Others on the tailnet reach it at `http://{host}:<port>`.{serve_public}
+- Others on the tailnet reach it at `http://{ip}:<port>`.{serve_public}
 
 @@ shared
 Group servers belong to everyone: one shared copy of a bot/tool instead of each friend running their own.

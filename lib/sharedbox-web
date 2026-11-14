@@ -200,7 +200,7 @@ def submit_join(ip, who, username, key, email=""):
 
 def portal_call(ip, who, action, **kw):
     # logins wait ~25 s for a code; T3's very first start downloads it
-    wait = {"status": 30, "t3": 240}.get(action, 90)
+    wait = {"status": 30, "t3": 240, "t3app": 240}.get(action, 90)
     if who.get("cf_jwt"):  # cloudflare mode: root re-verifies the Access token itself
         return spool_call(dict({"action": action, "cf_jwt": who["cf_jwt"]}, **kw), wait=wait)
     if who.get("session"):  # public gateway: root checks the session token itself
@@ -276,7 +276,18 @@ a.btn:hover{filter:brightness(1.08)}
 .box{max-width:680px}.err{color:var(--bad)}svg.spark{display:block}
 .box.me{max-width:980px}.me>p,.me>ul,.me>details,.me>form{max-width:680px}
 a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-radius:6px}
-.secondary{background:var(--btn2)!important;color:var(--fg)!important}
+.secondary{background:var(--btn2)!important;color:var(--fg)!important}[hidden]{display:none!important}
+button.linkbtn{background:none!important;color:var(--acc)!important;margin:0;padding:0;border:0;border-radius:0;font:inherit;font-weight:inherit;text-decoration:underline;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+.start{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:6px 0 8px;max-width:680px}
+.start h2{margin:0 0 6px;font-size:18px}.start>h3,.start .card h3{margin:0 0 8px;font-size:15px;color:var(--fg);text-transform:none;letter-spacing:0}
+.start p,.line{margin:8px 0}.line>.btn,.line>form>button:not(.linkbtn),.line>button{margin-top:6px}
+.start .card{border:0;background:none;padding:0}.start .note{margin:0 0 12px;background:var(--inset)}
+.start textarea.prompt{height:auto;min-height:120px;resize:vertical}input.mono{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+ul.acct{list-style:none;padding:0;margin:0 0 6px;max-width:680px}ul.acct li{padding:7px 0;border-bottom:1px solid var(--line)}
+ul.acct li:last-child{border:0}ul.acct form{margin-left:2px}
+details.more{margin-top:26px;max-width:680px}details.more>summary,details.more details>summary{cursor:pointer;color:var(--mut)}
+details.more>summary{font-weight:600}details.more h3{font-size:13px;margin:18px 0 4px}details.more p{margin:4px 0}
 .dash-h{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin:26px 0 10px}
 .dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
@@ -380,9 +391,9 @@ def dashboard():
 def join_page(ip, who, msg=None, err=None, form=None, rng="24h"):
     e = html.escape
     if not who:
-        return page("join", """<div class="box"><h2>Can't identify you</h2>
+        return page("join", f"""<div class="box"><h2>Can't identify you</h2>
 <p>This page only works over Tailscale. Ask the owner to share this machine with you, accept the
-invite, then open this page using the machine's Tailscale name.</p></div>""")
+invite, then open <b>http://{html.escape(box_ip())}:{html.escape(str(CFG['WEB_PORT']))}/join</b>.</p></div>""")
     name, rec = existing_account(who["id"])
     if name:
         return portal_page(ip, who, name, rec, rng=rng)
@@ -834,7 +845,7 @@ def servers_section(st, shared, btn, base="", own_public=True):
         port = str(port or "")
         if not port.isdigit():
             return ""
-        u = f"http://{HOST}:{port}/"
+        u = f"http://{box_ip()}:{port}/"
         tail = f'<a href="{e(u)}" target="_blank" rel="noopener">{e(u)}</a>'
         if not PUBLIC or not public:
             return tail + (" <span class='mut'>(Tailscale)</span>" if PUBLIC else "")
@@ -916,13 +927,13 @@ def status_and_shared(ip, who):
 
 
 def portal_btn(tok, base):
-    def btn(action, label, key="", extra="", primary=True, small=False, attrs=""):
+    def btn(action, label, key="", extra="", primary=True, small=False, attrs="", link=False):
+        """A one-button form. link=True: styled as a text link (a secondary choice inside a sentence)."""
         e = html.escape
-        cls = ' class="sm' + ('' if primary else ' secondary') + '"' if small else ""
-        style = "" if primary or small else ' style="background:var(--btn2);color:var(--fg)"'
+        cls = "linkbtn" if link else ("sm" + ("" if primary else " secondary")) if small else "" if primary else "secondary"
         return f"""<form method="post" action="{base}/me" style="display:inline"{attrs}>
 <input type="hidden" name="token" value="{tok}"><input type="hidden" name="action" value="{e(action)}">
-<input type="hidden" name="key" value="{e(key)}">{extra}<button{cls}{style}>{e(label)}</button></form>"""
+<input type="hidden" name="key" value="{e(key)}">{extra}<button{f' class="{cls}"' if cls else ''}>{e(label)}</button></form>"""
     return btn
 
 
@@ -1040,11 +1051,10 @@ def features_page(owner=False):
                 + (f"<p class='fm'>{more}</p>" if more else "") + "</div></div>")
     out = [
         "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The best way to talk to your agents.</p>"
-        "<ol class='steps'><li><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code"
-        "</a></li><li>" + ("In the app, add your own T3 on this box (over Tailscale)." if owner else
-        "<a class='btn' href='/_box/me#t3app' style='background:var(--btn2);color:var(--fg)'>Link my T3 account</a>")
-        + "</li><li>In the app, sign in with the same account and click <b>Add</b> next to the box.</li></ol>"
-        "<p class='fm'>On your phone, the T3 Code app (iOS and Android) works the same way. Or use "
+        + ("<p><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download T3 Code</a></p>"
+           "<p class='fm'>In the app, add your own T3 on this box over Tailscale.</p>" if owner else
+           "<p><a class='btn' href='/_box/me#start'>Set up the T3 app</a></p><p class='fm'>Your agent does it for you.</p>")
+        + "<p class='fm'>On your phone, the T3 Code app (iOS and Android) works the same way. Or use "
         "<a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<h3 class='fg'>Agents</h3><div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
@@ -1277,12 +1287,73 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
         out.append("<p class='err'>Couldn't load the box section.</p>")
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
-    out.append('<p style="margin-top:30px"><a class="btn" href="/cdn-cgi/access/logout" style="background:var(--btn2);color:var(--fg)">Log out of this browser</a></p>')
+    out.append('<p style="margin-top:30px"><a class="btn secondary" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
     return page("Owner dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
+AI_NAMES = {"claude": "Claude", "codex": "Codex"}
+START_VIEWS = ("", "login", "code", "check", "t3", "t3prompt")  # results shown inside the start card
+PROMPT_FAIL = "Couldn't make your prompt. Try again in a minute. If it still fails, tell the owner."
+APP_COOKIE, APP_COOKIE_AGE = "tb_app", 365 * 86400
+
+START_JS = r"""
+(function(){
+function copyText(v){if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(v);
+const t=document.createElement("textarea");t.value=v;t.style.position="fixed";t.style.opacity="0";
+document.body.appendChild(t);t.select();try{document.execCommand("copy")}finally{t.remove()}return Promise.resolve()}
+document.querySelectorAll("[data-copy]").forEach(function(b){b.addEventListener("click",function(){
+const src=document.getElementById(b.getAttribute("data-copy"));const label=b.textContent;
+copyText(src.value).catch(function(){}).then(function(){b.textContent="Copied";
+setTimeout(function(){b.textContent=label},2000)})})});
+document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){
+const n=document.getElementById("start-busy");if(n)n.hidden=false;
+setTimeout(function(){f.querySelectorAll("button").forEach(function(b){b.disabled=true})},0)})});
+})();
+"""
+
+
+def box_ip():
+    """The address friends' devices reach this box by: its Tailscale IP. Friends who joined the owner's tailnet
+    as shared-in users can't resolve the short MagicDNS name, so it is never used in an address."""
+    if SELF_IP:
+        return SELF_IP
+    if not _TS_IP:
+        _TS_IP.append(sb.tailscale_ip4() or "")
+    return _TS_IP[0] or HOST
+
+
+_TS_IP = []
+
+
+def dashboard_url():
+    return PUBLIC + "/_box/me" if PUBLIC else f"http://{box_ip()}:{CFG['WEB_PORT']}/me"
+
+
+def app_prompt_result(res):
+    """root's answer to `t3app` -> what the start card shows: the setup prompt, or the one failure line."""
+    pair = res.get("pair_url") if res.get("ok") else ""
+    prompt = sbconnect.app_prompt(pair, dashboard_url()) if pair else ""
+    if not prompt:
+        return {"ok": False, "error": PROMPT_FAIL, "_view": "t3prompt"}
+    return {"ok": True, "app_prompt": prompt, "app_pair_url": pair, "app_link": sbconnect.t3_app_link(pair),
+            "_view": "t3prompt"}
+
+
+def prompt_body(res):
+    e = html.escape
+    return f"""<h3>Your setup prompt</h3>
+<textarea id="app-prompt" readonly rows="7" class="prompt">{e(res['app_prompt'])}</textarea>
+<div class="line"><button type="button" data-copy="app-prompt">Copy prompt</button></div>
+<p class="sub">It works once, for 30 minutes.</p>
+<p class="sub">Doing it yourself? Install the app from <a href="https://t3.codes" target="_blank" rel="noopener">t3.codes</a>,
+then <a href="{e(res['app_link'])}">open it in the T3 app</a>.</p>
+<p class="sub">Or in the app: Settings, Environments, Add environment, then paste this into Host:</p>
+<input readonly class="mono" value="{e(res['app_pair_url'])}" onclick="this.select()" aria-label="Pairing link">"""
+
+
 def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
-    """The friend's home page: open T3, log in to an AI and GitHub. No terminal anywhere."""
+    """The friend's home page: one start card (log in to an AI, then get the T3 app), their dashboard and
+    servers, a few account lines, and the rest under "More options". No terminal anywhere."""
     if who.get("owner"):
         return owner_page(ip, who, name, rec, result, rng)
     e = html.escape
@@ -1291,167 +1362,163 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
     base = "/_box" if gate else ""
     st, shared = status_and_shared(ip, who)
     logins, t3 = st.get("logins") or {}, st.get("t3")
-    if gate and t3:
-        t3 = dict(t3, url=PUBLIC + "/")
-
     btn = portal_btn(tok, base)
+    view = str((result or {}).get("_view") or "")
+    in_start = bool(result) and view in START_VIEWS
 
-    def done(ok):
-        return '<span class="pill ok">done</span>' if ok else '<span class="pill warn">to do</span>'
-
-    out = []
-    if welcome:
-        out.append(f"<h2>Welcome, {e(name)}</h2><p>Two quick steps and you're building.</p>")
-    elif who["display"] == name:
-        out.append(f"<h2>Hi {e(name)}</h2>")
-    else:
-        out.append(f"<h2>Hi {e(who['display'])}</h2><p class='mut'>Your account on {e(HOST)} is "
-                   f"<b>{e(name)}</b>.</p>")
-    if result:
-        out.append(portal_result(result, btn, base))
     ai = [k for k in ("claude", "codex") if k in logins]
     ai_ok = any(logins[k]["ok"] for k in ai)
+    on_tailnet = bool((rec or {}).get("ts_id")) or not gate or not CF  # can reach the box's Tailscale IP
+    app_set = bool(who.get("app"))  # the tb_app cookie: they made a setup prompt on some laptop already
+
+    # ---- the start card: the page's one main button ----
+    if not t3:
+        state = "S0"
+    elif not ai_ok:
+        state = "S1"
+    elif not on_tailnet:
+        state = "S2b"
+    elif app_set:
+        state = "S3"
+    else:
+        state = "S2"
+    # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
+    if CF and gate:
+        def open_t3(label, small=False):
+            return f"<a href='/_box/app'>{e(label)}</a>" if small else f"<a class='btn' href='/_box/app'>{e(label)}</a>"
+    else:
+        def open_t3(label, small=False):
+            return btn("t3", label, link=small)
+    busy = ("<div id='start-busy' hidden>" + notice("Waking up T3. This can take a minute.", "busy") + "</div>")
+    make_prompt = btn("t3prompt", "Make my setup prompt", attrs=" data-busy='1'")
+    card = []
+    if in_start and result.get("ok") and result.get("app_prompt"):
+        card.append(prompt_body(result))
+    elif in_start and result.get("ok") and not result.get("done") and not result.get("pair_url") \
+            and (result.get("url") or result.get("code") or result.get("paste")):
+        card.append(portal_result(result, btn, base))  # a login in progress: its steps are the card
+    else:
+        if in_start:
+            card.append(portal_result(result, btn, base))
+        if state == "S0":
+            card.append("<h2>T3 isn't set up on this box yet</h2>"
+                        "<p>Tell the owner. Everything else on this page still works.</p>")
+        elif state == "S1":
+            card.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Log in to your AI'}</h2>")
+            if not ai:
+                card.append("<p>No coding agents are installed on the box yet. Tell the owner.</p>")
+            else:
+                card.append("<p>Use the account you already pay for. You only do this once.</p>")
+                first = "claude" if "claude" in logins else "codex"
+                card.append("<div class='line'>" + btn("login", "Log in with Claude" if first == "claude" else
+                                                       "Log in with ChatGPT", first) + "</div>")
+                if first == "claude" and "codex" in logins:
+                    card.append("<div class='line sub'>Pay for ChatGPT instead? "
+                                + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
+        elif state == "S2":
+            card.append("<h2>Get the T3 app on your laptop</h2><p>Paste a prompt into Claude Code, Codex or any "
+                        "agent on your laptop. It installs the app and connects it to the box.</p>"
+                        f"<div class='line'>{make_prompt}</div>{busy}"
+                        f"<div class='line sub'>No agent on your laptop? {open_t3('Open T3 in this browser', True)}.</div>")
+        elif state == "S2b":
+            card.append("<h2>Open T3</h2><p>This is where you talk to your agent. It runs on the box, so it keeps "
+                        f"going when you close the tab.</p><div class='line'>{open_t3('Open T3')}</div>"
+                        "<p class='sub'>Want the T3 app on your laptop? Ask the owner to add you to Tailscale.</p>")
+        else:  # S3
+            card.append(f"<h2>Open T3</h2><p>Your agents keep working when you close the tab.</p>"
+                        f"<div class='line'>{open_t3('Open T3 in browser')}</div>{busy}"
+                        "<div class='line sub'>Setting up another laptop? "
+                        + btn("t3prompt", "Make a new setup prompt", link=True, attrs=" data-busy='1'") + ".</div>")
+
+    out = []
+    if not (state == "S1" and welcome and not in_start):  # the welcome card says hello itself
+        if who["display"] == name:
+            out.append(f"<h2>Hi {e(name)}</h2>")
+        else:
+            out.append(f"<h2>Hi {e(who['display'])}</h2><p class='mut'>Your account on {e(HOST)} is "
+                       f"<b>{e(name)}</b>.</p>")
+    out.append("<section class='start' id='start'>" + "".join(card) + "</section>")
+
+    # ---- dashboard and servers ----
+    if result and view.endswith(("-ctl", "-logs")):
+        out.append(portal_result(result, btn, base))
     try:
-        dash = friend_dashboard(name, rec, rng, base)
+        out.append(friend_dashboard(name, rec, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
-        dash = ""
-    dash += servers_section(st, shared, btn, base)
-    # behind the public gate, T3 is a plain link: the gate pairs the browser by itself if it has to
-    t3_btn = ("<a class='btn' href='/_box/app'>Open T3 in browser</a>" if CF and gate
-              else btn("t3", "Open T3 in browser"))
-    sleeping = ""  # a napping T3 wakes by itself when opened: nothing to tell them
-    if ai_ok and not welcome:  # set up already: the dashboard is the first thing they see
-        if t3:
-            out.append("<p>" + t3_btn + " " + sleeping + "</p><p class='sub'>Best on the T3 Code app on your laptop: "
-                       "<a href='#t3app'>set it up</a>."
-                       + (" <a href='/_box/direct-on'>Skip this page next time</a>." if CF and gate else "") + "</p>")
-        out.append(dash)
-        out.append("<h2 style='margin-top:34px'>Setup</h2>")
-        dash = ""
-    out.append(f"<h2>1. Connect your AI {done(ai_ok)}</h2>")
-    if not ai:
-        out.append("<p class='mut'>No coding agents are installed on the box yet. Ask the owner.</p>")
-    elif ai_ok:
-        out.append("<p class='mut'>Logged in: " + ", ".join(e(logins[k]["label"]) for k in ai if logins[k]["ok"])
-                   + ".</p>")
-    else:
-        out.append("<p>Pick the one you pay for. You only do this once.</p><p>")
-        if "claude" in logins:
-            out.append(btn("login", "Log in with Claude", "claude") + " ")
-        if "codex" in logins:
-            out.append(btn("login", "Log in with ChatGPT (Codex)", "codex") + " ")
-        out.append("</p>")
-        if "claude" in logins:
-            out.append("<p class='sub'>Using a Claude API key instead? "
-                       + btn("login", "Log in with the Console", "claude",
-                             '<input type="hidden" name="console" value="1">', primary=False, small=True) + "</p>")
-    out.append(f"<h2>2. Open T3 {done(bool(t3 and (t3.get('running') or t3.get('sleeping'))) and ai_ok)}</h2>")
-    if not t3:
-        out.append("<p class='mut'>T3 Code isn't available on this box yet. Ask the owner.</p>")
-    else:
-        on_top = ai_ok and not welcome  # the button is already at the top of the page: don't repeat it
-        out.append(("" if on_top else
-                    "<p>This is where you work: start a chat, pick Claude or Codex, and tell it what to build. "
-                    "Your agents keep working when you close the tab.</p>" + t3_btn + " " + sleeping)
-                   + (f"<p class='sub'>Bookmark <b>{e(PUBLIC)}</b>: it opens this page, and T3 is one click away.</p>"
-                      if CF and gate else
-                      f"<p class='sub'>Already opened it on this device? Just go to "
-                      f"<a href='{e(safe_url(t3['url']))}'>{e(t3['url'])}</a> (bookmark it).</p>"))
+    out.append(servers_section(st, shared, btn, base))
+
+    # ---- your account: short lines ----
+    acct = []
+    if ai:
+        names = " and ".join(AI_NAMES.get(k, logins[k]["label"]) for k in ai if logins[k]["ok"])
+        acct.append(f"AI: {e(names)}, logged in." if ai_ok else "AI: not logged in yet.")
     if "gh" in logins:
-        out.append(f"<h2>Optional: GitHub {done(logins['gh']['ok'])}</h2>")
-        if logins["gh"]["ok"]:
-            out.append("<p class='mut'>Connected. Your agents can push code and make repos for you.</p>")
-        else:
-            out.append("<p>Lets your agents save your code to GitHub. You can also do it later: "
-                       "just ask your agent.</p>" + btn("login", "Connect GitHub", "gh", primary=False))
-    if t3 or "t3connect" in logins:
-        tail = urllib.parse.urlsplit(str((st.get("t3") or {}).get("url") or ""))  # the tailnet address, not PUBLIC
-        app_url = f"http://{HOST}:{tail.port}" if tail.port else ""
-        on_tailnet = bool((rec or {}).get("ts_id")) or not CF
-        out.append("<h2 id='t3app'>Use the T3 app on your laptop</h2><p>The app on your laptop is the best way to "
-                   "use the box.</p>")
-        dl = "<li>Download T3 Code from <a href='https://t3.codes' target='_blank' rel='noopener'>t3.codes</a>.</li>"
-        if "t3connect" in logins:
-            linked = logins["t3connect"]["ok"]
-            out.append(f"<h3>From anywhere {done(linked)}</h3><ol class='steps'>" + dl)
-            if linked:
-                out.append("<li>Linked.</li>")
-            else:
-                out.append("<li>" + btn("login", "Link my T3 account", "t3connect", primary=False)
-                           + " and approve the code it shows you.</li>")
-            out.append("<li>In the app, sign in with the same T3 account.</li>"
-                       f"<li>Go to <b>Settings → Environments</b> and click <b>Add</b> next to <b>{e(HOST)}</b>.</li>"
-                       "</ol>")
-            if not linked:
-                out.append("<p class='sub'>Linking restarts your T3 here, so do it when no agent is in the middle of "
-                           "something.</p>")
-        if app_url and on_tailnet:
-            out.append("<h3>On Tailscale</h3><ol class='steps'>" + dl
-                       + "<li>In the app, go to <b>Settings → Environments → Add environment</b> and enter "
-                         f"<code>{e(app_url)}</code>.</li>"
-                         "<li>When it asks for a code: " + btn("t3app", "Get a code for the app", primary=False)
-                       + " and paste it in. Each code works once, for 30 minutes.</li></ol>")
-    if dash:
-        out.append(dash)
+        acct.append("GitHub: connected." if logins["gh"]["ok"] else
+                    "GitHub: not connected. " + btn("login", "Connect GitHub", "gh", primary=False, small=True)
+                    + " so your agent can save your code.")
     if st.get("updates") in ("auto", "manual"):
         auto = st["updates"] == "auto"
-        out.append("<h2>Agent updates</h2><p>"
-                   + ("Your coding agents update to the newest version every night."
-                      if auto else "Your coding agents stay on the versions you have. Switch to auto any time.")
-                   + "</p>" + btn("updates", "Keep my current versions" if auto else "Update automatically",
-                                  "manual" if auto else "auto", primary=False)
-                   + "<p class='sub'>Serious security fixes are applied to everyone either way.</p>")
-    if CF:  # Cloudflare Access: any device where they sign in with their email is them
-        mail = (rec or {}).get("email") or ""
-        if gate:
-            out.append(f"<h2>Add a device</h2><p>On your phone or another computer, open <b>{e(PUBLIC)}</b> and "
-                       f"sign in with <b>{e(who.get('login', ''))}</b> (Cloudflare emails you a code). "
-                       f"That's all.</p>")
-        elif mail:
-            out.append(f"<h2>Use it without Tailscale</h2><p>On your phone or any computer, open <b>{e(PUBLIC)}</b> "
-                       f"and sign in with <b>{e(mail)}</b>. Same account, same projects. If it says you're not "
-                       f"allowed, ask the owner to let it in (their agent does it: <code>box friends email {e(name)} "
-                       f"{e(mail)}</code>).</p>")
-        else:
-            out.append(f"<h2>Use it without Tailscale</h2><p>Ask the owner to link your email to this account "
-                       f"(their agent does it: <code>box friends email {e(name)} YOUR-EMAIL</code>). Then open "
-                       f"<b>{e(PUBLIC)}</b> on any device and sign in with that email.</p>")
+        acct.append(("Agents update every night. " if auto else "Agents stay on your current versions. ")
+                    + btn("updates", "Keep my current versions" if auto else "Update automatically",
+                          "manual" if auto else "auto", primary=False, small=True))
+    acct.append(f"Projects you don't touch for {e(CFG['PROJECT_TTL_DAYS'])} days get archived. "
+                "Ask your agent to put them on GitHub.")
+    acct.append("Stuck? Ask your agent in T3. It knows how this box works.")
+    out.append("<h2 id='account'>Your account</h2>"
+               + (portal_result(result, btn, base) if result and view == "updates" else "")
+               + "<ul class='acct'>" + "".join(f"<li>{x}</li>" for x in acct) + "</ul>")
+
+    # ---- more options ----
+    more = []
+    mail = (rec or {}).get("email") or ""
     if CF and gate:
-        out.append(connect_section(name))
-    elif PUBLIC:  # one-time login links: a new device for gateway users, the way off Tailscale for the rest
-        if gate:
-            out.append("<h2>Add a device</h2><p>Use T3 Code on your phone or another computer: get a one-time "
-                       "link here, then open it there (or scan the QR code with the phone's camera).</p>")
-        else:
-            out.append(f"<h2>Use it without Tailscale</h2><p>On your phone or any computer, without installing "
-                       f"Tailscale: get a one-time link that logs that browser in at <b>{e(PUBLIC)}</b>. "
-                       f"Same account, same projects.</p>")
-        out.append(btn("device-link", "Get a login link", primary=False))
-    ssh_cmd = f"ssh {name}@{HOST}"
-    out.append(f"""<details{' open' if result and result.get('key_added') is not None else ''}>
-<summary class="mut" style="margin-top:26px;cursor:pointer">For terminal users: SSH access</summary>
-{'<p>Your key is set up. Connect with:</p><pre>' + e(ssh_cmd) + '</pre>' if st.get('ssh') else
- '<p class="mut">No SSH key yet. Paste one to get terminal access (<code>cat ~/.ssh/id_ed25519.pub</code> on your computer).</p>'}
+        more.append(f"<h3>Your phone</h3><p>Open <b>{e(PUBLIC)}</b> on your phone and sign in with "
+                    f"<b>{e(who.get('login', ''))}</b>.</p>")
+    elif CF and PUBLIC:  # the tailnet page: the way off Tailscale is the public site
+        more.append("<h3>Without Tailscale</h3><p>" + (
+            f"Open <a href='{e(PUBLIC)}/'>{e(PUBLIC)}</a> and sign in with <b>{e(mail)}</b>." if mail else
+            f"Ask the owner to link your email to this account. Then open <a href='{e(PUBLIC)}/'>{e(PUBLIC)}</a> "
+            "and sign in with it.") + "</p>")
+    elif PUBLIC:  # the older public front door: one-time login links
+        more.append("<h3>" + ("Your phone" if gate else "Without Tailscale") + "</h3><div>Get a one-time link that "
+                    f"logs another browser in at <b>{e(PUBLIC)}</b>. " + btn("device-link", "Get a login link",
+                                                                           primary=False, small=True) + "</div>"
+                    + (portal_result(result, btn, base) if result and view == "device-link" else ""))
+    term = ["<h3>Terminal access</h3>"]
+    if CF and gate:
+        term.append(connect_section(name))
+    key_open = bool(result and view == "add-key")
+    ssh_cmd = f"ssh {name}@{box_ip()}"
+    term.append(f"""<details{' open' if key_open else ''}><summary>Add an SSH key yourself</summary>
+{portal_result(result, btn, base) if key_open else ''}
+{('<p>Your key is set up. Connect with:</p><pre>' + e(ssh_cmd) + '</pre>' if on_tailnet else
+  '<p>Your key is set up.</p>') if st.get('ssh') else
+ '<p class="mut">Paste your public key (<code>cat ~/.ssh/id_ed25519.pub</code> on your computer).</p>'}
 <form method="post" action="{base}/me"><input type="hidden" name="token" value="{tok}">
 <input type="hidden" name="action" value="add-key">
 <textarea name="sshkey" required placeholder="ssh-ed25519 AAAA... you@laptop"></textarea>
-<button style="background:var(--btn2);color:var(--fg)">Add SSH key</button></form>
-<p class="sub">Then: <code>{e(ssh_cmd)}</code>, and <code>box</code> shows your usage, ports and limits.</p></details>""")
-    out.append(f"""<h2>Good to know</h2><ul>
-<li>Projects untouched for {e(CFG['PROJECT_TTL_DAYS'])} days are archived, and can be restored for
-{e(CFG['ARCHIVE_DAYS'])} days (ask your agent). Ask it to put them on GitHub to be safe.</li>
-<li>Your dashboard is always at <b>{e(PUBLIC + "/_box/me" if PUBLIC else f"http://{HOST}:{CFG['WEB_PORT']}/me")}</b>"""
- + (" (<a href='/_box/direct-off'>show it first again</a>)" if CF else "") + """.</li>
-<li>Stuck? Ask your agent in T3 Code. It knows how this machine works.</li></ul>""")
+<button class="secondary">Add SSH key</button></form></details>""")
+    more.append("".join(term))
+    if "claude" in logins and not ai_ok:
+        more.append("<h3>Claude API key</h3><div>Using a Claude API key? "
+                    + btn("login", "Log in with the Console", "claude", '<input type="hidden" name="console" value="1">',
+                          link=True) + ".</div>")
+    if CF and gate:
+        more.append("<h3>This page</h3><p>" + ("<a href='/_box/direct-off'>Show this page first again</a>"
+                                              if who.get("direct") else
+                                              "<a href='/_box/direct-on'>Go straight to T3 next time</a>") + ".</p>")
+    out.append(f"<details class='more'{' open' if key_open or view == 'device-link' else ''}>"
+               "<summary>More options</summary>" + "".join(more) + "</details>")
+
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
-        out.append('<p><a class="btn" href="/cdn-cgi/access/logout" style="background:var(--btn2);color:var(--fg)">'
-                   'Log out of this browser</a></p>')
+        out.append('<p><a class="btn secondary" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
     elif gate:
         out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
-<button style="background:var(--btn2);color:var(--fg)">Log out of this browser</button></form>""")
+<button class="secondary">Log out of this browser</button></form>""")
+    out.append(f"<script>{START_JS}</script>")
     return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
 
 
@@ -1472,7 +1539,9 @@ def notice(text, kind="ok"):
     """One-line result banner: icon + message, vertically centred. kind: ok | bad | busy (in progress)."""
     icon = {"ok": "<svg viewBox='0 0 12 12' width='11' height='11'><path d='M2.5 6.3l2.3 2.3 4.7-5' fill='none' "
                   "stroke='currentColor' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/></svg>",
-            "bad": "!", "busy": ""}[kind]
+            "bad": "<svg viewBox='0 0 12 12' width='11' height='11'><path d='M6 2.6v4' fill='none' stroke='currentColor' "
+                   "stroke-width='1.9' stroke-linecap='round'/><circle cx='6' cy='9.1' r='1.1' fill='currentColor'/></svg>",
+            "busy": ""}[kind]
     text = text[:1].upper() + text[1:]
     return f"<div class='note {kind}' role='status'><span class='ic' aria-hidden='true'>{icon}</span><p>{text}</p></div>"
 
@@ -1492,11 +1561,6 @@ def portal_result(res, btn, base=""):
         return (f"<div class='card'><h3>Invite ready{(' for ' + e(res['invite_user'])) if res.get('invite_user') else ''}"
                 f"</h3><p>Send them this:</p><pre style='white-space:pre-wrap;user-select:all'>"
                 f"{e(str(res['invite_message']))}</pre></div>")
-    if res.get("app_pair"):
-        u = str(res["app_pair"])
-        return (f"<div class='card'><h3>Your code for the T3 app</h3><p>Paste this into the app when it asks "
-                f"(works once, for 30 minutes):</p><p><code style='word-break:break-all'>{e(u)}</code>"
-                "</p></div>")
     if res.get("login_url"):
         url = safe_url(res["login_url"], ("https://",))
         return f"""<div class="card"><h3>Your login link</h3>
@@ -1507,7 +1571,7 @@ def portal_result(res, btn, base=""):
 <p class="sub">Anyone who has this link can log in as you until it's used, so don't share it.</p></div>"""
     if res.get("pair_url"):
         return f"""<div class="card"><h3>Your T3 Code is ready</h3>
-<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in browser →</a></p>
+<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in browser</a></p>
 <p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
@@ -1518,7 +1582,7 @@ or come back here for a new link on another device.</p></div>"""
     if res.get("done"):
         return notice("Logged in.")
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
-    open_btn = f'<a class="btn" style="margin-top:0" href="{e(url)}" target="_blank" rel="noopener">Open the login page →</a>'
+    open_btn = f'<a class="btn" style="margin-top:0" href="{e(url)}" target="_blank" rel="noopener">Open the login page</a>'
     if res.get("paste"):
         return f"""<div class="card"><h3>Finish logging in</h3>
 <p>1. {open_btn}</p><p>2. Sign in. The page then shows a code. Copy it and paste it here:</p>
@@ -1529,7 +1593,7 @@ or come back here for a new link on another device.</p></div>"""
 <p>1. {open_btn}</p><p>2. Sign in and type this code:</p>
 <p class="big" style="letter-spacing:.08em">{e(res.get('code') or '')}</p>
 <p id="wait" class="mut">3. That's it. This page moves on by itself once you're in.</p>
-<p class="sub">Not moving? {btn("check", "Check now", key, primary=False, small=True)}</p></div>
+<div class="sub">Not moving? {btn("check", "Check now", key, primary=False, small=True)}</div></div>
 <script>
 (function(){{const body=new URLSearchParams({{token:{json.dumps(res['_tok'])},action:"check",
 key:{json.dumps(key)},format:"json"}});const t0=Date.now();
@@ -1574,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def send(self, code, body, ctype="text/html; charset=utf-8"):
+    def send(self, code, body, ctype="text/html; charset=utf-8", headers=()):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -1584,8 +1648,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                          "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'")
+        for k, v in headers:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
+
+    def has_cookie(self, name):
+        return any(p.strip().partition("=")[0] == name for p in (self.headers.get("Cookie") or "").split(";"))
+
+    def app_cookie(self):
+        """Set-Cookie for "they made a T3 app setup prompt": the start card then leads with Open T3."""
+        return f"{APP_COOKIE}=1; Path=/; Max-Age={APP_COOKIE_AGE}; HttpOnly; SameSite=Lax"
 
     def ident(self):
         ip = self.client_address[0]
@@ -1593,7 +1666,8 @@ class Handler(BaseHTTPRequestHandler):
             ip = ip[7:]
         if ip in ("127.0.0.1", "::1") or ip == SELF_IP:
             return ip, None  # local users must not be able to sign up as the owner
-        return ip, sb.tailscale_whois(ip)
+        who = sb.tailscale_whois(ip)
+        return ip, (dict(who, app=self.has_cookie(APP_COOKIE)) if who else who)
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
@@ -1666,14 +1740,17 @@ class Handler(BaseHTTPRequestHandler):
     def after_post(self, ip, who, name, rec, result):
         """Post/redirect/get on the public site: show the result on a normal GET, so a refresh never resends a
         button press (no "resend the form?" dialog, no repeated actions)."""
+        cookie = [("Set-Cookie", self.app_cookie())] if result.get("app_prompt") else []
         if ip != "gate":
-            return self.send(200, portal_page(ip, who, name, rec, result))
+            return self.send(200, portal_page(ip, who, name, rec, result), headers=cookie)
         now = time.time()
         for k in [k for k, v in FLASH.items() if now - v[0] > 900]:
             FLASH.pop(k, None)
         fid = secrets.token_urlsafe(9)
         FLASH[fid] = (now, who["id"], result)
-        return self.redirect(f"/_box/me?r={fid}")
+        view = str(result.get("_view") or "")
+        anchor = "#start" if view in START_VIEWS else "#account" if view == "updates" else ""
+        return self.redirect(f"/_box/me?r={fid}{anchor}", cookie)
 
     def portal_post(self, ip, who, form):
         name, rec = (who["name"], who["rec"]) if who.get("session") or who.get("cf_jwt") else existing_account(who["id"])
@@ -1716,23 +1793,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server"})
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
-        actions = ("t3", "t3app", "login", "code", "check", "add-key", "updates") + (("device-link",) if PUBLIC and not CF else ())
+        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key", "updates") + (
+            ("device-link",) if PUBLIC and not CF else ())
         keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if action == "add-key":
             key_txt = form.get("sshkey", "")
             res = portal_call(ip, who, "add-key", sshkey=key_txt[:8192])
-            res = dict(res, key_added=bool(res.get("ok")))
+            res = dict(res, key_added=bool(res.get("ok")), _view="add-key")
             return self.after_post(ip, who, name, rec, res)
         kw = {"key": key}
         if action == "login" and form.get("console"):
             kw["console"] = True
         if action == "code":
             kw["code"] = form.get("code", "")[:1000]
-        if action == "t3app":  # a pairing link for the laptop app over Tailscale: keep the tailnet address
-            res = portal_call(ip, who, "t3")
-            res = ({"ok": True, "app_pair": res["pair_url"]} if res.get("ok") and res.get("pair_url") else res)
+        if action in ("t3prompt", "t3app"):  # the T3 app's setup prompt: keep the tailnet address (the app can't
+            # go through Cloudflare); "t3app" is the older button's name, still on pages open in someone's browser
+            res = app_prompt_result(portal_call(ip, who, "t3app"))
             return self.after_post(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"])))
         res = portal_call(ip, who, action, **kw)
         if (who.get("session") or who.get("cf_jwt")) and res.get("pair_url"):
@@ -1740,7 +1818,7 @@ class Handler(BaseHTTPRequestHandler):
         if as_json:
             return self.send(200, json.dumps({"ok": bool(res.get("ok")), "done": bool(res.get("done"))}),
                              "application/json")
-        res = dict(res, key=key, _tok=token_for(ip, who["id"]))
+        res = dict(res, key=key, _tok=token_for(ip, who["id"]), _view=action)
         self.send(200, portal_page(ip, who, name, rec, res))
 
 
@@ -1858,22 +1936,17 @@ def live_ssh_host():
 
 
 def connect_section(name):
-    """Dashboard card: a ready prompt for the agent on their own computer (Claude Code, Codex, ...)."""
+    """More options > Terminal access: a prompt for the agent on their own computer (Claude Code, Codex, ...),
+    copied with one button. The same text is at /_box/connect.md."""
     e = html.escape
     ssh_host = live_ssh_host()
-    text = sbconnect.connect_text(name, PUBLIC, ssh_host)
     if not ssh_host:
         return ""  # not switched on for this box yet: show nothing rather than a dead end
-    return f"""<h2>Use the box from your own computer's agent</h2>
-<p>Have Claude Code or Codex on your laptop? Paste this into it and it sets everything up by itself
-(you only type one emailed code). Afterwards you can say "run X on my treehouse box", use
-<code>ssh -t treehouse claude</code>, or open the box in VS Code / Cursor (Remote-SSH, host <b>treehouse</b>).</p>
-<textarea id="connect-prompt" readonly style="height:150px">{e(text)}</textarea>
-<p><button type="button" class="sm" id="connect-copy">Copy instructions</button>
-<span class="sub">Same text: <a href="/_box/connect.md">{e(PUBLIC)}/_box/connect.md</a></span></p>
-<script>document.getElementById("connect-copy").addEventListener("click",async function(){{
-const t=document.getElementById("connect-prompt");try{{await navigator.clipboard.writeText(t.value)}}
-catch(x){{t.select();document.execCommand("copy")}}this.textContent="Copied"}});</script>"""
+    text = sbconnect.connect_text(name, PUBLIC, ssh_host)
+    return f"""<p>Reach the box from your laptop's terminal. Paste this into an agent there.</p>
+<div class="line"><button type="button" class="sm secondary" id="connect-copy" data-copy="connect-prompt">Copy terminal prompt</button></div>
+<textarea id="connect-prompt" readonly hidden>{e(text)}</textarea>
+<p class="sub">Same text: <a href="/_box/connect.md">{e(PUBLIC)}/_box/connect.md</a></p>"""
 
 
 AGENT_GET = ("/_box/api/whoami", "/_box/connect.md")
@@ -1973,8 +2046,16 @@ class GateHandler(Handler):
     def who(self, owner=True):
         if CF:  # the gate verified the token and strips any client-sent X-Sharedbox-* header
             jwt = self.headers.get("X-Sharedbox-Cf-Jwt")
-            return cf_who(self.cf_email(), jwt) or (cf_owner_who(self.cf_email(), jwt) if owner else None)
-        return session_who(self.headers.get("X-Sharedbox-Session"))
+            who = cf_who(self.cf_email(), jwt) or (cf_owner_who(self.cf_email(), jwt) if owner else None)
+        else:
+            who = session_who(self.headers.get("X-Sharedbox-Session"))
+        if who:  # the gate's report of two cookies we never see ourselves (tb_app, tb_direct)
+            who.update(app=self.headers.get("X-Sharedbox-App") == "1",
+                       direct=self.headers.get("X-Sharedbox-Direct") == "1")
+        return who
+
+    def app_cookie(self):
+        return f"{APP_COOKIE}=1; Path=/_box; Max-Age={APP_COOKIE_AGE}; Secure; HttpOnly; SameSite=Lax"
 
     def route(self):
         path = urllib.parse.urlsplit(self.path).path
