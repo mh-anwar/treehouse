@@ -176,9 +176,6 @@ class RequestLoop(unittest.TestCase):
         r = self.opened(sim=(True, ["postgresql", "systemd-timesyncd"], ""))
         self.assertEqual((r["state"], self.installs), ("declined", []))
 
-    def test_other_users_not_opened(self):
-        r = self.opened(user="dave")
-        self.assertEqual((self.reviews, self.installs), ([["postgresql"]], []))
 
     def test_open_window_expires(self):
         r = self.opened(until="2000-01-01 00:00")

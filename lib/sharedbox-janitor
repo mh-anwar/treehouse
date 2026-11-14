@@ -532,12 +532,17 @@ def cmd_guard(cfg, a):
         print(f"balance: {e!r}", file=sys.stderr)
     adj = sb.cfg_int(cfg, "OOM_SCORE_ADJ")
     lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
+    # hackathon mode: the listed friends aren't the OOM killer's first pick (they're working as hard as the owner)
+    spared = set()
+    if cfg.get("HACKATHON") == "1":
+        names = set(re.split(r"[\s,]+", cfg.get("HACKATHON_USERS") or ""))
+        spared = {rec["uid"] for n, rec in sb.friend_users().items() if n in names}
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
         try:
             uid = os.stat(f"/proc/{pid}").st_uid
-            if not lo <= uid <= hi:
+            if not lo <= uid <= hi or uid in spared:
                 continue
             path = f"/proc/{pid}/oom_score_adj"
             with open(path) as f:
@@ -555,6 +560,9 @@ def cmd_reboot(cfg, a):
     """The SCHEDULED_REBOOT_DAYS reboot. While a friend's agent is mid-turn (claude/codex/opencode using CPU) it
     waits, up to REBOOT_WAIT_MAX, then reboots anyway with 5 minutes' warning. Reboots that security updates
     need are unattended-upgrades' and never wait here."""
+    if cfg.get("HACKATHON") == "1":
+        print("hackathon mode is on: skipping the scheduled reboot")
+        return
     start = time.time()
     deadline = start + REBOOT_WAIT_MAX
     uids = {rec["uid"]: n for n, rec in sb.friend_users().items()}
