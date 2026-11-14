@@ -1510,7 +1510,7 @@ REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedb
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-approve", "friends-deny", "friends-update", "tune-service")
+                   "friends-approve", "friends-deny", "friends-update", "tune-service", "hackathon")
 
 
 def friend_record(cfg, name):
@@ -1810,11 +1810,44 @@ def friends_action(cfg, by, req):
             return signup_approve(cfg, str(req.get("id") or "")[:64], by=by)
         if act == "friends-deny":
             return signup_deny(cfg, str(req.get("id") or "")[:64], by=by)
+        if act == "hackathon":
+            return hackathon_set(cfg, req, by)
         if act == "tune-service":
             return tune_service(str(req.get("op") or ""), str(req.get("unit") or "")[:80], by=by)
     except FriendError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": False, "error": "unknown request"}
+
+
+HACKATHON_MAX_DAYS = 7
+
+
+def hackathon_set(cfg, req, by):
+    """`box hackathon on|off` from an admin: write HACKATHON_UNTIL/USERS and apply the change right away."""
+    op = str(req.get("op") or "")
+    if op == "off":
+        sb.set_config({"HACKATHON_UNTIL": ""})
+    elif op == "on":
+        until = str(req.get("until") or "").strip()
+        ts = sb.parse_local_time(until)
+        if not ts or ts <= time.time():
+            return {"ok": False, "error": f"--until must be a future local time like 2026-11-15 00:00 (got {until!r})"}
+        if ts - time.time() > HACKATHON_MAX_DAYS * 86400:
+            return {"ok": False, "error": f"at most {HACKATHON_MAX_DAYS} days ahead"}
+        known = set(sb.friend_users()) | set(sb.admin_users(cfg))
+        users = [u for u in re.split(r"[\s,]+", str(req.get("users") or "")) if u]
+        bad = [u for u in users if u not in known]
+        if bad:
+            return {"ok": False, "error": f"no such account here: {' '.join(bad)}"}
+        sb.set_config({"HACKATHON_UNTIL": until, "HACKATHON_USERS": " ".join(dict.fromkeys(users))})
+    else:
+        return {"ok": False, "error": "op must be on or off"}
+    new = sb.load_config()
+    sb.hackathon_reconcile(new)
+    sb.log_event("hackathon_set", by, op=op, until=new.get("HACKATHON_UNTIL", ""),
+                 users=new.get("HACKATHON_USERS", ""))
+    return {"ok": True, "active": new.get("HACKATHON") == "1", "until": new.get("HACKATHON_UNTIL", ""),
+            "users": new.get("REQUEST_OPEN_USERS", "") if new.get("HACKATHON") == "1" else ""}
 
 
 TUNE_STATE = os.path.join(sb.STATE_DIR, "tune.json")
