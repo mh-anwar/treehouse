@@ -87,11 +87,13 @@ os.makedirs(os.path.join(STATE, "health"))
 os.makedirs(os.path.join(STATE, "gate", "invites"))
 os.makedirs(os.path.join(STATE, "spool"))
 TLS_PORT, GATE_PORT = free_port(), free_port()
-PORT_BASE = free_block(40)
-OWNER_T3_PORT = PORT_BASE + 35
+PORT_BASE = free_block(80)
+OWNER_T3_PORT = PORT_BASE + 75
+SHARED_BASE = PORT_BASE + 60
+TS_IP = "100.64.0.5"  # the box's Tailscale IP in every address a friend sees (never its short name)
 PUBLIC = f"https://treehouse.test:{TLS_PORT}"
 ME = pwd.getpwuid(os.getuid()).pw_name  # the owner's own account must exist on the system
-UIDS = {"alice": 2000, "bob": 2001, "carol": 2002}
+UIDS = {"alice": 2000, "bob": 2001, "carol": 2002, "dave": 2003, "erin": 2004}
 PORT_OF = {u: PORT_BASE + (uid - 2000) * 10 for u, uid in UIDS.items()}
 
 with open(os.path.join(TMP, "sharedbox.conf"), "w") as f:
@@ -99,7 +101,8 @@ with open(os.path.join(TMP, "sharedbox.conf"), "w") as f:
             f"CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nCF_OWNER_EMAILS=owner@x.io\n"
             f"PORT_BASE={PORT_BASE}\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT={OWNER_T3_PORT}\n"
             f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nSHARED_PUBLIC_LINKS=yes\nBRAND=treehouse\n"
-            "UPDATE_SOURCE=https://github.com/example/treehouse\n")
+            "UPDATE_SOURCE=https://github.com/example/treehouse\n"
+            "SSH_HOST=treehouse-ssh.test.io\nCF_SSH_APP_ID=sshapp12345\n")
 sock_dir = tempfile.mkdtemp(prefix="sbw-", dir="/tmp" if len(TMP) > 60 else None)  # AF_UNIX path limit
 os.environ.update(SHAREDBOX_CONF=os.path.join(TMP, "sharedbox.conf"), SHAREDBOX_LIB=os.path.join(WT, "lib"),
                   SHAREDBOX_STATE=STATE, SHAREDBOX_WEB_SOCK=os.path.join(sock_dir, "gate.sock"),
@@ -134,8 +137,10 @@ def save_registry(reg):
 
 
 save_registry({"users": {
-    "alice": {"email": "alice@x.io", "status": "active", "created": NOW - 40 * 86400},
-    "bob": {"email": "bob@x.io", "status": "active", "created": NOW - 3600, "welcome": True},
+    "alice": {"email": "alice@x.io", "status": "active", "created": NOW - 40 * 86400, "ts_id": "nAlice1"},
+    "bob": {"email": "bob@x.io", "status": "active", "created": NOW - 3600, "welcome": True, "ts_id": "nBob1"},
+    "dave": {"email": "dave@x.io", "status": "active", "created": NOW - 9 * 86400},  # joined through Cloudflare only
+    "erin": {"email": "erin@x.io", "status": "active", "created": NOW - 2 * 86400, "ts_id": "nErin1"},
 }})
 
 
@@ -183,7 +188,7 @@ write("requests.json", {"requests": [
     {"id": "r-2", "user": "bob", "kind": "other", "text": "Please open port 25\nfor my mail bot.\n\nThanks!", "ts": NOW - 600,
      "state": "new"},
 ]})
-write("shared.json", {s_["name"]: {"port": PORT_BASE + 30 + i, "cmd": ["node", "server.js"]}
+write("shared.json", {s_["name"]: {"port": SHARED_BASE + i, "cmd": ["node", "server.js"]}
                      for i, s_ in enumerate([{"name": "web"}, {"name": "down"}])})
 INVITE_TOK = "I" * 43
 write(f"gate/invites/{sb.token_hash(INVITE_TOK)}.json",
@@ -192,7 +197,7 @@ write(f"gate/invites/{sb.token_hash(INVITE_TOK)}.json",
 # ---------------- fake Cloudflare and the fake root boundary ----------------
 
 TOKENS = {"tok-alice": "alice@x.io", "tok-bob": "bob@x.io", "tok-owner": "owner@x.io",
-          "tok-stranger": "nobody@x.io", "tok-new": "new@x.io"}
+          "tok-stranger": "nobody@x.io", "tok-new": "new@x.io", "tok-dave": "dave@x.io", "tok-erin": "erin@x.io"}
 
 
 class FakeVerifier:
@@ -210,19 +215,24 @@ ACCOUNTS = {  # what `box _portal status` would say for each account
                           {"name": "bot", "state": "stopped", "port": str(PORT_OF["alice"] + 4)}], "ssh": True},
     "bob": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
     "carol": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
+    "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False},
+    "erin": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False,
+             "no_t3": True},  # T3 Code isn't installed for her: the start card says so
     ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
          "servers": [{"name": "site", "state": "running", "port": "8080"}], "ssh": True},
 }
 LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect"}
-SHARED = [{"name": "web", "state": "running", "port": PORT_BASE + 30, "created_by": "alice", "created": NOW - 86400,
+SHARED = [{"name": "web", "state": "running", "port": SHARED_BASE, "created_by": "alice", "created": NOW - 86400,
            "updated_by": "bob", "updated": NOW - 600},
-          {"name": "down", "state": "stopped", "port": PORT_BASE + 31, "created_by": "bob", "created": NOW - 3600}]
+          {"name": "down", "state": "stopped", "port": SHARED_BASE + 1, "created_by": "bob", "created": NOW - 3600}]
 PAIR_TOKENS = set()
 ROOT_LOG = []
 lock = threading.Lock()
 
 
 def identity(req):
+    if req.get("ts_id"):  # the tailnet page (port 8090): identity is the Tailscale login
+        return next((n for n, r in sb.registry()["users"].items() if r.get("ts_id") == req["ts_id"]), None), False
     email = TOKENS.get(req.get("cf_jwt") or "")
     if not email:
         return None, False
@@ -262,7 +272,7 @@ def _fake_root(req):
             return {"ok": False, "error": "not the owner"}
         tok = hashlib.sha256(os.urandom(8)).hexdigest()[:24]
         PAIR_TOKENS.add(tok)
-        return {"ok": True, "pair_url": f"http://100.64.0.5:{OWNER_T3_PORT}/pair#token={tok}"}
+        return {"ok": True, "pair_url": f"http://{TS_IP}:{OWNER_T3_PORT}/pair#token={tok}"}
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
                                 "request-approve", "request-done", "request-decline", "self-update", "invite"):
         return {"ok": False, "error": "not available for the owner's account"}
@@ -280,7 +290,7 @@ def _fake_root(req):
     key = req.get("key")
     if action == "status":
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
-                "t3": {"url": f"http://100.64.0.5:{port}/", "running": True, "sleeping": False},
+                "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False},
                 "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "updates": "auto",
                 "servers": [dict(s) for s in acct["servers"]]}
     if action == "shared-ls":
@@ -316,10 +326,14 @@ def _fake_root(req):
                                "their agent is told when it's done"}
         return {"ok": True, "id": key, "user": r["user"], "state": op,
                 "message": f"{'declined' if op == 'decline' else 'closed'} {r['user']}'s request; their agent will see it"}
-    if action == "t3":
+    if action in ("t3", "t3app"):
+        if acct.get("no_t3"):
+            return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
         tok = hashlib.sha256(os.urandom(8)).hexdigest()[:24]
         PAIR_TOKENS.add(tok)
-        return {"ok": True, "pair_url": f"http://100.64.0.5:{port}/pair#token={tok}", "url": f"http://100.64.0.5:{port}/"}
+        pair = f"http://{TS_IP}:{port}/pair#token={tok}"
+        return {"ok": True, "pair_url": pair, "url": f"http://{TS_IP}:{port}/",
+                **({"app_link": "t3code://pair?pairingUrl=" + urllib.parse.quote(pair, safe="")} if action == "t3app" else {})}
     if action == "add-key":
         k, err = sb.validate_pubkey(req.get("sshkey", ""))
         return {"ok": False, "error": err} if err else {"ok": True, "key_added": True}
@@ -342,6 +356,7 @@ def _fake_root(req):
 
 
 w.spool_call = fake_root
+w.SELF_IP = TS_IP
 
 # ---------------- fake T3 Code (one per account port) ----------------
 
@@ -407,7 +422,7 @@ def serve(port, handler):
 
 for p in list(PORT_OF.values()) + [OWNER_T3_PORT]:
     serve(p, FakeT3)
-for p in (PORT_OF["alice"] + 3, PORT_BASE + 30):  # "blog" (running) and group "web"; "bot"/"down" stay closed
+for p in (PORT_OF["alice"] + 3, SHARED_BASE):  # "blog" (running) and group "web"; "bot"/"down" stay closed
     serve(p, AppServer)
 
 threading.Thread(target=w.serve_gate, daemon=True).start()
@@ -712,7 +727,10 @@ def flow_open_t3(browser, persona, token, t3_port, cookie=False):
     page.goto(url("/"))
     if urllib.parse.urlsplit(page.url).path != "/_box/me":
         fail(persona, "open /", f"typed URL should land on the dashboard, got {page.url}")
-    btn = page.get_by_role("link", name=re.compile("Open my T3 Code|Open T3 in browser"))
+    # the start card's link when it has one (not before an AI login), else the header's "T3 in browser"
+    btn = page.locator("#start a[href='/_box/app']")
+    if not btn.count():
+        btn = page.get_by_role("link", name=re.compile("Open my T3 Code|Open T3|T3 in browser"))
     if not btn.count():
         fail(persona, "dashboard", "no 'Open my T3 Code' button")
         s.close()
@@ -727,7 +745,7 @@ def flow_open_t3(browser, persona, token, t3_port, cookie=False):
         if f"T3 on {t3_port}" not in page.inner_text("body"):
             fail(persona, "Open my T3 Code", f"reached the wrong T3: {page.inner_text('body')[:80]}")
     page.goto(url("/_box/me"))
-    page.get_by_role("link", name=re.compile("Open my T3 Code|Open T3 in browser")).first.click()
+    page.get_by_role("link", name=re.compile("Open my T3 Code|Open T3|T3 in browser")).first.click()
     page.wait_for_load_state("load")
     if page.title() != "Fake T3 Code":
         fail(persona, "Open my T3 Code (already paired)", f"got {page.url} '{page.title()}'")
@@ -796,7 +814,7 @@ def flow_invite(browser):
 def flow_apps(browser):
     s = Session(browser, "alice", "tok-alice")
     page = s.page
-    for path, want in ((f"/p/{PORT_OF['alice'] + 3}/", f"App {PORT_OF['alice'] + 3}"), ("/s/web/", f"App {PORT_BASE + 30}")):
+    for path, want in ((f"/p/{PORT_OF['alice'] + 3}/", f"App {PORT_OF['alice'] + 3}"), ("/s/web/", f"App {SHARED_BASE}")):
         page.goto(url(path))
         if page.title() != want:
             fail("alice", path, f"expected {want}, got '{page.title()}'")
@@ -852,10 +870,13 @@ def owner_requests(browser):
 SHOT_PAGES = {
     "alice": ["/_box/me", "/_box/me?range=7d", "/_box/features"],
     "bob": ["/_box/me?welcome=1", "/_box/me"],
+    "dave": ["/_box/me"],
+    "erin": ["/_box/me"],
     "owner": ["/_box/me"],
     "stranger": ["/", f"/i/{INVITE_TOK}", "/_box/nope"],
 }
-SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stranger": "tok-stranger"}
+SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stranger": "tok-stranger", "dave": "tok-dave",
+            "erin": "tok-erin"}
 
 
 def screenshots(browser):
@@ -878,16 +899,142 @@ def screenshots(browser):
                     s.page.wait_for_load_state("load")
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-logs-{width}-{scheme}.png"), full_page=True)
                 if persona == "alice":
-                    for label, nm in (("Get a pairing link for the app", "app-pair"), ("Link my T3 account", "t3connect")):
-                        s.page.goto(url("/_box/me"))
-                        b = s.page.locator("button", has_text=label)
-                        if b.count():
-                            b.first.click()
-                            s.page.wait_for_load_state("load")
-                            s.page.screenshot(path=os.path.join(SHOTS, f"alice-{nm}-{width}-{scheme}.png"), full_page=True)
+                    s.page.goto(url("/_box/me"))
+                    b = s.page.locator("#start button", has_text="Make my setup prompt")
+                    if not b.count():
+                        fail("alice", f"screenshots {width} {scheme}", "no 'Make my setup prompt' button")
+                    else:
+                        b.first.click()
+                        s.page.wait_for_load_state("load")
+                        inspect(s, f"setup prompt @{width} {scheme}")
+                        s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-prompt-{width}-{scheme}.png"), full_page=True)
+                        s.page.goto(url("/_box/me"))  # the tb_app cookie is set now: "Open T3" leads
+                        s.page.wait_for_load_state("load")
+                        s.page.screenshot(path=os.path.join(SHOTS, f"alice-me-app-set-{width}-{scheme}.png"), full_page=True)
                 s.drain(f"screenshots {width} {scheme}")
                 s.close()
                 w.portal_rate.clear()
+
+
+MAIN_JS = """() => [...document.querySelectorAll('main a.btn, main button')].filter(el =>
+  !el.matches('.secondary, .sm, .linkbtn') && el.offsetParent !== null && !el.closest('details:not([open])'))
+  .map(el => el.textContent.trim())"""
+HOSTNAME = socket.gethostname()
+
+
+def no_hostname_addresses(s, where, page=None):
+    """Friends who joined the tailnet as shared-in users can't resolve the box's short name: no address shows it."""
+    page = page or s.page
+    vals = page.evaluate("""() => [...document.querySelectorAll('code, pre, textarea, input')]
+        .map(el => el.matches('textarea, input') ? el.value : el.textContent)""")
+    hrefs = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href'))")
+    for v in vals + hrefs:
+        if re.search(rf"(//|@){re.escape(HOSTNAME)}\b", v or ""):
+            fail(s.persona, where, f"address uses the box's name, not its Tailscale IP: {v[:120]!r}")
+
+
+def start_cards(browser):
+    """The start card: exactly one main button per state (S0..S3), and the T3 app setup prompt."""
+    cases = [("erin", "tok-erin", [], "T3 isn't set up on this box yet"),
+             ("bob", "tok-bob", ["Log in with Claude"], "Log in with ChatGPT"),
+             ("alice", "tok-alice", ["Make my setup prompt"], "Open T3 in this browser"),
+             ("dave", "tok-dave", ["Open T3"], "Ask the owner to add you to Tailscale")]
+    for persona, tok, want, text in cases:
+        s = Session(browser, persona, tok)
+        s.page.goto(url("/_box/me"))
+        where = f"start card ({persona})"
+        inspect(s, where)
+        got = s.page.evaluate(MAIN_JS)
+        if got != want:
+            fail(persona, where, f"main buttons {got}, expected {want}")
+        card = s.page.inner_text("#start") if s.page.locator("#start").count() else ""
+        if text not in card:
+            fail(persona, where, f"start card lacks {text!r}: {card[:200]!r}")
+        no_hostname_addresses(s, where)
+        if s.page.locator("text=Link my T3 account").count():
+            fail(persona, where, "T3 Connect is shown")
+        s.drain(where)
+        s.close()
+    # S2 -> the prompt -> S3 from the tb_app cookie it sets
+    s = Session(browser, "alice (prompt)", "tok-alice")
+    page = s.page
+    page.goto(url("/_box/me"))
+    page.locator("#start button", has_text="Make my setup prompt").click()
+    page.wait_for_load_state("load")
+    inspect(s, "setup prompt")
+    prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
+    pair = page.locator("#start input.mono").input_value() if page.locator("#start input.mono").count() else ""
+    port = PORT_OF["alice"]
+    if f"t3code://pair?pairingUrl=http%3A%2F%2F{TS_IP}%3A{port}%2Fpair%23token%3D" not in prompt:
+        fail("alice", "setup prompt", f"no t3code:// link built from the IP: {prompt[:300]!r}")
+    if not pair.startswith(f"http://{TS_IP}:{port}/pair#token=") or pair not in prompt:
+        fail("alice", "setup prompt", f"pairing URL {pair!r} not in the prompt / not on the IP")
+    for must in (f"Add the backend at http://{TS_IP}:{port}?", f"{PUBLIC}/_box/me", "https://t3.codes",
+                 "Settings, Environments, Add environment"):
+        if must not in prompt:
+            fail("alice", "setup prompt", f"missing {must!r}")
+    if re.search(r"\{[^}]*\}", prompt):
+        fail("alice", "setup prompt", f"leftover placeholder: {re.search(r'[{][^}]*[}]', prompt).group(0)}")
+    link = page.locator("#start a[href^='t3code://']")
+    if not link.count() or "btn" in (link.first.get_attribute("class") or ""):
+        fail("alice", "setup prompt", "no plain t3code:// link")
+    if page.evaluate(MAIN_JS) != ["Copy prompt"]:
+        fail("alice", "setup prompt", f"main buttons {page.evaluate(MAIN_JS)}")
+    page.get_by_role("button", name="Copy prompt").click()
+    try:
+        page.wait_for_function("[...document.querySelectorAll('#start button')].some(b => b.textContent === 'Copied')",
+                               timeout=3000)
+    except Exception:  # noqa: BLE001
+        fail("alice", "setup prompt", "Copy prompt didn't say Copied")
+    if re.search(r"\b\d{1,2}:\d{2}\b", page.inner_text("#start")):
+        fail("alice", "setup prompt", "shows a clock time")
+    no_hostname_addresses(s, "setup prompt")
+    if not any(c["name"] == "tb_app" and c["path"] == "/_box" for c in s.ctx.cookies()):
+        fail("alice", "setup prompt", f"no tb_app cookie: {s.ctx.cookies()}")
+    page.goto(url("/_box/me"))
+    if page.evaluate(MAIN_JS) != ["Open T3 in browser"]:
+        fail("alice", "after the prompt (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
+    if not page.locator("#start button.linkbtn", has_text="Make a new setup prompt").count():
+        fail("alice", "after the prompt (S3)", "no 'Make a new setup prompt'")
+    page.locator("#start button", has_text="Make a new setup prompt").click()
+    page.wait_for_load_state("load")
+    if not page.locator("#app-prompt").count():
+        fail("alice", "S3 new prompt", "no prompt")
+    s.drain("setup prompt")
+    s.close()
+
+
+def tailnet_view():
+    """The tailnet page (port 8090, gate=False): same start card, no device-link, no /_box/ links (404 there)."""
+    alice = {"id": "nAlice1", "display": "Alice A", "login": "alice@github", "node": "laptop"}
+
+    class Tailnet(w.Handler):
+        def ident(self):
+            return "100.64.0.9", dict(alice, app=self.has_cookie(w.APP_COOKIE))
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Tailnet)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    w.ALLOWED_HOSTS.add("127.0.0.1")
+    import urllib.request
+    for cookie, want in (("", ["Make my setup prompt"]), ("tb_app=1", ["Open T3 in browser"])):
+        rq = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/me", headers={"Cookie": cookie} if cookie else {})
+        body = urllib.request.urlopen(rq, timeout=60).read().decode()
+        where = "tailnet /me" + (" (tb_app)" if cookie else "")
+        if "device-link" in body:
+            fail("alice (tailnet)", where, "device-link button (refused in Cloudflare mode)")
+        rel = re.findall(r"""href=['"](/_box/[^'"]*)""", body)
+        if rel:
+            fail("alice (tailnet)", where, f"relative /_box/ links (404 on the tailnet page): {rel}")
+        if f"href='{PUBLIC}/'" not in body or "Without Tailscale" not in body:
+            fail("alice (tailnet)", where, "no absolute 'Without Tailscale' link to the public site")
+        if re.search(rf"(//|@){re.escape(HOSTNAME)}\b", re.sub(r"<header>.*?</header>", "", body, flags=re.S)):
+            fail("alice (tailnet)", where, "an address uses the box's name")
+        start = body[body.find("id='start'"):body.find("</section>")]
+        mains = re.findall(r"<button(?![^>]*class=)[^>]*>([^<]*)</button>|<a class='btn' [^>]*>([^<]*)</a>", start)
+        got = [a or b for a, b in mains]
+        if got != want:
+            fail("alice (tailnet)", where, f"start card main buttons {got}, expected {want}")
+    srv.shutdown()
 
 
 def main():
@@ -902,10 +1049,13 @@ def main():
         flow_no_token(browser)
         if SHOTS:  # first, while the box looks like it does for a new visitor (bob's welcome flag back after)
             screenshots(browser)
-            reg = sb.registry()
-            reg["users"]["bob"]["welcome"] = True
-            save_registry(reg)
-            g._users = (0.0, {})
+        start_cards(browser)  # the start card's states, the setup prompt, the tailnet page: in every mode
+        tailnet_view()
+        w.portal_rate.clear()
+        reg = sb.registry()  # bob's first visit (flow_login) must still see the welcome page
+        reg["users"]["bob"]["welcome"] = True
+        save_registry(reg)
+        g._users = (0.0, {})
         if SHOTS_ONLY:
             browser.close()
             print(f"\nscreenshots in {SHOTS}; {len(FAILS)} problem(s)")

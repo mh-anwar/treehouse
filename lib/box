@@ -37,6 +37,7 @@ import urllib.parse
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbconnect  # noqa: E402
 import sbdistro  # noqa: E402
 
 BEGIN = "<!-- sharedbox:begin (managed automatically; edits inside this block are overwritten) -->"
@@ -548,7 +549,7 @@ def rule_fields(tl="", extras=(), nt=""):
     lim = my_limits()
     r = ports() or (0, 0)
     return dict(
-        host=socket.gethostname(), user=ME.pw_name, cpu=burst_text(lim, "CPU_QUOTA", "cores"),
+        host=socket.gethostname(), ip=sb.tailscale_ip4() or socket.gethostname(), user=ME.pw_name, cpu=burst_text(lim, "CPU_QUOTA", "cores"),
         mem_high=burst_text(lim, "MEMORY_HIGH", "RAM"), mem_max=lim["MEMORY_MAX"], tasks=lim["TASKS_MAX"],
         disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}", t3_ports=f"{r[0]} and {r[1]}",
         t3_nap=CFG["T3_NAP_MINUTES"],
@@ -1104,8 +1105,8 @@ def public_t3_url(url, host, port):
     return urllib.parse.urlunsplit(u._replace(netloc=f"{host}:{port}")) if u.netloc else url
 
 
-def t3_pair(host, port, env, ttl="30m"):
-    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", f"{ME.pw_name} (box t3)"],
+def t3_pair(host, port, env, ttl="30m", label=None):
+    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", label or f"{ME.pw_name} (box t3)"],
                        env=dict(os.environ, **env), capture_output=True, text=True, timeout=60)
     url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines()
                 if l.startswith("Pairing URL:")), None)
@@ -1220,6 +1221,23 @@ def cmd_t3(a):
             sys.exit("box t3: server did not come up; see `box t3 logs`")
         time.sleep(2)
     time.sleep(2)
+    if a.action == "app-link":  # for the T3 app on the human's laptop (over Tailscale): one click there
+        url = t3_pair(host, port, t3_live_env(host, env), label=f"{ME.pw_name} T3 app")
+        link = sbconnect.t3_app_link(url)
+        print(f"""
+The T3 Code app pairing link (works once, for 30 minutes). Give it to the human to open ON THE LAPTOP
+that has the T3 Code app (https://t3.codes) and Tailscale; the app asks "Add the backend at
+http://{host}:{port}?" and they click OK:
+
+  {link}
+
+If it doesn't open the app: in the T3 app, Settings, Environments, Add environment, paste this into Host:
+
+  {url}
+
+T3_APP_LINK={link}
+T3_PAIR_URL={url}""")
+        return
     url = t3_pair(host, port, t3_live_env(host, env))
     print(f"""
 T3 Code is running at http://{host}:{port}/ (only you can use it, after pairing)
@@ -2234,7 +2252,7 @@ def portal_status():
     return out
 
 
-def portal_t3(pair):
+def portal_t3(pair, app=False):
     if not shutil.which("t3"):
         return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
     r, host = ports(), sb.tailscale_ip4()
@@ -2253,12 +2271,14 @@ def portal_t3(pair):
     time.sleep(2)
     env = t3_live_env(host, env)
     t3_starter(env)
-    r = subprocess.run(["t3", "pair", "--ttl", "30m", "--label", f"{ME.pw_name} (join page)"],
+    label = f"{ME.pw_name} T3 app" if app else f"{ME.pw_name} (join page)"  # the label lets us spot the app later
+    r = subprocess.run(["t3", "pair", "--ttl", "30m", "--label", label],
                        env=dict(user_env(), **env), capture_output=True, text=True, timeout=60)
     url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines() if l.startswith("Pairing URL:")), None)
     if not url:
         return {"ok": False, "error": "pairing failed; try again, or ask the owner to check `box t3 logs`"}
-    return {"ok": True, "pair_url": public_t3_url(url, host, port), "url": f"http://{host}:{port}/"}
+    url = public_t3_url(url, host, port)
+    return {"ok": True, "pair_url": url, "app_link": sbconnect.t3_app_link(url), "url": f"http://{host}:{port}/"}
 
 
 def t3_starter(env):
@@ -2397,7 +2417,8 @@ def tail(screen, n=4):
 def portal_url():
     """The user's dashboard: the public site when there is one (works anywhere), else the tailnet page."""
     pub = sb.public_url(CFG)
-    return f"{pub}/_box/me" if pub else f"http://{socket.gethostname()}:{CFG['WEB_PORT']}/me"
+    # the Tailscale IP, not the name: friends who joined the owner's tailnet as shared-in users can't resolve it
+    return f"{pub}/_box/me" if pub else f"http://{sb.tailscale_ip4() or socket.gethostname()}:{CFG['WEB_PORT']}/me"
 
 
 # servers from the web page: the friend's own `box serve` units, and the group's `box shared` ones
@@ -2548,7 +2569,7 @@ def cmd_portal(a):
         elif a.action == "shared-logs":
             out = portal_shared_logs(a.key)
         elif a.action in ("t3-start", "t3-pair"):
-            out = portal_t3(a.action == "t3-pair")
+            out = portal_t3(a.action == "t3-pair", app=a.key == "app")
         elif a.action == "login-start" and a.key in PORTAL_LOGINS:
             out = portal_login_start(a.key, console=a.arg == "console")
         elif a.action == "login-code" and a.key in PORTAL_LOGINS:
@@ -2769,7 +2790,7 @@ def main():
     x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status", "auto", "manual", "now"])
     x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
-                                           choices=["start", "pair", "status", "stop", "logs"])
+                                           choices=["start", "pair", "app-link", "status", "stop", "logs"])
     x.set_defaults(fn=cmd_t3)
     s.add_parser("welcome").set_defaults(fn=cmd_welcome)
     x = s.add_parser("request", help="ask for a system package (install PKG...), anything else, or: status")
