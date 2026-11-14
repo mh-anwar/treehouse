@@ -1510,7 +1510,7 @@ REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedb
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-approve", "friends-deny", "friends-update", "tune-service", "hackathon")
+                   "friends-approve", "friends-deny", "friends-update", "tune-service", "hackathon", "friends-boxes")
 
 
 def friend_record(cfg, name):
@@ -1812,11 +1812,31 @@ def friends_action(cfg, by, req):
             return signup_deny(cfg, str(req.get("id") or "")[:64], by=by)
         if act == "hackathon":
             return hackathon_set(cfg, req, by)
+        if act == "friends-boxes":
+            return boxes_set(str(req.get("boxes") or "")[:2000], by)
         if act == "tune-service":
             return tune_service(str(req.get("op") or ""), str(req.get("unit") or "")[:80], by=by)
     except FriendError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": False, "error": "unknown request"}
+
+
+def boxes_set(value, by):
+    """`box friends boxes "a=100.x b=100.y"`: write BOXES. Every entry must be valid (a typo must not silently
+    drop a box). sharedbox-web re-reads it within 30 s, no restart."""
+    items = [x for x in re.split(r"[\s,]+", value) if x]
+    parsed = sb.boxes({"BOXES": " ".join(items)})
+    if len(parsed) != len(items):
+        bad = [x for x in items if f"{x.partition('=')[0].lower()}={x.partition('=')[2]}" not in
+               {f"{n}={ip}" for n, ip in parsed.items()}]
+        return {"ok": False, "error": "each box must be NAME=TAILSCALE-IP (lowercase name, a 100.x address, no "
+                                      f"repeats); not valid: {' '.join(bad)[:300]}"}
+    line = " ".join(f"{n}={ip}" for n, ip in parsed.items())
+    sb.set_config({"BOXES": line})
+    sb.log_event("boxes_set", by, boxes=line)
+    return {"ok": True, "boxes": parsed,
+            "message": f"BOXES={line}. The dashboard shows them within a minute. Put the same line on every box."
+            if line else "BOXES cleared: the dashboard no longer shows other boxes."}
 
 
 HACKATHON_MAX_DAYS = 7

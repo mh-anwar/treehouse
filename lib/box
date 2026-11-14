@@ -1730,7 +1730,9 @@ FRIENDS_USAGE = """usage: box friends [--json]                      list friends
        box friends requests approve|done|decline ID [--why TEXT]
                                                  approve = install it (REQUEST_DENY aside); done = handled it
        box friends issues [--days N]             what everyone's agents logged with `box issue`
-       box friends approve ID | deny ID          signups waiting for approval (JOIN_MODE=approve)"""
+       box friends approve ID | deny ID          signups waiting for approval (JOIN_MODE=approve)
+       box friends boxes ["NAME=IP NAME=IP"]     your treehouse boxes for the dashboard's Boxes card (same line
+                                                 on every box; Tailscale IPs; "" clears it)"""
 
 
 def friends_ago(ts):
@@ -1760,8 +1762,16 @@ def cmd_friends(a):
         fail(FRIENDS_USAGE)
     if act == "requests" and args and (args[0] not in ("approve", "done", "decline") or len(args) != 2):
         fail(FRIENDS_USAGE)
-    if act in ("list", "access", "issues", "update") and args:
+    if act in ("list", "access", "issues", "update") and args or act == "boxes" and len(args) > 1:
         fail(FRIENDS_USAGE)
+    if act == "boxes" and not args:  # the conf is world-readable: no need to ask root
+        cur = sb.boxes(CFG)
+        if a.json:
+            print(json.dumps({"ok": True, "boxes": cur}))
+        else:
+            print(" ".join(f"{n}={ip}" for n, ip in cur.items()) or 'no other boxes. add them: box friends boxes '
+                  '"thisbox=100.x.y.z otherbox=100.x.y.z"')
+        return
     req, wait = {"action": "friends-" + act}, 60
     if act in ("remove", "suspend", "resume"):
         req["name"] = args[0]
@@ -1779,6 +1789,8 @@ def cmd_friends(a):
         req["all"] = a.all
     elif act == "issues":
         req["days"] = a.days
+    elif act == "boxes":
+        req["boxes"] = args[0]
     res = admin_request(req, wait)
     if not isinstance(res, dict):
         fail("bad answer from the box")
@@ -2915,7 +2927,7 @@ def main():
     x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues, signups")
     x.add_argument("action", nargs="?", default="list",
                    choices=["list", "remove", "suspend", "resume", "email", "access", "requests", "issues",
-                            "approve", "deny", "update"])
+                            "approve", "deny", "update", "boxes"])
     x.add_argument("args", nargs="*"); x.add_argument("--archive", action="store_true")
     x.add_argument("--days", type=int, default=7); x.add_argument("--json", action="store_true")
     x.add_argument("--all", action="store_true"); x.add_argument("--why", help="decline: the reason they see")

@@ -158,6 +158,8 @@ Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` t
 - `box limits disk N`: the owner's own disk budget (whole GB). Not enforced on owner accounts, only what their
   agents are told to stay within; friends' limits stay root's (`sharedbox-admin limits`).
 - `box friends issues [--days N]`: what everyone's agents logged with `box issue`, most widespread first.
+- `box friends boxes "NAME=IP NAME=IP"`: the owner's treehouse boxes (Tailscale IPs, this box included), shown
+  in the Boxes card on the owner's dashboard. Run the same line on every box; `box friends boxes` shows it.
 
 @@ lean
 Memory and CPU are shared and fill up fast once several people are busy, so waste counts even on a quiet day.

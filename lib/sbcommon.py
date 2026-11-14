@@ -76,6 +76,8 @@ DEFAULTS = {
     # web dashboard + join page; "tailscale" = bind to this box's tailscale IPv4
     "WEB_BIND": "tailscale",
     "WEB_PORT": "8090",
+    # the owner's other treehouse boxes on this tailnet, "name=tailscale-ip ..." (same line on every box)
+    "BOXES": "",
     # per-friend port block: PORT_BASE + index*PORT_BLOCK .. +PORT_BLOCK-1
     "PORT_BASE": "20000",
     "PORT_BLOCK": "100",
@@ -845,6 +847,23 @@ def tailscale_ip4():
         return out[0] if out else None
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+BOX_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
+BOX_IP_RE = re.compile(r"100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])"
+                       r"\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])")  # an IPv4 in Tailscale's 100.64.0.0/10
+
+
+def boxes(cfg):
+    """BOXES as an ordered {name: ip}. Entries are "name=ip" split on spaces/commas; a bad entry or a repeated
+    name or ip is dropped. This box is in the list too (the same line goes on every box). Never raises."""
+    out = {}
+    for item in re.split(r"[\s,]+", str(cfg.get("BOXES") or "")):
+        name, _, ip = item.partition("=")
+        name = name.strip().lower()
+        if BOX_NAME_RE.fullmatch(name) and BOX_IP_RE.fullmatch(ip) and name not in out and ip not in out.values():
+            out[name] = ip
+    return out
 
 
 def tailscale_status():
