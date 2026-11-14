@@ -282,7 +282,9 @@ def load_config(path=CONF_PATH):
 # While on: no T3 or Docker naps, no trap or tripwire, and package requests from the owner and HACKATHON_USERS
 # skip the deny list and limits (REQUEST_NEVER still applies). `box hackathon on|off|status`.
 HACKATHON_OVERRIDES = {"T3_NAP_MINUTES": "0", "T3_IDLE_DAYS": "0", "DOCKER_NAP_MINUTES": "0",
-                       "TRAP_ENABLED": "0", "CANARY_ENABLED": "0"}
+                       "TRAP_ENABLED": "0", "CANARY_ENABLED": "0",
+                       # more builds at once, barely any queue wait
+                       "HEAVY_SLOTS": "4", "BUILD_JOBS": "4", "HEAVY_WAIT_MAX_MIN": "3"}
 
 
 def parse_local_time(text):
@@ -322,6 +324,11 @@ def hackathon_reconcile(cfg):
     "on"/"off" when it acted, None when nothing changed. Called by the janitor's t3-naps timer and `box hackathon`."""
     path = os.path.join(STATE_DIR, "hackathon.json")
     active = cfg.get("HACKATHON") == "1"
+    for i in range(cfg_int(cfg, "HEAVY_SLOTS")):  # `box heavy` only uses slot files that exist
+        slot = os.path.join(SLOTS, f"slot-{i}")
+        if os.path.isdir(SLOTS) and not os.path.exists(slot):
+            open(slot, "a").close()
+            os.chmod(slot, 0o644)
     st = read_json(path, {}) or {}
     if bool(st.get("active")) == active:
         return None
