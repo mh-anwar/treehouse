@@ -284,7 +284,8 @@ def problems(cfg, g, findings):
     nmed = sum(1 for f in findings if f["sev"] == "medium")
     if nmed:
         p.append(("yellow", f"{nmed} medium security finding(s)"))
-    local_trap = [h for h in g["trap"] if h.get("internal")]
+    own = sb.own_ips(cfg)   # the box itself (T3 environment discovery) and the owner's boxes aren't a scan
+    local_trap = [h for h in g["trap"] if h.get("internal") and h.get("ip") not in own]
     if local_trap:
         srcs = sorted({h["ip"] for h in local_trap})
         p.append(("red", f"something INSIDE your network probed decoy ports: {', '.join(srcs[:5])}"))

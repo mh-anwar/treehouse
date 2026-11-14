@@ -866,6 +866,18 @@ def boxes(cfg):
     return out
 
 
+def own_ips(cfg):
+    """This box's own addresses (every interface, from `ip -j addr`, plus loopback) and the owner's other
+    boxes (BOXES). Traffic from these is the box (or its owner) talking to itself, not a scan. Never raises."""
+    out = {"127.0.0.1", "::1", *boxes(cfg).values()}
+    try:
+        r = subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, timeout=5)
+        out |= {a["local"] for i in json.loads(r.stdout or "[]") for a in i.get("addr_info", []) if a.get("local")}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        pass
+    return out
+
+
 def tailscale_status():
     """`tailscale status --json` (peers included) as a dict, or None. Read-only; works without root."""
     try:
