@@ -163,6 +163,10 @@ DEFAULTS = {
                       "linux-image* linux-headers* linux-modules* kernel* grub* systemd systemd-* libpam* shadow "
                       "passwd login apparmor* selinux* sssd* ufw iptables* nftables firewalld network-manager* "
                       "netplan* tailscale* cloudflared wireguard* openvpn* cron cron-* cronie at"),
+    # temporarily open requests for some users (a hackathon): they skip REQUEST_DENY, REQUEST_MAX_DEPS and
+    # REQUEST_DAILY_LIMIT (not REQUEST_NEVER) until REQUEST_OPEN_UNTIL ("YYYY-MM-DD HH:MM", local; empty = no end)
+    "REQUEST_OPEN_USERS": "",
+    "REQUEST_OPEN_UNTIL": "",
     "REQUEST_MAX_DEPS": "500",
     "REQUEST_DAILY_LIMIT": "200",
     # email (weekly health report + urgent alerts)

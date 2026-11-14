@@ -2145,11 +2145,30 @@ def auto_installed_today(db, user):
 NO_SUCH_PKG_RE = re.compile(r"Unable to locate package|has no installation candidate|target not found", re.I)
 
 
+def open_for(cfg, user):
+    """REQUEST_OPEN_USERS (e.g. for a hackathon): these users' requests skip REQUEST_DENY, the dependency cap and
+    the daily limit, like the owner's approval, until REQUEST_OPEN_UNTIL ("YYYY-MM-DD HH:MM" local time; empty =
+    no end). REQUEST_NEVER still applies to them: it guards the box itself, not the user."""
+    users = re.split(r"[\s,]+", cfg.get("REQUEST_OPEN_USERS") or "")
+    if not user or user not in users:
+        return False
+    until = (cfg.get("REQUEST_OPEN_UNTIL") or "").strip()
+    if not until:
+        return True
+    try:
+        return time.time() < time.mktime(time.strptime(until, "%Y-%m-%d %H:%M"))
+    except ValueError:
+        return False  # a typo closes it rather than opening it forever
+
+
 def req_check(cfg, rec, db, owner_ok=False):
     """Decide a package request: ("install", native names, "") / ("installed", [], why) / ("waiting", [], why) /
     ("unknown", [], why) when a named package doesn't exist (closed without bothering the owner).
     The owner's approval (owner_ok) skips REQUEST_DENY, the dependency cap and the daily limit, nothing else."""
     d = sbdistro()
+    opened = not owner_ok and sb.cfg_bool(cfg, "REQUEST_AUTO_INSTALL") and open_for(cfg, rec.get("user"))
+    if opened:
+        owner_ok = True  # the checks below that the owner's OK skips; REQUEST_NEVER is checked after simulating
     try:
         pkgs = d.native_names(rec.get("packages") or [])
         if not pkgs:
@@ -2178,6 +2197,10 @@ def req_check(cfg, rec, db, owner_ok=False):
                 return "unknown", [], (f"no such package in the distro's repos ({err}); check the exact name "
                                        "(apt-cache search / pacman -Ss) and request that instead")
             return "waiting", [], f"not installable from the distro's repos: {err}"
+        if opened:
+            never = denied(cfg, list(dict.fromkeys(missing + list(new))), "REQUEST_NEVER")
+            if never:
+                return "waiting", [], f"{' '.join(never[:5])} is never installed on request (REQUEST_NEVER)"
         if not owner_ok:
             cap = sb.cfg_int(cfg, "REQUEST_MAX_DEPS")
             if cap and len(new) > cap:
