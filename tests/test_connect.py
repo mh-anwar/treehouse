@@ -543,6 +543,15 @@ class Web(unittest.TestCase):
     def test_prompt_result(self):
         w = self.web
         pair = "http://100.64.0.5:31000/pair#token=abc123"
+        old_ts = w.sb.tailscale_status
+        w.sb.tailscale_status = lambda: {"User": {"7": {"LoginName": "sam@github"}}, "Peer": {}}
+        try:
+            res = w.app_prompt_result({"ok": True, "pair_url": pair, "apps": [{"os": "Linux", "last": "2026-11-12"}]},
+                                      dict(self.friend, ts_id="7"))
+        finally:
+            w.sb.tailscale_status = old_ts
+        self.assertIn("hasn't seen any device of the Tailscale account sam@github", res["app_prompt"])
+        self.assertIn("A T3 app already connected to my T3 (Linux, last connected 2026-11-12)", res["app_prompt"])
         res = w.app_prompt_result({"ok": True, "pair_url": pair})
         self.assertTrue(res["ok"])
         self.assertEqual(res["app_link"], "t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.5%3A31000%2Fpair%23token%3Dabc123")
@@ -602,14 +611,56 @@ class AppLink(unittest.TestCase):
         p = sbconnect.app_prompt(pair, "https://treehouse.example.com/_box/me")
         self.assertIn("t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.10%3A20100", p)
         self.assertIn("curl -sI --max-time 15 http://100.64.0.10:20100/", p)
-        self.assertIn("Add the backend at http://100.64.0.10:20100? Click OK.", p)
-        self.assertIn("Settings, Connections, Add environment, pick Remote link, and paste this into Host: " + pair, p)
+        self.assertIn("Add the backend at http://100.64.0.10:20100? Click Confirm.", p)
+        self.assertIn("Settings, Environments, Add environment, pick Remote link, and paste this into Host: " + pair, p)
         self.assertIn("Start-Process", p)
         self.assertIn("If it still times out, stop and tell me", p)
         self.assertNotIn("invite", p)
         self.assertIn("make a new prompt at https://treehouse.example.com/_box/me", p)
         self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
         self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")
+        for must in ("tailscale status --json", "BackendState", "NeedsLogin", "NeedsMachineAuth", "tailscale switch",
+                     "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "C:\\Program Files\\Tailscale\\tailscale.exe",
+                     "tailscale ping", "my Tailscale account <login>", "Add route", "Remove route", "already saved",
+                     "Don't set up T3 Connect", "Open T3", "x-scheme-handler/t3code", "HKCU", "in one line"):
+            self.assertIn(must, p)
+        self.assertNotIn("What the box knows", p)  # no facts given: none made up
+        self.assertNotIn("already connected from", p)
+
+    def test_prompt_facts(self):
+        pair = "http://100.64.0.10:20100/pair#token=tok"
+        p = sbconnect.app_prompt(pair, "https://t.example.com/_box/me", "sietchtabr", ts_login="sam@github",
+                                 ts_mode="reverse", apps=[dict(os="macOS", ip="100.64.0.68", version="0.1.9",
+                                                               last="2026-11-12")])
+        self.assertIn("NOT shared with the Tailscale account sam@github", p)
+        self.assertIn("sign in as sam@github", p)
+        self.assertIn("A T3 app already connected to my T3 (macOS, Tailscale IP 100.64.0.68, app 0.1.9, "
+                      "last connected 2026-11-12)", p)
+        self.assertIn("already connected from this computer's Tailscale IP", p)
+        for mode, text in (("sharee", "is shared with the Tailscale account"), ("member", "is a member"),
+                           ("none", "hasn't seen any device"), ("", "My Tailscale account on the box's side")):
+            self.assertIn(text, sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode))
+        for q in (p, sbconnect.app_prompt(pair, "d", "sietchtabr")):
+            self.assertIsNone(re.search(r"\{[^}]*\}", q))
+            self.assertNotIn("invite", q)
+            self.assertIsNone(re.search(r"//sietchtabr|@sietchtabr", q))  # addresses use the IP
+            self.assertIsNone(re.search(r"\bsudo\b|\b(None|null|undefined|NaN)\b|Error:|Exception", q))
+            self.assertTrue(q.isascii())
+
+    def test_ts_facts(self):
+        st = {"CurrentTailnet": {"MagicDNSSuffix": "owner.ts.net"},
+              "User": {"1": {"LoginName": "owner@x"}, "2": {"LoginName": "sam@github"}, "3": {"LoginName": "kim@x"},
+                       "4": {"LoginName": "lee@x"}},
+              "Peer": {"a": {"UserID": 2, "DNSName": "aether.tail99.ts.net."},
+                       "b": {"UserID": 3, "ShareeNode": True, "DNSName": ""},
+                       "c": {"UserID": 4, "DNSName": "lap.owner.ts.net."}}}
+        f = sbconnect.ts_facts
+        self.assertEqual(f(st, {"ts_id": "2", "login": "old"}), {"login": "sam@github", "mode": "reverse"})
+        self.assertEqual(f(st, {"ts_id": 3}), {"login": "kim@x", "mode": "sharee"})
+        self.assertEqual(f(st, {"ts_id": "4"}), {"login": "lee@x", "mode": "member"})
+        self.assertEqual(f(st, {"email": "Owner@X"})["mode"], "none")  # matched by email, no peers of theirs
+        self.assertEqual(f(st, {"email": "nobody@x"}), {"login": "", "mode": ""})
+        self.assertEqual(f(None, {"ts_id": "2", "login": "sam@github"}), {"login": "sam@github", "mode": ""})
 
     def test_connect_text_mentions_app_link(self):
         self.assertIn("ssh treehouse box t3 app-link", sbconnect.connect_text("sam", SITE, "treehouse-ssh.example.com"))

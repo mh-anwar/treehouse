@@ -78,15 +78,24 @@ class AppPaired(unittest.TestCase):
         try:
             self.assertFalse(box.t3_app_paired())  # no database yet
             con = sqlite3.connect(db)
-            con.execute("CREATE TABLE auth_sessions (session_id TEXT, client_label TEXT, revoked_at TEXT)")
-            con.execute("INSERT INTO auth_sessions VALUES ('a', ?, NULL)", (f"{box.ME.pw_name} (join page)",))
-            con.execute("INSERT INTO auth_sessions VALUES ('b', ?, '2026-01-01')", (f"{box.ME.pw_name} T3 app",))
+            con.execute("CREATE TABLE auth_sessions (session_id TEXT, client_label TEXT, client_surface TEXT, "
+                        "client_os TEXT, client_ip_address TEXT, client_app_version TEXT, expires_at TEXT, "
+                        "last_connected_at TEXT, revoked_at TEXT)")
+            me, later = box.ME.pw_name, "2999-01-01T00:00:00.000Z"
+            rows = [("a", f"{me} (join page)", "web", "Linux", "100.64.0.9", "0.1.9", later, None, None),
+                    ("b", f"{me} T3 app", "desktop", "macOS", "100.64.0.7", "0.1.8", later, None, "2026-01-01"),
+                    ("x", f"{me} T3 app", "desktop", "macOS", "100.64.0.8", "0.1.8", "2020-01-01T00:00:00.000Z",
+                     "2019-12-30T00:00:00.000Z", None)]
+            con.executemany("INSERT INTO auth_sessions VALUES (?,?,?,?,?,?,?,?,?)", rows)
             con.commit()
-            self.assertFalse(box.t3_app_paired())  # only a browser and a revoked app session
-            con.execute("INSERT INTO auth_sessions VALUES ('c', ?, NULL)", (f"{box.ME.pw_name} T3 app",))
+            self.assertFalse(box.t3_app_paired())  # a browser, a revoked app session and an expired one
+            con.execute("INSERT INTO auth_sessions VALUES ('c', ?, 'desktop', 'macOS', '100.64.0.7', '0.1.9', ?, "
+                        "'2026-11-12T10:00:00.000Z', NULL)", (f"{me} T3 app", later))
             con.commit()
             con.close()
             self.assertTrue(box.t3_app_paired())
+            self.assertEqual(box.t3_app_sessions(), [{"os": "macOS", "ip": "100.64.0.7", "version": "0.1.9",
+                                                      "last": "2026-11-12"}])
         finally:
             if old is None:
                 os.environ.pop("T3CODE_HOME", None)
