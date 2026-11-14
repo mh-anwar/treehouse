@@ -1337,6 +1337,9 @@ def t3_switch_line():
     if not st or st.get("state") == "done" and time.time() - st.get("ts", 0) > 86400:
         return ""
     s = st.get("state")
+    if s in ("preparing", "waiting", "switching") and unit_state(T3_SWITCH_UNIT) not in ("active", "activating"):
+        return (f"\nSwitch: stopped while {s} (a reboot?). `box t3 switch` starts it again"
+                + ("; check `box t3 status` works first." if s == "switching" else "."))
     if s == "waiting":
         why = "; ".join(st.get("waiting_on") or []) or "quiet so far, checking it stays quiet"
         return f"\nSwitch: waiting for agents to finish ({why})."
