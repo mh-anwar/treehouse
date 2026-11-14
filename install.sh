@@ -65,6 +65,9 @@ fi
 
 # read existing config if present, else defaults from the shipped file
 conf_get() { sed -n "s/^$1=//p" "${ETC}/sharedbox.conf" 2>/dev/null | tail -1 || true; }
+# the value the box actually uses, hackathon mode included (sbcommon.load_config); falls back to the raw line
+conf_eff() { SHAREDBOX_CONF="${ETC}/sharedbox.conf" PYTHONPATH="$SRC/lib" python3 -c \
+    "import sys, sbcommon; print(sbcommon.load_config().get(sys.argv[1], ''))" "$1" 2>/dev/null || conf_get "$1"; }
 SSH_GROUP=$(conf_get SSH_GROUP); SSH_GROUP=${SSH_GROUP:-ssh-users}
 FRIENDS_GROUP=$(conf_get FRIENDS_GROUP); FRIENDS_GROUP=${FRIENDS_GROUP:-friends}
 SLOTS=$(conf_get HEAVY_SLOTS); SLOTS=${SLOTS:-2}
@@ -256,14 +259,14 @@ if [[ ! -s $(conf_get SMTP_PASSWORD_FILE || true) && ! -s $ETC/smtp-password ]];
     warn "password in $ETC/smtp-password:  sudo install -m 600 /dev/stdin $ETC/smtp-password  (paste, Enter, Ctrl-D)"
     warn "then test: sudo sharedbox-health test-email"
 fi
-if [[ $(conf_get TRAP_ENABLED) != 0 ]]; then
+if [[ $(conf_eff TRAP_ENABLED) != 0 ]]; then
     say "trap: decoy ports + bait URLs + AI-crawler maze (sharedbox-trap stats for the score)"
     do_ systemctl enable sharedbox-trap.service
     do_ systemctl restart sharedbox-trap.service
 else
     do_ systemctl disable --now sharedbox-trap.service 2>/dev/null || true
 fi
-if [[ $(conf_get CANARY_ENABLED) != 0 ]]; then
+if [[ $(conf_eff CANARY_ENABLED) != 0 ]]; then
     say "tripwire: decoy secrets in $(conf_get CANARY_DIR || true) (default /srv/backups/prod)"
     do_ systemctl enable sharedbox-canary.service
     do_ systemctl restart sharedbox-canary.service

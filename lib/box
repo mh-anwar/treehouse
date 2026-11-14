@@ -214,6 +214,38 @@ def advice(g):
     return out
 
 
+def hackathon_line(cfg=None):
+    """One line for `box status` while hackathon mode is on, else ""."""
+    cfg = cfg or CFG
+    if cfg.get("HACKATHON") != "1":
+        return ""
+    return (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: no naps, trap/tripwire off, package requests open for "
+            f"{cfg.get('REQUEST_OPEN_USERS') or 'the owner'} (`box help hackathon`)")
+
+
+def cmd_hackathon(a):
+    if a.op in (None, "status"):
+        line = hackathon_line()
+        print(line or "Hackathon mode is off. The owner turns it on: box hackathon on --until \"YYYY-MM-DD HH:MM\" "
+                      "[--users a,b]")
+        return
+    if ME.pw_name not in sb.admin_users(CFG):
+        sys.exit("only the owner (an admin account) can switch hackathon mode")
+    req = {"action": "hackathon", "op": a.op}
+    if a.op == "on":
+        until = a.until
+        if a.hours:
+            until = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + a.hours * 3600))
+        if not until:
+            sys.exit('give an end: --until "YYYY-MM-DD HH:MM" or --hours N')
+        req.update(until=until, users=a.users or "")
+    res = admin_request(req, 60)
+    if not res.get("ok"):
+        sys.exit(res.get("error", "that didn't work"))
+    print(f"Hackathon mode on until {res['until']} (open package requests: {res['users']})" if res.get("active")
+          else "Hackathon mode is off.")
+
+
 def cmd_status(a):
     if a.agent:
         try:
@@ -232,6 +264,8 @@ def cmd_status(a):
     lines.append(f"Box: {b['level']} | load {b['loadavg'][0]:.1f}/{b['ncpu']} cpus | "
                  f"RAM avail {sb.human(b['mem_avail'])}/{sb.human(b['mem_total'])} | "
                  f"disk free {sb.human(b['disk_free'])}/{sb.human(b['disk_total'])}")
+    if hackathon_line():
+        lines.append(hackathon_line())
     if lim:
         lines.append(f"You: CPU {live.get('cpu_pct', 0)}% (cap {burst_now(lim, 'CPU_QUOTA')}) | "
                      f"RAM {sb.human(live.get('mem', 0))} (soft {burst_now(lim, 'MEMORY_HIGH')}, hard {lim['MEMORY_MAX']}) | "
@@ -2837,6 +2871,12 @@ def main():
     x = s.add_parser("restore", help="put an archived project back in ~/projects (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
+    x = s.add_parser("hackathon", help="develop freely until a set time: no naps, no trap/tripwire, open installs")
+    x.add_argument("op", nargs="?", choices=["status", "on", "off"])
+    x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
+    x.add_argument("--hours", type=float, help="or: end this many hours from now")
+    x.add_argument("--users", help="friends who get open package requests too (the owner always does)")
+    x.set_defaults(fn=cmd_hackathon)
     x = s.add_parser("tune", help="how efficient the box itself is (kernel, memory, disk, network); read-only")
     x.add_argument("op", nargs="?", help="shell (speed up your shell start) | disable|enable NAME (owner only)")
     x.add_argument("unit", nargs="?")

@@ -289,3 +289,43 @@ class Reviewer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Hackathon(unittest.TestCase):
+    def cfg(self, until, **kw):
+        c = dict(adm.sb.DEFAULTS, ADMIN_USERS="pippin", HACKATHON_UNTIL=until, **kw)
+        return adm.sb.apply_hackathon(c)
+
+    def test_on_overlays_and_opens_requests(self):
+        c = self.cfg("2999-01-01 00:00", HACKATHON_USERS="krish")
+        self.assertEqual(c["HACKATHON"], "1")
+        for k in ("T3_NAP_MINUTES", "T3_IDLE_DAYS", "DOCKER_NAP_MINUTES", "TRAP_ENABLED", "CANARY_ENABLED"):
+            self.assertEqual(c[k], "0", k)
+        self.assertEqual(c["REQUEST_OPEN_USERS"].split(), ["pippin", "krish"])
+        self.assertTrue(adm.open_for(c, "krish"))
+        self.assertFalse(adm.open_for(c, "dave"))
+
+    def test_past_or_bad_time_is_off(self):
+        for until in ("2000-01-01 00:00", "tonight", ""):
+            c = self.cfg(until)
+            self.assertEqual(c["HACKATHON"], "", until)
+            self.assertEqual(c["TRAP_ENABLED"], adm.sb.DEFAULTS["TRAP_ENABLED"])
+
+    def test_reconcile_acts_only_on_transitions(self):
+        calls = []
+        orig = adm.sb.subprocess.run
+        adm.sb.subprocess.run = lambda cmd, **k: calls.append(cmd)
+        self.addCleanup(setattr, adm.sb.subprocess, "run", orig)
+        for name in ("log_event", "write_json", "read_json"):
+            self.addCleanup(setattr, adm.sb, name, getattr(adm.sb, name))
+        state = {}
+        adm.sb.read_json = lambda p, d=None: dict(state)
+        adm.sb.write_json = lambda p, data, **k: state.update(data)
+        adm.sb.log_event = lambda *a, **k: None
+        on = self.cfg("2999-01-01 00:00")
+        self.assertEqual(adm.sb.hackathon_reconcile(on), "on")
+        self.assertIn(["systemctl", "stop", "sharedbox-trap.service"], calls)
+        self.assertIsNone(adm.sb.hackathon_reconcile(on))
+        calls.clear()
+        self.assertEqual(adm.sb.hackathon_reconcile(self.cfg("2000-01-01 00:00", CANARY_ENABLED="0")), "off")
+        self.assertEqual(calls, [["systemctl", "enable", "--now", "sharedbox-trap.service"]])

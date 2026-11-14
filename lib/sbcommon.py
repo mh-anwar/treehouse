@@ -165,6 +165,9 @@ DEFAULTS = {
                       "netplan* tailscale* cloudflared wireguard* openvpn* cron cron-* cronie at"),
     # temporarily open requests for some users (a hackathon): they skip REQUEST_DENY, REQUEST_MAX_DEPS and
     # REQUEST_DAILY_LIMIT (not REQUEST_NEVER) until REQUEST_OPEN_UNTIL ("YYYY-MM-DD HH:MM", local; empty = no end)
+    # hackathon mode (`box hackathon`): on until this local time ("YYYY-MM-DD HH:MM"); extra users besides the owner
+    "HACKATHON_UNTIL": "",
+    "HACKATHON_USERS": "",
     "REQUEST_OPEN_USERS": "",
     "REQUEST_OPEN_UNTIL": "",
     "REQUEST_MAX_DEPS": "500",
@@ -270,7 +273,69 @@ def load_config(path=CONF_PATH):
     # invites only, unless the owner chose otherwise in the conf file
     if "JOIN_MODE" not in explicit and (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare":
         cfg["JOIN_MODE"] = "closed"
+    apply_hackathon(cfg)
     return cfg
+
+
+# ---------- hackathon mode: one switch for "develop freely" ----------
+# HACKATHON_UNTIL="YYYY-MM-DD HH:MM" (local time, in the future) turns it on; it ends by itself at that time.
+# While on: no T3 or Docker naps, no trap or tripwire, and package requests from the owner and HACKATHON_USERS
+# skip the deny list and limits (REQUEST_NEVER still applies). `box hackathon on|off|status`.
+HACKATHON_OVERRIDES = {"T3_NAP_MINUTES": "0", "T3_IDLE_DAYS": "0", "DOCKER_NAP_MINUTES": "0",
+                       "TRAP_ENABLED": "0", "CANARY_ENABLED": "0"}
+
+
+def parse_local_time(text):
+    """"YYYY-MM-DD HH:MM" local time -> epoch seconds, or None."""
+    try:
+        return time.mktime(time.strptime((text or "").strip(), "%Y-%m-%d %H:%M"))
+    except ValueError:
+        return None
+
+
+def hackathon_until(cfg, now=None):
+    """Epoch when hackathon mode ends, or None when it's off (unset, malformed or past)."""
+    until = parse_local_time(cfg.get("HACKATHON_UNTIL"))
+    return until if until and (now or time.time()) < until else None
+
+
+def apply_hackathon(cfg, now=None):
+    """Overlay hackathon mode onto a loaded config (in place). cfg["HACKATHON"] = "1" while it's on."""
+    if not hackathon_until(cfg, now):
+        cfg["HACKATHON"] = ""
+        return cfg
+    cfg["HACKATHON"] = "1"
+    cfg.update(HACKATHON_OVERRIDES)
+    owner = (cfg.get("OWNER_T3_USER") or "").strip() or next(iter(admin_users(cfg)), "")
+    names = re.split(r"[\s,]+", " ".join((cfg.get("REQUEST_OPEN_USERS") or "", owner,
+                                         cfg.get("HACKATHON_USERS") or "")))
+    cfg["REQUEST_OPEN_USERS"] = " ".join(dict.fromkeys(n for n in names if n))
+    cfg["REQUEST_OPEN_UNTIL"] = cfg["HACKATHON_UNTIL"].strip()
+    return cfg
+
+
+HACKATHON_UNITS = (("TRAP_ENABLED", "sharedbox-trap.service"), ("CANARY_ENABLED", "sharedbox-canary.service"))
+
+
+def hackathon_reconcile(cfg):
+    """Root: when hackathon mode turns on or off, stop or bring back the trap and tripwire. Returns
+    "on"/"off" when it acted, None when nothing changed. Called by the janitor's t3-naps timer and `box hackathon`."""
+    path = os.path.join(STATE_DIR, "hackathon.json")
+    active = cfg.get("HACKATHON") == "1"
+    st = read_json(path, {}) or {}
+    if bool(st.get("active")) == active:
+        return None
+    for key, unit in HACKATHON_UNITS:
+        if active:
+            subprocess.run(["systemctl", "stop", unit], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif (cfg.get(key) or "1").strip() != "0":
+            subprocess.run(["systemctl", "enable", "--now", unit], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    write_json(path, {"active": active, "ts": int(time.time()), "until": cfg.get("HACKATHON_UNTIL", "")},
+               mode=0o644)
+    log_event("hackathon_on" if active else "hackathon_off", None, until=cfg.get("HACKATHON_UNTIL", ""))
+    return "on" if active else "off"
 
 
 def brand(cfg):

@@ -231,3 +231,25 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
 - Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
 - `docker compose` works the same way.
 
+
+@@ hackathon
+Hackathon mode = develop freely until a set time. `box status` shows a line while it's on; `box hackathon` shows
+the state. While on: T3 Code and idle Docker databases never nap, the decoy-port trap and the decoy-secrets
+tripwire are off (so ports like 5432, 6379, 8080 are free for real servers), and package requests from the owner
+and the listed friends install without the deny list, the size cap or the daily limit (packages that could break
+the box itself, like sudo, the kernel, SSH or the firewall, are still refused). It ends by itself at its end time.
+Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2` (or `--hours N`), `box hackathon off`.
+
+@@ boxes
+The owner may have more than one box. The owner's own agents can reach the second box, minastirith (a Dell,
+Tailscale 100.94.44.25), with `ssh minastirith`. It's SLOWER than sietchtabr (i3, 2 cores/4 threads, about 40-45%
+of the CPU power, 16 GB, Wi-Fi), so it's overflow capacity, not a speed-up. Move a job there only when all hold:
+1. sietchtabr is contended: `box status` says busy, `box heavy` would wait, load is above ~6 of 8, or you're near
+   your own limits.
+2. The job is long (~10+ min here) and self-contained (full test suite, image build, benchmark, crawl, batch job),
+   and doesn't need this box's databases, dev servers or files you're editing.
+3. Little to copy: push to git and pull there, or rsync under ~1 GB; install dependencies there instead of
+   copying node_modules or Docker contexts over Wi-Fi.
+4. The other box is free: `ssh minastirith uptime` load below ~3 of 4.
+Otherwise run it here (`box heavy` for heavy work). Never keep the only copy of anything there; results go back
+to git or this box. There you log in as its admin: no sudo or system changes unless the owner asks.

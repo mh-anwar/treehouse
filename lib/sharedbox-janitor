@@ -280,6 +280,13 @@ def t3_should_sleep(cfg, name, rec, st, now, home=""):
 
 def cmd_t3_naps(cfg, a):
     """Nap every friend's T3 nobody is using. Light (no du), so it can run every few minutes."""
+    if not a.dry_run:
+        try:  # hackathon mode starting or ending: the trap and tripwire follow it (same timer, every few minutes)
+            done = sb.hackathon_reconcile(cfg)
+            if done:
+                print(f"hackathon mode {done}")
+        except Exception as e:  # noqa: BLE001 - never let this stop the naps
+            print(f"hackathon reconcile: {e!r}", file=sys.stderr)
     state = sb.read_json(NAP_STATE, {}) or {}
     now = int(time.time())
     users = sb.friend_users()
