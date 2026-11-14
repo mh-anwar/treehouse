@@ -987,7 +987,9 @@ def start_cards(browser):
         fail("alice", "setup prompt", f"pairing URL {pair!r} not in the prompt / not on the IP")
     for must in (f"Add the backend at http://{TS_IP}:{port}?", f"{PUBLIC}/_box/me", "https://t3.codes",
                  "Settings, Environments, Add environment, pick Remote link", "Start-Process",
-                 "If it still times out, stop and tell me"):
+                 "If it still times out, stop and tell me",
+                 f"curl -s --noproxy '*' --max-time 15 http://{TS_IP}:{port}/.well-known/t3/environment",
+                 "0. Already working?", "ask me what the app showed"):
         if must not in prompt:
             fail("alice", "setup prompt", f"missing {must!r}")
     if re.search(r"\{[^}]*\}", prompt):
