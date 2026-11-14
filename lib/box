@@ -1067,6 +1067,24 @@ def t3_db_state():
     return running, scheduled
 
 
+def t3_app_paired():
+    """Has the T3 app on a laptop actually connected? Its pairing is labelled "<user> T3 app" (portal_t3), and the
+    session it turned into keeps that label. A read-only look at T3's database; trouble = False."""
+    import sqlite3
+    db = os.path.join(os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3"), "userdata", "statev2.sqlite")
+    if not os.path.exists(db):
+        return False
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=5)
+        try:
+            return bool(con.execute("SELECT 1 FROM auth_sessions WHERE client_label = ? AND revoked_at IS NULL "
+                                    "LIMIT 1", (f"{ME.pw_name} T3 app",)).fetchone())
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
+
+
 def t3_busy():
     """Why T3 must stay up even though nothing looks active, or ""."""
     running, scheduled = t3_db_state()
@@ -1231,7 +1249,7 @@ http://{host}:{port}?" and they click OK:
 
   {link}
 
-If it doesn't open the app: in the T3 app, Settings, Environments, Add environment, paste this into Host:
+If it doesn't open the app: in the T3 app, Settings, Connections, Add environment, pick Remote link, paste this into Host:
 
   {url}
 
@@ -2245,6 +2263,7 @@ def portal_status():
         _, _, env = t3_env()
         out["t3"] = {"url": f"http://{host}:{r[0]}/", "running": t3_up(host, env)}
         out["t3"]["sleeping"] = not out["t3"]["running"] and os.path.exists(T3_SLEEPING)
+        out["t3"]["app"] = t3_app_paired()  # the start card leads with "Open T3" once the app has connected
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
     out["ssh"] = bool(ssh_keys())

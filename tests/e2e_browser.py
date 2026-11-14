@@ -290,7 +290,8 @@ def _fake_root(req):
     key = req.get("key")
     if action == "status":
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
-                "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False},
+                "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
+                                                      "app": bool(acct.get("app"))},  # the T3 app connected
                 "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "updates": "auto",
                 "servers": [dict(s) for s in acct["servers"]]}
     if action == "shared-ls":
@@ -900,7 +901,7 @@ def screenshots(browser):
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-logs-{width}-{scheme}.png"), full_page=True)
                 if persona == "alice":
                     s.page.goto(url("/_box/me"))
-                    b = s.page.locator("#start button", has_text="Make my setup prompt")
+                    b = s.page.locator("#start button:visible", has_text="Make my setup prompt")
                     if not b.count():
                         fail("alice", f"screenshots {width} {scheme}", "no 'Make my setup prompt' button")
                     else:
@@ -908,9 +909,15 @@ def screenshots(browser):
                         s.page.wait_for_load_state("load")
                         inspect(s, f"setup prompt @{width} {scheme}")
                         s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-prompt-{width}-{scheme}.png"), full_page=True)
-                        s.page.goto(url("/_box/me"))  # the tb_app cookie is set now: "Open T3" leads
-                        s.page.wait_for_load_state("load")
-                        s.page.screenshot(path=os.path.join(SHOTS, f"alice-me-app-set-{width}-{scheme}.png"), full_page=True)
+                        s.page.locator("#start summary", has_text="Do it by hand").click()
+                        s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-byhand-{width}-{scheme}.png"), full_page=True)
+                        ACCOUNTS["alice"]["app"] = True  # as if the app on her laptop connected: "Open T3" leads
+                        try:
+                            s.page.goto(url("/_box/me"))
+                            s.page.wait_for_load_state("load")
+                            s.page.screenshot(path=os.path.join(SHOTS, f"alice-me-app-set-{width}-{scheme}.png"), full_page=True)
+                        finally:
+                            ACCOUNTS["alice"]["app"] = False
                 s.drain(f"screenshots {width} {scheme}")
                 s.close()
                 w.portal_rate.clear()
@@ -938,9 +945,10 @@ def start_cards(browser):
     cases = [("erin", "tok-erin", [], "T3 isn't set up on this box yet"),
              ("bob", "tok-bob", ["Log in with Claude"], "Log in with ChatGPT"),
              ("alice", "tok-alice", ["Make my setup prompt"], "Open T3 in this browser"),
-             ("dave", "tok-dave", ["Open T3"], "Ask the owner to add you to Tailscale")]
-    for persona, tok, want, text in cases:
-        s = Session(browser, persona, tok)
+             ("dave", "tok-dave", ["Make my setup prompt"], "No agent on your laptop?"),  # no Tailscale id on record
+             ("alice", "tok-alice", ["Open T3"], "T3 app for your laptop?", 390)]  # phones lead with Open T3
+    for persona, tok, want, text, *width in cases:
+        s = Session(browser, persona, tok, **({"width": width[0]} if width else {}))
         s.page.goto(url("/_box/me"))
         where = f"start card ({persona})"
         inspect(s, where)
@@ -950,16 +958,18 @@ def start_cards(browser):
         card = s.page.inner_text("#start") if s.page.locator("#start").count() else ""
         if text not in card:
             fail(persona, where, f"start card lacks {text!r}: {card[:200]!r}")
+        if "Ask the owner to add you to Tailscale" in card:
+            fail(persona, where, "tells a friend who may already be on Tailscale to ask for it")
         no_hostname_addresses(s, where)
         if s.page.locator("text=Link my T3 account").count():
             fail(persona, where, "T3 Connect is shown")
         s.drain(where)
         s.close()
-    # S2 -> the prompt -> S3 from the tb_app cookie it sets
+    # S2 -> the prompt -> S3 once the app has really connected (a T3 session labelled for it)
     s = Session(browser, "alice (prompt)", "tok-alice")
     page = s.page
     page.goto(url("/_box/me"))
-    page.locator("#start button", has_text="Make my setup prompt").click()
+    page.locator("#start button:visible", has_text="Make my setup prompt").click()
     page.wait_for_load_state("load")
     inspect(s, "setup prompt")
     prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
@@ -970,7 +980,8 @@ def start_cards(browser):
     if not pair.startswith(f"http://{TS_IP}:{port}/pair#token=") or pair not in prompt:
         fail("alice", "setup prompt", f"pairing URL {pair!r} not in the prompt / not on the IP")
     for must in (f"Add the backend at http://{TS_IP}:{port}?", f"{PUBLIC}/_box/me", "https://t3.codes",
-                 "Settings, Environments, Add environment"):
+                 "Settings, Connections, Add environment, pick Remote link", "Start-Process",
+                 "If it still times out, stop and tell me"):
         if must not in prompt:
             fail("alice", "setup prompt", f"missing {must!r}")
     if re.search(r"\{[^}]*\}", prompt):
@@ -989,17 +1000,35 @@ def start_cards(browser):
     if re.search(r"\b\d{1,2}:\d{2}\b", page.inner_text("#start")):
         fail("alice", "setup prompt", "shows a clock time")
     no_hostname_addresses(s, "setup prompt")
-    if not any(c["name"] == "tb_app" and c["path"] == "/_box" for c in s.ctx.cookies()):
-        fail("alice", "setup prompt", f"no tb_app cookie: {s.ctx.cookies()}")
-    page.goto(url("/_box/me"))
-    if page.evaluate(MAIN_JS) != ["Open T3 in browser"]:
-        fail("alice", "after the prompt (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
-    if not page.locator("#start button.linkbtn", has_text="Make a new setup prompt").count():
-        fail("alice", "after the prompt (S3)", "no 'Make a new setup prompt'")
-    page.locator("#start button", has_text="Make a new setup prompt").click()
-    page.wait_for_load_state("load")
-    if not page.locator("#app-prompt").count():
-        fail("alice", "S3 new prompt", "no prompt")
+    if page.locator("#start details.byhand[open]").count():
+        fail("alice", "setup prompt", "the do-it-by-hand steps are open: one obvious next step only")
+    if "Paste it into Claude Code, Codex or any agent on your laptop" not in page.inner_text("#start"):
+        fail("alice", "setup prompt", "no next step after Copy prompt")
+    page.locator("#start summary", has_text="Do it by hand").click()
+    page.locator("#start button", has_text="Copy").last.click()
+    try:
+        page.wait_for_function("[...document.querySelectorAll('#start details button')].some(b => b.textContent === 'Copied')",
+                               timeout=3000)
+    except Exception:  # noqa: BLE001
+        fail("alice", "setup prompt", "the pairing link's Copy didn't say Copied")
+    if any(c["name"] == "tb_app" for c in s.ctx.cookies()):
+        fail("alice", "setup prompt", "sets the old tb_app cookie")
+    page.goto(url("/_box/me"))  # only made a prompt, the app never connected: still the setup prompt
+    if page.evaluate(MAIN_JS) != ["Make my setup prompt"]:
+        fail("alice", "after the prompt, app not connected", f"main buttons {page.evaluate(MAIN_JS)}")
+    ACCOUNTS["alice"]["app"] = True
+    try:
+        page.goto(url("/_box/me"))
+        if page.evaluate(MAIN_JS) != ["Open T3 in this browser"]:
+            fail("alice", "app connected (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
+        if not page.locator("#start button.linkbtn", has_text="Make a new setup prompt").count():
+            fail("alice", "app connected (S3)", "no 'Make a new setup prompt'")
+        page.locator("#start button", has_text="Make a new setup prompt").click()
+        page.wait_for_load_state("load")
+        if not page.locator("#app-prompt").count():
+            fail("alice", "S3 new prompt", "no prompt")
+    finally:
+        ACCOUNTS["alice"]["app"] = False
     s.drain("setup prompt")
     s.close()
 
@@ -1010,16 +1039,20 @@ def tailnet_view():
 
     class Tailnet(w.Handler):
         def ident(self):
-            return "100.64.0.9", dict(alice, app=self.has_cookie(w.APP_COOKIE))
+            return "100.64.0.9", dict(alice)
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Tailnet)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     w.ALLOWED_HOSTS.add("127.0.0.1")
     import urllib.request
-    for cookie, want in (("", ["Make my setup prompt"]), ("tb_app=1", ["Open T3 in browser"])):
-        rq = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/me", headers={"Cookie": cookie} if cookie else {})
-        body = urllib.request.urlopen(rq, timeout=60).read().decode()
-        where = "tailnet /me" + (" (tb_app)" if cookie else "")
+    for app, want in ((False, ["Make my setup prompt"]), (True, ["Open T3 in this browser"])):
+        ACCOUNTS["alice"]["app"] = app
+        rq = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/me")
+        try:
+            body = urllib.request.urlopen(rq, timeout=60).read().decode()
+        finally:
+            ACCOUNTS["alice"]["app"] = False
+        where = "tailnet /me" + (" (app connected)" if app else "")
         if "device-link" in body:
             fail("alice (tailnet)", where, "device-link button (refused in Cloudflare mode)")
         rel = re.findall(r"""href=['"](/_box/[^'"]*)""", body)
@@ -1030,6 +1063,7 @@ def tailnet_view():
         if re.search(rf"(//|@){re.escape(HOSTNAME)}\b", re.sub(r"<header>.*?</header>", "", body, flags=re.S)):
             fail("alice (tailnet)", where, "an address uses the box's name")
         start = body[body.find("id='start'"):body.find("</section>")]
+        start = re.sub(r"<div class='narrow'>.*?<!--/narrow-->", "", start, flags=re.S)  # phones only
         mains = re.findall(r"<button(?![^>]*class=)[^>]*>([^<]*)</button>|<a class='btn' [^>]*>([^<]*)</a>", start)
         got = [a or b for a, b in mains]
         if got != want:

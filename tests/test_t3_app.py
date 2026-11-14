@@ -63,3 +63,32 @@ class T3Urls(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AppPaired(unittest.TestCase):
+    """The start card leads with "Open T3" only once the app really connected, not when a prompt was made."""
+
+    def test_from_t3_sessions(self):
+        import sqlite3
+        d = os.path.join(TMP, "t3home", "userdata")
+        os.makedirs(d, exist_ok=True)
+        db = os.path.join(d, "statev2.sqlite")
+        old = os.environ.get("T3CODE_HOME")
+        os.environ["T3CODE_HOME"] = os.path.dirname(d)
+        try:
+            self.assertFalse(box.t3_app_paired())  # no database yet
+            con = sqlite3.connect(db)
+            con.execute("CREATE TABLE auth_sessions (session_id TEXT, client_label TEXT, revoked_at TEXT)")
+            con.execute("INSERT INTO auth_sessions VALUES ('a', ?, NULL)", (f"{box.ME.pw_name} (join page)",))
+            con.execute("INSERT INTO auth_sessions VALUES ('b', ?, '2026-01-01')", (f"{box.ME.pw_name} T3 app",))
+            con.commit()
+            self.assertFalse(box.t3_app_paired())  # only a browser and a revoked app session
+            con.execute("INSERT INTO auth_sessions VALUES ('c', ?, NULL)", (f"{box.ME.pw_name} T3 app",))
+            con.commit()
+            con.close()
+            self.assertTrue(box.t3_app_paired())
+        finally:
+            if old is None:
+                os.environ.pop("T3CODE_HOME", None)
+            else:
+                os.environ["T3CODE_HOME"] = old

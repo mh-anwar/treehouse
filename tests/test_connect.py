@@ -496,18 +496,19 @@ class Web(unittest.TestCase):
             if action == "status":
                 return {"ok": True, "updates": "auto", "ssh": True, "servers": [],
                         "logins": {k: {"label": k, "ok": v} for k, v in logins.items()},
-                        "t3": {"url": "http://100.64.0.5:31000/", "running": True} if t3 else None}
+                        "t3": {"url": "http://100.64.0.5:31000/", "running": True, "app": app} if t3 else None}
             if action == "shared-ls":
                 return {"ok": True, "servers": []}
             return {"ok": False, "error": "unexpected"}
         w.portal_call = portal_call
-        who = dict(w.cf_who("friend@example.com", "jwt"), app=app)
+        who = w.cf_who("friend@example.com", "jwt")
         return w.portal_page("gate", who, "sam", rec, result=result, welcome=welcome)
 
     @staticmethod
     def start_mains(page):
         """The start card's main buttons: plain <button>s and a.btn links (not secondary, small or text-styled)."""
         start = page[page.index("id='start'"):page.index("</section>")]
+        start = re.sub(r"<div class='narrow'>.*?<!--/narrow-->", "", start, flags=re.S)  # phones only
         return re.findall(r"<button(?![^>]*class=)[^>]*>([^<]*)</button>|<a class='btn' [^>]*>([^<]*)</a>", start)
 
     def test_start_states_one_main_button(self):
@@ -519,14 +520,17 @@ class Web(unittest.TestCase):
                 ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this box yet"),
                 ({"claude": False, "codex": False}, True, "n1", False, "Log in with Claude", "Log in with ChatGPT"),
                 ({"claude": True}, True, "n1", False, "Make my setup prompt", "No agent on your laptop?"),
-                ({"claude": True}, True, "", False, "Open T3", "Ask the owner to add you to Tailscale"),
-                ({"claude": True}, True, "n1", True, "Open T3 in browser", "Make a new setup prompt"),
+                ({"claude": True}, True, "", False, "Make my setup prompt", "No agent on your laptop?"),
+                ({"claude": True}, True, "n1", True, "Open T3 in this browser", "App not connecting"),
             ]
             for logins, t3, ts_id, app, main, text in cases:
                 page = self.render(logins, t3, ts_id, app)
                 mains = [a or b for a, b in self.start_mains(page)]
                 self.assertEqual(mains, [main] if main else [], (logins, t3, ts_id, app))
                 self.assertIn(text, page)
+                self.assertNotIn("Ask the owner to add you to Tailscale", page)
+                if main == "Make my setup prompt":  # phones lead with Open T3 instead
+                    self.assertRegex(page, r"<div class='narrow'><h2>Open T3</h2>.*<a class='btn' [^>]*>Open T3</a>")
                 self.assertNotIn("Link my T3 account", page)  # T3 Connect stays hidden until it's tested
                 self.assertNotIn("→", page)
                 self.assertNotIn(f"@{w.HOST}<", page)
@@ -554,7 +558,7 @@ class Web(unittest.TestCase):
         self.assertIn("note bad", page)
         self.assertNotIn("class='ic' aria-hidden='true'>!<", page)  # an SVG mark, not a font glyph
 
-    def test_prompt_sets_cookie_and_redirects(self):
+    def test_prompt_redirects_without_cookie(self):
         w = self.web
         w.portal_call = lambda ip, who, action, **kw: (
             {"ok": True, "pair_url": "http://100.64.0.5:31000/pair#token=t"} if action == "t3app" else {"ok": False})
@@ -565,17 +569,16 @@ class Web(unittest.TestCase):
         h.redirect = lambda where, headers=(): sent.update(where=where, headers=list(headers))
         h.portal_post("gate", who, {"action": "t3prompt", "key": ""})
         self.assertTrue(sent["where"].startswith("/_box/me?r=") and sent["where"].endswith("#start"), sent)
-        self.assertEqual(sent["headers"][0][0], "Set-Cookie")
-        self.assertTrue(sent["headers"][0][1].startswith("tb_app=1; Path=/_box; Max-Age="), sent)
+        self.assertEqual(sent["headers"], [], sent)  # "set up" comes from a real app session, not a cookie
 
     def test_gate_flags(self):
         r = self.request("GET", "/_box/features")  # any page: who() reads the gate's flags
         self.assertEqual(r["code"], 200)
         h = object.__new__(self.web.GateHandler)
         h.headers = email_parser.parsestr("X-Sharedbox-Cf-Email: friend@example.com\r\nX-Sharedbox-Cf-Jwt: j\r\n"
-                                          "X-Sharedbox-App: 1\r\n\r\n")
+                                          "X-Sharedbox-Direct: 1\r\n\r\n")
         who = h.who()
-        self.assertEqual((who["app"], who["direct"]), (True, False))
+        self.assertEqual((who.get("app"), who["direct"]), (None, True))
 
     def test_features_hero(self):
         page = self.web.features_page()
@@ -600,7 +603,10 @@ class AppLink(unittest.TestCase):
         self.assertIn("t3code://pair?pairingUrl=http%3A%2F%2F100.105.248.23%3A20100", p)
         self.assertIn("curl -sI --max-time 15 http://100.105.248.23:20100/", p)
         self.assertIn("Add the backend at http://100.105.248.23:20100? Click OK.", p)
-        self.assertIn("paste this into Host: " + pair, p)
+        self.assertIn("Settings, Connections, Add environment, pick Remote link, and paste this into Host: " + pair, p)
+        self.assertIn("Start-Process", p)
+        self.assertIn("If it still times out, stop and tell me", p)
+        self.assertNotIn("invite", p)
         self.assertIn("make a new prompt at https://treehouse.example.com/_box/me", p)
         self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
         self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")

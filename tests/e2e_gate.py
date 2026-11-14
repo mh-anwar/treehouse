@@ -263,12 +263,12 @@ def run_tests():
     c, h, b = req("/s/web/assets/utils-D8OUUT-k.js", "A")
     check("friend's app asset not touched", c == 200 and not hv(h, "cache-control"), h)
 
-    # ---- sharedbox-web never sees cookies, only flags for the two it needs (the dashboard's start card) ----
+    # ---- sharedbox-web never sees cookies, only a flag for the one it needs (tb_direct) ----
     c, h, b = req("/_box/me", "A", extra=["Cookie: tb_app=1; tb_direct=1; t3_session_1=secret",
                                          "X-Sharedbox-Cf-Email: owner@x.io"])
     hd = json.loads(b)["headers"] if c == 200 else {}
-    check("web gets X-Sharedbox-App/Direct from the cookies, no Cookie header",
-          hd.get("x-sharedbox-app") == "1" and hd.get("x-sharedbox-direct") == "1" and "cookie" not in hd
+    check("web gets X-Sharedbox-Direct from the cookie, no Cookie header, nothing for tb_app",
+          "x-sharedbox-app" not in hd and hd.get("x-sharedbox-direct") == "1" and "cookie" not in hd
           and hd.get("x-sharedbox-cf-email") == "alice@x.io", (c, hd))
     c, h, b = req("/_box/me", "A", extra=["X-Sharedbox-App: 1", "X-Sharedbox-Direct: 1"])
     hd = json.loads(b)["headers"] if c == 200 else {}

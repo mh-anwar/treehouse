@@ -283,7 +283,9 @@ button:disabled{opacity:.6;cursor:default}
 .start h2{margin:0 0 6px;font-size:18px}.start>h3,.start .card h3{margin:0 0 8px;font-size:15px;color:var(--fg);text-transform:none;letter-spacing:0}
 .start p,.line{margin:8px 0}.line>.btn,.line>form>button:not(.linkbtn),.line>button{margin-top:6px}
 .start .card{border:0;background:none;padding:0}.start .note{margin:0 0 12px;background:var(--inset)}
-.start textarea.prompt{height:auto;min-height:120px;resize:vertical}input.mono{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.start textarea.prompt{height:auto;min-height:120px;resize:vertical}.byhand{margin:10px 0 0}.byhand>summary{cursor:pointer;color:var(--mut);font-size:14px}
+.copyrow{display:flex;gap:8px;align-items:center}.copyrow input{flex:1 1 auto;min-width:0;margin:0}.copyrow button{margin:0;flex:none}
+.narrow{display:none}@media (max-width:560px){.start .narrow{display:block}.start .wide{display:none}}input.mono{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 ul.acct{list-style:none;padding:0;margin:0 0 6px;max-width:680px}ul.acct li{padding:7px 0;border-bottom:1px solid var(--line)}
 ul.acct li:last-child{border:0}ul.acct form{margin-left:2px}
 details.more{margin-top:26px;max-width:680px}details.more>summary,details.more details>summary{cursor:pointer;color:var(--mut)}
@@ -1294,7 +1296,6 @@ def owner_page(ip, who, name, rec, result=None, rng="24h"):
 AI_NAMES = {"claude": "Claude", "codex": "Codex"}
 START_VIEWS = ("", "login", "code", "check", "t3", "t3prompt")  # results shown inside the start card
 PROMPT_FAIL = "Couldn't make your prompt. Try again in a minute. If it still fails, tell the owner."
-APP_COOKIE, APP_COOKIE_AGE = "tb_app", 365 * 86400
 
 START_JS = r"""
 (function(){
@@ -1332,7 +1333,7 @@ def dashboard_url():
 def app_prompt_result(res):
     """root's answer to `t3app` -> what the start card shows: the setup prompt, or the one failure line."""
     pair = res.get("pair_url") if res.get("ok") else ""
-    prompt = sbconnect.app_prompt(pair, dashboard_url()) if pair else ""
+    prompt = sbconnect.app_prompt(pair, dashboard_url(), HOST) if pair else ""
     if not prompt:
         return {"ok": False, "error": PROMPT_FAIL, "_view": "t3prompt"}
     return {"ok": True, "app_prompt": prompt, "app_pair_url": pair, "app_link": sbconnect.t3_app_link(pair),
@@ -1344,11 +1345,15 @@ def prompt_body(res):
     return f"""<h3>Your setup prompt</h3>
 <textarea id="app-prompt" readonly rows="7" class="prompt">{e(res['app_prompt'])}</textarea>
 <div class="line"><button type="button" data-copy="app-prompt">Copy prompt</button></div>
-<p class="sub">It works once, for 30 minutes.</p>
-<p class="sub">Doing it yourself? Install the app from <a href="https://t3.codes" target="_blank" rel="noopener">t3.codes</a>,
-then <a href="{e(res['app_link'])}">open it in the T3 app</a>.</p>
-<p class="sub">Or in the app: Settings, Environments, Add environment, then paste this into Host:</p>
-<input readonly class="mono" value="{e(res['app_pair_url'])}" onclick="this.select()" aria-label="Pairing link">"""
+<p>Paste it into Claude Code, Codex or any agent on your laptop. It works once, for 30 minutes.</p>
+<details class="byhand"><summary>Do it by hand</summary>
+<p class="sub">Install the app from <a href="https://t3.codes" target="_blank" rel="noopener">t3.codes</a>,
+then <a href="{e(res['app_link'])}">open this link in the T3 app</a>.</p>
+<p class="sub">If that doesn't open it: in the app, go to Settings, Connections, Add environment, pick Remote link,
+and paste this into Host:</p>
+<div class="copyrow"><input id="app-pair" readonly class="mono" value="{e(res['app_pair_url'])}" onclick="this.select()"
+aria-label="Pairing link"><button type="button" class="sm secondary" data-copy="app-pair">Copy</button></div>
+</details>"""
 
 
 def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
@@ -1368,16 +1373,16 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
 
     ai = [k for k in ("claude", "codex") if k in logins]
     ai_ok = any(logins[k]["ok"] for k in ai)
-    on_tailnet = bool((rec or {}).get("ts_id")) or not gate or not CF  # can reach the box's Tailscale IP
-    app_set = bool(who.get("app"))  # the tb_app cookie: they made a setup prompt on some laptop already
+    # Whether they can reach the box over Tailscale isn't known here (friends invited by email have no Tailscale
+    # id on record even once the owner shares the box), so everyone gets the setup prompt: its first step checks.
+    on_tailnet = bool((rec or {}).get("ts_id")) or not gate or not CF  # known to reach the Tailscale IP (ssh line)
+    app_set = bool(t3 and t3.get("app"))  # the T3 app on a laptop really connected (a session labelled for it)
 
     # ---- the start card: the page's one main button ----
     if not t3:
         state = "S0"
     elif not ai_ok:
         state = "S1"
-    elif not on_tailnet:
-        state = "S2b"
     elif app_set:
         state = "S3"
     else:
@@ -1408,7 +1413,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
             if not ai:
                 card.append("<p>No coding agents are installed on the box yet. Tell the owner.</p>")
             else:
-                card.append("<p>Use the account you already pay for. You only do this once.</p>")
+                card.append("<p>Your agents on the box use your Claude or ChatGPT plan. You only do this once.</p>")
                 first = "claude" if "claude" in logins else "codex"
                 card.append("<div class='line'>" + btn("login", "Log in with Claude" if first == "claude" else
                                                        "Log in with ChatGPT", first) + "</div>")
@@ -1416,27 +1421,24 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
                     card.append("<div class='line sub'>Pay for ChatGPT instead? "
                                 + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
         elif state == "S2":
-            card.append("<h2>Get the T3 app on your laptop</h2><p>Paste a prompt into Claude Code, Codex or any "
-                        "agent on your laptop. It installs the app and connects it to the box.</p>"
-                        f"<div class='line'>{make_prompt}</div>{busy}"
-                        f"<div class='line sub'>No agent on your laptop? {open_t3('Open T3 in this browser', True)}.</div>")
-        elif state == "S2b":
-            card.append("<h2>Open T3</h2><p>This is where you talk to your agent. It runs on the box, so it keeps "
-                        f"going when you close the tab.</p><div class='line'>{open_t3('Open T3')}</div>"
-                        "<p class='sub'>Want the T3 app on your laptop? Ask the owner to add you to Tailscale.</p>")
+            card.append("<div class='wide'><h2>Get the T3 app on your laptop</h2><p>Paste a prompt into Claude Code, "
+                        "Codex or any agent on your laptop. It installs the app and connects it to the box.</p>"
+                        f"<div class='line'>{make_prompt}</div>"
+                        f"<div class='line sub'>No agent on your laptop? {open_t3('Open T3 in this browser', True)}.</div>"
+                        "</div><div class='narrow'><h2>Open T3</h2><p>This is where you talk to your agent. It runs on "
+                        f"the box, so it keeps going when you close the tab.</p><div class='line'>{open_t3('Open T3')}</div>"
+                        "<div class='line sub'>T3 app for your laptop? "
+                        + btn("t3prompt", "Make my setup prompt", link=True, attrs=" data-busy='1'")
+                        + ".</div></div><!--/narrow-->" + busy)
         else:  # S3
-            card.append(f"<h2>Open T3</h2><p>Your agents keep working when you close the tab.</p>"
-                        f"<div class='line'>{open_t3('Open T3 in browser')}</div>{busy}"
-                        "<div class='line sub'>Setting up another laptop? "
+            card.append("<h2>Open T3</h2><p>Open the T3 app on your laptop. Or open T3 in this browser. Your agents "
+                        f"keep working when you close it.</p><div class='line'>{open_t3('Open T3 in this browser')}</div>"
+                        f"{busy}<div class='line sub'>App not connecting, or setting up another laptop? "
                         + btn("t3prompt", "Make a new setup prompt", link=True, attrs=" data-busy='1'") + ".</div>")
 
     out = []
-    if not (state == "S1" and welcome and not in_start):  # the welcome card says hello itself
-        if who["display"] == name:
-            out.append(f"<h2>Hi {e(name)}</h2>")
-        else:
-            out.append(f"<h2>Hi {e(who['display'])}</h2><p class='mut'>Your account on {e(HOST)} is "
-                       f"<b>{e(name)}</b>.</p>")
+    if who["display"] != name:  # the start card is the greeting; only say which account this is when it differs
+        out.append(f"<p class='mut'>Hi {e(who['display'])}. Your account on {e(HOST)} is <b>{e(name)}</b>.</p>")
     out.append("<section class='start' id='start'>" + "".join(card) + "</section>")
 
     # ---- dashboard and servers ----
@@ -1464,7 +1466,6 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
                           "manual" if auto else "auto", primary=False, small=True))
     acct.append(f"Projects you don't touch for {e(CFG['PROJECT_TTL_DAYS'])} days get archived. "
                 "Ask your agent to put them on GitHub.")
-    acct.append("Stuck? Ask your agent in T3. It knows how this box works.")
     out.append("<h2 id='account'>Your account</h2>"
                + (portal_result(result, btn, base) if result and view == "updates" else "")
                + "<ul class='acct'>" + "".join(f"<li>{x}</li>" for x in acct) + "</ul>")
@@ -1653,13 +1654,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def has_cookie(self, name):
-        return any(p.strip().partition("=")[0] == name for p in (self.headers.get("Cookie") or "").split(";"))
-
-    def app_cookie(self):
-        """Set-Cookie for "they made a T3 app setup prompt": the start card then leads with Open T3."""
-        return f"{APP_COOKIE}=1; Path=/; Max-Age={APP_COOKIE_AGE}; HttpOnly; SameSite=Lax"
-
     def ident(self):
         ip = self.client_address[0]
         if ip.startswith("::ffff:"):
@@ -1667,7 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
         if ip in ("127.0.0.1", "::1") or ip == SELF_IP:
             return ip, None  # local users must not be able to sign up as the owner
         who = sb.tailscale_whois(ip)
-        return ip, (dict(who, app=self.has_cookie(APP_COOKIE)) if who else who)
+        return ip, who
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
@@ -1740,9 +1734,8 @@ class Handler(BaseHTTPRequestHandler):
     def after_post(self, ip, who, name, rec, result):
         """Post/redirect/get on the public site: show the result on a normal GET, so a refresh never resends a
         button press (no "resend the form?" dialog, no repeated actions)."""
-        cookie = [("Set-Cookie", self.app_cookie())] if result.get("app_prompt") else []
         if ip != "gate":
-            return self.send(200, portal_page(ip, who, name, rec, result), headers=cookie)
+            return self.send(200, portal_page(ip, who, name, rec, result))
         now = time.time()
         for k in [k for k, v in FLASH.items() if now - v[0] > 900]:
             FLASH.pop(k, None)
@@ -1750,7 +1743,7 @@ class Handler(BaseHTTPRequestHandler):
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
         anchor = "#start" if view in START_VIEWS else "#account" if view == "updates" else ""
-        return self.redirect(f"/_box/me?r={fid}{anchor}", cookie)
+        return self.redirect(f"/_box/me?r={fid}{anchor}")
 
     def portal_post(self, ip, who, form):
         name, rec = (who["name"], who["rec"]) if who.get("session") or who.get("cf_jwt") else existing_account(who["id"])
@@ -2049,13 +2042,9 @@ class GateHandler(Handler):
             who = cf_who(self.cf_email(), jwt) or (cf_owner_who(self.cf_email(), jwt) if owner else None)
         else:
             who = session_who(self.headers.get("X-Sharedbox-Session"))
-        if who:  # the gate's report of two cookies we never see ourselves (tb_app, tb_direct)
-            who.update(app=self.headers.get("X-Sharedbox-App") == "1",
-                       direct=self.headers.get("X-Sharedbox-Direct") == "1")
+        if who:  # the gate's report of a cookie we never see ourselves (tb_direct)
+            who.update(direct=self.headers.get("X-Sharedbox-Direct") == "1")
         return who
-
-    def app_cookie(self):
-        return f"{APP_COOKIE}=1; Path=/_box; Max-Age={APP_COOKIE_AGE}; Secure; HttpOnly; SameSite=Lax"
 
     def route(self):
         path = urllib.parse.urlsplit(self.path).path
