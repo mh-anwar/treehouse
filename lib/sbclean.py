@@ -290,6 +290,15 @@ def is_git_repo(path):
     return os.path.isdir(os.path.join(path, ".git"))
 
 
+REGENERABLE = set(ARTIFACTS) | {"dist", "out", ".cache", "coverage", ".nyc_output", "tmp", ".tox", ".eggs"}
+REGENERABLE_SUFFIXES = (".pyc", ".pyo", ".log", ".tsbuildinfo", ".egg-info", ".egg-info/")
+
+
+def _regenerable(rel):
+    parts = [x for x in rel.split("/") if x]
+    return any(x in REGENERABLE for x in parts) or rel.endswith(REGENERABLE_SUFFIXES) or parts[-1:] == [".DS_Store"]
+
+
 def backed_up(path):
     """True only if everything in the repo is on a git remote: at least one remote, a clean work tree (untracked
     files count as not backed up), no local branch commits missing from the remotes, no stash. Any doubt -> False."""
@@ -300,7 +309,11 @@ def backed_up(path):
             return False
         if _git(path, "status", "--porcelain", "--untracked-files=all").strip():
             return False
-        if _git(path, "rev-list", "--branches", "--not", "--remotes").strip():
+        # ignored files are only fine when they're regenerable build output (.env, local DB data etc. are not)
+        for line in _git(path, "status", "--porcelain", "--ignored=matching", "--untracked-files=all").splitlines():
+            if line.startswith("!! ") and not _regenerable(line[3:].strip().strip('"')):
+                return False
+        if _git(path, "rev-list", "HEAD", "--branches", "--not", "--remotes").strip():  # HEAD: detached commits
             return False
         if _git(path, "stash", "list").strip():
             return False

@@ -97,7 +97,7 @@ REQUIRED_TOOLS = ("setpriv", "ssh-keygen", "useradd", "groupadd", "usermod", "gp
 OPTIONAL_TOOLS = {"tailscale": "signup identity and the default WEB_BIND",
                   "smartctl": "disk health in the weekly report",
                   "checkupdates": "pending-update count in the weekly report (Arch has no auto-updates)",
-                  "ionice": "lower IO priority for `box heavy`"}
+                  "ionice": "lower IO priority for background jobs"}
 
 
 class Unsupported(Exception):

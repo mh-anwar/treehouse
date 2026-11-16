@@ -115,7 +115,7 @@ do_ install -m 644 "$SRC/share/profile.sh" /etc/profile.d/sharedbox.sh
 do_ rm -rf "$SHARE/team"
 do_ cp -r "$SRC/share/team" "$SHARE/team"   # team mode: crew prompts (`box team crew`)
 do_ chmod -R u=rwX,go=rX "$SHARE/team"
-do_ install -d -m 711 /srv/teams              # team mode: root creates /srv/teams/NAME (member ACLs)
+do_ install -d -m 755 /srv/teams              # team mode: root creates /srv/teams/NAME (member ACLs)
 # box tuning (etc/sysctl-*.conf, `sharedbox-tune`): additive, applied live, nothing restarted. `box tune` checks it.
 for f in "$SRC"/etc/sysctl-*.conf; do
     n=$(basename "$f" .conf); do_ install -m 644 "$f" "/etc/sysctl.d/60-sharedbox-${n#sysctl-}.conf"
@@ -139,7 +139,10 @@ gone = ("CPU_QUOTA", "BURST_CPU_QUOTA", "BURST_MEMORY_HIGH", "BALANCE_CPU_BUSY",
         "HEAVY_SLOTS", "HEAVY_WAIT_MAX_MIN")
 lines = open(p).read().splitlines()
 out = [("# v1, removed: " + l) if re.match(r"\s*(%s)=" % "|".join(gone), l) else l for l in lines]
-open(p, "w").write("\n".join(out) + "\n")
+open(p + ".v2tmp", "w").write("\n".join(out) + "\n")
+import os, shutil
+shutil.copymode(p, p + ".v2tmp")
+os.replace(p + ".v2tmp", p)
 sb.set_config({"MEMORY_HIGH": "16G", "MEMORY_MAX": "17G", "CPU_WEIGHT": "100", "IO_WEIGHT": "100",
                "PROJECT_TTL_DAYS": "20", "CACHE_TTL_DAYS": "30"}, p)
 '

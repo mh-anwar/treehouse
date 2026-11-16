@@ -37,6 +37,33 @@ class BackedUp(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _ignore(self, *pats):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as f:
+            f.write("\n".join(pats) + "\n")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-q", "-m", "ignore")
+        git(self.repo, "push", "-q", "origin", "main")
+
+    def test_ignored_secret_not_backed_up(self):
+        self._ignore(".env", "node_modules/")
+        open(os.path.join(self.repo, ".env"), "w").close()
+        self.assertFalse(sbclean.backed_up(self.repo))
+
+    def test_ignored_build_output_is_fine(self):
+        self._ignore("node_modules/", "dist/", "*.log")
+        for d in ("node_modules/x", "dist"):
+            os.makedirs(os.path.join(self.repo, d))
+            open(os.path.join(self.repo, d, "f.js"), "w").close()
+        open(os.path.join(self.repo, "debug.log"), "w").close()
+        self.assertTrue(sbclean.backed_up(self.repo))
+
+    def test_detached_head_commit(self):
+        git(self.repo, "checkout", "-q", "--detach")
+        with open(os.path.join(self.repo, "a.txt"), "a") as f:
+            f.write("loose\n")
+        git(self.repo, "commit", "-q", "-am", "loose")
+        self.assertFalse(sbclean.backed_up(self.repo))
+
     def test_clean_and_pushed(self):
         self.assertTrue(sbclean.backed_up(self.repo))
 
