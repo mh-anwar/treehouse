@@ -74,6 +74,9 @@ DEFAULTS = {
     "WEB_PORT": "8090",
     # the owner's other treehouse boxes on this tailnet, "name=tailscale-ip ..." (same line on every box)
     "BOXES": "",
+    # primary: accounts are made here (invites, public site). secondary: copies the primary's accounts (same
+    # uid, limits, keys) every 5 minutes, refuses invites (sharedbox-admin fed-sync; docs/multibox.md)
+    "BOX_ROLE": "primary",
     # per-friend port block: PORT_BASE + index*PORT_BLOCK .. +PORT_BLOCK-1
     "PORT_BASE": "20000",
     "PORT_BLOCK": "100",

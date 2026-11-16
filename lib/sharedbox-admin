@@ -28,6 +28,11 @@
   sharedbox-admin access list | add EMAIL [--user NAME] | remove EMAIL   who Cloudflare Access lets in
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
   sharedbox-admin process-requests                (run by sharedbox-requests.service: `box request`s)
+  sharedbox-admin fed-init | fed-key              this box's roster signing key (made once) | its trust line
+  sharedbox-admin fed-trust 'NAME namespaces=... ssh-ed25519 ...'   trust another box's roster (once per box)
+  sharedbox-admin fed-sync [--force]              publish this box's roster, pull the others', mirror accounts
+                                                  (secondary), keys, T3 links (sharedbox-fed.timer, 5 min)
+  sharedbox-admin fed-status                      what each box's roster says and what was done here
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
 """
@@ -52,6 +57,7 @@ sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbshared  # noqa: E402
 import sbteam  # noqa: E402
+import sbfed  # noqa: E402
 
 SYSTEMD_DIR = "/etc/systemd/system"
 MANAGED_PROPS = {
@@ -161,6 +167,8 @@ def create_user(cfg, name, key, login=None, ts_id=None, node=None, email=None):
     err = sb.validate_username(name, cfg)
     if err:
         return None, err
+    if sbfed.role(cfg) == "secondary":
+        return None, "this is a secondary box: accounts are made on the primary and copied here within minutes"
     if (key or "").strip():  # optional: most friends only use the web UI and never SSH in
         key, err = sb.validate_pubkey(key)
         if err:
@@ -1076,6 +1084,9 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
     the whole login. funnel: a one-time login link, valid for the invite's lifetime, logs them in."""
     if sb.solo(cfg):
         raise InviteError("this box is in solo mode (SOLO=1 in sharedbox.conf): no friend accounts")
+    if sbfed.role(cfg) == "secondary":
+        raise InviteError("this is a secondary box (BOX_ROLE=secondary): invite on the primary box; "
+                          "the account is copied here within minutes")
     pub, cf = sb.public_url(cfg), cf_mode(cfg)
     days = max(1, min(int(days or sb.cfg_int(cfg, "INVITE_DAYS")), 30))
     note = sb.printable(note or "")[:120]
@@ -2808,6 +2819,240 @@ def cmd_shared(cfg, a):
     print("\n".join(res["lines"]) if "lines" in res else res["message"])
 
 
+
+# ---------- federation: the same accounts on every box (lib/sbfed.py, docs/multibox.md) ----------
+
+FED_KEY = os.path.join(sbfed.FED_ETC, "box_ed25519")
+FED_SIGNERS = os.path.join(sbfed.FED_ETC, "allowed_signers")
+FED_ROSTER = os.path.join(sb.STATE_DIR, sbfed.ROSTER_REL)
+FED_STATE = os.path.join(sb.STATE_DIR, sbfed.STATE_REL)
+
+
+def fed_init(cfg, a=None):
+    """This box's roster signing key, made once (root only)."""
+    os.makedirs(sbfed.FED_ETC, mode=0o700, exist_ok=True)
+    os.chmod(sbfed.FED_ETC, 0o700)
+    if not os.path.exists(FED_KEY):
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"treehouse-roster@{socket.gethostname()}",
+             "-f", FED_KEY])
+    if not os.path.exists(FED_SIGNERS):
+        sbfed.write_private(FED_SIGNERS, "")
+    if a is not None:
+        fed_key(cfg, a)
+
+
+def fed_me(cfg):
+    return sbfed.self_name(sb.boxes(cfg), sb.tailscale_ip4(), socket.gethostname())
+
+
+def fed_key(cfg, a=None):
+    """The line to give the other boxes (`sharedbox-admin fed-trust '<line>'` there)."""
+    if not os.path.exists(FED_KEY + ".pub"):
+        die("no signing key yet: sharedbox-admin fed-init")
+    line = sbfed.signer_line(fed_me(cfg), open(FED_KEY + ".pub").read())
+    if not line:
+        die("this box isn't in BOXES (its name must be a box name there)")
+    print(line)
+
+
+def fed_trust(cfg, a):
+    parts = (a.line or "").split(None, 1)
+    m = re.search(r"((?:ssh-|ecdsa-|sk-)\S+ [A-Za-z0-9+/=]+)", a.line or "")
+    line = sbfed.signer_line(parts[0] if parts else "", m.group(1) if m else "")
+    if not line:
+        die("expected the line `sharedbox-admin fed-key` prints on the other box")
+    name = line.split()[0]
+    if name not in sb.boxes(cfg):
+        die(f"{name} isn't in BOXES on this box; add it first: box friends boxes \"NAME=IP ...\"")
+    fed_init(cfg)
+    keep = [ln for ln in open(FED_SIGNERS).read().splitlines() if ln.strip() and ln.split()[0] != name]
+    sbfed.write_private(FED_SIGNERS, "\n".join(keep + [line]) + "\n", mode=0o600)
+    sb.log_event("fed_trust", None, box=name)
+    print(f"trusting {name}'s roster")
+
+
+def fed_state():
+    st = sb.read_json(FED_STATE, {}) or {}
+    for k in ("serial", "docs", "applied", "linked", "log"):
+        st.setdefault(k, {} if k != "log" else [])
+    return st
+
+
+def fed_log(st, text):
+    st["log"] = (st.get("log") or [])[-49:] + [f"{time.strftime('%Y-%m-%d %H:%M')} {text}"]
+    print(text)
+
+
+def user_json(pw, args, payload=None, timeout=120):
+    """Run `box _fed-user ...` as the user; its one JSON line, or {"ok": False, "error": ...}."""
+    try:
+        r = as_user(pw, [sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), "_fed-user", *args],
+                    input_text=json.dumps(payload or {}), timeout=timeout)
+        return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except (subprocess.TimeoutExpired, ValueError, OSError) as ex:
+        return {"ok": False, "error": f"{type(ex).__name__}"}
+
+
+def mirror_create(cfg, name, uid, home_box):
+    """A copy of the primary's account: same name, uid = gid, groups, shell, limits, port block. No key yet
+    (fed-sync writes the managed authorized_keys block next)."""
+    lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
+    if not lo <= uid <= hi:
+        raise FriendError(f"uid {uid} outside the friends' range")
+    run(["groupadd", "--gid", str(uid), name])
+    run(["useradd", "--create-home", "--uid", str(uid), "--gid", str(uid), "--groups", cfg["FRIENDS_GROUP"],
+         "--shell", "/bin/bash", "--comment", f"sharedbox copy from {home_box}", "-K", "HOME_MODE=0700", name])
+    run(["usermod", "-p", "*", name])
+    add_to_shared(cfg, name)
+    pw = pwd.getpwnam(name)
+    r = as_user(pw, [sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), "_init-home"], input_text="\n")
+    if r.returncode != 0:
+        run(["userdel", "-r", name], check=False)
+        raise FriendError("failed to initialise home: " + (r.stderr or r.stdout)[-300:])
+    reg = sb.registry()
+    rec = {"created": int(time.time()), "status": "active", "limits": {}, "uid": uid, "home_box": home_box}
+    reg["users"][name] = rec
+    save_registry(reg)
+    write_dropins(cfg, name, rec, uid)
+    daemon_reload()
+    run(["loginctl", "enable-linger", name], check=False)
+    run(["gpasswd", "-a", name, cfg["SSH_GROUP"]], stdout=subprocess.DEVNULL)
+    run(["systemctl", "start", f"user@{uid}.service"], check=False)
+    # T3 isn't started here: the first link pass (`box _portal t3-pair` from the home box) turns on its
+    # socket, and from then on it wakes only when someone uses it
+    sb.log_event("user_mirrored", name, home=home_box, uid=uid)
+
+
+def fed_apply_accounts(cfg, st, doc):
+    reg = sb.registry()
+    local = {n: r for n, r in reg["users"].items() if isinstance(r, dict)}
+    passwd = {p.pw_name: p.pw_uid for p in pwd.getpwall()}
+    passwd.update({f"gid:{g.gr_gid}": g.gr_name for g in grp.getgrall()})
+    lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
+    for action, name, detail in sbfed.plan_accounts(doc, local, passwd, lo, hi):
+        try:
+            if action == "create":
+                mirror_create(cfg, name, detail, doc["box"])
+                fed_log(st, f"created {name} (uid {detail}) as a copy from {doc['box']}")
+            elif action == "resume":
+                friend_resume(cfg, name, by=f"fed:{doc['box']}")
+                fed_log(st, f"resumed {name} (active on {doc['box']})")
+            elif action == "suspend":
+                friend_suspend(cfg, name, by=f"fed:{doc['box']}")
+                fed_log(st, f"suspended {name}: {detail}")
+            elif action == "limits":
+                reg = sb.registry()
+                reg["users"][name]["limits"] = dict(detail)
+                save_registry(reg)
+                write_dropins(cfg, name, reg["users"][name], reg["users"][name]["uid"])
+                daemon_reload()
+                fed_log(st, f"limits for {name} now match {doc['box']}")
+            elif action == "conflict" and st["applied"].get("conflict:" + name) != detail:
+                st["applied"]["conflict:" + name] = detail
+                fed_log(st, f"NOT copying {name}: {detail}")
+        except (FriendError, subprocess.CalledProcessError, KeyError, OSError) as ex:
+            fed_log(st, f"{action} {name} failed: {ex}")
+
+
+def fed_sync(cfg, a=None):
+    force = bool(getattr(a, "force", False))
+    boxes = sb.boxes(cfg)
+    if len(boxes) < 2 or not os.path.exists(FED_KEY):
+        return  # one box, or federation not set up (fed-init): nothing to do
+    me, my_role, now = fed_me(cfg), sbfed.role(cfg), time.time()
+    if me not in boxes:
+        print(f"fed-sync: this box ({me}) isn't in BOXES", file=sys.stderr)
+        return
+    st = fed_state()
+    friends = sb.friend_users()
+    # 1. this box's roster: each account's box-to-box key (made on first use) and, on its home box, the
+    #    keys the user added themselves (their laptop)
+    users, pws = {}, {}
+    for name, rec in friends.items():
+        try:
+            pws[name] = pwd.getpwnam(name)
+        except KeyError:
+            continue
+        home = rec.get("home_box") or me
+        info = user_json(pws[name], ["prepare"], {"home": home == me}, timeout=60) \
+            if rec.get("status") == "active" else {}
+        keys = ([info["pubkey"]] if info.get("pubkey") else []) + (info.get("own_keys") or [])
+        users[name] = {"uid": rec["uid"], "status": rec.get("status", "active"), "home": home,
+                       "limits": rec.get("limits") or {}, "keys": keys}
+    try:
+        host_key = open("/etc/ssh/ssh_host_ed25519_key.pub").read()
+    except OSError:
+        host_key = ""
+    doc = sbfed.build_roster(me, my_role, users, time.time_ns() // 1_000_000, now, host_key)
+    os.makedirs(os.path.dirname(FED_ROSTER), exist_ok=True)
+    sb.write_json(FED_ROSTER, sbfed.wire(doc, FED_KEY), mode=0o644)
+    # 2. the other boxes' rosters (signed, newer than the last one seen)
+    port = cfg.get("WEB_PORT", "8090")
+    for peer, ip in boxes.items():
+        if peer == me:
+            continue
+        w, why = sbfed.fetch(ip, port)
+        pdoc = None
+        if w is not None:
+            pdoc, why = sbfed.unwire(w, FED_SIGNERS, peer)
+        if pdoc is not None:
+            ok, why = sbfed.check_roster(pdoc, peer, st["serial"].get(peer, 0), now)
+            if ok:
+                st["serial"][peer] = pdoc["serial"]
+                st["docs"][peer] = pdoc
+        if why and st["applied"].get("err:" + peer) != why:
+            fed_log(st, f"{peer}: {why}")
+        st["applied"]["err:" + peer] = why
+    # 3. a secondary copies the primary's accounts (fresh rosters only: a box that's been down for days
+    #    never suspends anyone)
+    if my_role == "secondary":
+        for peer, pdoc in st["docs"].items():
+            if pdoc.get("role") == "primary" and sbfed.fresh(pdoc, now):
+                fed_apply_accounts(cfg, st, pdoc)
+        friends = sb.friend_users()
+    # 4. keys + ssh config + pinned host keys, then (as the user) T3 links, gh token, git identity
+    docs = {p: d for p, d in st["docs"].items() if p in boxes}
+    local_uids = {n: r["uid"] for n, r in friends.items() if r.get("status", "active") == "active"}
+    keys = sbfed.merge_keys(local_uids, docs, now)
+    kh = sbfed.known_hosts_lines(boxes, docs)
+    for name, uid in sorted(local_uids.items()):
+        try:
+            pw = pwd.getpwnam(name)
+        except KeyError:
+            continue
+        payload = {"keys": keys.get(name, []), "ssh": sbfed.ssh_config_lines(boxes, me, name),
+                   "known_hosts": kh}
+        h = sb.token_hash(json.dumps(payload, sort_keys=True))
+        changed = st["applied"].get("keys:" + name) != h
+        if changed or force:
+            r = user_json(pw, ["apply"], payload, timeout=60)
+            if r.get("ok"):
+                st["applied"]["keys:" + name] = h
+        peers = {p: boxes[p] for p in sbfed.present_on(docs, name, uid, now) if p in boxes}
+        if peers and (changed or force or now - st["linked"].get(name, 0) > sbfed.LINK_EVERY):
+            home = (friends.get(name) or {}).get("home_box") or me
+            r = user_json(pw, ["link"], {"peers": peers, "self": me, "home": home == me}, timeout=600)
+            st["linked"][name] = now
+            if r.get("notes"):
+                fed_log(st, f"{name}: " + "; ".join(r["notes"])[:300])
+    sb.write_json(FED_STATE, st, mode=0o600)
+
+
+def fed_status(cfg, a):
+    st = fed_state()
+    print(f"this box: {fed_me(cfg)} ({sbfed.role(cfg)}); signing key: "
+          f"{'yes' if os.path.exists(FED_KEY) else 'no (sharedbox-admin fed-init)'}")
+    trusted = [ln.split()[0] for ln in open(FED_SIGNERS).read().splitlines() if ln.strip()] \
+        if os.path.exists(FED_SIGNERS) else []
+    print("trusts: " + (", ".join(trusted) or "nobody yet (sharedbox-admin fed-trust)"))
+    for peer, d in sorted(st["docs"].items()):
+        age = int((time.time() - d.get("ts", 0)) / 60)
+        print(f"  {peer} ({d.get('role')}): {len(d.get('users') or {})} accounts, roster {age} min old"
+              + (f"; last problem: {st['applied'].get('err:' + peer)}" if st["applied"].get("err:" + peer) else ""))
+    for line in st.get("log", [])[-15:]:
+        print("  " + line)
+
+
 def main():
     if os.geteuid() != 0:
         die("must run as root")
@@ -2859,6 +3104,11 @@ def main():
     x.set_defaults(fn=cmd_access)
     s.add_parser("process-spool").set_defaults(fn=lambda c, a: process_spool(c))
     s.add_parser("process-requests").set_defaults(fn=lambda c, a: process_requests(c))
+    s.add_parser("fed-init").set_defaults(fn=fed_init)
+    s.add_parser("fed-key").set_defaults(fn=fed_key)
+    x = s.add_parser("fed-trust"); x.add_argument("line"); x.set_defaults(fn=fed_trust)
+    x = s.add_parser("fed-sync"); x.add_argument("--force", action="store_true"); x.set_defaults(fn=fed_sync)
+    s.add_parser("fed-status").set_defaults(fn=fed_status)
     a = p.parse_args()
     a.fn(cfg, a)
 

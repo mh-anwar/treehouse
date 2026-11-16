@@ -1,6 +1,8 @@
 """Multi-box: see every treehouse box's load and run heavy work on whichever has room.
 
   box boxes [--json]                         load on each box in BOXES, whether you can reach it, the best pick
+  box boxes setup                            (re)connect your account on the other boxes now: T3 links, GitHub
+  box boxes login claude|codex|gh --on NAME [--code X | --wait]   log an agent in on another box (device login)
   box run [--anywhere|--on NAME] [--shards N] [--prep CMD] [--back PATH]... [--git] -- CMD...
                                              run CMD on the least-loaded box: sync this project there
                                              (incrementally), stream the output back, exit with CMD's code
@@ -9,7 +11,8 @@ Design (docs/multibox.md):
 - Load comes from each box's existing GET /api/box (sharedbox-web, port WEB_PORT, answers only boxes in BOXES),
   so `box boxes` costs one small HTTP call per box and no SSH.
 - Work runs over plain SSH as the same user on the other box. Destination: a Host in ~/.ssh/config whose
-  HostName is the box's IP (the owner today), else ~/.sharedbox/boxes.json {"name": "user@host"}, else
+  HostName is the box's IP (the owner's alias, or the `Host <box>` block federation writes for every friend,
+  with their per-user ~/.ssh/id_treehouse key and pinned host keys: lib/sbfed.py), else ~/.sharedbox/boxes.json {"name": "user@host"}, else
   <same username>@<tailscale ip> (what the provisioner sets up for friends).
 - The project goes to a persistent mirror on the other box (~/.sharedbox/mirror/<slug>), synced with rsync
   using the project's .gitignore files as the filter: only source changes travel, and the other box's own
@@ -427,11 +430,104 @@ def cmd_run(sb, cfg, user, home, a, box_bin):
     sys.exit(next((rc for rc in rcs if rc), 0))
 
 
+# ---------- your account on the other boxes (federation: lib/sbfed.py) ----------
+
+LOGIN_KEYS = ("claude", "codex", "gh")
+
+
+def remote_json(dest, cmd, stdin_text=None, timeout=120):
+    try:
+        r = subprocess.run(["ssh", *SSH_OPTS, dest, cmd], input=stdin_text, capture_output=True, text=True,
+                           timeout=timeout)
+        return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"ok": False, "error": "no answer from that box (try box boxes)"}
+
+
+def login_text(name, key, out):
+    """What the agent tells the human after starting a login on another box."""
+    if out.get("done"):
+        return f"{key}: already logged in on {name}."
+    if not out.get("ok"):
+        return f"{key} on {name}: {out.get('error', 'failed')}"
+    lines = [f"Ask the human to open this link and approve the {key} login for the box {name}:", "", f"  {out['url']}"]
+    if out.get("code"):
+        lines += ["", f"and type this code there: {out['code']}", "",
+                  f"Then run: box boxes login {key} --on {name} --wait"]
+    elif out.get("paste"):
+        lines += ["", "It shows a code at the end. Get it from the human, then run:",
+                  f"  box boxes login {key} --on {name} --code THE_CODE"]
+    return "\n".join(lines)
+
+
+def cmd_boxes_login(sb, cfg, user, home, a):
+    if a.key not in LOGIN_KEYS or not a.on:
+        sys.exit("usage: box boxes login claude|codex|gh --on BOX [--code X | --wait]")
+    boxes = sb.boxes(cfg)
+    if a.on not in boxes:
+        sys.exit(f"no box called {a.on}; see box boxes")
+    dest = ssh_dest(a.on, boxes[a.on], user, home)
+    if a.code:
+        out = remote_json(dest, f"box _portal login-code {a.key}", stdin_text=a.code)
+    elif a.wait:
+        deadline = time.time() + 180
+        out = {}
+        while time.time() < deadline:
+            out = remote_json(dest, f"box _portal login-check {a.key}")
+            if out.get("done"):
+                break
+            time.sleep(3)
+    else:
+        out = remote_json(dest, f"box _portal login-start {a.key}", timeout=60)
+        print(login_text(a.on, a.key, out))
+        sys.exit(0 if out.get("ok") else 1)
+    print(f"{a.key} on {a.on}: " + ("logged in" if out.get("done") else out.get("error", "not yet")))
+    sys.exit(0 if out.get("done") else 1)
+
+
+def cmd_boxes_setup(sb, cfg, user, home, box_bin):
+    """The link pass the root timer runs every 12 h, now: T3 links both ways, GitHub, git identity."""
+    boxes = sb.boxes(cfg)
+    me = next((n for n, ip in boxes.items() if ip == sb.tailscale_ip4()), socket.gethostname().split(".")[0])
+    peers = {n: ip for n, ip in boxes.items() if n != me}
+    if not peers:
+        sys.exit("only this box; nothing to connect")
+    rec = (sb.registry().get("users") or {}).get(user) or {}
+    req = json.dumps({"peers": peers, "self": me, "home": (rec.get("home_box") or me) == me})
+    r = subprocess.run([box_bin, "_fed-user", "link"], input=req, capture_output=True, text=True, timeout=900)
+    try:
+        notes = json.loads(r.stdout.strip().splitlines()[-1]).get("notes") or []
+    except (ValueError, IndexError):
+        notes = [r.stderr.strip()[-300:] or "failed"]
+    for n in notes:
+        print(n)
+    st = sb.read_json(os.path.join(home, ".sharedbox", "boxes-state.json"), {}) or {}
+    for name, p in (st.get("peers") or {}).items():
+        if not p.get("ssh"):
+            print(f"{name}: your account isn't there yet (copied from the primary within ~5 minutes of joining)")
+            continue
+        print(f"{name}: ssh ok, T3 {'linked' if p.get('t3') else 'not linked yet'}")
+        for k in p.get("missing_logins") or []:
+            print(f"  {k} isn't logged in there yet: box boxes login {k} --on {name}")
+
+
 def add_parsers(s, sb, cfg, user, home, box_bin):
     """The argparse hook lib/box calls: `box boxes` and `box run`."""
     x = s.add_parser("boxes", help="load on each of the owner's boxes and the best place for heavy work")
+    x.add_argument("op", nargs="?", default="status", choices=["status", "setup", "login"])
+    x.add_argument("key", nargs="?", help="login: claude | codex | gh")
+    x.add_argument("--on", metavar="NAME", help="login: which box")
+    x.add_argument("--code", help="login: the code the browser showed (Claude)")
+    x.add_argument("--wait", action="store_true", help="login: wait for a device login to finish")
     x.add_argument("--json", action="store_true")
-    x.set_defaults(fn=lambda a: cmd_boxes(sb, cfg, user, home, a.json))
+
+    def boxes_fn(a):
+        if a.op == "login":
+            return cmd_boxes_login(sb, cfg, user, home, a)
+        if a.op == "setup":
+            return cmd_boxes_setup(sb, cfg, user, home, box_bin)
+        return cmd_boxes(sb, cfg, user, home, a.json)
+    x.set_defaults(fn=boxes_fn)
     x = s.add_parser("run", help="run a heavy command on the least-loaded box (falls back to here)")
     g = x.add_mutually_exclusive_group()
     g.add_argument("--anywhere", action="store_true", help="the default: pick the box with the most room")

@@ -247,3 +247,9 @@ copies only changed source files to a kept copy over there, streams the output b
 `box run --shards N -- CMD` splits a run over the boxes (each part gets BOX_SHARD and BOX_SHARDS, e.g.
 `playwright test --shard=$((BOX_SHARD+1))/$BOX_SHARDS`). Add `--prep "npm ci"` to install dependencies there
 (this only re-runs when lockfiles change) and `--back DIR` to copy results back.
+Friends have the same account (same name, files limits and port block) on every box, made automatically:
+`ssh minastirith` just works (its own key, no prompt), and the T3 Code on each box is linked into the other,
+so the human can start a thread "on minastirith" from their usual T3. GitHub and git identity are copied over.
+Claude/Codex logins are not (copying them breaks both): `box boxes setup` lists what's missing, then
+`box boxes login claude --on minastirith` prints a link (and for Claude asks for the code back with `--code X`).
+The human only clicks the link. Files are NOT shared between boxes: push to git, or use `box run`.
