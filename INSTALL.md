@@ -66,8 +66,7 @@ git clone https://github.com/mh-anwar/treehouse ~/treehouse && cd ~/treehouse
 sudo ./install.sh            # dry run
 ```
 Summarize what the dry run will do in 5–8 plain bullets (accounts and groups it creates, services,
-limits, cleanup policy; it also adds an `sbshared` system account and `/srv/shared` for servers the
-whole group owns, `box shared`). Mention the parts that matter on a machine already in use: the janitor
+limits, cleanup policy). Mention the parts that matter on a machine already in use: the janitor
 archives git projects untouched for 20 days in *friends'* homes, and only once they're fully pushed (restorable
 for 14 days); every account, the owner's included, gets the same limits (16 GB RAM, no CPU cap); and the scheduled reboot is twice a week (Wed and Sun at 04:00; it waits up to 2
 hours for agents that are mid-turn). Then ask for the OK, and run:
@@ -142,8 +141,6 @@ this machine → **Share…**. `box invite` prints the matching message.
 - `systemctl is-active sharedbox-web sharedbox-tick.timer sharedbox-janitor.timer`
 - `curl -s http://$(tailscale ip -4 | head -1):8090/healthz` prints `ok`
 - `sudo sharedbox-health report | head -40` reads sensibly
-- `box shared ls` runs (as the owner's account) and `sudo sharedbox-admin shared-sync` lists the friends and
-  admins in `sbshared` (the group that may edit shared servers)
 
 Fix anything that's down (`journalctl -u <unit> -n 40`) before you report success.
 

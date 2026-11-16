@@ -9,7 +9,7 @@
 #
 # This script never restarts or reconfigures sshd, tailscaled, networking or the firewall,
 # and never changes limits of existing users. It installs files, creates the `friends`
-# group, a `sharedbox` system user and an `sbshared` system user/group (shared servers), runs `systemctl daemon-reload`
+# group, a `sharedbox` system user, runs `systemctl daemon-reload`
 # and starts its own units.
 set -euo pipefail
 
@@ -67,9 +67,6 @@ fi
 conf_get() { sed -n "s/^$1=//p" "${ETC}/sharedbox.conf" 2>/dev/null | tail -1 || true; }
 SSH_GROUP=$(conf_get SSH_GROUP); SSH_GROUP=${SSH_GROUP:-ssh-users}
 FRIENDS_GROUP=$(conf_get FRIENDS_GROUP); FRIENDS_GROUP=${FRIENDS_GROUP:-friends}
-SHARED_USER=$(conf_get SHARED_USER); SHARED_USER=${SHARED_USER:-sbshared}
-SHARED_GROUP=$(conf_get SHARED_GROUP); SHARED_GROUP=${SHARED_GROUP:-sbshared}
-SHARED_DIR=$(conf_get SHARED_DIR); SHARED_DIR=${SHARED_DIR:-/srv/shared}
 
 ALLOW=$(sshd -T 2>/dev/null | sed -n 's/^allowgroups //p' || true)
 if [[ -n $ALLOW ]] && ! tr ' ' '\n' <<<"$ALLOW" | grep -qx "$SSH_GROUP"; then
@@ -95,17 +92,11 @@ getent group "$FRIENDS_GROUP" >/dev/null || do_ groupadd "$FRIENDS_GROUP"
 getent group "$SSH_GROUP" >/dev/null || do_ groupadd "$SSH_GROUP"
 getent passwd sharedbox >/dev/null || do_ useradd --system --no-create-home --home-dir /nonexistent \
     --shell /usr/sbin/nologin --user-group sharedbox
-# shared servers (box shared) run as SHARED_USER: no login, not in FRIENDS_GROUP/SSH_GROUP. Friends and admins
-# join SHARED_GROUP (sharedbox-admin shared-sync below, and on every new account) to edit the code.
-getent group "$SHARED_GROUP" >/dev/null || do_ groupadd --system "$SHARED_GROUP"
-getent passwd "$SHARED_USER" >/dev/null || do_ useradd --system --no-create-home --home-dir "$SHARED_DIR" \
-    --shell /usr/sbin/nologin --gid "$SHARED_GROUP" "$SHARED_USER"
-command -v setfacl >/dev/null || warn "setfacl not found (package acl): files friends add to shared servers may not be group-writable"
 
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbconnect.py sbteam.py sbmulti.py sbfed.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-update \
          sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -184,16 +175,10 @@ do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites" "$STATE/g
 # `box invite` without sudo: anyone can drop a file, root only acts on files owned by ADMIN_USERS
 do_ install -d -m 1733 "$STATE/admin"
 do_ install -d -m 711 "$STATE/admin-replies"
-# `box shared`: friends and admins drop requests, root acts (only on files owned by them)
-do_ install -d -m 1733 "$STATE/shared-drop"
-do_ install -d -m 711 "$STATE/shared-replies"
-[[ -e $STATE/shared.json ]] || do_ sh -c "echo '{}' > $STATE/shared.json"
-# shared servers' code: members only (it may hold the servers' secrets); the janitor never looks here
-do_ install -d -m 750 -o root -g "$SHARED_GROUP" "$SHARED_DIR" "$SHARED_DIR/.trash"
-# the code folders belong to SHARED_USER, so git would call friends' checkouts there "dubious ownership"
-if command -v git >/dev/null && ! git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$SHARED_DIR/*"; then
-    do_ git config --system --add safe.directory "$SHARED_DIR/*"
-fi
+# Team/boost requests retain their own identity-checked channel.
+do_ install -d -m 1733 "$STATE/member-drop"
+do_ install -d -m 711 "$STATE/member-replies"
+
 
 # ---------- cron/at ----------
 # cron/at sessions skip pam_systemd, so friends' jobs would run outside their slice limits.
@@ -222,6 +207,36 @@ fi
 
 # ---------- systemd ----------
 say "systemd units"
+# Retired shared-server feature: keep all code and data in /srv/shared.
+for u in /etc/systemd/system/sb-shared-*.service; do
+    [[ -e $u ]] || continue
+    do_ systemctl disable --now "$(basename "$u")" 2>/dev/null || true
+    do_ rm -f "$u"
+done
+do_ systemctl disable --now sharedbox-shared.slice 2>/dev/null || true
+do_ rm -f /etc/systemd/system/sharedbox-shared.slice "$LIB/sbshared.py" "$STATE/agent-floors.json" "$STATE/shared.json"
+for d in shared-drop shared-replies; do
+    do_ rmdir "$STATE/$d" 2>/dev/null || true
+done
+[[ ! -d /srv/shared ]] || say "Kept /srv/shared and its ownership unchanged (user data)."
+# Request status and account notices used to live beside version pins.
+if [[ -d $STATE/agent-pins ]]; then
+    do_ env PYTHONPATH="$SRC/lib" python3 -c 'import sbcommon; sbcommon.migrate_user_state()'
+fi
+# Remove retired settings from existing boxes as well as the example config.
+do_ sed -i -E '/^(SHARED_(USER|GROUP|DIR|PORT_BASE|PORT_COUNT|MAX|MEMORY_MAX|CPU_QUOTA|PUBLIC_LINKS)|AGENT_(UPDATES_DEFAULT|FORCE_SEVERITY)|REQUEST_REVIEWER|REQUEST_REVIEW_MODEL|REQUEST_REVIEW_CLAUDE_MODEL|OPENROUTER_KEY_FILE)=/d' "$ETC/sharedbox.conf"
+# Old user/group IDs still own preserved data; leave them reserved.
+
+do_ env SHAREDBOX_LIB="$LIB" python3 -c '
+import importlib.machinery
+m = importlib.machinery.SourceFileLoader("tools", "/usr/lib/sharedbox/sharedbox-tools").load_module()
+cfg = m.sb.load_config()
+for name, _ in m.agent_specs(cfg):
+    cur = m.current_version(name)
+    for binary in m.agent_bins(name, m.version_dir(name, cur)) if cur else []:
+        m.write_shim(cfg, name, binary)
+'
+
 # removed units: the busy-box guard (it lowered limits at runtime) and the T3/Docker nap timer (now sharedbox-tick)
 for u in sharedbox-guard.timer sharedbox-t3-naps.timer; do
     if [[ -e /etc/systemd/system/$u ]]; then
@@ -234,7 +249,6 @@ do_ systemctl daemon-reload
 # equal limits for every account, the owner's included (16G RAM, no CPU cap, equal weight): rewrite every slice
 # drop-in, and drop what older versions left (OOM preference for friends, the guard's runtime CPU/RAM values)
 do_ "$LIB/sharedbox-admin" reapply >/dev/null
-# shared servers: slice limits, folder owners, SHARED_GROUP = friends + admins (never starts/stops a server)
 do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path sharedbox-janitor.timer \
     sharedbox-tools-update.timer sharedbox-tick.timer
 # federation (same accounts on every box in BOXES): a signing key once, then a 5-minute timer that does nothing

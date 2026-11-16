@@ -6,15 +6,13 @@
   box boost [--why TEXT]           more RAM for a few hours (BOOST_MEMORY for BOOST_HOURS), if the box has it free
   box serve add NAME [--port P] -- CMD...   long-running server (survives logout/reboot)
   box serve ls | logs NAME | restart NAME | stop NAME | start NAME | rm NAME
-  box shared ls | create NAME | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
-                                   servers the whole group owns (code in /srv/shared/NAME); add --json
   box clean [--dry-run]            clean unused caches and old tmp files now
   box restore [NAME]               put an archived project back in ~ (lists archives without NAME)
   box rules                        the rules your agents are given
   box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
   box setup [--check]              guided setup: git identity, GitHub, agent logins
   box agents                       installed coding agents + whether you're logged in
-  box updates [auto|manual|now]    whether your coding agents update daily (status without an argument)
+  box updates                    installed coding agent versions
   box request "TEXT"               ask the owner for something (e.g. a system package)
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
@@ -132,15 +130,12 @@ def archive_until_text():
     return f"restorable for {CFG['ARCHIVE_DAYS']} days with `box restore NAME`"
 
 
-REBOOT_BACK = ("Comes back by itself: `box serve` services, group servers (`box shared`), T3 Code. "
+REBOOT_BACK = ("Comes back by itself: `box serve` services, T3 Code. "
                "Everything else stops (tmux, nohup, running builds): save work and finish long jobs before then.")
 
 
 def advice(g):
     out = []
-    for n in agent_notices()[-3:]:
-        out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
-                   f"({n['why']}). Mention it to the user if they ask why a tool changed.")
     for n in other_notices(3)[-5:]:
         out.append(f"{fmt_ts(n['ts'])}: {sb.printable(n['text'])} Tell the user if it's what they were waiting for.")
     rb = sb.reboot_info(CFG)
@@ -306,7 +301,7 @@ def cmd_heavy(a):
 # ---------- boost ----------
 
 def cmd_boost(a):
-    res = shared_request({"action": "boost", "why": a.why or ""}, wait=60)
+    res = member_request({"action": "boost", "why": a.why or ""}, wait=60)
     if a.json:
         print(json.dumps(res))
         sys.exit(0 if res.get("ok") else 1)
@@ -543,14 +538,10 @@ def rule_fields(tl="", extras=(), nt=""):
         reboot_days=(f"It also reboots {sb.reboot_schedule_text(CFG)}, whether or not there are updates; that "
                      "reboot waits up to 2 hours while an agent is mid-turn.") if reboot_days() else "",
         archive_days=CFG["ARCHIVE_DAYS"], brand=BRAND,
-        tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
+        tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(),
         serve_public=(f"\n- Public link (behind the box's login, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
-        shared_public=(f"\n- Public link (behind the box's login, for every member): `{sb.public_url(CFG)}/s/NAME/`."
-                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else ""),
-        connect=connect_text(),
-        shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
-                                    sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
+        connect=connect_text())
 
 
 def connect_text():
@@ -1080,34 +1071,13 @@ def git_ident():
 
 # ---------- agent updates ----------
 
-SECURITY_NOTE = ("Serious security fixes are applied to everyone, even on manual: if your version has a "
-                 "serious security advisory that the newest version fixes, you're moved to the newest.")
-
-
 def agent_info():
-    """(mode, pending, {npm name: {current, mine, bins}}): which agent versions this user runs."""
     st = sb.read_json(sb.TOOLS_JSON, {}) or {}
-    mode, chose = sb.agent_pref(CFG, HOME)
-    pdir = os.path.join(sb.AGENT_PINS, ME.pw_name)
-    try:
-        applied = os.stat(os.path.join(pdir, ".applied")).st_mtime
-    except OSError:
-        applied = 0
-    pending = mode == "manual" and (chose > applied or not applied)  # pinned at the next nightly run
-    out = {}
-    for name, ag in (st.get("agents") or {}).items():
-        mine = ag.get("current")
-        if mode == "manual" and not pending:
-            try:
-                mine = os.path.basename(os.readlink(os.path.join(pdir, sb.agent_slug(name))))
-            except OSError:
-                pass
-        out[name] = dict(ag, mine=mine)
-    return mode, pending, out
+    return {name: dict(ag, mine=ag.get("current")) for name, ag in (st.get("agents") or {}).items()}
 
 
 def all_notices(days=7):
-    path = os.path.join(sb.AGENT_PINS, ME.pw_name, "notices.json")
+    path = os.path.join(sb.USER_STATE, ME.pw_name, "notices.json")
     try:
         items = sb.read_json(path, []) or []
     except OSError:
@@ -1115,62 +1085,20 @@ def all_notices(days=7):
     return [n for n in items if isinstance(n, dict) and time.time() - n.get("ts", 0) < days * 86400]
 
 
-def agent_notices(days=7):
-    """Forced agent updates (written by sharedbox-tools; they have no "kind")."""
-    return [n for n in all_notices(days) if "kind" not in n]
-
-
 def other_notices(days=7):
     """Notices root writes for this user with a "kind", e.g. "request-done" (the owner closed a `box request`)."""
     return [n for n in all_notices(days) if isinstance(n.get("kind"), str) and isinstance(n.get("text"), str)]
 
 
-def set_agent_pref(mode):
-    path = os.path.join(HOME, sb.AGENT_PREF_REL)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(mode + "\n")
-    os.replace(tmp, path)   # a fresh mtime: the shims switch right away, the nightly job pins it
-
-
 def cmd_updates(a):
-    act = a.action or "status"
-    mode, pending, info = agent_info()
-    if act == "auto":
-        set_agent_pref("auto")
-        print("Agent updates: auto. Your coding agents now run the newest version, updated every night "
-              "(about 5 AM).")
-        return
-    if act == "manual":
-        set_agent_pref("manual")
-        print("Agent updates: manual. You stay on the versions you have now. Run `box updates now` whenever "
-              "you want the newest ones (you'll stay on those).\n" + SECURITY_NOTE)
-        return
-    if act == "now":
-        if mode != "manual":
-            print("You're on auto updates, so you already run the newest versions.")
-            return
-        set_agent_pref("manual")
-        print("Done: you now run the newest versions and stay on them until you run this again.")
-        return
-    print(f"Agent updates: {mode}" + (" (your current versions get pinned at the next nightly run)"
-                                      if pending else ""))
-    print(f"  auto   = newest version every night (about 5 AM)\n"
-          f"  manual = stay on your versions; `box updates now` to move to the newest\n  {SECURITY_NOTE}\n")
-    if info:
-        print(f"{'agent':<28}{'yours':<14}newest")
-        for name, ag in sorted(info.items()):
-            label = f"{', '.join(ag.get('bins') or []) or name}"
-            print(f"{label:<28}{ag.get('mine') or '-':<14}{ag.get('current') or '-'}")
-    for n in agent_notices(30):
-        print(f"! {fmt_ts(n['ts'])}: {n['name']} moved {n['from']} -> {n['to']} ({n['why']})")
-    print("\nChange it: box updates auto | box updates manual")
+    print("Coding agents update automatically every night.")
+    for name, ag in sorted(agent_info().items()):
+        print(f"{name}: {ag.get('current') or '-'}")
 
 
 def cmd_agents(a):
     tv = tools()
-    _, _, info = agent_info()
+    info = agent_info()
     mine = {b: ag.get("mine") for ag in info.values() for b in ag.get("bins") or [] if ag.get("mine")}
     web = {k for k in PORTAL_LOGINS}
     print(f"{'agent':<14}{'version':<12}{'logged in':<11}how to log in")
@@ -1240,13 +1168,6 @@ def cmd_setup(a):
             n, label, cmd, _, _, how = avail[int(tok) - 1]
             print(f"\n--- {label}: {how}")
             subprocess.run(cmd)
-    # 4. updates
-    mode, _ = sb.agent_pref(CFG, HOME)
-    print("\n4) Agent updates")
-    auto = ask("   Update your coding agents to the newest version every night? (No = stay on today's "
-               "versions; serious security fixes are applied either way)", default=mode == "auto")
-    set_agent_pref("auto" if auto else "manual")
-    print(f"   {'auto' if auto else 'manual'} ✓  (change any time: box updates auto|manual)")
     print(f"""
 All set. Tips:
   • Start agents inside tmux so they keep running when you disconnect:  tmux new -A -s main
@@ -1254,7 +1175,7 @@ All set. Tips:
   • Keep each project as a git repo in your home folder (~/myapp) and push it to GitHub. Projects idle for
     {CFG['PROJECT_TTL_DAYS']} days are archived ({archive_until_text()}), but only once everything is pushed.
   • `box` shows your usage · `box agents` shows agent logins · `box rules` shows what your agents are told
-  • `box updates` shows whether your agents update nightly
+  • `box updates` shows your installed agent versions
 """)
     os.makedirs(os.path.join(HOME, ".sharedbox"), exist_ok=True)
     open(os.path.join(HOME, ".sharedbox", "setup-done"), "w").close()
@@ -1287,7 +1208,7 @@ REQ_FINAL = ("installed", "done", "declined")
 def my_requests():
     """My requests as root last recorded them, plus ones root hasn't picked up yet (state "sent")."""
     try:
-        theirs = (sb.read_json(os.path.join(sb.AGENT_PINS, ME.pw_name, "requests.json"), {}) or {}).get("requests") or []
+        theirs = (sb.read_json(os.path.join(sb.USER_STATE, ME.pw_name, "requests.json"), {}) or {}).get("requests") or []
     except OSError:
         theirs = []
     known = {r.get("id") for r in theirs}
@@ -1349,7 +1270,7 @@ def cmd_request(a):
     sb.write_json(REQ_SENT, sent, mode=0o600)
     rec = None
     if pkgs:  # most package requests are installed within a minute: wait for the outcome
-        deadline = time.time() + (a.wait if a.wait is not None else 240)  # the AI reviewer can take a minute
+        deadline = time.time() + (a.wait if a.wait is not None else 240)
         while time.time() < deadline:
             rec = next((r for r in my_requests() if r.get("id") == rid), None)
             if rec and rec.get("state") in REQ_FINAL + ("waiting",):
@@ -1374,7 +1295,6 @@ def cmd_request(a):
         print("request sent to the box owner; you'll see the answer in `box status` / `box request status`. "
               "Meanwhile, most tools install without sudo: "
               "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
-
 
 
 # ---------- invite (box owner/admins, no sudo) ----------
@@ -1565,20 +1485,20 @@ def cmd_friends(a):
         print(P(res.get("message") or "done"))
 
 
-# ---------- shared servers (the whole group owns them; root acts on requests) ----------
+# ---------- member requests (team and boost) ----------
 
-def shared_request(req, wait=60):
-    """Drop a request for root in SHARED_DROP and wait for the answer (always a dict)."""
+def member_request(req, wait=60):
+    """Drop a request for root in MEMBER_DROP and wait for the answer (always a dict)."""
     rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
-    path = os.path.join(sb.SHARED_DROP, f"{rid}.json")
-    tmp = os.path.join(sb.SHARED_DROP, f".{rid}.tmp")
+    path = os.path.join(sb.MEMBER_DROP, f"{rid}.json")
+    tmp = os.path.join(sb.MEMBER_DROP, f".{rid}.tmp")
     try:
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
         return {"ok": False, "error": provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})")}
-    reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
+    reply = os.path.join(sb.MEMBER_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
     while time.time() < deadline:
         try:
@@ -1588,52 +1508,6 @@ def shared_request(req, wait=60):
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
     return {"ok": False, "error": provisioner_trouble(f"the box didn't answer within {wait} seconds")}
-
-
-def cmd_shared(a):
-    def done(res):
-        if a.json:
-            print(json.dumps(res))
-            sys.exit(0 if res.get("ok") else 1)
-        if not res.get("ok"):
-            sys.exit(f"box shared {a.action}: {res.get('error', 'failed')}")
-        if "lines" in res:
-            print("\n".join(res["lines"]) or "(no log lines yet)")
-        elif "servers" not in res:
-            print(res.get("message", "done"))
-        sys.exit(0)
-
-    import sbshared
-    err = sbshared.parse_tail(a)
-    if err:
-        done({"ok": False, "error": err})
-    if a.action == "ls":
-        servers = sbshared.list_servers(CFG)
-        if not a.json:
-            if not servers:
-                print("no shared servers yet. make one: box shared create NAME")
-            for x in servers:
-                print(f"{x['name']:<20} {x['state']:<10} port {x['port'] or '-':<6} "
-                      f"{sb.printable(' '.join(x['cmd'])) or '(nothing set to run)'}\n"
-                      f"{'':<20} {x['dir']}  by {x['created_by']}, last change {x['updated_by']} "
-                      f"{fmt_ts(x['updated']) if x.get('updated') else ''}")
-        done({"ok": True, "servers": servers})
-    if ME.pw_name not in sb.admin_users(CFG) and not is_friend():
-        done({"ok": False, "error": "only friends and the box owner's accounts can manage shared servers"})
-    if not a.name:
-        done({"ok": False, "error": f"usage: box shared {a.action} NAME"})
-    if not sbshared.NAME_RE.match(a.name):
-        done({"ok": False, "error": "name: 2-31 lowercase letters, digits or -, starting with a letter"})
-    req = {"action": a.action, "name": a.name}
-    if a.action == "set":
-        if not a.cmd:
-            done({"ok": False, "error": "usage: box shared set NAME [--port P] -- COMMAND..."})
-        req.update(cmd=a.cmd, port=a.port)
-    elif a.cmd or a.port is not None:
-        done({"ok": False, "error": f"box shared {a.action} takes only a NAME"})
-    if a.action == "logs":
-        req["lines"] = a.lines
-    done(shared_request(req))
 
 
 # ---------- shared skills (a catalog; nothing is installed until the owner says so) ----------
@@ -2055,7 +1929,6 @@ def portal_status():
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
     out["ssh"] = bool(ssh_keys())
-    out["updates"] = sb.agent_pref(CFG, HOME)[0]
     return out
 
 
@@ -2240,7 +2113,7 @@ def portal_url():
     return f"{pub}/_box/me" if pub else f"http://{sb.tailscale_ip4() or socket.gethostname()}:{CFG['WEB_PORT']}/me"
 
 
-# servers from the web page: the friend's own `box serve` units, and the group's `box shared` ones
+# servers from the web page: the friend's own `box serve` units
 PORTAL_SERVER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")  # never starts with "-": no option injection
 PORTAL_SERVER_OPS = ("start", "stop", "restart")
 PORTAL_LOG_LINES = 100
@@ -2323,50 +2196,6 @@ def portal_serve_logs(name):
     return {"ok": True, "name": name, "lines": portal_cap_lines(r.stdout.splitlines())}
 
 
-def portal_shared(args, missing):
-    """Run `box shared ARGS --json` (a fresh process, as this user) and pass its JSON answer through.
-    `missing` is the answer when this box's `box` has no `shared` command yet."""
-    r = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "shared", *args, "--json"],
-                       capture_output=True, text=True, errors="replace", timeout=240)
-    for line in reversed(r.stdout.splitlines()):
-        try:
-            out = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(out, dict):
-            if isinstance(out.get("lines"), list):
-                out["lines"] = portal_cap_lines(out["lines"])
-            return out
-    if r.returncode == 2 and "invalid choice" in r.stderr:
-        return missing
-    return {"ok": False, "error": "group servers: " + ((r.stderr or "").strip()[-300:] or "no answer")}
-
-
-def portal_shared_ls():
-    out = portal_shared(["ls"], {"ok": True, "servers": [], "unavailable": True})
-    if out.get("ok") and not isinstance(out.get("servers"), list):
-        out["servers"] = []
-    return out
-
-
-def portal_shared_ctl(name, op):
-    name = portal_server_name(name)
-    if not name or op not in PORTAL_SERVER_OPS:
-        return {"ok": False, "error": "no such server"}
-    return dict(portal_shared([op, name], {"ok": False, "unavailable": True,
-                                           "error": "group servers aren't set up on this box yet"}),
-                name=name, op=op)
-
-
-def portal_shared_logs(name):
-    name = portal_server_name(name)
-    if not name:
-        return {"ok": False, "error": "no such server"}
-    return dict(portal_shared(["logs", name, "-n", str(PORTAL_LOG_LINES)],
-                              {"ok": False, "unavailable": True,
-                               "error": "group servers aren't set up on this box yet"}), name=name)
-
-
 def cmd_portal(a):
     try:
         if a.action == "status":
@@ -2381,12 +2210,6 @@ def cmd_portal(a):
             out = portal_serve_ctl(a.key, a.arg)
         elif a.action == "serve-logs":
             out = portal_serve_logs(a.key)
-        elif a.action == "shared-ls":
-            out = portal_shared_ls()
-        elif a.action == "shared-ctl" and a.arg in PORTAL_SERVER_OPS:
-            out = portal_shared_ctl(a.key, a.arg)
-        elif a.action == "shared-logs":
-            out = portal_shared_logs(a.key)
         elif a.action in ("t3-start", "t3-pair"):
             out = portal_t3(a.action == "t3-pair", app=a.key == "app")
         elif a.action == "login-start" and a.key in PORTAL_LOGINS:
@@ -2397,9 +2220,6 @@ def cmd_portal(a):
             out = portal_add_key(sys.stdin.read(8192))
         elif a.action == "login-check" and a.key in PORTAL_LOGINS:
             out = portal_login_wait(a.key, 5)
-        elif a.action == "updates-set" and a.key in ("auto", "manual"):
-            set_agent_pref(a.key)
-            out = {"ok": True, "updates": a.key}
         else:
             out = {"ok": False, "error": "unknown action"}
     except (OSError, subprocess.SubprocessError) as e:
@@ -2770,7 +2590,7 @@ def team_rules():
 
 def cmd_team(a):
     import sbteam
-    sys.exit(sbteam.main(a.rest, CFG, request=lambda req: shared_request(req, 60)) or 0)
+    sys.exit(sbteam.main(a.rest, CFG, request=lambda req: member_request(req, 60)) or 0)
 
 
 def main():
@@ -2794,11 +2614,6 @@ def main():
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
     x.add_argument("-f", "--follow", action="store_true")
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_serve)
-    x = s.add_parser("shared", help="servers the whole group owns: ls, create, set, start, stop, restart, rm, logs")
-    x.add_argument("action", choices=["ls", "create", "set", "start", "stop", "restart", "rm", "logs"])
-    x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
-    x.add_argument("-n", "--lines", type=int, default=100); x.add_argument("--json", action="store_true")
-    x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_shared)
     x = s.add_parser("clean"); x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_clean)
     x = s.add_parser("restore", help="put an archived project back in ~ (lists them without NAME)")
@@ -2818,7 +2633,7 @@ def main():
     x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
     x.set_defaults(fn=cmd_setup)
     s.add_parser("agents").set_defaults(fn=cmd_agents)
-    x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status", "auto", "manual", "now"])
+    x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status"])
     x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
                                            choices=["start", "pair", "app-link", "status", "stop", "logs"])

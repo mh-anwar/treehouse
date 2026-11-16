@@ -487,8 +487,6 @@ class Web(unittest.TestCase):
                 return {"ok": True, "updates": "auto", "ssh": True, "servers": [],
                         "logins": {k: {"label": k, "ok": v} for k, v in logins.items()},
                         "t3": {"url": "http://100.64.0.5:31000/", "running": True, "app": app} if t3 else None}
-            if action == "shared-ls":
-                return {"ok": True, "servers": []}
             return {"ok": False, "error": "unexpected"}
         w.portal_call = portal_call
         who = w.cf_who("friend@example.com", "jwt")
@@ -827,7 +825,7 @@ class ConnectText(unittest.TestCase):
                      "IdentityFile ~/.ssh/treehouse", "ProxyCommand cloudflared access ssh --hostname %h",
                      "cloudflared.exe\" access ssh --hostname %h", "ServerAliveInterval 30",
                      "ssh -o StrictHostKeyChecking=accept-new treehouse 'box status'", "ssh -t treehouse claude",
-                     "Remote-SSH", "box rules", "box serve", "box shared", "no sudo"):
+                     "Remote-SSH", "box rules", "box serve", "no sudo"):
             self.assertIn(must, t)
         self.assertNotIn("{", t.replace("{{", "").replace('@{"X-Treehouse', "").replace('{"ok"', ""))
 

@@ -7,9 +7,8 @@ Tailscale Funnel terminates TLS for https://<box>.<tailnet>.ts.net and forwards 
   /i/<token>        invite signup        \\
   /login/<token>    one-time device login  > sharedbox-web (private unix socket), which renders the pages
   /_box/...         the friend's portal   /  and asks root to verify tokens / mint sessions
-  /s/NAME/...       a group server (box shared), for any signed-in friend or the owner      \\  reverse proxy with
-  /p/PORT/...       one of the signed-in friend's own `box serve` ports (their range), or a  > the prefix stripped
-                    group server's port                                                    /  (X-Forwarded-Prefix)
+  /p/PORT/...       one of the signed-in friend's own `box serve` ports, with the prefix stripped
+                    (X-Forwarded-Prefix)
   anything else     logged in: reverse proxy (HTTP + WebSocket) to that friend's own T3 Code
                     logged out: a landing page ("ask your friend for an invite link")
 
@@ -35,7 +34,6 @@ from collections import deque
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
-import sbshared  # noqa: E402  (read side only: the registry root writes, 0644)
 
 CFG = sb.load_config()
 PUBLIC = sb.public_url(CFG)
@@ -79,7 +77,6 @@ _sessions = {}     # sha256 -> (checked_at, (user, record, hash) | None)
 _refreshing = {}   # sha256 -> monotonic time of the last refresh request
 _rate = {}         # bucket -> deque[timestamps]
 _cf_tokens = {}    # sha256(jwt) -> (checked_at, claims | None)
-_shared = (0.0, {})
 
 
 def users(max_age=SESSION_CACHE_SECS):
@@ -120,7 +117,7 @@ def backend_for(user):
     return backend_host(), lo
 
 
-# ---------- public links to friends' servers: /s/NAME/ (group) and /p/PORT/ (own) ----------
+# ---------- public links to friends' servers: /p/PORT/ (own) ----------
 
 # T3 Code's build files: the name carries a hash of the content, so a changed file always gets a new name. T3 sends
 # them "no-cache", which makes the browser re-ask about all ~200 of them on every open (one round trip each through
@@ -129,63 +126,32 @@ HASHED_ASSET = re.compile(r"/assets/[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8}\.(?:js|mjs|
                           r"webp|avif|svg|ico|wasm|json|map)")
 IMMUTABLE = "private, max-age=31536000, immutable"
 
-APP_PATH = re.compile(r"/([sp])/([^/?]*)(/[^?]*)?(\?.*)?", re.S)
-SHARED_NAME = re.compile(r"[a-z][a-z0-9-]{1,30}")
+APP_PATH = re.compile(r"/([p])/([^/?]*)(/[^?]*)?(\?.*)?", re.S)
 APP_PORT = re.compile(r"[1-9][0-9]{0,4}")
-# cookies an app behind /s/ or /p/ never sees or sets: ours, Cloudflare's, and the visitor's T3 Code session
+# cookies an app behind /p/ never sees or sets: ours, Cloudflare's, and the visitor's T3 Code session
 APP_COOKIE_DENY = re.compile(r"(?i)(t3|cf_|__cf|__host-sbgate$)")
 # headers an app could use to reach outside its own prefix on this shared origin
 APP_RESP_DENY = {"service-worker-allowed", "clear-site-data"}
 
 
-def shared_servers():
-    """Group servers: name -> port (int), from the registry root writes. Cached briefly."""
-    global _shared
-    if time.monotonic() - _shared[0] > SESSION_CACHE_SECS:
-        reg = sbshared.registry()
-        _shared = (time.monotonic(), {n: r["port"] for n, r in reg.items()
-                                      if isinstance(r.get("port"), int) and not isinstance(r["port"], bool)
-                                      and 0 < r["port"] < 65536})
-    return _shared[1]
-
-
 def app_route(target):
-    """("s"|"p", key, prefix, rest) for /s/NAME/... or /p/PORT/... (rest = path+query to forward, or None
-    when the trailing slash is missing), ("bad", ...) for a malformed key under /s/ or /p/, else None."""
+    """("p", key, prefix, rest) for /p/PORT/... (rest = path+query to forward, or None
+    when the trailing slash is missing), ("bad", ...) for a malformed key under /p/, else None."""
     m = APP_PATH.fullmatch(target)
     if not m:
         return None
     kind, key, rest, query = m.groups()
-    if not (SHARED_NAME if kind == "s" else APP_PORT).fullmatch(key):
+    if not APP_PORT.fullmatch(key):
         return ("bad", key, None, None)
     prefix = f"/{kind}/{key}"
     return (kind, key, prefix, None if rest is None else rest + (query or ""))
 
 
 def app_port(kind, key, user, owner):
-    """(port, None) if this identity may open /s/NAME or /p/PORT, else (None, (code, title, text)).
-    Group servers: any active friend or the owner. A port: the friend's own range except its first port
-    (their T3 Code, which has its own front door at /), or any group server's port."""
+    """(port, None) if this identity may open /p/PORT, else (None, (code, title, text)).
+    Only the friend's own range except its first port (T3 Code has its own front door at /)."""
     e = key  # keys are [a-z0-9-] only (checked by app_route): safe in HTML as is
-    group = shared_servers()
-    if not sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"):
-        group_off = (403, "Open it over Tailscale", "Group servers aren't on the public site: anyone in the group "
-                     "can change their code, so they only open over Tailscale (see <a href='/_box/me'>your page</a>).")
-        if kind == "s":
-            return None, group_off
-    if kind == "s":
-        if key not in group:
-            return None, (404, "No such server", f"There's no group server called <b>{e}</b>. "
-                          "See <a href='/_box/me'>your page</a> for the list.")
-        if not (user or owner):
-            return None, (403, "Not allowed", "Group servers are for members of this box. "
-                          "Ask your friend for an invite link.")
-        return group[key], None
     port = int(key)
-    if port in group.values():
-        if (user or owner) and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"):
-            return port, None
-        return None, (403, "Open it over Tailscale", "That's a group server; group servers only open over Tailscale.")
     if user and user != OWNER:
         rec = users().get(user)
         if rec:
@@ -195,7 +161,7 @@ def app_port(kind, key, user, owner):
             if port == lo:
                 return None, (403, "Not here", "That's your T3 Code's port: open it at <a href='/'>the start page</a>.")
     return None, (403, "Not yours", f"Port {e} isn't one of your servers, so you can't open it here. "
-                  "Your own servers and the group's are listed on <a href='/_box/me'>your page</a>.")
+                  "Your own servers are listed on <a href='/_box/me'>your page</a>.")
 
 
 def app_cookies(headers):
@@ -205,7 +171,7 @@ def app_cookies(headers):
 
 
 def app_location(v, prefix, port):
-    """Keep an app's redirects inside its prefix: "/x" -> "/s/NAME/x"; absolute URLs to this site or to the
+    """Keep an app's redirects inside its prefix: "/x" -> "/p/PORT/x"; absolute URLs to this site or to the
     app's own backend address become prefixed public URLs. Anything else (another site) is left alone."""
     v = v.strip()
     try:
@@ -644,7 +610,7 @@ async def handle_request(reader, writer, head, peer):
         if err:
             await respond(writer, err[0], page(err[1], err[2]))
             return False
-        if rest is None:  # /s/NAME -> /s/NAME/ so the app's relative links resolve under the prefix
+        if rest is None:  # /p/PORT -> /p/PORT/ so the app's relative links resolve under the prefix
             q = target.partition("?")
             await respond(writer, 308, "", headers=[("Location", prefix + "/" + q[1] + q[2])])
             return False
@@ -727,10 +693,6 @@ async def handle_request(reader, writer, head, peer):
     except (OSError, asyncio.TimeoutError):
         if to_web:
             msg = "The box is busy. Try again in a minute."
-        elif app_kind == "s":
-            msg = (f"The group server <b>{prefix[3:]}</b> isn't running (or isn't listening on its port, "
-                   f"{dest[2]}). Start or restart it under <b>Group servers</b> on <a href='/_box/me'>your page</a>, "
-                   "or with <code>box shared start NAME</code>.")
         elif app_kind == "p":
             msg = (f"Nothing is listening on port {dest[2]}. Start the server under <b>Your servers</b> on "
                    "<a href='/_box/me'>your page</a>, or with <code>box serve start NAME</code>.")

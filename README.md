@@ -43,9 +43,7 @@ No terminal, no VPN invites, no "can you run this command for me".
   themselves and never send a non-technical user to a terminal.
 - 🧰 **Ready on first login.** Claude Code, Codex, opencode, node, Python + uv, git + gh, Go, rustup,
   build tools, headless-browser libs, optional JDK + Android SDK. `npm i -g` works without sudo.
-- 🏕️ **Shared servers the whole group owns.** A group chat bot or game server lives in `/srv/shared/NAME`:
-  any friend (or their agent) can edit its code, start/stop/restart it and read its logs with `box shared`.
-  It runs as its own locked-down account, in one slice with a shared CPU/RAM cap, and survives reboots.
+
 - 💻 **Terminal still works.** Technical users can add an SSH key and use the `box` CLI. With the
   Cloudflare login, a friend pastes one prompt into their laptop's own Claude Code / Codex and it sets up
   `ssh treehouse` (through Cloudflare, no VPN), VS Code Remote-SSH included.
@@ -70,8 +68,7 @@ No terminal, no VPN invites, no "can you run this command for me".
 - 🧩 **Shared skills.** A catalog of agent skills everyone's agents can see (`box skills`): a 4-model
   `council` review and Theo Browne's [tstack](https://github.com/t3dotgg/tstack) PR skills. Agents suggest
   one and install it only after their owner says yes. Admins publish their own with `box skills share DIR`.
-- 🔁 **Self-updating.** Agents update nightly (each person can opt out with `box updates manual`; serious
-  security fixes still reach everyone). Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
+- 🔁 **Self-updating.** Agents update nightly. Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
   clear leaks; they wait up to 2 hours for agents that are mid-turn, and the dashboards show the next one.
 
 ## Quick start
@@ -160,7 +157,6 @@ so symlink tricks can't redirect deletions.
 | A project (a git repo directly in `~`) | untouched 20 days, no process, no service, **and fully pushed** (a remote, clean tree, no untracked files, every branch pushed, no stash): **archived** to `~/.sharedbox/archive/` (announced 3 days ahead). Non-git folders and unpushed work: never |
 | An archived project | 14 days after archiving (`box restore NAME` until then), or first when over budget |
 | `~/services`, `~/keep`, dotfiles | never |
-| `/srv/shared` (shared servers' code) | never (`box shared rm` only moves code to `/srv/shared/.trash`) |
 
 Below 20% free disk all TTLs halve; below 10% caches are wiped.
 </details>
@@ -180,7 +176,6 @@ invites (`/join`, `box invite`), and Cloudflare seat alerts.
 ```
 box invite [--note WHO] [--json]        # owner accounts, no sudo: one-time invite link
 box skills share DIR | unshare NAME     # owner accounts, no sudo: publish a skill to everyone
-box shared ls | create NAME | set NAME -- CMD... | logs NAME   # anyone: group-owned servers in /srv/shared
 sharedbox-admin list | invite | sessions | issues | requests
 sharedbox-admin limits NAME MEMORY_HIGH=10G MEMORY_MAX=11G DISK_BUDGET_GB=50
 sharedbox-admin boost NAME [--why TEXT] # same as `box boost` for that account

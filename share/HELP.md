@@ -54,7 +54,7 @@ shallow 5 s / 18 MB.
 {updates}
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
 - Never start a long job (big build, long test run) close to a reboot `box status` announces.
-- Comes back: `box serve` services, group servers, the user's T3 Code, everything on disk.
+- Comes back: `box serve` services, the user's T3 Code, everything on disk.
 - Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, memory, a running `box boost`.
 - Make servers safe to restart any time: keep state in files or a database.
 
@@ -68,24 +68,7 @@ shallow 5 s / 18 MB.
 - Others on the tailnet reach it at `http://{ip}:<port>`.{serve_public}
 
 @@ shared
-Group servers belong to everyone: one shared copy of a bot/tool instead of each friend running their own.
-- `box shared ls` lists them (check first; don't make a duplicate). `box shared create NAME` makes
-  `{shared_dir}/NAME/` and picks a port in {shared_ports} (in `$PORT`).
-- Put the code there, then `box shared set NAME -- COMMAND...` runs it. `./start.sh` = a file in that folder
-  (`chmod +x` it); other commands must be installed system-wide, not in a home. Python: make the venv inside the
-  folder and use `./.venv/bin/python app.py`.
-- `box shared start|stop|restart|logs NAME`; `box shared rm NAME` stops it and moves the code to `{shared_dir}/.trash`.
-  Everyone also gets Start/Stop/Restart/Logs buttons on their page {portal}.
-- Every friend can edit, start, stop and remove every group server; `box shared ls` records who changed what. Only
-  create one when the user wants it shared, and don't stop or change other people's unless the user asked.
-- It runs as a separate account that writes only its own folder, with `HOME` = that folder and no access to anyone's
-  home. **Secrets (`.env`, tokens) there are readable by everyone on the box.** Tell the user before adding a key.
-- "Permission denied" writing in `{shared_dir}/NAME` right after the group was set up: this login session started
-  before the account joined the group. `box shared` commands still work; for file edits use
-  `sg sbshared -c '<command>'`, or it fixes itself after the next login/reboot.
-- After copying files in: `chmod -R g+w {shared_dir}/NAME`. Git "dubious ownership":
-  `git config --global --add safe.directory {shared_dir}/NAME`.
-- Never cleaned by the janitor; doesn't count toward your disk budget.{shared_public}
+For a group bot or tool, use a `box serve` service. See `box help servers`.
 
 @@ browsers
 Headless browsers work without root (system libraries are installed). Never ask for sudo/admin for one.
@@ -103,9 +86,7 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 (live in the next session). Never install one unasked.
 
 @@ updates
-The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed and updated by the owner. `box updates` shows
-whether this user's agents update nightly (`auto`) or stay put (`manual`; `box updates now` moves up). Change it
-only when the user asks. Serious security fixes are applied to everyone.
+Coding agents (`claude`, `codex`, `opencode`, `t3`) update automatically every night. `box updates` shows versions.
 
 @@ connect
 The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this
@@ -127,10 +108,8 @@ account, with no VPN: SSH goes through Cloudflare. {connect}
   Most are installed automatically within a minute (the command waits and says so). Use the distro's package
   name; check it first (`apt-cache policy PKG` / `pacman -Si PKG`).
 - Servers and daemons install too, but their system service stays off: run the program as yourself (in your
-  home, on your own port, `box serve add` to keep it up). A few kinds (hacking/sniffing tools, privileged
-  container/VM engines, mail servers, huge installs) go to an AI reviewer for a few seconds; a decline says why
-  and what to do instead. Follow that instead of asking again. Packages that touch the box's security (sudo, SSH, firewall, kernel) are never
-  installed on request. Rarely it says "sent to the owner": keep working around it; don't ask again.
+  home, on your own port, `box serve add` to keep it up). Packages the rules do not decide are emailed
+  to the owner for approval.
 - Anything else (a config change, more disk, a service): `box request "<plain words>"`. The owner sees it.
 - `box request status` lists yours with their state. When the owner answers, `box status` shows it.
 

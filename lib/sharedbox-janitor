@@ -8,7 +8,7 @@
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
 
 Root only *reads* (du, /proc) and decides. Every deletion and archive move runs as the friend via
-setpriv. Scope: friends' homes and their own files in /tmp, /var/tmp. Never SHARED_DIR (box shared code).
+setpriv. Scope: friends' homes and their own files in /tmp, /var/tmp. Never service directories.
 """
 
 import argparse
@@ -135,7 +135,7 @@ def t3_running(uid):
 
 def heal_provision():
     """If the request handler's path unit ever ends up failed (it once hit systemd's start limit under a burst of
-    retries), nothing on the box answers joins, logins or `box shared` until root resets it: do that here."""
+    retries), nothing on the box answers joins, logins or member requests until root resets it: do that here."""
     for unit in ("sharedbox-provision.service", "sharedbox-provision.path"):
         r = subprocess.run(["systemctl", "is-failed", "--quiet", unit], check=False)
         if r.returncode == 0:

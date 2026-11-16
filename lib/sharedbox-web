@@ -891,18 +891,17 @@ def activity_section(name, owner=False, rng="24h"):
             + "".join(out) + "</details>")
 
 
-def servers_section(st, shared, btn, base="", own_public=True):
-    """Your own `box serve` servers and the group's shared ones, with start/stop/restart and logs.
+def servers_section(st, btn, base="", own_public=True):
+    """Your own `box serve` servers, with start/stop/restart and logs.
     own_public=False (the owner): the gate only opens friends' port blocks at /p/PORT, so no public links."""
     e = html.escape
 
-    def acts(kind, s, group=False):
+    def acts(kind, s):
         n, running = s["name"], s.get("state") == "running"
-        conf = (f' onsubmit="return confirm({e(json.dumps("Stop " + n + " for everyone?"))})"' if group else "")
         b = []
         for op, label in (("restart", "Restart"), ("stop", "Stop")) if running else (("start", "Start"),):
             b.append(btn(f"{kind}-ctl", label, n, f'<input type="hidden" name="op" value="{op}">',
-                         primary=op == "start", small=True, attrs=conf if op == "stop" else ""))
+                         primary=op == "start", small=True))
         b.append(btn(f"{kind}-logs", "Logs", n, primary=False, small=True))
         return '<div class="acts">' + "".join(b) + "</div>"
 
@@ -943,60 +942,20 @@ def servers_section(st, shared, btn, base="", own_public=True):
                    "expect to live at <code>/</code> may need a base-path setting (Vite <code>base</code>, Next "
                    "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC and own_public else
                    "Links work from devices on Tailscale.") + "</p>")
-    end = "</section>"
-    if shared.get("unavailable"):
-        return "".join(out) + end
-    out.append("</section><h2>Group servers</h2><section class='sec'>")
-    if not shared.get("ok"):
-        out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
-        return "".join(out) + end
-    group = [s for s in shared.get("servers") or []
-             if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))]
-    if not group:
-        out.append("<p class='mut' style='margin:0'>Nothing yet. Servers the whole group owns show up here; anyone can restart "
-                   "them. Ask your agent to make one with <code>box shared</code>.</p>")
-        return "".join(out) + end
-
-    def who_when(by, ts):
-        return (f"{e(str(by))} · {e(ago_text(ts))}" if by and ts else e(str(by or "?")))
-
-    out.append('<div class="srv">' + "".join(
-        f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
-        f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
-        f'<div class="sub">{link(s.get("port"), "/s/" + s["name"], sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"))}</div>'
-        f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
-        + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
-        + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'
-        f'</div>{acts("shared", s, group=True)}</div>' for s in group) + "</div>")
-    out.append("<p class='sub' style='margin:12px 0 0'>Everyone in the group can start, stop and restart these. "
-               + ("Public links open for anyone with an account here, behind the usual login."
-                  if PUBLIC and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else
-                  "Their links work from devices on Tailscale (anyone can change their code, so they stay off the "
-                  "public site).") + "</p>")
-    return "".join(out) + end
+    return "".join(out) + "</section>"
 
 
 def logs_card(res, btn):
     e = html.escape
-    kind = "shared" if str(res.get("_view", "")).startswith("shared") else "serve"
+    kind = "serve"
     name = str(res.get("name") or res.get("key") or "")
     lines = [sb.printable(str(x).replace("\t", "    ")) for x in (res.get("lines") or [])][-200:]
     text = "\n".join(lines) or "(no log lines yet)"
-    return f"""<div class="card" id="logs"><h3>Logs: {e(name)}{" (group)" if kind == "shared" else ""}</h3>
+    return f"""<div class="card" id="logs"><h3>Logs: {e(name)}</h3>
 <pre class="logs" id="logpre">{e(text)}</pre>
 <p style="display:flex;gap:6px;flex-wrap:wrap">{btn(kind + "-logs", "Refresh", name, primary=False, small=True)}
 <a href="me" style="align-self:center;font-size:13px">Close</a></p></div>
 <script>(function(){{var p=document.getElementById("logpre");if(p)p.scrollTop=p.scrollHeight}})();</script>"""
-
-
-def status_and_shared(ip, who):
-    """Root's `status` and `shared-ls` answers. The group's servers are a second (slower) call: fetch both at once."""
-    shared = {}
-    th = threading.Thread(target=lambda: shared.update(portal_call(ip, who, "shared-ls")), daemon=True)
-    th.start()
-    st = portal_call(ip, who, "status")
-    th.join(35)
-    return st, dict(shared) or {"ok": False, "error": "no answer in time"}
 
 
 def portal_btn(tok, base):
@@ -1014,7 +973,7 @@ def portal_btn(tok, base):
 
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
-OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs",  # root allows only these (+ the lists)
+OWNER_ACTIONS = ("serve-ctl", "serve-logs",  # root allows only these (+ the lists)
                  "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
@@ -1054,17 +1013,8 @@ EVENT_TEXT = {
     "boxes_set": "{user} set the list of boxes: {boxes}",
     "tools_added": "installed {packages}",
     "tools_removed": "removed {packages}",
-    "agent_forced_update": "a security update was forced for {agent}",
-    "agent_updates_auto": "{user} turned on automatic agent updates",
-    "agent_updates_manual": "{user} turned off automatic agent updates",
     "skill_shared": "{user} shared the skill {skill}",
     "skill_unshared": "{user} removed the skill {skill}",
-    "shared_created": "{user} created the group server {server}",
-    "shared_set": "{user} set the group server {server} to run `{cmd}`",
-    "shared_start": "{user} started the group server {server}",
-    "shared_stop": "{user} stopped the group server {server}",
-    "shared_restart": "{user} restarted the group server {server}",
-    "shared_removed": "{user} removed the group server {server} (code kept in the trash)",
     "limits_changed": "{user}'s limits were changed",
     "memory_boost": "{user} boosted their memory limit",
     "boost": "{user} boosted their memory limit",
@@ -1078,7 +1028,6 @@ EVENT_TEXT = {
     "cloudflare_setup": "the public site was set up ({host})",
     "cloudflare_ssh": "SSH through Cloudflare was turned on",
     "admin_drop_refused": "a non-admin tried to send an admin request",
-    "shared_drop_refused": "a non-member tried to control a group server",
 }
 
 
@@ -1135,13 +1084,12 @@ def features_page(owner=False):
         "<a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<h3 class='fg'>Agents</h3><div class='flist'>",
         row("Your agents", "Claude Code, Codex and opencode, ready to go.",
-            "Environment-aware: they know about group servers, restarts, limits and where files go."
+            "Environment-aware: they know about servers, restarts, limits and where files go."
             + (" Your laptop's Claude Code or Codex can work on the box too." if live_ssh_host() else "")),
         row("Skills", "Shared agent skills you can pull, like council and full-send."),
         row("Failure reporting", "Agents report what slowed them down.", "An agent picks these up weekly and fixes the box."),
         "</div><h3 class='fg'>Servers</h3><div class='flist'>",
         row("Your servers", "Servers that run 24/7.", "Self-healing, with controls + a private link."),
-        row("Group servers", "One shared copy of a bot for the whole group."),
         row("Docker", "Docker works, no admin needed."),
         row("Projects", "Your projects live in your home folder.", "T3 starts new projects there too."),
         "</div><h3 class='fg'>Resources</h3><div class='flist'>",
@@ -1552,7 +1500,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
     e = html.escape
     base = "/_box"
     btn = portal_btn(token_for(ip, who["id"]), base)
-    st, shared = status_and_shared(ip, who)
+    st = portal_call(ip, who, "status")
     view = str((result or {}).get("_view") or "")
     out = []
     start = [f"<h2>Hi {e(name)}</h2><p class='mut'>You're the owner of {e(HOST)}, signed in as "
@@ -1566,7 +1514,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
         out.append(you_strip(name, rec, st, btn, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
-    out.append(servers_section(st, shared, btn, base, own_public=False))
+    out.append(servers_section(st, btn, base, own_public=False))
     # ---- admin ----
     try:
         boxes = boxes_section()
@@ -1699,7 +1647,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     tok = token_for(ip, who["id"])
     gate = bool(who.get("session") or who.get("cf_jwt"))
     base = "/_box" if gate else ""
-    st, shared = status_and_shared(ip, who)
+    st = portal_call(ip, who, "status")
     logins, t3 = st.get("logins") or {}, st.get("t3")
     btn = portal_btn(tok, base)
     view = str((result or {}).get("_view") or "")
@@ -1782,7 +1730,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         out.append(you_strip(name, rec, st, btn, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
-    out.append(servers_section(st, shared, btn, base))
+    out.append(servers_section(st, btn, base))
 
     # ---- your account: one row per thing, buttons on the right ----
     acct = []
@@ -1799,15 +1747,9 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
             '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
             "" if logins["gh"]["ok"] else btn("login", "Connect GitHub", "gh", primary=False, small=True))
-    if st.get("updates") in ("auto", "manual"):
-        auto = st["updates"] == "auto"
-        row("Agent updates", "Every night, automatically" if auto else "Staying on your current versions",
-            btn("updates", "Keep current versions" if auto else "Update automatically",
-                "manual" if auto else "auto", primary=False, small=True))
     row("Projects", f"Live in your home folder. Archived after {e(CFG['PROJECT_TTL_DAYS'])} days untouched, "
         "and only once they're pushed to git. Ask your agent to put them on GitHub.")
     out.append("<h2 id='account'>Your account</h2>"
-               + (portal_result(result, btn, base) if result and view == "updates" else "")
                + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
 
     # ---- more options ----
@@ -1930,9 +1872,6 @@ def portal_result(res, btn, base=""):
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
         return notice("SSH key added.")
-    if res.get("updates") in ("auto", "manual"):
-        return notice("Agents will update automatically." if res["updates"] == "auto"
-                      else "Agents will stay on the versions you have now.")
     if res.get("done"):
         return notice("Logged in.")
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
@@ -2129,7 +2068,7 @@ class Handler(BaseHTTPRequestHandler):
         fid = secrets.token_urlsafe(9)
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
-        anchor = "#start" if view in START_VIEWS else "#account" if view == "updates" else ""
+        anchor = "#start" if view in START_VIEWS else ""
         tab = {"invite": "people", "hackathon": "settings", "request-update": "settings"}.get(
             view, "requests" if view.startswith("request-") else "")
         if tab and who.get("owner"):
@@ -2196,16 +2135,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such request"})
             res = portal_call(ip, who, action, key=key)
             return self.after_post(ip, who, name, rec, dict(res, _view=action))
-        if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
+        if action in ("serve-ctl", "serve-logs"):
             op = form.get("op", "")
             if not SERVER_RE.fullmatch(key) or (action.startswith("serve-") and key == "t3") \
                     or (action.endswith("-ctl") and op not in SERVER_OPS):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server"})
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
-        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key", "updates") + (
+        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key") + (
             ("device-link",) if PUBLIC and not CF else ())
-        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh", "t3connect")
+        keys = ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if action == "add-key":

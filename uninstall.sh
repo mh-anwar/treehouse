@@ -25,10 +25,14 @@ true
 python3 -I "$(dirname "$0")/lib/sbretired.py" /etc/sharedbox/sharedbox.conf /var/lib/sharedbox || true
 rm -rf /var/lib/sharedbox/trap /var/lib/sharedbox/alerts
 rm -f /var/lib/sharedbox/canary.jsonl /var/lib/sharedbox/canary-planted.json
-# shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
+# Retired shared-server units; preserve their code and file ownership.
 for u in /etc/systemd/system/sb-shared-*.service; do
     [[ -e $u ]] && systemctl disable --now "$(basename "$u")" 2>/dev/null || true
 done
+systemctl disable --now sharedbox-shared.slice 2>/dev/null || true
+rmdir /var/lib/sharedbox/shared-drop /var/lib/sharedbox/shared-replies 2>/dev/null || true
+rm -rf /var/lib/sharedbox/agent-pins
+[[ ! -d /srv/shared ]] || echo "Kept /srv/shared (user data)."
 rm -f /etc/systemd/system/sb-shared-*.service /etc/systemd/system/sharedbox-shared.slice
 rm -f /etc/systemd/system/sharedbox-*.{service,timer,path,slice}
 rm -rf /etc/systemd/system/sharedbox-gate.service.d

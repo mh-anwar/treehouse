@@ -4,8 +4,6 @@
   sharedbox-tools install [--dry-run]    install everything enabled in sharedbox.conf
   sharedbox-tools update                 update the coding agents (+ uv); system packages are left to
                                          unattended-upgrades (Debian/Ubuntu) or the owner's pacman -Syu (Arch)
-  sharedbox-tools force NAME [VERSION]   security: move everyone pinned below VERSION (default: the newest)
-                                         of agent NAME (e.g. claude-code) onto the newest version now
   sharedbox-tools add pkg|npm NAME...    install extra packages and remember them (e.g. for `box request`s)
   sharedbox-tools remove pkg|npm NAME... uninstall packages (also remove them from TOOLS_* in sharedbox.conf)
                                          `pkg` = the system package manager (apt or pacman); `apt` still works
@@ -15,20 +13,16 @@ Only installs packages. It never upgrades the whole system, restarts services, o
 
 Coding agents (TOOLS_NPM) are kept per version in /opt/sharedbox/agents/<pkg>/<version>, installed with pnpm
 (one hard-linked store, ~40% less disk than npm; npm is the fallback if pnpm can't be installed), and /usr/local/bin
-has a small shim per command. The shim runs the newest version, or the version the user is pinned to if
-they chose `box updates manual`. A new version is installed next to the old one and switched to atomically,
-so running sessions don't break mid-update. Pins are moved to the newest version when the pinned one has a
-security advisory (npm audit) at or above AGENT_FORCE_SEVERITY that the newest one doesn't, or by `force`.
+has a launcher per command that follows current. New versions are installed alongside old ones
+and switched atomically so running sessions keep working.
 """
 
 import argparse
 import hashlib
 import json
 import os
-import pwd
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -166,7 +160,7 @@ def npm_extras_pinned():
     return out
 
 
-# ---------- coding agents: versioned store + per-user pins ----------
+# ---------- coding agents: versioned store ----------
 
 def agent_specs(cfg):
     """TOOLS_NPM as [(name, wanted)], renamed packages mapped to their new name ("latest" unless pinned)."""
@@ -296,26 +290,11 @@ def set_current(name, ver):
 
 
 def shim_text(cfg, name, binary):
-    slug = sb.agent_slug(name)
-    default = cfg.get("AGENT_UPDATES_DEFAULT") if cfg.get("AGENT_UPDATES_DEFAULT") in ("auto", "manual") else "auto"
-    return f"""#!/bin/sh
-{SHIM_MARK} for {name}: written by sharedbox-tools, don't edit (rewritten on every update).
-# Runs the newest installed version, or the one this user is pinned to after `box updates manual`.
-a={sb.AGENTS_DIR}/{slug}
-s={sb.AGENT_PINS}/$(id -un 2>/dev/null)
-p=$HOME/{sb.AGENT_PREF_REL}
-m={default}
-if [ -f "$p" ]; then
-    read -r m < "$p" || :
-    # chose (again) since the owner's update job last ran: newest until it pins this version
-    [ "$p" -nt "$s/.applied" ] && m=auto
-fi
-d=$a/current
-[ "$m" = manual ] && [ -e "$s/{slug}" ] && d=$s/{slug}
-d=$(readlink -f "$d") || d=$a/current
+    return f'''#!/bin/sh
+{SHIM_MARK} for {name}: written by sharedbox-tools.
 export DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1
-exec "$d/node_modules/.bin/{binary}" "$@"
-"""
+exec "{sb.AGENTS_DIR}/{sb.agent_slug(name)}/current/node_modules/.bin/{binary}" "$@"
+'''
 
 
 def is_shim(path):
@@ -356,152 +335,7 @@ def drop_legacy_global(names, dry):
         run(["npm", "uninstall", "-g", "--prefix", NPM_PREFIX] + old, dry, check=False)
 
 
-def read_user_pref(cfg, pw):
-    """A user's choice, read as root from their home: O_NOFOLLOW + owner check, a few bytes only."""
-    default = cfg.get("AGENT_UPDATES_DEFAULT") if cfg.get("AGENT_UPDATES_DEFAULT") in ("auto", "manual") else "auto"
-    try:
-        fd = os.open(os.path.join(pw.pw_dir, sb.AGENT_PREF_REL),
-                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError:
-        return default, 0
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != pw.pw_uid:
-            return default, 0
-        mode = f.read(16).decode(errors="replace").split()
-    mode = mode[0] if mode else ""
-    return (mode, st.st_mtime) if mode in ("auto", "manual") else (default, 0)
-
-
-def people():
-    return [pw for pw in pwd.getpwall()
-            if 1000 <= pw.pw_uid < 65534 and pw.pw_dir.startswith("/home/") and os.path.isdir(pw.pw_dir)]
-
-
-def pin_of(user, name):
-    try:
-        v = os.path.basename(os.readlink(os.path.join(sb.AGENT_PINS, user, sb.agent_slug(name))))
-    except OSError:
-        return None
-    return v if VERSION_RE.fullmatch(v) and installed_ok(name, v) else None
-
-
-def set_pin(user, name, ver):
-    d = os.path.join(sb.AGENT_PINS, user)
-    os.makedirs(d, mode=0o755, exist_ok=True)
-    link = os.path.join(d, sb.agent_slug(name))
-    tmp = f"{link}.tmp-{os.getpid()}"
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    os.symlink(version_dir(name, ver), tmp)
-    os.replace(tmp, link)
-
-
-def apply_choices(cfg, names):
-    """Before switching to new versions: freeze people who chose `manual` at the version they have now.
-    People on auto lose their pins. Returns {user: pinned names}."""
-    os.makedirs(sb.AGENT_PINS, mode=0o755, exist_ok=True)
-    out = {}
-    for pw in people():
-        mode, chose_at = read_user_pref(cfg, pw)
-        d = os.path.join(sb.AGENT_PINS, pw.pw_name)
-        if mode == "auto":
-            if os.path.isdir(d):
-                shutil.rmtree(d, ignore_errors=True)
-                sb.log_event("agent_updates_auto", pw.pw_name)
-            continue
-        try:
-            applied = os.stat(os.path.join(d, ".applied")).st_mtime
-        except OSError:
-            applied = 0
-        rechose = chose_at > applied
-        for name in names:
-            cur = current_version(name)
-            if not cur:
-                continue
-            if rechose or not pin_of(pw.pw_name, name):
-                set_pin(pw.pw_name, name, cur)
-            out.setdefault(pw.pw_name, []).append(name)
-        os.makedirs(d, mode=0o755, exist_ok=True)
-        with open(os.path.join(d, ".applied"), "w") as f:
-            f.write(f"{int(time.time())}\n")
-        if rechose:
-            sb.log_event("agent_updates_manual", pw.pw_name)
-    return out
-
-
 _audits = {}
-
-
-def audit(name, ver):
-    """{advisory id: severity} for an installed version (npm/pnpm audit of its own lockfile), or None."""
-    if (name, ver) not in _audits:
-        d = version_dir(name, ver)
-        use_pnpm = os.path.exists(os.path.join(d, "pnpm-lock.yaml")) and pnpm()
-        cmd = ([pnpm(), "audit", "--json", "--prod"] if use_pnpm
-               else ["npm", "audit", "--json", "--omit=dev", "--prefix", d])
-        try:
-            r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=180)
-            data = json.loads(r.stdout or "{}")
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            data = {}
-        if isinstance(data.get("advisories"), dict):   # pnpm's format
-            _audits[(name, ver)] = {str(k): a["severity"] for k, a in data["advisories"].items()
-                                    if isinstance(a, dict) and a.get("severity") in SEVERITIES}
-        elif "vulnerabilities" not in data:
-            print(f"    warning: audit of {name}@{ver} failed; skipping its security check", file=sys.stderr)
-            _audits[(name, ver)] = None
-        else:
-            adv = {}
-            for v in data["vulnerabilities"].values():
-                for via in v.get("via") or []:
-                    if isinstance(via, dict) and via.get("severity") in SEVERITIES:
-                        adv[str(via.get("source") or via.get("url") or via.get("title"))] = via["severity"]
-            _audits[(name, ver)] = adv
-    return _audits[(name, ver)]
-
-
-def security_pass(cfg, names, force=None):
-    """Move pins to the newest version where the pinned one is unsafe. force = {name: min version}."""
-    floors = sb.read_json(os.path.join(sb.STATE_DIR, "agent-floors.json"), {}) or {}
-    floors.update(force or {})
-    sev = cfg.get("AGENT_FORCE_SEVERITY", "high")
-    level = SEVERITIES.index(sev) if sev in SEVERITIES else None
-    moved = []
-    if not os.path.isdir(sb.AGENT_PINS):
-        return moved
-    for user in sorted(os.listdir(sb.AGENT_PINS)):
-        notes = []
-        for name in names:
-            pin, cur = pin_of(user, name), current_version(name)
-            if not pin or not cur or pin == cur or vkey(pin) > vkey(cur):
-                continue
-            why = None
-            if name in floors and vkey(pin) < vkey(floors[name]):
-                why = f"the owner required {name} {floors[name]} or newer"
-            elif level is not None:
-                old, new = audit(name, pin), audit(name, cur)
-                if old is not None and new is not None:
-                    bad = sorted({sev for k, sev in old.items() if k not in new
-                                  and SEVERITIES.index(sev) >= level}, key=SEVERITIES.index)
-                    if bad:
-                        why = f"{bad[-1]} security advisory in {name} {pin}, fixed in {cur}"
-            if why:
-                set_pin(user, name, cur)
-                notes.append({"name": name, "from": pin, "to": cur, "why": why})
-                moved.append((user, name, pin, cur))
-                sb.log_event("agent_forced_update", user, package=name, old=pin, new=cur, why=why)
-        if notes:
-            path = os.path.join(sb.AGENT_PINS, user, "notices.json")
-            prev = [n for n in (sb.read_json(path, []) or []) if time.time() - n.get("ts", 0) < 30 * 86400]
-            try:  # 0640 root:<their group>: root also puts their `box request` outcomes in here
-                owner, mode = (0, pwd.getpwnam(user).pw_gid), 0o640
-            except KeyError:
-                owner, mode = None, 0o644
-            sb.write_json(path, prev + [dict(n, ts=int(time.time())) for n in notes], mode=mode, owner=owner)
-    return moved
 
 
 def in_use(paths):
@@ -527,12 +361,6 @@ def in_use(paths):
 
 def gc_versions(names):
     keep = set()
-    if os.path.isdir(sb.AGENT_PINS):
-        for user in os.listdir(sb.AGENT_PINS):
-            for name in names:
-                v = pin_of(user, name)
-                if v:
-                    keep.add(version_dir(name, v))
     candidates = []
     for name in names:
         root, cur = agent_root(name), current_version(name)
@@ -591,9 +419,11 @@ def agents_lock():
 
 
 def sync_agents(cfg, dry, errors):
-    """Install the wanted version of each agent, switch to it, keep pins safe, write shims, clean up."""
+    """Install the wanted version of each agent, switch to it, write shims, clean up."""
     if not dry:
         lock = agents_lock()  # noqa: F841 (held until this function returns)
+    if not dry:
+        sb.migrate_user_state()
     specs = agent_specs(cfg)
     names = [n for n, _ in specs]
     if not specs:
@@ -601,8 +431,6 @@ def sync_agents(cfg, dry, errors):
     if not shutil.which("npm") and not dry:
         errors.append("npm missing; coding agents not installed")
         return
-    if not dry:
-        apply_choices(cfg, names)
     # Lookups and downloads are network/disk bound: do them side by side (measured on a fresh store, 4 agents:
     # lookups 2.0 s -> 0.6 s, installs 38 s -> 22 s). Switching versions stays one at a time, in order.
     from concurrent.futures import ThreadPoolExecutor
@@ -656,8 +484,7 @@ def sync_agents(cfg, dry, errors):
                 write_shim(cfg, name, b)
             except OSError as e:
                 errors.append(f"shim {b}: {e}")
-    for step, fn in (("security check", lambda: security_pass(cfg, names)),
-                     ("cleanup", lambda: gc_versions(names)),
+    for step, fn in (("cleanup", lambda: gc_versions(names)),
                      ("stale shims", lambda: remove_stale_shims(names))):
         try:
             fn()
@@ -670,13 +497,7 @@ def agent_status():
     out = {}
     for name in [n for n, _ in agent_specs(sb.load_config())] if os.path.isdir(sb.AGENTS_DIR) else []:
         cur = current_version(name)
-        pins = {}
-        if os.path.isdir(sb.AGENT_PINS):
-            for user in sorted(os.listdir(sb.AGENT_PINS)):
-                v = pin_of(user, name)
-                if v:
-                    pins[user] = v
-        out[name] = {"current": cur, "pinned": pins,
+        out[name] = {"current": cur,
                      "bins": agent_bins(name, version_dir(name, cur)) if cur else []}
     return out
 
@@ -794,7 +615,7 @@ def _versions(home):
 
 
 def write_status(last_update=None):
-    """tools.json (world-readable): versions, agents + who is pinned, and how the last update went."""
+    """tools.json (world-readable): versions, agents, and how the last update went."""
     v = versions()
     prev = sb.read_json(TOOLS_JSON, {}) or {}
     try:
@@ -853,39 +674,6 @@ def cmd_update(cfg, a):
     if errors:
         print("update finished with errors:\n" + "\n".join(f"  - {e}" for e in errors), file=sys.stderr)
         sys.exit(1)
-
-
-def cmd_force(cfg, a):
-    """Owner: move everyone pinned below VERSION (default: the newest installed) onto the newest now."""
-    specs = agent_specs(cfg)
-    names = [n for n, _ in specs]
-    match = [n for n in names if a.name in (n, n.rsplit("/", 1)[-1], sb.agent_slug(n))
-             or (current_version(n) and a.name in agent_bins(n, version_dir(n, current_version(n))))]
-    if not match:
-        sys.exit(f"{a.name} isn't one of the agents in TOOLS_NPM: {' '.join(names)}")
-    name = match[0]
-    cur = current_version(name)
-    if not cur:
-        sys.exit(f"{name} isn't installed yet; run `sharedbox-tools update` first")
-    floor = a.version or cur
-    if not VERSION_RE.fullmatch(floor):
-        sys.exit(f"bad version: {floor}")
-    if vkey(floor) > vkey(cur):
-        log(f"{name} {floor} is newer than the installed {cur}; updating first")
-        errors = []
-        sync_agents(cfg, False, errors)
-        cur = current_version(name)
-        if errors or vkey(floor) > vkey(cur or ""):
-            sys.exit(f"could not install {name} {floor}: {'; '.join(errors) or 'not on npm yet?'}")
-    path = os.path.join(sb.STATE_DIR, "agent-floors.json")
-    floors = sb.read_json(path, {}) or {}
-    floors[name] = max(floor, floors.get(name, "0.0.0"), key=vkey)
-    sb.write_json(path, floors, mode=0o644)
-    moved = security_pass(cfg, names)
-    for user, n, old, new in moved:
-        print(f"    {user}: {n} {old} -> {new}")
-    print(f"{len(moved)} pinned user(s) moved. Everyone now runs {name} {floors[name]} or newer.")
-    write_status()
 
 
 def pkg_installed(name):
@@ -979,8 +767,7 @@ def cmd_status(cfg, a):
         print(f"{v['label']:<14} {v['version']:<12} {v['path']}")
     st = sb.read_json(TOOLS_JSON, {}) or {}
     for name, ag in sorted((st.get("agents") or {}).items()):
-        pins = ", ".join(f"{u}@{v}" for u, v in ag["pinned"].items()) or "nobody"
-        print(f"agent {name}: newest {ag['current']}, pinned: {pins}")
+        print(f"agent {name}: current {ag['current']}")
     lu = st.get("last_update") or {}
     if lu:
         print(f"last update {time.strftime('%Y-%m-%d %H:%M', time.localtime(lu['ts']))}: "
@@ -997,8 +784,6 @@ def main():
     x = s.add_parser("install"); x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_install)
     s.add_parser("update").set_defaults(fn=cmd_update)
-    x = s.add_parser("force"); x.add_argument("name"); x.add_argument("version", nargs="?")
-    x.set_defaults(fn=cmd_force)
     x = s.add_parser("add"); x.add_argument("kind", choices=["pkg", "apt", "npm"])
     x.add_argument("names", nargs="+"); x.set_defaults(fn=cmd_add)
     x = s.add_parser("remove"); x.add_argument("kind", choices=["pkg", "apt", "npm"])

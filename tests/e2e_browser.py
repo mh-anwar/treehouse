@@ -89,7 +89,6 @@ os.makedirs(os.path.join(STATE, "spool"))
 TLS_PORT, GATE_PORT = free_port(), free_port()
 PORT_BASE = free_block(80)
 OWNER_T3_PORT = PORT_BASE + 75
-SHARED_BASE = PORT_BASE + 60
 TS_IP = "100.64.0.5"  # the box's Tailscale IP in every address a friend sees (never its short name)
 PUBLIC = f"https://treehouse.test:{TLS_PORT}"
 ME = pwd.getpwuid(os.getuid()).pw_name  # the owner's own account must exist on the system
@@ -100,7 +99,7 @@ with open(os.path.join(TMP, "sharedbox.conf"), "w") as f:
     f.write(f"PUBLIC_URL={PUBLIC}\nPUBLIC_MODE=cloudflare\nCF_TEAM_DOMAIN=x.cloudflareaccess.com\n"
             f"CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nCF_OWNER_EMAILS=owner@x.io\n"
             f"PORT_BASE={PORT_BASE}\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT={OWNER_T3_PORT}\n"
-            f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nSHARED_PUBLIC_LINKS=yes\nBRAND=treehouse\n"
+            f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nBRAND=treehouse\n"
             "UPDATE_SOURCE=https://github.com/example/treehouse\n"
             "SSH_HOST=treehouse-ssh.test.io\nCF_SSH_APP_ID=sshapp12345\n"
             f"BOXES=treebox={TS_IP} peer=100.64.0.6 gone=100.64.0.7\n")
@@ -175,7 +174,6 @@ write("events.jsonl", "\n".join(json.dumps(e) for e in [
     {"ts": NOW - 9000, "kind": "user_created", "user": "alice"},
     {"ts": NOW - 8000, "kind": "cf_access", "user": "alice", "email": "alice@x.io"},
     {"ts": NOW - 7000, "kind": "invite_created", "user": "box", "email": "bob@x.io"},
-    {"ts": NOW - 6000, "kind": "shared_restart", "user": "alice", "server": "web"},
     {"ts": NOW - 5000, "kind": "tools_updated"},
     {"ts": NOW - 4000, "kind": "skill_shared", "user": "alice", "skill": "deploy"},
     {"ts": NOW - 3000, "kind": "balance", "cpu_busy": True},
@@ -188,8 +186,6 @@ write("requests.json", {"requests": [
     {"id": "r-2", "user": "bob", "kind": "other", "text": "Please open port 25\nfor my mail bot.\n\nThanks!", "ts": NOW - 600,
      "state": "new"},
 ]})
-write("shared.json", {s_["name"]: {"port": SHARED_BASE + i, "cmd": ["node", "server.js"]}
-                     for i, s_ in enumerate([{"name": "web"}, {"name": "down"}])})
 INVITE_TOK = "I" * 43
 write(f"gate/invites/{sb.token_hash(INVITE_TOK)}.json",
       {"hash": sb.token_hash(INVITE_TOK), "email": "new@x.io", "expires": NOW + 86400})
@@ -221,13 +217,11 @@ ACCOUNTS = {  # what `box _portal status` would say for each account
     ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
          "servers": [{"name": "site", "state": "running", "port": "8080"}], "ssh": True},
 }
-LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect"}
-SHARED = [{"name": "web", "state": "running", "port": SHARED_BASE, "created_by": "alice", "created": NOW - 86400,
-           "updated_by": "bob", "updated": NOW - 600},
-          {"name": "down", "state": "stopped", "port": SHARED_BASE + 1, "created_by": "bob", "created": NOW - 3600}]
 PAIR_TOKENS = set()
 ROOT_LOG = []
 lock = threading.Lock()
+LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect"}
+
 
 
 def identity(req):
@@ -273,7 +267,7 @@ def _fake_root(req):
         tok = hashlib.sha256(os.urandom(8)).hexdigest()[:24]
         PAIR_TOKENS.add(tok)
         return {"ok": True, "pair_url": f"http://{TS_IP}:{OWNER_T3_PORT}/pair#token={tok}"}
-    if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
+    if owner and action not in ("status", "serve-ctl", "serve-logs",
                                 "request-approve", "request-done", "request-decline", "self-update", "invite",
                                 "boost", "hackathon"):
         return {"ok": False, "error": "not available for the owner's account"}
@@ -308,23 +302,18 @@ def _fake_root(req):
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
                 "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
-                "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "updates": "auto",
+                "git": {"name": name, "email": ""}, "ssh": acct["ssh"],
                 "servers": [dict(s) for s in acct["servers"]]}
-    if action == "shared-ls":
-        return {"ok": True, "servers": [dict(s) for s in SHARED]}
-    if action in ("serve-ctl", "shared-ctl"):
-        pool = acct["servers"] if action == "serve-ctl" else SHARED
+    if action == "serve-ctl":
+        pool = acct["servers"]
         s = next((s for s in pool if s["name"] == key), None)
         if not s:
             return {"ok": False, "error": "no such server"}
         op = req.get("op")
         s["state"] = "stopped" if op == "stop" else "running"
-        if action == "shared-ctl":
-            return {"ok": True, "message": {"start": "started", "stop": "stopped", "restart": "restarted"}[op]
-                    + f" {key}", "name": key, "op": op}
         return {"ok": True, "name": key, "op": op, "state": s["state"],
                 "message": f"{key}: {'stopped' if op == 'stop' else op + 'ed'}"}
-    if action in ("serve-logs", "shared-logs"):
+    if action in ("serve-logs",):
         return {"ok": True, "name": key, "lines": [f"2026-11-11T10:00:0{i}+00:00 box node[12{i}]: line {i} <b>x</b>"
                                                    for i in range(8)]}
     if action.startswith("request-"):
@@ -354,8 +343,6 @@ def _fake_root(req):
     if action == "add-key":
         k, err = sb.validate_pubkey(req.get("sshkey", ""))
         return {"ok": False, "error": err} if err else {"ok": True, "key_added": True}
-    if action == "updates":
-        return {"ok": True, "updates": key}
     if key not in LABELS:
         return {"ok": False, "error": "unknown login"}
     if action == "login":
@@ -439,7 +426,7 @@ def serve(port, handler):
 
 for p in list(PORT_OF.values()) + [OWNER_T3_PORT]:
     serve(p, FakeT3)
-for p in (PORT_OF["alice"] + 3, SHARED_BASE):  # "blog" (running) and group "web"; "bot"/"down" stay closed
+for p in (PORT_OF["alice"] + 3,):  # "blog" runs; "bot" stays closed
     serve(p, AppServer)
 
 
@@ -863,12 +850,12 @@ def flow_invite(browser):
 def flow_apps(browser):
     s = Session(browser, "alice", "tok-alice")
     page = s.page
-    for path, want in ((f"/p/{PORT_OF['alice'] + 3}/", f"App {PORT_OF['alice'] + 3}"), ("/s/web/", f"App {SHARED_BASE}")):
+    for path, want in ((f"/p/{PORT_OF['alice'] + 3}/", f"App {PORT_OF['alice'] + 3}"),):
         page.goto(url(path))
         if page.title() != want:
             fail("alice", path, f"expected {want}, got '{page.title()}'")
     s.expect_codes |= {502, 403}
-    for path in (f"/p/{PORT_OF['alice'] + 4}/", "/s/down/", f"/p/{PORT_OF['bob'] + 3}/"):
+    for path in (f"/p/{PORT_OF['alice'] + 4}/", f"/p/{PORT_OF['bob'] + 3}/"):
         page.goto(url(path))
         inspect(s, path)
     s.drain("apps")
