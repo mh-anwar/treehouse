@@ -2928,6 +2928,35 @@ def sync_t3_project_dir():
     open(T3_PROJECT_DIR_MARK, "a").close()
 
 
+def sync_home_defaults():
+    """The rules promise `go install X@latest` and `cargo install X` work with no setup. Out of the box Go puts programs
+    in ~/go/bin and cargo in ~/.cargo/bin (neither on PATH), and Debian's rustup has no default toolchain, so `cargo`
+    refuses to run. Point both at ~/.local/bin (on PATH in login shells, T3 and `box serve`) and make stable the
+    default (the first `cargo` downloads it, about 30 s). Only fills in what's missing; never changes a setting."""
+    root = os.path.join(HOME, ".local")
+    goenv = os.path.join(HOME, ".config", "go", "env")  # what `go env -w` writes
+    try:
+        with open(goenv) as f:
+            cur = f.read()
+    except FileNotFoundError:
+        cur = ""
+    if not re.search(r"^GOBIN=", cur, re.M):
+        os.makedirs(os.path.dirname(goenv), exist_ok=True)
+        with open(goenv, "a") as f:
+            f.write(("" if not cur or cur.endswith("\n") else "\n") + f"GOBIN={root}/bin\n")
+    cargo = os.path.join(HOME, ".cargo")
+    if not any(os.path.exists(os.path.join(cargo, n)) for n in ("config.toml", "config")):
+        os.makedirs(cargo, exist_ok=True)
+        with open(os.path.join(cargo, "config.toml"), "w") as f:
+            f.write(f'# {BRAND}: `cargo install` puts programs in ~/.local/bin, which is on PATH\n'
+                    f'[install]\nroot = "{root}"\n')
+    rustup = os.path.join(HOME, ".rustup")
+    if shutil.which("rustup") and not os.path.exists(rustup):  # never used rustup: stable by default
+        os.makedirs(rustup, exist_ok=True)
+        with open(os.path.join(rustup, "settings.toml"), "w") as f:
+            f.write('version = "12"\ndefault_toolchain = "stable"\n')
+
+
 def sync_hooks():
     try:
         drop_legacy_hook()
@@ -2966,6 +2995,10 @@ def cmd_init_home(a):
                 f.write(txt)
     sync_agent_files()
     sync_hooks()
+    try:
+        sync_home_defaults()
+    except OSError:
+        pass
 
 
 # ---------- federation, as the user (root's `sharedbox-admin fed-sync` runs these; lib/sbfed.py) ----------
@@ -3131,6 +3164,10 @@ def cmd_sync_rules(a):
         pass
     sync_agent_files(rule_notices())
     sync_hooks()
+    try:
+        sync_home_defaults()
+    except OSError:
+        pass
     print(json.dumps({"synced": True}))
 
 
@@ -3160,6 +3197,10 @@ def cmd_pass(a):
             pass
         sync_agent_files(rule_notices(plan.get("box"), status))
         sync_hooks()
+        try:
+            sync_home_defaults()
+        except OSError:
+            pass
     json.dump(rep, sys.stdout)
 
 
