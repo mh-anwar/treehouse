@@ -472,7 +472,7 @@ Every agent reads this first. Keep it short; put decisions here (or `box team de
 
 ## How we work
 - Board: `box team board`. Claim before working, post done with the result, `box team wait` for handoffs.
-- Code: `{repo}` is the shared repo. `box team clone` puts a clone in ~/projects/{name}; one branch per agent,
+- Code: `{repo}` is the shared repo. `box team clone` puts a clone in ~/{name}; one branch per agent,
   small commits, push often, rebase on main before merging.
 """
 
@@ -931,7 +931,7 @@ def main(argv, cfg, request=None):
     if a.cmd == "clone":
         repo = os.path.join(tdir, REPO)
         subprocess.run(["git", "config", "--global", "--add", "safe.directory", repo], check=False)
-        dest = os.path.join(os.path.expanduser("~"), "projects", name)
+        dest = os.path.join(os.path.expanduser("~"), name)
         if os.path.exists(dest):
             print(f"{dest} already exists (safe.directory set for {repo})")
             return 0

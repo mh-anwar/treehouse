@@ -490,7 +490,6 @@ def safe_url(u, schemes=("https://", "http://")):
 # ---------- the friend's dashboard (server-side SVG from root's world-readable health files) ----------
 
 METRICS = os.path.join(sb.STATE_DIR, "health", "metrics.jsonl")
-BALANCE = os.path.join(sb.STATE_DIR, "balance.json")
 RANGES = {"24h": 86400, "7d": 7 * 86400}
 SERVER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")  # same rule as `box _portal` and sharedbox-admin
 SERVER_OPS = ("start", "stop", "restart")
@@ -653,16 +652,11 @@ def nice_max(peak_v, limit, floor):
 
 
 def friend_limits(rec):
-    """Live cgroup limits (they move with the box's busy/quiet balance), falling back to the config."""
+    """Live cgroup limits, falling back to the config. Everyone (owner included) has the same limits and no CPU cap."""
     c = sb.read_cgroup(sb.slice_path(rec["uid"])) if rec and rec.get("uid") is not None else None
-    owner = bool((rec or {}).get("owner"))  # the owner isn't under the friends' limits: only real cgroup ones
-    lim = sb.user_limits(CFG, None if owner else rec)
-    cfg_mem = sb.parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") and not owner else None
-    try:
-        cfg_cpu = None if owner else float(str(lim["CPU_QUOTA"]).rstrip("%")) / 100
-    except (KeyError, ValueError):
-        cfg_cpu = None
-    return {"cpu": (c or {}).get("cpu_quota_cores") or cfg_cpu,
+    lim = sb.user_limits(CFG, rec)
+    cfg_mem = sb.parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
+    return {"cpu": (c or {}).get("cpu_quota_cores"),
             "mem_high": (c or {}).get("mem_high") or cfg_mem, "mem_max": (c or {}).get("mem_max"),
             "lim": lim}
 
@@ -714,26 +708,9 @@ def reboot_text():
     return "next reboot " + time.strftime("%a %H:%M", time.localtime(rb["at"]))
 
 
-BOOST_JSON = os.path.join(sb.STATE_DIR, "boost.json")
-
-
 def boost_until(name, st=None):
-    """Epoch until which `name`'s memory boost lasts, or 0. Root reports it in `status` ("boost": {"until": ...}
-    or an epoch) and/or in boost.json ({"users": {name: {"until": ...}}} or {name: ...})."""
-    now = time.time()
-    cands = [(st or {}).get("boost")]
-    data = sb.read_json(BOOST_JSON, {}) or {}
-    if isinstance(data, dict):
-        cands.append((data.get("users") if isinstance(data.get("users"), dict) else data).get(name))
-    for c in cands:
-        v = c.get("until") if isinstance(c, dict) else c
-        try:
-            v = float(v)
-        except (TypeError, ValueError):
-            continue
-        if v > now:
-            return v
-    return 0
+    """Epoch until which `name`'s memory boost lasts, or 0 (root's boosts.json, via sb.boosts())."""
+    return sb.boosts().get(name, 0)
 
 
 def boost_size():
@@ -1520,7 +1497,7 @@ def hackathon_section(btn):
               extra="<input type='hidden' name='op' value='off'>") if until else ""
     return ("<h3 id='settings' style='margin:0 0 10px'>Hackathon mode</h3><section class='sec'>"
             f"<p style='margin-top:0'>{state}</p>"
-            "<p class='sub'>For a build day: no trap or tripwire, more builds at once, and package requests from the "
+            "<p class='sub'>For a build day: no decoy ports or tripwire (so ports like 5432 and 8080 are free), and package requests from the "
             "people you pick skip the deny list. It ends by itself at the time you set (at most 7 days).</p>"
             f"{form}<div style='margin-top:10px'>{off}</div></section>")
 
