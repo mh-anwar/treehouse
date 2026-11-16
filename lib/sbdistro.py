@@ -207,11 +207,24 @@ def sync_db_age_days():
     return (time.time() - min(os.path.getmtime(p) for p in dbs)) / 86400
 
 
+APT_LISTS = "/var/lib/apt/lists"
+
+
+def apt_lists_missing(lists=APT_LISTS):
+    """True on a machine that has never run `apt-get update` (minimal and container images ship without lists):
+    then apt knows no package at all, and every tool would be skipped as "not available"."""
+    return not glob.glob(os.path.join(lists, "*_Packages*"))
+
+
 def available(pkgs, fam=None):
     """The subset of pkgs (native names) the package manager knows; prints why others are skipped."""
     fam = fam or current()
     ok = []
     if fam == "debian":
+        if pkgs and apt_lists_missing():
+            # only refreshes the package lists (no upgrade); a box that already has lists is left alone
+            print("    apt has no package lists yet: apt-get update", file=sys.stderr)
+            subprocess.run(["apt-get", "update", "-o", "DPkg::Lock::Timeout=300"], capture_output=True, check=False)
         for p in pkgs:
             r = subprocess.run(["apt-cache", "show", "--no-all-versions", p],
                                capture_output=True, text=True)
@@ -295,7 +308,7 @@ def install(pkgs, dry=False, fam=None):
     pacman sync database (no -Sy). Raises Unsupported on an unknown distro."""
     fam = fam or current()
     if fam == "debian":
-        pkgs = available(pkgs, fam)
+        pkgs = modern_node(available(pkgs, fam), dry)
         if not pkgs:
             return
         env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
@@ -439,7 +452,51 @@ VETTED = {
                 "stable main\n",
         "arch": "amd64",
     },
+    # Node.js 22 for the coding agents and T3 Code, where the distro's own is older (Ubuntu 24.04 ships 18)
+    "nodejs": {
+        "key_url": "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key",
+        "fingerprints": ["6F71F525282841EEDAF851B42F59B5F99B1BE0B4"],  # NodeSource <gpg-2023@nodesource.com>
+        "keyring": "/etc/apt/keyrings/nodesource.gpg",
+        "list": "/etc/apt/sources.list.d/nodesource.list",
+        "repo": "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n",
+    },
 }
+NODE_MIN_MAJOR = 22
+
+
+def apt_candidate_major(pkg):
+    """Major version apt would install for pkg ("Candidate: 18.19.1+dfsg-6ubuntu5" -> 18), or None."""
+    try:
+        out = subprocess.run(["apt-cache", "policy", pkg], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"Candidate:\s*(?:\d+:)?(\d+)\.", out)
+    return int(m.group(1)) if m else None
+
+
+def modern_node(pkgs, dry=False):
+    """Agents and T3 Code need Node.js 22+. If apt's nodejs is older, add NodeSource's repo (pinned key) so
+    nodejs comes from there; its nodejs includes npm, so the distro's separate npm package is dropped."""
+    if "nodejs" not in pkgs:
+        return pkgs
+    major = apt_candidate_major("nodejs")
+    if major is None or major >= NODE_MIN_MAJOR:
+        return pkgs
+    if dry:
+        print(f"    would add NodeSource's apt repo: this distro's Node.js is {major}, agents need {NODE_MIN_MAJOR}+")
+        return pkgs
+    print(f"    this distro's Node.js is {major}; adding NodeSource's repo for Node.js {NODE_MIN_MAJOR}", file=sys.stderr)
+    try:
+        if not shutil.which("gpg"):  # checks the repo's signing key; minimal images lack it
+            env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
+            _run(["apt-get", "install", "-y", "--no-install-recommends", "-o", "DPkg::Lock::Timeout=300", "gnupg"],
+                 False, env=env)
+        ensure_vetted_source("nodejs")
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        print(f"    warning: couldn't add NodeSource's repo ({e}); installing Node.js {major}, which is too old "
+              "for T3 Code", file=sys.stderr)
+        return pkgs
+    return [p for p in pkgs if p != "npm"]
 
 
 def _key_fingerprints(armored):
