@@ -26,7 +26,7 @@
   sharedbox-admin fed-init | fed-key              this box's roster signing key (made once) | its trust line
   sharedbox-admin fed-trust 'NAME namespaces=... ssh-ed25519 ...'   trust another box's roster (once per box)
   sharedbox-admin fed-sync [--force]              publish this box's roster, pull the others', mirror accounts
-                                                  (secondary), keys, T3 links (sharedbox-fed.timer, 5 min)
+                                                  (secondary), team copies, keys, T3 links (sharedbox-fed.timer, 5 min)
   sharedbox-admin fed-status                      what each box's roster says and what was done here
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
@@ -2479,6 +2479,24 @@ def fed_apply_accounts(cfg, st, doc):
             fed_log(st, f"{action} {name} failed: {ex}")
 
 
+def fed_apply_teams(st, docs, me, now):
+    try:
+        done = sbteam.sync_mirrors(docs, me, now)
+    except OSError as ex:
+        fed_log(st, f"team copies failed: {ex}")
+        return
+    for action, name, detail, err in done:
+        if err:
+            fed_log(st, f"team {name}: {action} failed: {err}")
+        elif action == "mirror":
+            fed_log(st, f"team {name}: copy from {detail['home']} ({', '.join(detail['members'])})")
+        elif action == "drop":
+            fed_log(st, f"team {name}: removed on {detail}, copy dropped")
+        elif action == "conflict" and st["applied"].get("team:" + name) != detail:
+            st["applied"]["team:" + name] = detail
+            fed_log(st, f"team {name}: NOT copying: {detail}")
+
+
 def fed_sync(cfg, a=None):
     force = bool(getattr(a, "force", False))
     boxes = sb.boxes(cfg)
@@ -2509,7 +2527,8 @@ def fed_sync(cfg, a=None):
         host_key = open("/etc/ssh/ssh_host_ed25519_key.pub").read()
     except OSError:
         host_key = ""
-    doc = sbfed.build_roster(me, my_role, users, time.time_ns() // 1_000_000, now, host_key)
+    doc = sbfed.build_roster(me, my_role, users, time.time_ns() // 1_000_000, now, host_key,
+                             teams=sbteam.load_metas())
     os.makedirs(os.path.dirname(FED_ROSTER), exist_ok=True)
     sb.write_json(FED_ROSTER, sbfed.wire(doc, FED_KEY), mode=0o644)
     # 2. the other boxes' rosters (signed, newer than the last one seen)
@@ -2529,14 +2548,16 @@ def fed_sync(cfg, a=None):
         if why and st["applied"].get("err:" + peer) != why:
             fed_log(st, f"{peer}: {why}")
         st["applied"]["err:" + peer] = why
-    # 3. a secondary copies the primary's accounts (fresh rosters only: a box that's been down for days
+    # 3. every box: copies of the other boxes' teams (fresh rosters that carry teams only)
+    fed_apply_teams(st, {p: d for p, d in st["docs"].items() if p in boxes}, me, now)
+    # 4. a secondary copies the primary's accounts (fresh rosters only: a box that's been down for days
     #    never suspends anyone)
     if my_role == "secondary":
         for peer, pdoc in st["docs"].items():
             if pdoc.get("role") == "primary" and sbfed.fresh(pdoc, now):
                 fed_apply_accounts(cfg, st, pdoc)
         friends = sb.friend_users()
-    # 4. keys + ssh config + pinned host keys, then (as the user) T3 links, gh token, git identity
+    # 5. keys + ssh config + pinned host keys, then (as the user) T3 links, gh token, git identity
     docs = {p: d for p, d in st["docs"].items() if p in boxes}
     local_uids = {n: r["uid"] for n, r in friends.items() if r.get("status", "active") == "active"}
     keys = sbfed.merge_keys(local_uids, docs, now)
@@ -2573,7 +2594,8 @@ def fed_status(cfg, a):
     print("trusts: " + (", ".join(trusted) or "nobody yet (sharedbox-admin fed-trust)"))
     for peer, d in sorted(st["docs"].items()):
         age = int((time.time() - d.get("ts", 0)) / 60)
-        print(f"  {peer} ({d.get('role')}): {len(d.get('users') or {})} accounts, roster {age} min old"
+        teams = f", {len(d['teams'])} teams" if isinstance(d.get("teams"), dict) else ""
+        print(f"  {peer} ({d.get('role')}): {len(d.get('users') or {})} accounts{teams}, roster {age} min old"
               + (f"; last problem: {st['applied'].get('err:' + peer)}" if st["applied"].get("err:" + peer) else ""))
     for line in st.get("log", [])[-15:]:
         print("  " + line)
