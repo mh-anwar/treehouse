@@ -1993,6 +1993,15 @@ class Handler(BaseHTTPRequestHandler):
             if not peer_allowed(self.client_address[0]):
                 return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
             self.send(200, json.dumps(box_summary()), "application/json")
+        elif path == "/api/peer/roster":  # federation (lib/sbfed.py): root's signed roster, for the other boxes only
+            if not peer_allowed(self.client_address[0]):
+                return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
+            try:
+                with open(os.path.join(sb.STATE_DIR, "fed", "roster.json")) as f:
+                    body = f.read(256 << 10)
+            except OSError:
+                return self.send(404, '{"error": "no roster (sharedbox-admin fed-init)"}', "application/json")
+            self.send(200, body, "application/json")
         elif path in ("/join", "/me"):
             ip, who = self.ident()
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)

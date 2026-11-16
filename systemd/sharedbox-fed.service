@@ -1,0 +1,9 @@
+[Unit]
+Description=sharedbox federation: publish this box's signed account roster, pull the other boxes', mirror accounts
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-admin fed-sync
+TimeoutStartSec=20min
+Nice=10

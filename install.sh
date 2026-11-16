@@ -97,7 +97,7 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap sharedbox-update \
          sharedbox-canary sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -230,6 +230,10 @@ do_ "$LIB/sharedbox-admin" reapply >/dev/null
 # shared servers: slice limits, folder owners, SHARED_GROUP = friends + admins (never starts/stops a server)
 do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path sharedbox-janitor.timer \
     sharedbox-tools-update.timer sharedbox-tick.timer
+# federation (same accounts on every box in BOXES): a signing key once, then a 5-minute timer that does nothing
+# until another box is trusted (sharedbox-admin fed-trust; docs/multibox.md)
+do_ "$LIB/sharedbox-admin" fed-init
+do_ systemctl enable --now sharedbox-fed.timer
 do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too:
 do_ "$LIB/sharedbox-tune" apply || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
 do_ systemctl restart sharedbox-janitor.timer sharedbox-tools-update.timer   # pick up schedule changes

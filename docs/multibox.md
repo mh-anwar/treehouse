@@ -73,23 +73,107 @@ key, and the remote script, run with local `sh`, including its exit code and kil
 
 1. `install.sh` copies `lib/sbmulti.py` (one line, added). Deploy to both boxes as usual.
 2. Optional: `BOX_SPEED=minastirith=0.45` in /etc/sharedbox/sharedbox.conf on both boxes.
-3. Owner: works now with the `ssh minastirith` alias (radagast). Friends: they need the account, the same
-   username and a key on the other box (next section). Until then `box run` runs here for them.
+3. Owner: works now with the `ssh minastirith` alias (radagast). Friends: federation ("Accounts across boxes") gives them
+   the account and keys on the other box. Until then `box run` runs here for them.
 4. Agents learn it from `box help boxes` (a short paragraph is added to share/HELP.md).
 
-## Next
+## Accounts across boxes
 
-**Identity across boxes (root provisioner, no human steps).** Pull model, with no new write endpoint:
-- `box _init-home` makes `~/.ssh/id_treehouse` (ed25519, no passphrase) for each user and adds a
-  `Host <box>` block for every BOXES entry (`HostName ip`, `User <same name>`, `IdentityFile`).
-- Each box's sharedbox-web serves `GET /api/peer/accounts` with the same peer check as `/api/box`. It returns
-  `[{user, uid, pubkey, role}]` for accounts that are on.
-- Each box's sharedbox-admin (root) polls its peers every few minutes. It creates missing accounts with the
-  **same UID** (so files keep their owners across syncs), applies the same limits and port block, and writes
-  the pubkey to a root-owned `/etc/ssh/treehouse_keys/%u` (an sshd drop-in adds it to `AuthorizedKeysFile`,
-  so users can't lock themselves out). A friend removed or suspended on their home box disappears from the
-  list, and the peer locks the account. Trust is the tailnet plus BOXES, the same as today's `/api/box`.
-- `box invite` still creates the account on one box (its *home*). The others follow within minutes.
+**Decision: one source of truth (the primary) publishes a signed roster; every other box mirrors it with the
+same UID; per-user box-to-box SSH keys; T3 linked server-to-server; logins done on each box, not copied.**
+Built in `lib/sbfed.py`, `sharedbox-admin fed-*`, `box _fed-user`, `box boxes setup|login`.
+
+### Options compared
+
+| Option | Verdict |
+|---|---|
+| (a) Mirror accounts (same name/UID/groups/limits) pushed by root over root SSH | Works, but needs root-to-root SSH trust (a root shell on the other box if a key leaks) and touches sshd/root's authorized_keys. |
+| (b) Shared/network home (NFS or sshfs over Tailscale/Wi-Fi) | No. minastirith is on Wi-Fi: every `git status`, `node_modules` read and SQLite lock goes over the air; one box down freezes the other's agents; file locking and inotify (dev servers, T3) misbehave. The opposite of "capable". |
+| (c) On-demand (create on B the first time it's needed) | Slow first use (the T3 download, an empty home) right when the user wants it; still needs an identity source, so it's (d) with a worse trigger. |
+| **(d) Single identity source: the primary publishes a signed roster, secondaries pull** | **Chosen.** Pull over the existing tailnet web port, no root SSH, no new daemon (a 5-minute timer). The signature makes it safe even though anyone on a peer box can open a socket from that box's IP. Each box keeps its own home on its own disk: full local speed. |
+
+Mirroring (a)'s *result* (same UID, groups, limits, port block) with (d)'s *transport* gets the best of both.
+
+### How it works
+
+- `BOX_ROLE=primary|secondary` in sharedbox.conf (default primary). Invites and `useradd` happen only on the
+  primary; a secondary refuses `box invite`/signups with a pointer to the primary.
+- Every box has a root-only signing key `/etc/sharedbox/fed/box_ed25519` (`sharedbox-admin fed-init`, run by
+  install.sh) and an `allowed_signers` file of the boxes it trusts (`fed-key` on one box prints a line,
+  `fed-trust '<line>'` on the other). This is the only manual step, once per pair of boxes, done by the owner's
+  agent with sudo.
+- `sharedbox-fed.timer` (every 5 min, oneshot `sharedbox-admin fed-sync`) on every box:
+  1. Builds this box's roster: each friend's name, uid, status, limits, home box, their per-user box-to-box
+     public key (`~/.ssh/id_treehouse`, made as the user on first use) and, on the home box only, the keys
+     the user added themselves (their laptop). Plus this box's SSH host key. Signed with `ssh-keygen -Y sign`
+     (namespace `treehouse-roster`), written to `/var/lib/sharedbox/fed/roster.json`, served by sharedbox-web
+     at `GET /api/peer/roster` to BOXES IPs only (same check as `/api/box`).
+  2. Pulls the other boxes' rosters, verifies the signature *for that box's name*, refuses older serials
+     (replays) and future timestamps. The last good roster per box is kept in root's state file.
+  3. Secondary only, from a fresh primary roster (< 2 days old, so a long outage never suspends anyone):
+     creates missing accounts with the **same uid = gid**, groups, shell, 0700 home, limits drop-ins and port
+     block (port_range is derived from the uid, so ports match too); resumes and suspends to match; copies
+     per-user `limits`. **Never deletes**: removed on the primary = suspended here, home kept (like the
+     primary's own suspend). Conflicts (name or uid taken by a non-treehouse account, uid outside the friends'
+     range, an account here that isn't a copy) are logged once and left alone.
+  4. Every box, as each user: a managed block in `~/.ssh/authorized_keys` with that user's keys from the
+     other boxes (same uid only, no key options allowed), `Host <box>` blocks in `~/.ssh/config`
+     (`User <same name>`, `IdentityFile ~/.ssh/id_treehouse`) and pinned host keys from the signed rosters in
+     `~/.ssh/treehouse_known_hosts` (no TOFU prompt). So `ssh minastirith` works as `dave` from sietchtabr and
+     back, and `box run --anywhere` works for friends unchanged (sbmulti's `ssh_dest` already prefers a Host
+     whose HostName is the box's IP). Written only when the content changes.
+  5. Every box, as each user, every 12 h or when keys changed (`box _fed-user link`; `box boxes setup` runs it
+     on demand): links the other box's T3 into this T3 (`t3 environment link http://<ip>:<their port>
+     --pairing-code <token from box _portal t3-pair there> --access full-access`), renewing a week before T3's
+     30-day expiry. Both boxes do this, so the link goes both ways. From the home box only: copies the GitHub
+     token (`gh auth token | ssh B gh auth login --with-token`) and the git identity if B has none.
+- Friends reach B **through their usual T3**: a linked environment is server-to-server (A's T3 talks to B's T3
+  over the tailnet), so it works from the public Cloudflare site with no Tailscale on the friend's laptop.
+  The gate's `backend_for()` stays as it is (each friend's main T3 remains on the primary).
+
+### Credentials: why logins are not copied
+
+- **GitHub** (`gh`): an OAuth token that doesn't rotate and is meant to be used from many machines. Copied.
+- **Claude** (`~/.claude/.credentials.json`) and **Codex** (`~/.codex/auth.json`): short-lived access tokens
+  plus *rotating* refresh tokens. Two boxes refreshing the same token family race: the first refresh
+  invalidates the other's copy (Codex reports "refresh token already used" and logs out; Claude drops to a
+  login prompt), so a copy works for hours and then breaks one or both boxes, mid-task, unpredictably. A copy
+  also doubles where a long-lived secret lives for no gain.
+- Instead: `box boxes setup` lists what's missing on the other box, and `box boxes login claude --on
+  minastirith` runs the same device login the dashboard uses (`box _portal login-start` over the user's SSH)
+  and prints the link (and for Claude takes the code back with `--code`). The human clicks a link, as on
+  day one; the agent does the rest. Each box then refreshes its own tokens independently.
+
+### Same rules on both boxes
+
+Limits, janitor, tick, agent rules, `box` CLI: identical code and the same sharedbox.conf (except BOX_ROLE and
+public-site settings). Limits are copied per user. Projects are not shared: git is the source of truth; `box
+run` mirrors are caches.
+
+### Deploy
+
+1. Deploy this branch to both boxes as usual (install.sh installs `sbfed.py`, `sharedbox-fed.timer`, runs
+   `fed-init`).
+2. On minastirith, as root: set `BOX_ROLE=secondary` in /etc/sharedbox/sharedbox.conf.
+3. Key exchange, as root: on sietchtabr `sharedbox-admin fed-key` -> on minastirith
+   `sharedbox-admin fed-trust '<that line>'`; and the reverse (`fed-key` on minastirith, `fed-trust` on
+   sietchtabr). Both need BOXES listing both boxes (already true).
+4. `sharedbox-admin fed-sync --force` on sietchtabr, then minastirith, then sietchtabr again (or wait 10
+   minutes). `sharedbox-admin fed-status` shows what each side did.
+
+### Risks and limits
+
+- Root on any trusted box can add keys to any friend on the others (rosters contribute keys). All boxes are
+  the owner's; `allowed_signers` is the trust list.
+- T3's linked-environment polling may wake a friend's socket-activated T3 on the other box now and then; watch
+  memory on minastirith after the first day.
+- `t3 environment link` is a T3 CLI surface that may change; a failed link is logged (`fed-status`) and
+  retried, nothing else depends on it.
+- The owner's own accounts (pippin here, radagast there) are not mirrored: the owner keeps the `ssh
+  minastirith` alias.
+- A friend's files on B are separate: an agent that edits on B must push to git (said in `box help boxes`).
+
+## Next
 
 **Janitor**: prune `~/.sharedbox/mirror/*` untouched for 7 days (core agent's area). Mirrors are caches:
 the source of truth is always the home box or git.
@@ -104,8 +188,7 @@ already carries the user's identity, so the board needs no new auth or HTTP API.
 **Placement of new agents.** Keep it in T3:
 - Give every user's T3 a home box chosen at invite time by memory headroom (`box boxes --json`). Set it via the
   gate's existing `backend_for()` hook (`rec["box"]`), so the public URL stays the same.
-- At provisioning, auto-link each user's T3s on the two boxes (`t3 environment link`), so they can start a
-  thread "over there" from one UI when they want.
+- (Built: federation links each user's T3s on the two boxes, see "Accounts across boxes".)
 - Don't migrate live threads: the session state and dev servers stay where they started.
 
 **Later**: `box run --anywhere` for Docker builds (send build context through the mirror and use the far

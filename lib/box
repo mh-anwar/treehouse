@@ -2574,6 +2574,127 @@ def cmd_init_home(a):
     sync_hooks()
 
 
+# ---------- federation, as the user (root's `sharedbox-admin fed-sync` runs these; lib/sbfed.py) ----------
+
+FED_KEY = os.path.join(HOME, ".ssh", "id_treehouse")
+FED_STATE = os.path.join(HOME, ".sharedbox", "boxes-state.json")
+
+
+def fed_read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def fed_ssh(dest, cmd, input_text=None, timeout=120):
+    import sbmulti
+    return subprocess.run(["ssh", *sbmulti.SSH_OPTS, dest, cmd], input=input_text, capture_output=True, text=True,
+                          timeout=timeout, stdin=None if input_text is not None else subprocess.DEVNULL)
+
+
+def fed_remote_json(dest, cmd, input_text=None, timeout=120):
+    try:
+        r = fed_ssh(dest, cmd, input_text, timeout)
+        return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"ok": False, "error": "no answer"}
+
+
+def fed_link_peer(peer, ip, home, notes):
+    """One other box: can we log in; T3 there linked into T3 here; GitHub token + git identity (from the home
+    box only); which agent logins are missing there."""
+    out = {"ssh": False}
+    if fed_ssh(peer, "true", timeout=20).returncode != 0:
+        notes.append(f"can't ssh to {peer} yet")
+        return out
+    out["ssh"] = True
+    if home and gh_ok():  # a GitHub OAuth token doesn't rotate: the same one works on both boxes
+        st = fed_remote_json(peer, "box _portal status", timeout=60)
+        if not (st.get("logins") or {}).get("gh", {}).get("ok"):
+            tok = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=20).stdout.strip()
+            if tok:
+                r = fed_ssh(peer, "gh auth login --hostname github.com --git-protocol https --with-token && "
+                                  "gh auth setup-git", input_text=tok + "\n", timeout=60)
+                out["gh"] = r.returncode == 0
+                if r.returncode == 0:
+                    notes.append(f"GitHub login copied to {peer}")
+    if home:
+        name, email = git_ident()
+        if name and email:
+            q = shlex.quote
+            fed_ssh(peer, f"git config --global user.name >/dev/null || git config --global user.name {q(name)}; "
+                          f"git config --global user.email >/dev/null || git config --global user.email {q(email)}",
+                    timeout=30)
+    # T3: link the other box's T3 into this one (each box does this, so the link goes both ways)
+    if shutil.which("t3") and is_friend():
+        lo = ports()[0]
+        url = f"http://{ip}:{lo}"
+        try:
+            envs = json.loads(subprocess.run(["t3", "environment", "list", "--json"], env=user_env(),
+                                             capture_output=True, text=True, timeout=60).stdout or "[]")
+        except (ValueError, OSError, subprocess.TimeoutExpired):
+            envs = []
+        import sbfed
+        if sbfed.link_due(envs, url, time.time()):
+            pr = fed_remote_json(peer, "box _portal t3-pair", timeout=240)
+            tok = sbfed.pair_token(pr.get("pair_url", ""))
+            if tok:
+                r = subprocess.run(sbfed.link_argv(url, tok), env=user_env(), capture_output=True, text=True,
+                                   timeout=120)
+                out["t3"] = r.returncode == 0
+                notes.append(f"T3 on {peer} linked" if r.returncode == 0 else
+                             f"T3 link to {peer} failed: {(r.stderr or r.stdout).strip()[-150:]}")
+            else:
+                notes.append(f"T3 on {peer} didn't give a pairing code: {pr.get('error', '')[:100]}")
+        else:
+            out["t3"] = True
+    st = fed_remote_json(peer, "box _portal status", timeout=60)
+    there = {k: v.get("ok") for k, v in (st.get("logins") or {}).items()}
+    out["missing_logins"] = [k for k in ("claude", "codex") if portal_logged_in(k) and there.get(k) is False]
+    return out
+
+
+def cmd_fed_user(a):
+    import sbfed
+    try:
+        req = json.loads(sys.stdin.read(1 << 20) or "{}")
+    except ValueError:
+        req = {}
+    os.umask(0o077)
+    if a.action == "prepare":  # make the box-to-box key once; report it (and, on the home box, laptop keys)
+        os.makedirs(os.path.dirname(FED_KEY), mode=0o700, exist_ok=True)
+        if not os.path.exists(FED_KEY):
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+                            f"{ME.pw_name}@{socket.gethostname()} treehouse", "-f", FED_KEY],
+                           capture_output=True, timeout=30)
+        own = sbfed.own_keys(fed_read(os.path.join(HOME, ".ssh", "authorized_keys"))) if req.get("home") else []
+        print(json.dumps({"ok": True, "pubkey": fed_read(FED_KEY + ".pub").strip(), "own_keys": own}))
+    elif a.action == "apply":  # the managed blocks: authorized_keys, ~/.ssh/config, pinned host keys
+        d = os.path.join(HOME, ".ssh")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        keys = [k for k in (sbfed.clean_key(x) for x in req.get("keys") or []) if k]
+        ssh = [ln for ln in req.get("ssh") or [] if isinstance(ln, str) and "\n" not in ln]
+        kh = [ln for ln in req.get("known_hosts") or [] if isinstance(ln, str) and "\n" not in ln]
+        for path, lines in ((os.path.join(d, "authorized_keys"), keys), (os.path.join(d, "config"), ssh)):
+            cur = fed_read(path)
+            new = sbfed.managed_block(cur, lines)
+            if new != cur:
+                sbfed.write_private(path, new)
+        sbfed.write_private(os.path.join(d, "treehouse_known_hosts"), "".join(ln + "\n" for ln in kh))
+        print(json.dumps({"ok": True}))
+    elif a.action == "link":
+        notes, peers = [], {}
+        for peer, ip in (req.get("peers") or {}).items():
+            if sb.BOX_NAME_RE.fullmatch(str(peer)) and sb.BOX_IP_RE.fullmatch(str(ip)):
+                peers[peer] = fed_link_peer(peer, ip, bool(req.get("home")), notes)
+        sb.write_json(FED_STATE, {"ts": int(time.time()), "self": req.get("self"), "peers": peers}, mode=0o600)
+        print(json.dumps({"ok": True, "notes": notes}))
+    else:
+        print(json.dumps({"ok": False, "error": "unknown action"}))
+
+
 NOTICE_KEYS = ("SECURITY", "DELETED", "ARCHIVED", "OVER", "REBOOT")
 
 
@@ -2728,6 +2849,7 @@ def main():
     x = s.add_parser("team", add_help=False, help="hackathon team: shared board, tasks, wait, inbox, crew (box team -h)")
     x.add_argument("rest", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_team)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
+    x = s.add_parser("_fed-user"); x.add_argument("action"); x.set_defaults(fn=cmd_fed_user)
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
     x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them, no sudo")
