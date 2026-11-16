@@ -269,8 +269,7 @@ def remote_script(rel, sub, cmd, env=None, prep="", key=""):
     """The sh script run on the other box (in ~/rel/sub). CMD runs in its own session/process group (setsid)
     with stdin from /dev/null; a watcher reads our stdin and kills that group when it closes (we were
     interrupted or the link dropped), so a Ctrl-C here never leaves an orphaned test run there. The --prep stamp
-    lives next to the mirror (~/rel.prep), not in it, so a sync's --delete doesn't wipe it. Uses `box heavy`
-    there when treehouse is installed, so remote jobs queue behind that box's own heavy work."""
+    lives next to the mirror (~/rel.prep), not in it, so a sync's --delete doesn't wipe it."""
     q = shlex.quote
     envs = " ".join(f"{k}={q(str(v))}" for k, v in (env or {}).items())
     where = rel if sub in ("", ".") else f"{rel}/{sub}"
@@ -281,10 +280,11 @@ def remote_script(rel, sub, cmd, env=None, prep="", key=""):
                   f"  sh -c {q(prep)} </dev/null || exit 98",
                   f"  echo {q(key)} > ~/{q(rel)}.prep",
                   "fi"]
-    lines += ["H=; command -v box >/dev/null 2>&1 && H='box heavy --'",
-              f"setsid env SHAREDBOX_REMOTE=1 {envs} $H sh -c {q(shlex.join(cmd))} </dev/null &",
+    # a background job in a non-interactive sh gets stdin from /dev/null, so hand ssh's stdin to the watcher as fd 3
+    lines += ["exec 3<&0",
+              f"setsid env SHAREDBOX_REMOTE=1 {envs} sh -c {q(shlex.join(cmd))} </dev/null 3<&- &",
               "p=$!",
-              "( cat; kill -TERM -$p ) >/dev/null 2>&1 &",  # no output fds: ssh closes when CMD ends
+              "( cat <&3; kill -TERM -$p ) >/dev/null 2>&1 &",  # no output fds: ssh closes when CMD ends
               "w=$!",
               "wait $p; rc=$?",
               "kill $w 2>/dev/null",
@@ -295,7 +295,7 @@ def remote_script(rel, sub, cmd, env=None, prep="", key=""):
 def run_local(cmd, why, box_bin):
     if why:
         print(f"box run: running here ({why})", file=sys.stderr, flush=True)
-    os.execvp(box_bin, [box_bin, "heavy", "--", *cmd])
+    os.execvp(cmd[0], cmd)
 
 
 def sync(root, is_git, dest, rel, with_git):

@@ -128,6 +128,23 @@ if [[ ! -e $ETC/sharedbox.conf ]]; then
     if [[ -n $ADMINS ]]; then do_ sed -i "s/^ADMIN_USERS=.*/ADMIN_USERS=$ADMINS/" "$ETC/sharedbox.conf"; fi
 else
     say "keeping existing $ETC/sharedbox.conf (new settings use built-in defaults; see $SRC/etc/sharedbox.conf)"
+    # v2 (2026-11): equal limits, no naps/throttles, 20-day archive. Old boxes wrote the v1 numbers into the conf
+    # explicitly, which would override the new defaults, so rewrite them once (marker: $ETC/.v2-limits).
+    if [[ ! -e $ETC/.v2-limits ]]; then
+        do_ env SHAREDBOX_CONF="$ETC/sharedbox.conf" PYTHONPATH="$SRC/lib" PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import re, sbcommon as sb
+p = sb.CONF_PATH
+gone = ("CPU_QUOTA", "BURST_CPU_QUOTA", "BURST_MEMORY_HIGH", "BALANCE_CPU_BUSY", "BALANCE_MEM_OK_PCT", "BALANCE_MEM_TIGHT_PCT",
+        "OOM_SCORE_ADJ", "BUILD_JOBS", "ARTIFACT_TTL_DAYS", "T3_NAP_MINUTES", "T3_IDLE_DAYS", "DOCKER_NAP_MINUTES",
+        "HEAVY_SLOTS", "HEAVY_WAIT_MAX_MIN")
+lines = open(p).read().splitlines()
+out = [("# v1, removed: " + l) if re.match(r"\s*(%s)=" % "|".join(gone), l) else l for l in lines]
+open(p, "w").write("\n".join(out) + "\n")
+sb.set_config({"MEMORY_HIGH": "16G", "MEMORY_MAX": "17G", "CPU_WEIGHT": "100", "IO_WEIGHT": "100",
+               "PROJECT_TTL_DAYS": "20", "CACHE_TTL_DAYS": "30"}, p)
+'
+        do_ touch "$ETC/.v2-limits"
+    fi
 fi
 if [[ -n $MAIL_TO ]]; then
     if grep -q '^MAIL_TO=' "$ETC/sharedbox.conf" 2>/dev/null; then do_ sed -i "s/^MAIL_TO=.*/MAIL_TO=$MAIL_TO/" "$ETC/sharedbox.conf"
