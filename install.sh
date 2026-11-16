@@ -130,6 +130,7 @@ if [[ ! -e $ETC/sharedbox.conf ]]; then
     if [[ -n $ADMINS ]]; then do_ sed -i "s/^ADMIN_USERS=.*/ADMIN_USERS=$ADMINS/" "$ETC/sharedbox.conf"; fi
     # less than 20 GB of RAM: per-account limits that fit this machine (still the same for everyone)
     do_ env SHAREDBOX_CONF="$ETC/sharedbox.conf" SHAREDBOX_LIB="$SRC/lib" PYTHONDONTWRITEBYTECODE=1 python3 -I "$SRC/lib/sharedbox-tune" fit-limits
+    do_ touch "$ETC/.v2-limits"   # a new conf already has the v2 limits; the one-time migration below must not reset them
 else
     say "keeping existing $ETC/sharedbox.conf (new settings use built-in defaults; see $SRC/etc/sharedbox.conf)"
     # v2 (2026-11): equal limits, no naps/throttles, 20-day archive. Old boxes wrote the v1 numbers into the conf
