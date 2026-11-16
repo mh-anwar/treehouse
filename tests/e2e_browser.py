@@ -275,8 +275,24 @@ def _fake_root(req):
         PAIR_TOKENS.add(tok)
         return {"ok": True, "pair_url": f"http://{TS_IP}:{OWNER_T3_PORT}/pair#token={tok}"}
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
-                                "request-approve", "request-done", "request-decline", "self-update", "invite"):
+                                "request-approve", "request-done", "request-decline", "self-update", "invite",
+                                "boost", "hackathon"):
         return {"ok": False, "error": "not available for the owner's account"}
+    if action == "boost":  # root: raise this account's memory limit to 28G for 4 hours
+        if req.get("user") != name:
+            return {"ok": False, "error": "you can only boost your own account"}
+        return {"ok": True, "until": int(time.time()) + 4 * 3600, "error": ""}
+    if action == "hackathon":  # root: sharedbox-admin hackathon_set
+        if not owner:
+            return {"ok": False, "error": "not the owner"}
+        if req.get("op") == "off":
+            sb.set_config({"HACKATHON_UNTIL": ""})
+            return {"ok": True, "active": False, "until": "", "users": ""}
+        ts = sb.parse_local_time(req.get("until"))
+        if not ts or ts <= time.time():
+            return {"ok": False, "error": f"--until must be a future local time (got {req.get('until')!r})"}
+        sb.set_config({"HACKATHON_UNTIL": req["until"], "HACKATHON_USERS": req.get("users") or ""})
+        return {"ok": True, "active": True, "until": req["until"], "users": req.get("users") or ""}
     if action == "invite":
         return {"ok": True, "invite_user": "sam", "invite_message": f"Open https://treehouse.test and sign in with "
                 f"{req.get('email')}."}
@@ -664,10 +680,11 @@ def submit(page, sig):
             page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")  # a person opens it
             for inp in f.locator("input:not([type=hidden]), textarea").all():
                 n = inp.get_attribute("name") or ""
-                if inp.get_attribute("readonly") is not None:
+                if inp.get_attribute("readonly") is not None or inp.get_attribute("type") in ("checkbox", "radio"):
                     continue
                 inp.fill({"sshkey": SSH_KEY, "code": "sk-paste-code-123", "username": "carol",
-                          "email": "sam@example.com", "note": "Sam"}.get(n, "x"))
+                          "email": "sam@example.com", "note": "Sam", "hours": "2",
+                          "until": time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() + 7200))}.get(n, "x"))
             with page.expect_navigation(timeout=30000):
                 f.locator("button").first.click()
             return True
@@ -888,6 +905,7 @@ def owner_requests(browser):
     page = s.page
     page.goto(url("/_box/me"))
     for label in ("Approve", "Done", "Decline"):
+        page.goto(url("/_box/me?tab=requests"))
         b = page.locator("#requests ~ div button", has_text=label)
         if not b.count():
             continue
@@ -905,7 +923,7 @@ SHOT_PAGES = {
     "bob": ["/_box/me?welcome=1", "/_box/me"],
     "dave": ["/_box/me"],
     "erin": ["/_box/me"],
-    "owner": ["/_box/me"],
+    "owner": ["/_box/me", "/_box/me?tab=people", "/_box/me?tab=settings"],
     "stranger": ["/", f"/i/{INVITE_TOK}", "/_box/nope"],
 }
 SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stranger": "tok-stranger", "dave": "tok-dave",
@@ -1071,7 +1089,7 @@ def boxes_card(browser):
     """The owner's Boxes card: one row per box in BOXES (this one, a live peer, a dead one); friends don't get it."""
     for width, scheme in ((1280, "dark"), (390, "light")):
         s = Session(browser, "owner", "tok-owner", width=width, scheme=scheme)
-        s.page.goto(url("/_box/me"))
+        s.page.goto(url("/_box/me?tab=boxes"))
         where = f"boxes card @{width}"
         if SHOTS and s.page.locator("#boxes").count():
             os.makedirs(SHOTS, exist_ok=True)

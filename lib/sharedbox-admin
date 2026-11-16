@@ -830,6 +830,7 @@ def handle_owner_pair(cfg, rid, req):
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
                         "shared-logs", "self-update", "invite") + REQUEST_PORTAL_ACTIONS
+OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as `box hackathon on|off`
 
 
 def start_update(cfg, by):
@@ -878,6 +879,8 @@ def handle_portal(cfg, rid, req):
             return {"ok": False, "error": "not available for the owner's account"}
         if req.get("action") == "self-update":
             return start_update(cfg, name)
+        if req.get("action") == "hackathon":  # {"op": "on"|"off", "until": "YYYY-MM-DD HH:MM", "users": "a b"}
+            return hackathon_set(cfg, {k: req.get(k) for k in ("op", "until", "users")}, name)
         if req.get("action") == "invite":  # the owner's dashboard: same as `box invite --email ... --note ...`
             try:
                 res = invite_account(cfg, None, str(req.get("note") or "")[:120], by=name,
