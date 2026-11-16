@@ -52,6 +52,7 @@ DEFAULTS = {
     # the name people see on pages, emails and broadcasts ("treehouse · <hostname>"). Commands, paths and
     # unit names stay sharedbox-*.
     "BRAND": "treehouse",
+    "BOX_NAME": "",   # this machine's name on pages and emails (default: its hostname)
     # who may join: open | closed. Not set in the conf file + PUBLIC_MODE=cloudflare = closed
     # (invites only; see load_config)
     "JOIN_MODE": "open",
@@ -267,10 +268,15 @@ def brand(cfg):
     return (cfg.get("BRAND") or "").strip() or "treehouse"
 
 
+def box_name(cfg):
+    """This machine's name on pages and emails: BOX_NAME, else the hostname."""
+    import socket
+    return (cfg.get("BOX_NAME") or "").strip() or socket.gethostname()
+
+
 def brand_host(cfg):
     """"treehouse · mybox": the name on pages and emails, with this machine's name second."""
-    import socket
-    return f"{brand(cfg)} · {socket.gethostname()}"
+    return f"{brand(cfg)} · {box_name(cfg)}"
 
 
 def cfg_bool(cfg, key):

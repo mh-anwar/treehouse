@@ -97,7 +97,7 @@ PORT_OF = {u: PORT_BASE + (uid - 2000) * 10 for u, uid in UIDS.items()}
 
 with open(os.path.join(TMP, "sharedbox.conf"), "w") as f:
     f.write(f"PUBLIC_URL={PUBLIC}\nPUBLIC_MODE=cloudflare\nCF_TEAM_DOMAIN=x.cloudflareaccess.com\n"
-            f"CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nCF_OWNER_EMAILS=owner@x.io\n"
+            f"CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nBOX_NAME=mybox\nCF_OWNER_EMAILS=owner@x.io\n"
             f"PORT_BASE={PORT_BASE}\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT={OWNER_T3_PORT}\n"
             f"OWNER_T3_USER={ME}\nADMIN_USERS={ME}\nBRAND=treehouse\n"
             "UPDATE_SOURCE=https://github.com/example/treehouse\n"

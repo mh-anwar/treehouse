@@ -60,7 +60,7 @@ def _form_key():
 
 SECRET = _form_key()
 FLASH = {}  # id -> (time, who id, result): a button's outcome shown on the GET after it (post/redirect/get)
-HOST = socket.gethostname()
+HOST = sb.box_name(CFG)
 BRAND = sb.brand(CFG)
 SELF_IP = None
 OWNER_TS_ID = ""  # the Tailscale user that owns this machine (= the owner), filled in main()

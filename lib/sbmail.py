@@ -34,14 +34,14 @@ def send(cfg, subject, text, html=None, to=None):
         raise MailNotConfigured(f"{pw_file} is readable by others; chmod 600 it")
     user = cfg.get("SMTP_USER") or cfg["MAIL_TO"].split(",")[0].strip()
     sender = cfg.get("MAIL_FROM") or user
-    host = socket.gethostname()
+    host = (cfg.get("BOX_NAME") or "").strip() or socket.gethostname()  # sbcommon.box_name
 
     msg = EmailMessage()
     msg["Subject"] = f"[{host}] {subject}"
     msg["From"] = f"{(cfg.get('BRAND') or 'treehouse').strip()} on {host} <{sender}>"
     msg["To"] = to or cfg["MAIL_TO"]
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid(domain=host)
+    msg["Message-ID"] = make_msgid(domain=socket.gethostname())
     msg.set_content(text)
     if html:
         msg.add_alternative(html, subtype="html")

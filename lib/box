@@ -1728,7 +1728,7 @@ def cmd_setup(a):
     if a.check or not sys.stdin.isatty():
         print("setup complete" if not missing else "missing:\n" + "\n".join(f"- {m}" for m in missing))
         return
-    print(f"Let's get you set up on {socket.gethostname()}. Ctrl-C any time; rerun with `box setup`.\n")
+    print(f"Let's get you set up on {sb.box_name(CFG)}. Ctrl-C any time; rerun with `box setup`.\n")
     # 1. git
     if not (name and email):
         print("1) git identity (used in your commits)")
@@ -1781,7 +1781,7 @@ def cmd_welcome(a):
     have = ", ".join(t["label"] for k, t in sorted(tv.items())
                      if k in ("claude", "codex", "gemini", "opencode")) or "see `box agents`"
     print(f"""
-Welcome to {BRAND} on {socket.gethostname()}, {ME.pw_name}!
+Welcome to {BRAND} on {sb.box_name(CFG)}, {ME.pw_name}!
 
   Agents installed:  {have}
   Your ports:        {f'{r[0]}-{r[1]}' if r else 'any'}

@@ -17,7 +17,6 @@ import json
 import os
 import pwd
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -364,7 +363,7 @@ def build_report(cfg, g, findings, new_ids, resolved):
 
     subject = f"{icon} weekly health: {word}" + (f" ({len(probs)} issue{'s' * (len(probs) != 1)})" if probs else "")
     text = "\n\n".join(f"== {t} ==\n" + "\n".join(lines) for t, lines in S)
-    host = socket.gethostname()
+    host = sb.box_name(cfg)
     text = f"{host} — week ending {time.strftime('%a %d %b %Y')}\n\n{text}\n\n-- sharedbox-health\n"
     color = {"green": "#1a7f37", "yellow": "#9a6700", "red": "#cf222e"}[level]
     h = ["<div style='font-family:-apple-system,Segoe UI,sans-serif;max-width:720px;color:#1f2328'>",
