@@ -6,9 +6,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 import sbclean  # noqa: E402
 
 ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
@@ -118,6 +120,41 @@ class BackedUp(unittest.TestCase):
         found = sbclean.find_projects(home)
         self.assertEqual([n for n, _ in found], ["app", "old"])
 
+
+    def test_pass_archives_pushed_but_never_touches_unpushed_work(self):
+        """The whole janitor pass, over the disk budget with deletion on: an old pushed project is archived (moved,
+        restorable), an equally old project with an unpushed commit stays exactly where it is."""
+        home = os.path.join(self.tmp, "home")
+        wip = os.path.join(home, "wip")
+        os.makedirs(wip)
+        git(wip, "init", "-q", "-b", "main")
+        with open(os.path.join(wip, "work.txt"), "w") as f:
+            f.write("only copy\n")
+        git(wip, "add", "work.txt")
+        git(wip, "commit", "-q", "-m", "w")
+        git(wip, "remote", "add", "origin", self.remote)  # has a remote, but this commit was never pushed
+        old = time.time() - 60 * 86400
+        for top in (self.repo, wip):
+            for d, dirs, files in os.walk(top):
+                for n in dirs + files:
+                    os.utime(os.path.join(d, n), (old, old), follow_symlinks=False)
+            os.utime(top, (old, old))
+        plan = {"project_ttl_days": 20, "warn_days": 3, "cache_ttl_days": 30, "tmp_ttl_days": 3, "tmp_dirs": [],
+                "archive_days": 14}
+        saved = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            res = sbclean.run_pass(plan)
+            self.assertEqual([a["name"] for a in res["archived"]], ["app"])
+            self.assertTrue(os.path.isdir(os.path.join(res["archived"][0]["path"], "app", ".git")))
+            self.assertFalse(os.path.exists(self.repo))
+            # far over the disk budget with deletion on: archives may go, unpushed work still may not
+            res = sbclean.run_pass(dict(plan, usage=10**12, budget=1, over_budget_delete=True))
+        finally:
+            os.environ["HOME"] = saved
+        with open(os.path.join(wip, "work.txt")) as f:
+            self.assertEqual(f.read(), "only copy\n")
+        self.assertFalse(any(d["path"].startswith(wip) for d in res["deleted"]), res["deleted"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -308,3 +308,4 @@ async def main():
 
 
 asyncio.run(main())
+sys.exit(0 if results and all(results) else 1)
