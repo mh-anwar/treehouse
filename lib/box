@@ -1141,8 +1141,9 @@ T3_MANAGED_MARK = os.path.join(HOME, ".sharedbox", "t3-managed")  # t3code.servi
 T3_OLD_DROPIN = os.path.join(UNIT_DIR, T3_OLD + ".d", "sb-managed.conf")
 T3_BACKUP = os.path.join(HOME, ".t3", "sb-backup", "statev2-before-switch.sqlite")
 T3_TERMINAL = ("completed", "failed", "cancelled", "interrupted", "rolled_back")
-T3_SWITCH_QUIET = 600         # nothing running for this long in a row (gaps between a delegated task's turns are shorter)
-T3_SWITCH_SAMPLE = 30
+# SHAREDBOX_T3_SWITCH_QUIET/_SAMPLE shorten these for tests (tests/container/scenario-t3switch.sh)
+T3_SWITCH_QUIET = int(os.environ.get("SHAREDBOX_T3_SWITCH_QUIET") or 600)  # nothing running for this long in a row
+T3_SWITCH_SAMPLE = int(os.environ.get("SHAREDBOX_T3_SWITCH_SAMPLE") or 30)  # (gaps between a delegated task's turns are shorter)
 T3_SWITCH_CPU_USEC = 1_000_000  # agents' CPU per sample that counts as working
 T3_SWITCH_GIVE_UP = 3 * 86400
 VERSION_TEXT_RE = re.compile(r"\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b")
