@@ -234,99 +234,125 @@ def page(title, body, gate=False, member=True):
 FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2316a34a'/%3E%3Cpath d='M16 5l8 11h-4l5 7H7l5-7H8z' fill='%23fff'/%3E%3Crect x='14.5' y='23' width='3' height='4' fill='%23fff'/%3E%3C/svg%3E"
 
 CSS = """
-:root{--bg:#0d0f12;--panel:#151920;--line:#252b35;--fg:#e6e9ef;--mut:#8a93a3;--acc:#5aa9ff;
---ok:#3ecf8e;--warn:#f5b041;--bad:#ff6b6b;--inset:#0a0c0f;--track:#222833;--btn2:#252b35;--on-acc:#04111f;
---okb:#1f5f45;--warnb:#6b5420;--badb:#6b2a2a;--c2:#c084fc;--grid:#1d222b;color-scheme:dark}
-@media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--panel:#fff;--line:#dfe3ea;--fg:#151a22;--mut:#5d6675;
---acc:#1f6fd1;--ok:#17905c;--warn:#a86a00;--bad:#d03434;--inset:#f1f3f6;--track:#e6e9ef;--btn2:#e6e9ef;
---on-acc:#fff;--okb:#9fd8bd;--warnb:#e8cf98;--badb:#efb3b3;--c2:#8b3fd9;--grid:#eef0f4;color-scheme:light}}
+:root{--bg:#0f1115;--panel:#161a20;--line:#262c35;--fg:#e7e9ee;--mut:#8b93a1;--acc:#6aa8ff;
+--ok:#46c28e;--warn:#e9b04a;--bad:#f07272;--inset:#0c0e12;--track:#252b34;--btn2:#232932;--on-acc:#06121f;
+--okb:#24533f;--warnb:#5e4b1f;--badb:#5e2a2a;--c2:#b993f5;--grid:#1e232b;--w:800px;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#f5f6f8;--panel:#fff;--line:#e2e5ea;--fg:#16191f;--mut:#5f6774;
+--acc:#2563c9;--ok:#178a58;--warn:#9a6400;--bad:#c93434;--inset:#f3f4f7;--track:#e7e9ee;--btn2:#eceef2;
+--on-acc:#fff;--okb:#a8d9c1;--warnb:#ead39f;--badb:#efbcbc;--c2:#7d44d1;--grid:#eef0f3;color-scheme:light}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
-font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;
-border-bottom:1px solid var(--line)}.brand{font-weight:700;color:var(--fg);text-decoration:none;display:inline-flex;align-items:center;gap:8px}.brand .host{font-weight:400;color:var(--mut)}
-nav a{color:var(--mut);margin-left:18px;text-decoration:none}nav a:hover{color:var(--fg)}
-main{max-width:1200px;margin:0 auto;padding:24px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:22px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.card h3{margin:0 0 6px;font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
-.big{font-size:24px;font-weight:650}.sub{color:var(--mut);font-size:12px}
-.bar{height:6px;background:var(--track);border-radius:3px;overflow:hidden;margin-top:8px}
-.bar>i{display:block;height:100%;background:var(--acc)}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans","Liberation Sans","DejaVu Sans",sans-serif;
+-webkit-font-smoothing:antialiased}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px 16px;flex-wrap:wrap;padding:12px max(16px,calc((100% - var(--w))/2));
+border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-weight:650;color:var(--fg);text-decoration:none;display:inline-flex;align-items:center;gap:8px}.brand .host{font-weight:400;color:var(--mut)}
+nav{display:flex;flex-wrap:wrap;gap:4px 18px}nav a{color:var(--mut);text-decoration:none;white-space:nowrap;font-size:14px}nav a:hover{color:var(--fg)}
+main{max-width:var(--w);margin:0 auto;padding:24px 16px 48px}
+h2{font-size:17px;font-weight:650;margin:32px 0 10px;letter-spacing:-.01em}h3{font-size:15px;font-weight:650;margin:0 0 6px}
+p{margin:8px 0}a{color:var(--acc)}.mut{color:var(--mut)}.sub{color:var(--mut);font-size:13px}.err{color:var(--bad)}
+code,pre,.mono,input.mono,textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+code{font-size:.9em;background:var(--inset);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+pre{font-size:12.5px;background:var(--inset);border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
+pre code{border:0;padding:0;background:none}
+.card,.sec,.start{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.sec{margin:0 0 12px}.sec>h3:first-child,.card>h3:first-child{margin-top:0}
+.big{font-size:24px;font-weight:650}
+.bar{height:6px;background:var(--track);border-radius:3px;overflow:hidden;margin-top:6px}
+.bar>i{display:block;height:100%;background:var(--acc);border-radius:3px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
 th{font-size:12px;color:var(--mut);font-weight:600}tr:last-child td{border-bottom:0}
-td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.pill{display:inline-block;white-space:nowrap;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--mut)}
-.pill.ok{color:var(--ok);border-color:var(--okb)}.pill.warn{color:var(--warn);border-color:var(--warnb)}
-.pill.bad{color:var(--bad);border-color:var(--badb)}
-.note{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:0 0 14px}
-.note p{margin:0}.note .ic{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;font-size:12px;font-weight:700;line-height:1}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}.tw{overflow-x:auto;margin:0 -8px}.tw table{min-width:560px}
+.pill{display:inline-block;white-space:nowrap;padding:1px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);color:var(--mut)}
+.pill.ok{color:var(--ok);border-color:var(--okb)}.pill.warn{color:var(--warn);border-color:var(--warnb)}.pill.bad{color:var(--bad);border-color:var(--badb)}
+.note{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 14px;margin:0 0 12px}
+.note p{margin:0}.note .ic{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;line-height:1}
 .note.ok{border-color:var(--okb)}.note.ok .ic{background:var(--ok);color:var(--on-acc)}
 .note.bad{border-color:var(--badb)}.note.bad .ic{background:var(--bad);color:#fff}
 .note.busy .ic{border:2px solid var(--line);border-top-color:var(--acc);animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.note.busy .ic{animation:none}}
 .mini{width:100%;min-width:90px}.mini .bar{margin-top:3px}
-h2{font-size:15px;margin:26px 0 10px}ul.ev{list-style:none;padding:0;margin:0;background:var(--panel);
-border:1px solid var(--line);border-radius:10px}ul.ev li{padding:7px 12px;border-bottom:1px solid var(--line);font-size:13px}
-ul.ev li:last-child{border:0}.mut{color:var(--mut)}code,pre{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace}
-pre{background:var(--inset);border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
-form label{display:block;margin:14px 0 6px;color:var(--mut)}input,textarea{width:100%;background:var(--inset);
-color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
-textarea{font-family:ui-monospace,monospace;font-size:12px;height:90px}
-button{margin-top:16px;background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer}
-a.btn{display:inline-block;margin-top:16px;background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:10px 18px;font-weight:650;cursor:pointer;text-decoration:none}
-a.btn:hover{filter:brightness(1.08)}
-.box{max-width:680px}.err{color:var(--bad)}svg.spark{display:block}
-.box.me{max-width:980px}.me>p,.me>ul,.me>details,.me>form{max-width:680px}
-a{color:var(--acc)}button.sm{margin:0;padding:5px 11px;font-size:12px;border-radius:6px}
-.secondary{background:var(--btn2)!important;color:var(--fg)!important}[hidden]{display:none!important}
+ul.ev{list-style:none;padding:0;margin:0}ul.ev li{padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}ul.ev li:last-child{border:0}
+form label{display:block;margin:14px 0 6px;color:var(--mut);font-size:14px}
+input,textarea,select{width:100%;background:var(--inset);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit}
+input:focus,textarea:focus{outline:2px solid var(--acc);outline-offset:-1px}
+input[type=checkbox],input[type=radio]{width:auto;accent-color:var(--acc)}
+textarea{font-size:12.5px;height:90px}
+button,a.btn{display:inline-block;margin-top:14px;background:var(--acc);color:var(--on-acc);border:1px solid transparent;border-radius:8px;
+padding:9px 16px;font:inherit;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;line-height:1.3}
+button:hover,a.btn:hover{filter:brightness(1.07)}
+.box{max-width:var(--w)}.box.me{max-width:none}
+button.sm,a.btn.sm{margin:0;padding:5px 11px;font-size:13px;border-radius:7px}
+.secondary{background:var(--btn2)!important;color:var(--fg)!important;border-color:var(--line)!important}[hidden]{display:none!important}
 button.linkbtn{background:none!important;color:var(--acc)!important;margin:0;padding:0;border:0;border-radius:0;font:inherit;font-weight:inherit;text-decoration:underline;cursor:pointer}
 button:disabled{opacity:.6;cursor:default}
-.start{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:6px 0 8px;max-width:680px}
-.start h2{margin:0 0 6px;font-size:18px}.start>h3,.start .card h3{margin:0 0 8px;font-size:15px;color:var(--fg);text-transform:none;letter-spacing:0}
+.start{margin:0 0 12px;padding:22px 24px}
+.start h2{margin:0 0 6px;font-size:20px}.start>h3,.start .card h3{margin:0 0 8px;font-size:16px}
 .start p,.line{margin:8px 0}.line>.btn,.line>form>button:not(.linkbtn),.line>button{margin-top:6px}
 .start .card{border:0;background:none;padding:0}.start .note{margin:0 0 12px;background:var(--inset)}
 .start textarea.prompt{height:auto;min-height:120px;resize:vertical}.byhand{margin:10px 0 0}.byhand>summary{cursor:pointer;color:var(--mut);font-size:14px}
 .copyrow{display:flex;gap:8px;align-items:center}.copyrow input{flex:1 1 auto;min-width:0;margin:0}.copyrow button{margin:0;flex:none}
-.narrow{display:none}@media (max-width:560px){.start .narrow{display:block}.start .wide{display:none}}input.mono{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
-ul.acct{list-style:none;padding:0;margin:0 0 6px;max-width:680px}ul.acct li{padding:7px 0;border-bottom:1px solid var(--line)}
-ul.acct li:last-child{border:0}ul.acct form{margin-left:2px}
-details.more{margin-top:26px;max-width:680px}details.more>summary,details.more details>summary{cursor:pointer;color:var(--mut)}
-details.more>summary{font-weight:600}details.more h3{font-size:13px;margin:18px 0 4px}details.more p{margin:4px 0}
-.dash-h{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin:26px 0 10px}
-.dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg a{padding:4px 12px;font-size:12px;color:var(--mut);text-decoration:none}
-.seg a.on{background:var(--acc);color:var(--on-acc);font-weight:650}
-.fhero{border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:4px 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.fg{margin:28px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--acc)}.inv{display:flex!important;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0}.inv input{width:auto;flex:1 1 220px;max-width:300px;margin:0}.inv input.short{flex:1 1 140px;max-width:180px}.inv button{margin:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:650;color:var(--mut);font-size:13px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
+.narrow{display:none}@media (max-width:560px){.start .narrow{display:block}.start .wide{display:none}}input.mono{font-size:12px}
+.greet{margin:0 0 14px;color:var(--mut)}
+/* the "you" strip */
+.you{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 20px}
+.stat h4{margin:0;font-size:12px;font-weight:600;color:var(--mut)}.stat .v{font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat .v small{font-size:13px;color:var(--mut);font-weight:500}.stat .sub{margin-top:2px}
+.youx{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;border-top:1px solid var(--line);margin-top:14px;padding-top:12px}
+.boxline{font-size:13px;color:var(--mut)}.boxline .dot{margin-right:5px}
+.warnline{font-size:13px;color:var(--warn);margin:10px 0 0}
+@media(max-width:620px){.you{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}}
+.dash-h{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:32px 0 10px}
+.dash-h h2{margin:0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg a{padding:4px 12px;font-size:13px;color:var(--mut);text-decoration:none}
+.seg a.on{background:var(--btn2);color:var(--fg);font-weight:600}
+/* rows: account settings, admin lists */
+.rows{list-style:none;margin:0;padding:0}.rows>li{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--line)}
+.rows>li:first-child{padding-top:0}.rows>li:last-child{border:0;padding-bottom:0}
+.rows .k{flex:0 0 120px;font-weight:600;font-size:14px}.rows .d{flex:1 1 240px;min-width:0;font-size:14px}.rows .a{flex:none;margin-left:auto}
+.rows .a form{display:inline}
+@media(max-width:560px){.rows .k{flex-basis:100%}.rows .a{margin-left:0}}
+details.sec>summary{cursor:pointer;font-weight:650;list-style:none;display:flex;justify-content:space-between;align-items:center}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary::after{content:"";width:8px;height:8px;border-right:2px solid var(--mut);border-bottom:2px solid var(--mut);transform:rotate(45deg);margin:0 4px 4px 0}
+details.sec[open]>summary::after{transform:rotate(-135deg);margin-bottom:-4px}
+details.sec[open]>summary{margin-bottom:12px}details.sec h3{margin:18px 0 4px;font-size:14px}details.sec h3:first-of-type{margin-top:4px}
+details.sec>summary .sub{font-weight:400;margin-left:auto;margin-right:14px}
+/* admin tabs */
+.tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--line);margin:36px 0 16px}
+.tabs a{padding:8px 12px;margin-bottom:-1px;color:var(--mut);text-decoration:none;font-size:14px;border-bottom:2px solid transparent}
+.tabs a.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}.tabs a .pill{margin-left:6px;font-size:11px}
+.admin-h{display:flex;align-items:baseline;gap:10px;margin:32px 0 0}.admin-h h2{margin:0}
+.fhero{border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:0 0 26px;background:var(--panel)}.fhero h2{margin-top:0}.fp{margin:0;font-weight:600;color:var(--fg)}.fm{margin:4px 0 0;color:var(--mut);font-size:14px}.steps{margin:14px 0 6px;padding-left:22px}.steps li{margin:0 0 10px;padding-left:4px}.steps li .btn,.steps li button{margin-top:0}.fg{margin:28px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}.inv{display:flex!important;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0}.inv input{width:auto;flex:1 1 220px;max-width:300px;margin:0}.inv input.short{flex:1 1 140px;max-width:180px}.inv button{margin:0}.flist{display:grid;gap:0}.frow{display:grid;grid-template-columns:150px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line)}.fl{font-weight:600;color:var(--mut);font-size:13px;padding-top:2px}@media(max-width:560px){.frow{grid-template-columns:1fr;gap:4px}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;min-width:0}
-.tile h3{margin:0 0 4px;font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+.tile h3{margin:0 0 4px;font-size:12px;font-weight:600;color:var(--mut)}
 .tile .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}.tile .v small{font-size:12px;color:var(--mut);font-weight:500}
-.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:12px}
-.chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px 8px;min-width:0}
-.chart-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin-bottom:8px}
-.chart-h b{font-size:13px}.chart-h .now{font-size:18px;font-weight:650;font-variant-numeric:tabular-nums}
-.plot{position:relative;height:130px}.plot svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-.plot .yl{position:absolute;right:0;transform:translateY(-100%);font-size:10.5px;color:var(--mut);
+.chart{min-width:0;margin-top:14px}
+.chart-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin-bottom:6px;font-size:13px}
+.plot{position:relative;height:64px}.plot svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.plot .yl{position:absolute;right:0;transform:translateY(-100%);font-size:11px;color:var(--mut);
 background:var(--panel);padding:0 3px;border-radius:3px;line-height:1.3}.plot .yl.lim{color:var(--warn)}
-.xl{display:flex;justify-content:space-between;font-size:10.5px;color:var(--mut);margin-top:4px}
-.ln{fill:none;stroke-width:1.8;vector-effect:non-scaling-stroke;stroke-linejoin:round}
-.ln.a{stroke:var(--acc)}.ln.b{stroke:var(--c2)}.ar{stroke:none;opacity:.16}.ar.a{fill:var(--acc)}.ar.b{fill:var(--c2)}
+.xl{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-top:4px}
+.ln{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.ln.a{stroke:var(--acc)}.ln.b{stroke:var(--c2)}.ar{stroke:none;opacity:.14}.ar.a{fill:var(--acc)}.ar.b{fill:var(--c2)}
 .gl{stroke:var(--grid);stroke-width:1;vector-effect:non-scaling-stroke}
-.lim{stroke:var(--warn);stroke-width:1.3;stroke-dasharray:5 4;vector-effect:non-scaling-stroke}
+.lim{stroke:var(--warn);stroke-width:1.2;stroke-dasharray:5 4;vector-effect:non-scaling-stroke}
 .key{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);margin-right:6px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);margin-right:6px;flex:none}
 .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
-.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 28px}.duo>section{min-width:0}.duo>section:only-child{grid-column:1/-1}
-.srv{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
-.srv .tile{display:flex;flex-direction:column;gap:6px}.srv .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
-.people{list-style:none;padding:0;margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px}
-.people li{display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--line);font-size:13px}
+.srv{display:grid;gap:0}.srv>.item{display:flex;flex-direction:column;gap:4px;padding:12px 0;border-bottom:1px solid var(--line);min-width:0}
+.srv>.item:first-child{padding-top:0}.srv>.item:last-child{border:0;padding-bottom:0}.srv .sub{overflow-wrap:anywhere}
+.srv .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.people{list-style:none;padding:0;margin:0}
+.people li{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
 .people li:last-child{border:0}.people .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .people svg{width:90px;height:22px;flex:none}.people .c{min-width:110px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
 pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:11.5px}
-nav a{white-space:nowrap}
-@media (max-width:560px){main{padding:16px}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}td.num,td .pill{white-space:nowrap}header{padding:12px 16px;gap:6px 12px;flex-wrap:wrap}.brand .host{display:none}nav a{margin:0 14px 0 0}.charts{grid-template-columns:1fr}
+.hk .grid{display:flex;flex-wrap:wrap;gap:8px 18px;margin:6px 0}.hk .grid label{display:flex;align-items:center;gap:6px;margin:0;color:var(--fg)}
+.hk .when{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.hk .when input{width:auto}
+.hk{display:block!important}.foot{margin-top:28px;display:flex;justify-content:flex-end}
+@media (max-width:560px){main{padding:16px 16px 40px}.brand .host{display:none}.start{padding:18px}.sec{padding:16px}
 .people .c{min-width:56px;font-size:12px}.people svg{width:56px}}
 """
 
@@ -428,13 +454,23 @@ Run <code>cat ~/.ssh/id_ed25519.pub</code> on your computer to get it.</label>
 <button type="submit">Create my account</button></form>
 <h2>What you get</h2><ul>
 <li>Your own T3 Code: a web app where you chat with Claude or Codex and it builds things for you. Use your own subscription.</li>
-<li>Fair-share limits: {e(CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG['CPU_QUOTA']))} cores, up to
-{e(CFG.get('BURST_MEMORY_HIGH') or CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG.get('BURST_CPU_QUOTA') or CFG['CPU_QUOTA']))} cores
-while the box is quiet. {e(CFG['DISK_BUDGET_GB'])}G of disk.</li>
+<li>{e(limits_text())}</li>
 <li>A block of {e(CFG['PORT_BLOCK'])} ports for your servers, which keep running after you log out.</li>
-<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are archived (restorable for {e(CFG['ARCHIVE_DAYS'])} days).
-Use git. Nothing here is backed up.</li>
+<li>{e(archive_text())}</li>
 </ul></div>""")
+
+
+def limits_text():
+    """What everyone gets, from the config (never hard-coded)."""
+    mem = str(CFG.get("MEMORY_MAX") or CFG.get("MEMORY_HIGH") or "")
+    return (f"{mem} of memory each ({boost_size()} on demand for a few hours), an equal share of the CPU, "
+            f"and {CFG['DISK_BUDGET_GB']}G of disk.")
+
+
+def archive_text():
+    return (f"Your projects live in your home folder. One you haven't touched for {CFG['PROJECT_TTL_DAYS']} days is "
+            f"archived only if it's fully pushed to git (restorable for {CFG['ARCHIVE_DAYS']} days). "
+            "Nothing here is backed up, so use git.")
 
 
 # ---------- portal: everything a new friend needs, in the browser ----------
@@ -631,7 +667,7 @@ def friend_limits(rec):
             "lim": lim}
 
 
-SAFE_EVENTS = ("user_created", "tools_updated", "skill_shared", "balance")
+SAFE_EVENTS = ("user_created", "tools_updated", "skill_shared")
 
 
 def box_feed(n=6, me=None):
@@ -650,8 +686,7 @@ def box_feed(n=6, me=None):
             txt = (f"<b>{html.escape(user)}</b> shared the skill <code>{html.escape(str(ev.get('skill', '')))}</code>"
                    " (<code>box skills</code>)")
         else:
-            txt = ("The box got busy: everyone's limits went down for a while" if ev.get("cpu_busy") or
-                   ev.get("mem_tight") else "The box is quiet again: limits went back up")
+            continue
         out.append(f"<li><span class='mut'>{html.escape(ago_text(ev.get('ts', 0)))}</span> · {txt}</li>")
         if len(out) >= n:
             break
@@ -669,158 +704,174 @@ def ago_text(ts):
     return "just now"
 
 
-def reboot_tile():
-    """("Next reboot", value html, subtitle) for the box tiles, or None when no reboot is planned."""
+def reboot_text():
+    """"next reboot Wed 04:00" for the box line, or "" when no reboot is planned."""
     rb = sb.reboot_info(CFG)
     if not rb["at"]:
-        return None
+        return ""
     if rb["postponed"]:
-        return ("Reboot", "Waiting", f"for agents to finish their turn, by "
-                f"{time.strftime('%H:%M', time.localtime(rb['latest']))} at the latest")
-    when = time.strftime("%a %H:%M", time.localtime(rb["at"]))
-    if rb["why"] == "updates":
-        return ("Next reboot", html.escape(when), "for security updates")
-    sched = rb["schedule"] or "scheduled"
-    return ("Next reboot", html.escape(when), sched[:1].upper() + sched[1:] + ".")
+        return f"reboot waiting for agents (by {time.strftime('%H:%M', time.localtime(rb['latest']))})"
+    return "next reboot " + time.strftime("%a %H:%M", time.localtime(rb["at"]))
 
 
-def friend_dashboard(name, rec, rng="24h", base=""):
-    """Their CPU/memory against their limits, disk vs budget, box health, who's around. All server-side."""
+BOOST_JSON = os.path.join(sb.STATE_DIR, "boost.json")
+
+
+def boost_until(name, st=None):
+    """Epoch until which `name`'s memory boost lasts, or 0. Root reports it in `status` ("boost": {"until": ...}
+    or an epoch) and/or in boost.json ({"users": {name: {"until": ...}}} or {name: ...})."""
+    now = time.time()
+    cands = [(st or {}).get("boost")]
+    data = sb.read_json(BOOST_JSON, {}) or {}
+    if isinstance(data, dict):
+        cands.append((data.get("users") if isinstance(data.get("users"), dict) else data).get(name))
+    for c in cands:
+        v = c.get("until") if isinstance(c, dict) else c
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        if v > now:
+            return v
+    return 0
+
+
+def boost_size():
+    return str(CFG.get("BOOST_MEMORY_MAX") or CFG.get("BOOST_MEMORY") or "28G")
+
+
+def mem_limit(lim):
+    """The memory limit to show: the live hard cap, else MEMORY_MAX from the config, else the soft limit."""
+    return lim.get("mem_max") or (sb.parse_size(CFG["MEMORY_MAX"]) if CFG.get("MEMORY_MAX") else None) \
+        or lim.get("mem_high")
+
+
+def you_strip(name, rec, st, btn, rng="24h", base=""):
+    """One card: your memory/CPU/disk/ports now, one small memory chart, one line about the box, the boost button."""
     e = html.escape
     rng = rng if rng in RANGES else "24h"
     now = time.time()
     rows = metrics_tail(RANGES[rng])
     t0, t1 = now - RANGES[rng], now
     step = sample_step(rows)
-    gap = max(3 * step, 2.5 * RANGES[rng] / 240)  # bridge bucket-sized steps; break on real outages
-    lim = friend_limits(rec)
+    gap = max(3 * step, 2.5 * RANGES[rng] / 240)
     owner = bool((rec or {}).get("owner"))
-    out = [f"""<div class="dash-h" id="dash"><h2>{"Your account on" if owner else "Your corner of"} {e(HOST)}</h2><span class="seg">"""
-           + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
-           + "</span></div>"]
-    # -- box health tiles
-    last = rows[-1] if rows else {}
-    bal = sb.read_json(BALANCE, {}) or {}
-    busy = bool(bal.get("cpu_busy") or bal.get("mem_tight"))
-    l = lim["lim"]
-    quiet_txt = (f"{cores(l.get('BURST_CPU_QUOTA') or l['CPU_QUOTA'])} cores, "
-                 f"{l.get('BURST_MEMORY_HIGH') or l['MEMORY_HIGH']} RAM")
-    busy_txt = f"{cores(l['CPU_QUOTA'])} cores, {l['MEMORY_HIGH']} RAM"
-    ncpu = os.cpu_count() or 1
-    tiles = [
-        ("Box right now", f'<span class="dot {"warn" if busy else "ok"}"></span>{"Busy" if busy else "Quiet"}',
-         (f"Friends get {busy_txt if busy else quiet_txt} right now." if owner else
-          f"Limits are lower while it's busy: {busy_txt}." if busy else f"You get the roomy limits: {quiet_txt}.")),
-    ]
-    if last:
-        tiles += [
-            ("Box CPU", f"{float(last.get('cpu') or 0):.0f}<small>%</small>",
-             f"load {float(last.get('load1') or 0):.2f} on {ncpu} cores"),
-            ("Box memory", f"{float(last.get('mem') or 0):.0f}<small>% used</small>", ""),
-            ("Disk free", f"{float(last.get('disk_free') or 0):.0f}<small>%</small>",
-             sb.human(last["disk_free_b"]) + " free" if last.get("disk_free_b") else ""),
-        ]
-        if last.get("temp") is not None:
-            t = float(last["temp"])
-            tiles.append(("Temperature", f"{t:.0f}<small>°C</small>",
-                          "running hot" if t >= 80 else "warm" if t >= 65 else "cool"))
-    rb = reboot_tile()
-    if rb:
-        tiles.append(rb)
-    out.append('<div class="tiles">' + "".join(
-        f'<div class="tile"><h3>{e(h)}</h3><div class="v">{v}</div>'
-        f'{f"<div class=sub>{e(s)}</div>" if s else ""}</div>' for h, v, s in tiles) + "</div>")
-    # -- their CPU and memory
+    lim = friend_limits(rec)
     cpu, mem = user_series(rows, name, step)
-    cpu_b, mem_b = bucket(cpu, t0, t1, how=avg), bucket(mem, t0, t1)
     cpu_now, mem_now = last_val(cpu), last_val(mem)
-    charts = []
-    if any(v is not None for _, v in mem):
-        top = nice_max(peak(cpu_b), lim["cpu"], 0.2)
-        cl = [(lim["cpu"], f"your limit {fmt_cores(lim['cpu'])}")] if lim["cpu"] else []
-        head = (f'<div class="chart-h"><b>Your CPU</b><span class="now">{fmt_cores(cpu_now or 0)}</span>'
-                f'<span class="sub">peak {fmt_cores(peak(cpu))}'
-                + (f' · limit {fmt_cores(lim["cpu"])}' if lim["cpu"] else "") + "</span></div>")
-        charts.append(svg_chart([(cpu_b, "a")], t0, t1, top, gap, fmt_cores, cl, rng, head))
-        mh, mm = lim["mem_high"], lim["mem_max"]
-        top = nice_max(peak(mem_b), mh, 256 << 20)
-        ml = ([(mh, f"slows down past {sb.human(mh)}")] if mh else []) + \
-             ([(mm, f"hard stop {sb.human(mm)}")] if mm and mm != mh else [])
-        head = (f'<div class="chart-h"><b>Your memory</b><span class="now">{sb.human(mem_now or 0)}</span>'
-                f'<span class="sub">peak {sb.human(peak(mem))}'
-                + (f" · limit {sb.human(mh)}" if mh else "") + "</span></div>")
-        charts.append(svg_chart([(mem_b, "b")], t0, t1, top, gap, sb.human, ml, rng, head))
-    if rows:
-        bc = bucket([(r["ts"], r.get("cpu")) for r in rows], t0, t1, how=avg)
-        bm = bucket([(r["ts"], r.get("mem")) for r in rows], t0, t1)
-        head = ('<div class="chart-h"><b>The whole box</b><span class="sub">'
-                '<span class="key" style="background:var(--acc)"></span>CPU '
-                '<span class="key" style="background:var(--c2)"></span>memory, % used</span></div>')
-        charts.append(svg_chart([(bm, "b"), (bc, "a")], t0, t1, 100, gap, lambda v: f"{v:.0f}%", (), rng, head))
-    if charts:
-        out.append('<div class="charts">' + "".join(charts) + "</div>")
-    else:
-        out.append("<p class='mut'>No usage history yet. Check back in a few minutes.</p>")
-    # -- disk and ports
+    boosted = boost_until(name, st)
+    ml = sb.parse_size(boost_size()) if boosted else mem_limit(lim)
+    ncpu = os.cpu_count() or 1
     u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
     budget = u.get("budget") or (None if owner else sb.cfg_int(CFG, "DISK_BUDGET_GB") << 30)
     disk = u.get("disk")
-    pct = min(100, 100 * (disk or 0) / budget) if budget else 0
+
+    def bar(used, cap):
+        pct = min(100, 100 * (used or 0) / cap) if cap else 0
+        color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
+        return f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>'
+
+    def stat(label, v, sub):
+        return f'<div class="stat"><h4>{e(label)}</h4><div class="v">{v}</div>{sub}</div>'
+    stats = [stat("Memory", f"{e(sb.human(mem_now or 0))}" + (f"<small> of {e(sb.human(ml))}</small>" if ml else ""),
+                  bar(mem_now, ml) if ml else '<div class="sub">no limit</div>'),
+             stat("CPU", e(fmt_cores(cpu_now or 0)), f'<div class="sub">equal share of {ncpu} cores</div>')]
+    if disk is not None or budget:
+        stats.append(stat("Disk", (e(sb.human(disk)) if disk is not None else "–")
+                          + (f"<small> of {e(sb.human(budget))}</small>" if budget else ""),
+                          bar(disk, budget) if budget else ""))
+    lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None and not owner else None
+    if lo_hi:
+        stats.append(stat("Your ports", f"<span class='mono' style='font-size:16px'>{lo_hi[0]}–{lo_hi[1]}</span>",
+                          '<div class="sub">for your servers</div>'))
+    else:
+        stats.append(stat("Projects", str(int(u.get("projects") or 0)), '<div class="sub">in your home folder</div>'))
+    out = ['<section class="sec" id="dash">'
+           f'<div class="you">{"".join(stats)}</div>']
+    # one small chart: memory against the limit
+    if any(v is not None for _, v in mem):
+        mem_b = bucket(mem, t0, t1)
+        top = nice_max(peak(mem_b), ml, 256 << 20)
+        head = (f'<div class="chart-h"><b>Your memory</b><span class="sub">peak {e(sb.human(peak(mem)))}</span>'
+                f'<span style="margin-left:auto" class="seg">'
+                + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
+                + "</span></div>")
+        out.append(svg_chart([(mem_b, "b")], t0, t1, top, gap, sb.human,
+                             [(ml, f"limit {sb.human(ml)}")] if ml else [], rng, head))
+    # archive warnings
     pend = [str(p) for p in (u.get("pending_deletions") or [])]
     arch = [str(a.get("name")) for a in (u.get("archives") or []) if isinstance(a, dict)
             and float(a.get("until") or 0) > now][:10]
-    color = "var(--bad)" if pct > 90 else "var(--warn)" if pct > 70 else "var(--acc)"
-    lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None and not owner else None
-    if owner and not u:
-        pass  # nothing measured for the owner's account: no disk tile rather than a made-up budget
+    if pend:
+        out.append(f'<p class="warnline">Will be archived soon: {e(", ".join(pend))}. Projects are archived after '
+                   f'{e(CFG["PROJECT_TTL_DAYS"])} days untouched, and only once everything is pushed to git. '
+                   "Open one in T3 to keep it where it is.</p>")
+    if arch:
+        out.append(f'<p class="sub" style="margin:8px 0 0">Archived, restorable for {e(CFG["ARCHIVE_DAYS"])} days: '
+                   f'{e(", ".join(arch))}. Ask your agent to restore one.</p>')
+    # the box in one line, and the boost
+    last = rows[-1] if rows else {}
+    level = {"calm": ("ok", "quiet"), "moderate": ("warn", "moderate"), "busy": ("bad", "busy")}.get(
+        sb.box_load().get("level"), ("ok", "quiet"))
+    bits = [f'<span class="dot {level[0]}"></span>Box: {level[1]}']
+    if last.get("mem") is not None:
+        bits.append(f"{float(last['mem']):.0f}% memory used")
+    if last.get("disk_free") is not None:
+        bits.append(f"{float(last['disk_free']):.0f}% disk free")
+    rb = reboot_text()
+    if rb:
+        bits.append(e(rb))
+    if boosted:
+        boost = (f'<span class="pill ok">Boosted to {e(boost_size())} until '
+                 f'{e(time.strftime("%H:%M", time.localtime(boosted)))}</span>')
     else:
-        out.append('<div class="tiles">'
-                   f'<div class="tile" style="grid-column:span 2"><h3>Your disk</h3><div class="v">'
-                   f'{e(sb.human(disk)) if disk is not None else "–"}'
-                   + (f'<small> of {e(sb.human(budget))}</small></div>'
-                      f'<div class="bar"><i style="width:{pct:.1f}%;background:{color}"></i></div>' if budget else "</div>")
-                   + (f'<div class="sub" style="margin-top:6px;color:var(--warn)">Will be archived soon (untouched '
-                      f'{e(CFG["PROJECT_TTL_DAYS"])} days): {e(", ".join(pend))}. Open them in T3 or push to GitHub '
-                      f'to keep them where they are.</div>'
-                      if pend else f'<div class="sub" style="margin-top:6px">{plural(int(u.get("projects") or 0), "project")}. '
-                      f'Projects untouched for {e(CFG["PROJECT_TTL_DAYS"])} days are archived.</div>')
-                   + (f'<div class="sub" style="margin-top:6px">Archived, restorable for {e(CFG["ARCHIVE_DAYS"])} days: '
-                      f'{e(", ".join(arch))}. Ask your agent to restore one (<code>box restore NAME</code>).</div>'
-                      if arch else "")
-                   + "</div>"
-                   + (f'<div class="tile"><h3>Your ports</h3><div class="v" style="font-size:17px">{lo_hi[0]}–{lo_hi[1]}'
-                      f'</div><div class="sub">for your servers</div></div>' if lo_hi else "")
-                   + "</div>")
-    # -- who's around: names, a sparkline, CPU now. No emails, no details.
+        boost = btn("boost", "Emergency memory boost", primary=False, small=True,
+                    attrs=f" onsubmit=\"return confirm({e(json.dumps(f'Raise your memory limit to {boost_size()} for 4 hours? Only use it when a job runs out of memory.'))})\"")
+    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span>{boost}</div></section>')
+    return "".join(out)
+
+
+def activity_section(name, owner=False, rng="24h"):
+    """Collapsed: who's around, your own activity, what happened on the box."""
+    e = html.escape
+    now = time.time()
+    rows = metrics_tail(RANGES["24h"])
+    t0, t1 = now - RANGES["24h"], now
+    step = sample_step(rows)
+    gap = max(3 * step, 2.5 * RANGES["24h"] / 240)
+    last = rows[-1] if rows else {}
     people = []
-    # everyone with an account, sampled or not (an admin who isn't logged in has no cgroup, so no samples)
     users = sorted(set((last.get("users") or {}).keys()) | set(sb.friend_users()) | set(sb.admin_users(CFG)))
     for n in users:
-        c, m = user_series(rows, n, step)
+        c, _ = user_series(rows, n, step)
         cb = bucket(c, t0, t1, n=120, how=avg)
         cn = last_val(c[-3:]) or 0
         seen = next((t for t, v in reversed(c) if v is not None and v >= 0.05), None)
         people.append((cn, n, cb, seen))
     people.sort(key=lambda p: (-p[0], -(p[3] or 0), p[1]))
+    working = sum(1 for p in people if p[0] >= 0.05)
 
-    def doing(cn, seen):  # everyone with an account is listed; say whether they're working right now
+    def doing(cn, seen):
         if cn >= 0.05:
-            return fmt_cores(cn)
+            return "working now"
         return f"active {ago_text(seen)}" if seen else "away"
-
+    out = []
     if people:
-        out.append("<h2>People on the box</h2><ul class='people'>" + "".join(
+        out.append("<h3>People on the box</h3><ul class='people'>" + "".join(
             f'<li><span class="dot {"ok" if cn >= 0.05 else ""}"></span><span class="n">'
             f'<b>{e(n)}</b>{" <span class=mut>(you)</span>" if n == name else ""}</span>{spark(cb, t0, t1, 2 * gap)}'
-            f'<span class="c">{doing(cn, seen)}</span></li>'
-            for cn, n, cb, seen in people) + "</ul>")
-    feed = [] if owner else box_feed(me=name)  # the owner's Box section has the full event log instead
-    mine = [] if owner else own_events(name)
+            f'<span class="c">{doing(cn, seen)}</span></li>' for cn, n, cb, seen in people) + "</ul>")
+    mine = [] if owner else own_events(name, n=5)
+    feed = [] if owner else box_feed(n=5, me=name)
     if mine:
-        out.append("<h2>Your activity</h2><ul class='ev'>" + "".join(mine) + "</ul>")
+        out.append("<h3>Your activity</h3><ul class='ev'>" + "".join(mine) + "</ul>")
     if feed:
-        out.append("<h2>Recently on the box</h2><ul class='ev'>" + "".join(feed) + "</ul>")
-    return "".join(out)
+        out.append("<h3>Recently on the box</h3><ul class='ev'>" + "".join(feed) + "</ul>")
+    if not out:
+        return ""
+    return (f"<details class='sec' id='activity'><summary>Activity<span class='sub'>"
+            f"{working} working now</span></summary>"
+            + "".join(out) + "</details>")
 
 
 def servers_section(st, shared, btn, base="", own_public=True):
@@ -858,34 +909,34 @@ def servers_section(st, shared, btn, base="", own_public=True):
         return (f'<a href="{e(pu)}" target="_blank" rel="noopener">{e(pu)}</a>'
                 f'<br><span class="mut">on Tailscale: {tail}</span>')
 
-    out = ["<div class='duo'><section><h2>Your servers</h2>"]  # side by side when there's room
+    out = ["<h2>Your servers</h2><section class='sec'>"]
     mine = st.get("servers")
     if mine is None:
         out.append("<p class='mut'>Couldn't load your servers just now.</p>")
     elif not mine:
-        out.append("<p class='mut'>None yet. Ask your agent to \"run this as a server\": it uses "
-                   "<code>box serve</code>.</p>")
+        out.append("<p class='mut' style='margin:0'>None yet. Ask your agent to \"run this as a server\" (it uses "
+                   "<code>box serve</code>).</p>")
     else:
         out.append('<div class="srv">' + "".join(
-            f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
+            f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
             f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
             f'<div class="sub">{link(s.get("port"), public=own_public)}</div>{acts("serve", s)}</div>'
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
-        out.append("<p class='sub'>" + ("Public links open only for you, behind your usual login. Apps that "
+        out.append("<p class='sub' style='margin:12px 0 0'>" + ("Public links open only for you, behind your usual login. Apps that "
                    "expect to live at <code>/</code> may need a base-path setting (Vite <code>base</code>, Next "
                    "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC and own_public else
                    "Links work from devices on Tailscale.") + "</p>")
-    end = "</section></div>"
+    end = "</section>"
     if shared.get("unavailable"):
         return "".join(out) + end
-    out.append("</section><section><h2>Group servers</h2>")
+    out.append("</section><h2>Group servers</h2><section class='sec'>")
     if not shared.get("ok"):
         out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
         return "".join(out) + end
     group = [s for s in shared.get("servers") or []
              if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))]
     if not group:
-        out.append("<p class='mut'>Nothing yet. Servers the whole group owns show up here; anyone can restart "
+        out.append("<p class='mut' style='margin:0'>Nothing yet. Servers the whole group owns show up here; anyone can restart "
                    "them. Ask your agent to make one with <code>box shared</code>.</p>")
         return "".join(out) + end
 
@@ -893,14 +944,14 @@ def servers_section(st, shared, btn, base="", own_public=True):
         return (f"{e(str(by))} · {e(ago_text(ts))}" if by and ts else e(str(by or "?")))
 
     out.append('<div class="srv">' + "".join(
-        f'<div class="tile"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
+        f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
         f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
         f'<div class="sub">{link(s.get("port"), "/s/" + s["name"], sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"))}</div>'
         f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
         + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
         + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'
         f'</div>{acts("shared", s, group=True)}</div>' for s in group) + "</div>")
-    out.append("<p class='sub'>Everyone in the group can start, stop and restart these. "
+    out.append("<p class='sub' style='margin:12px 0 0'>Everyone in the group can start, stop and restart these. "
                + ("Public links open for anyone with an account here, behind the usual login."
                   if PUBLIC and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else
                   "Their links work from devices on Tailscale (anyone can change their code, so they stay off the "
@@ -945,7 +996,7 @@ def portal_btn(tok, base):
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
 OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs",  # root allows only these (+ the lists)
-                 "request-approve", "request-done", "request-decline", "self-update", "invite")
+                 "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -997,6 +1048,11 @@ EVENT_TEXT = {
     "shared_restart": "{user} restarted the group server {server}",
     "shared_removed": "{user} removed the group server {server} (code kept in the trash)",
     "limits_changed": "{user}'s limits were changed",
+    "memory_boost": "{user} boosted their memory limit",
+    "boost": "{user} boosted their memory limit",
+    "hackathon_set": "{user} changed hackathon mode",
+    "hackathon_on": "hackathon mode started",
+    "hackathon_off": "hackathon mode ended",
     "over_budget": "{user} went over their disk budget",
     "deleted": "the janitor cleaned up {user}'s {path}",
     "disk_pressure": "the disk is getting full",
@@ -1013,8 +1069,8 @@ def event_text(ev, show_email=True):
     e = html.escape
     kind = str(ev.get("kind") or "?")
     if kind == "balance":
-        return ("The box got busy: everyone's limits went down for a while" if ev.get("cpu_busy") or ev.get("mem_tight")
-                else "The box is quiet again: limits went back up")
+        return ("The box got busy for a while" if ev.get("cpu_busy") or ev.get("mem_tight")
+                else "The box is quiet again")
     tpl = EVENT_TEXT.get(kind)
     fields = {k: (" ".join(map(str, v)) if isinstance(v, list) else str(v)) for k, v in ev.items()
               if k not in ("ts", "kind") and v not in (None, "", [], {})}
@@ -1044,14 +1100,11 @@ def features_page(owner=False):
             return f"{float(str(v).rstrip('%')) / 100:g}"
         except ValueError:
             return str(v)
-    big_c, big_m = cores(CFG["BURST_CPU_QUOTA"]), str(CFG["BURST_MEMORY_HIGH"]).replace("G", " GB")
-    small_c, small_m = cores(CFG["CPU_QUOTA"]), str(CFG["MEMORY_HIGH"]).replace("G", " GB")
-    bal = sb.read_json(os.path.join(sb.STATE_DIR, "balance.json"), {}) or {}
-    busy = bal.get("cpu_busy") or bal.get("mem_tight")
+    mem = str(CFG.get("MEMORY_MAX") or CFG.get("MEMORY_HIGH") or "").replace("G", " GB")
     days = " and ".join({"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday",
                          "Sat": "Saturday", "Sun": "Sunday"}.get(d, d)
                         for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split())
-    ttl = CFG.get("PROJECT_TTL_DAYS", "7")
+    ttl = CFG.get("PROJECT_TTL_DAYS", "20")
     def row(label, lead, more=""):
         return (f"<div class='frow'><div class='fl'>{label}</div><div><p class='fp'>{lead}</p>"
                 + (f"<p class='fm'>{more}</p>" if more else "") + "</div></div>")
@@ -1072,10 +1125,11 @@ def features_page(owner=False):
         row("Your servers", "Servers that run 24/7.", "Self-healing, with controls + a private link."),
         row("Group servers", "One shared copy of a bot for the whole group."),
         row("Docker", "Docker works, no admin needed."),
+        row("Projects", "Your projects live in your home folder.", "T3 starts new projects there too."),
         "</div><h3 class='fg'>Resources</h3><div class='flist'>",
-        row("Burst mode", f"Up to {e(big_c)} cores and {e(big_m)} when the box is quiet.",
-            f"Dynamic resource allocation: {e(small_c)} cores and {e(small_m)} each when it's busy. "
-            f"Right now it's {'busy' if busy else 'quiet'}."),
+        row("Memory and CPU", f"{e(mem)} of memory each, and an equal share of the CPU.",
+            f"Running out? The Emergency memory boost on your dashboard raises it to {e(boost_size())} for a few hours "
+            "when the box has room."),
         row("System tools", "Your agent can install what it needs through an auto-approver.",
             "Unusual installs get checked by the owner first."),
         "</div><h3 class='fg'>Upkeep and safety</h3><div class='flist'>",
@@ -1083,7 +1137,7 @@ def features_page(owner=False):
         row("Reboots", f"Security updates every {e(days)} night{'s' if ' and ' in days else ''}." if days
             else "Security updates at night.", "A busy agent gets up to 2 hours to finish."),
         row("Janitor", "Cleans up caches and leftovers so the disk never fills.",
-            f"Projects untouched for {e(ttl)} days get archived, not deleted."),
+            f"Projects untouched for {e(ttl)} days get archived (not deleted), and only once they're pushed to git."),
         row("Tripwire", "You get an email if an agent goes rogue.",
             "Fake passwords are planted on the box, and anything that reads them sets it off."),
         "</div>",
@@ -1096,7 +1150,7 @@ def own_events(name, n=8):
     out, last_sig = [], None
     for ev in reversed(sb.recent_events(300)):
         # only kinds with a plain sentence: anything else is box-internal detail
-        if isinstance(ev, dict) and ev.get("user") == name and (ev.get("kind") in EVENT_TEXT or ev.get("kind") == "balance") \
+        if isinstance(ev, dict) and ev.get("user") == name and ev.get("kind") in EVENT_TEXT \
                 and ev.get("kind") not in ("admin_drop_refused", "shared_drop_refused", "janitor_error"):
             sig = {k: v for k, v in ev.items() if k != "ts"}
             if out and sig == last_sig:
@@ -1118,7 +1172,7 @@ def requests_section(btn=None):
     """Friends' open `box request`s with Approve / Done / Decline (owner only)."""
     e = html.escape
     reqs = [r for r in (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") or [] if isinstance(r, dict)]
-    out = ['<h2 id="requests">Requests</h2>']
+    out = ['<h3 id="requests" style="margin:0 0 10px">Requests</h3>']
     if not reqs:
         out.append("<p class='mut'>No open requests.</p>")
         return "".join(out)
@@ -1146,8 +1200,8 @@ def requests_section(btn=None):
                    f"<td><span class='pill {'warn' if r.get('state') == 'waiting' else ''}'>"
                    f"{e(REQUEST_STATE_TEXT.get(r.get('state'), str(r.get('state'))))}</span></td>"
                    f"<td style='white-space:nowrap'>{acts}</td></tr>")
-    out.append('<div style="overflow-x:auto"><table style="min-width:620px"><thead><tr><th>who</th><th>asked for</th><th>when</th>'
-               '<th>state</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
+    out.append('<div class="sec"><div class="tw"><table style="min-width:620px"><thead><tr><th>who</th><th>asked for</th><th>when</th>'
+               '<th>state</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div></div>")
     out.append("<p class='sub'>Approve installs it. Done means it's handled. Their agent is told either way.</p>")
     return "".join(out)
 
@@ -1168,8 +1222,9 @@ def update_section(btn):
         line = "Installs the latest version of treehouse and refreshes everyone's agent rules."
     if not (CFG.get("UPDATE_SOURCE") or "").strip():
         return ""
-    return ("<h2>Treehouse</h2><p class='sub'>" + line + "</p>"
-            + btn("self-update", "Update treehouse", primary=False))
+    return ("<h3 id='update' style='margin:24px 0 10px'>Update treehouse</h3><section class='sec'><ul class='rows'><li>"
+            "<span class='d'>" + line + "</span><span class='a'>"
+            + btn("self-update", "Update treehouse", primary=False, small=True) + "</span></li></ul></section>")
 
 
 # ---------- the owner's other boxes (BOXES) ----------
@@ -1335,9 +1390,9 @@ def boxes_section():
         ver = f"<code>{e(d['version'])}</code>" if d.get("version") else "<span class='mut'>–</span>"
         trs.append(f'<tr><td><b>{e(name)}</b><div class="mut">{e(ip)}</div></td><td class="num">{state}</td>'
                    f'<td class="num">{load}</td>{mem}{disk}<td class="num">{ver}</td><td class="num">{links}</td></tr>')
-    return ('<div class="dash-h" id="boxes"><h2>Boxes</h2><span class="sub">your treehouse machines</span></div>'
-            '<div style="overflow-x:auto"><table><thead><tr><th>box</th><th>status</th><th>load</th><th>memory</th>'
-            '<th>disk</th><th>version</th><th>open</th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
+    return ('<h3 id="boxes" style="margin:0 0 10px">Boxes <span class="sub" style="font-weight:400">your treehouse '
+            'machines</span></h3><div class="sec"><div class="tw"><table><thead><tr><th>box</th><th>status</th><th>load</th><th>memory</th>'
+            '<th>disk</th><th>version</th><th>open</th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div></div>")
 
 
 def box_section(n_events=30, btn=None):
@@ -1345,7 +1400,7 @@ def box_section(n_events=30, btn=None):
     read from world-readable state files (and the gate's invite records, which this process may read)."""
     e = html.escape
     now = time.time()
-    out = ['<div class="dash-h" id="box"><h2>The box</h2><span class="sub">only you see this</span></div>']
+    out = ['<h3 id="friends" style="margin:0 0 10px">Friends</h3>']
     users = sb.registry().get("users") or {}
     usage = (sb.read_json(sb.USAGE, {}) or {}).get("users") or {}
     rows = metrics_tail(RANGES["7d"])
@@ -1400,22 +1455,24 @@ def box_section(n_events=30, btn=None):
                        f'<td><span class="pill {"ok" if stt == "active" else "bad"}">{e(stt)}</span></td>'
                        f'<td class="num">{disk}</td><td>{svc_html}</td>'
                        f'<td class="num">{on}</td></tr>')
-        out.append('<div style="overflow-x:auto"><table><thead><tr><th>username</th><th>email</th><th>joined</th>'
+        out.append('<section class="sec"><div class="tw"><table><thead><tr><th>username</th><th>email</th><th>joined</th>'
                    '<th>status</th><th>disk</th><th>servers</th><th>online</th></tr></thead><tbody>'
-                   + "".join(trs) + "</tbody></table></div>")
+                   + "".join(trs) + "</tbody></table></div></section>")
     else:
         out.append("<p class='mut'>Nobody has joined yet.</p>")
+    out.append('<p class="sub">To remove, suspend or link an email, ask your agent.</p>')
     if btn:
-        out.append("<h3 id='invite'>Invite someone</h3>"
+        out.append("<h3 id='invite' style='margin:24px 0 10px'>Invite someone</h3><section class='sec'>"
                    + btn("invite", "Invite", attrs=" class='inv'",
                          extra="<input type='email' name='email' placeholder='their email' required>"
                                "<input name='note' placeholder='name (optional)' maxlength='120' class='short'>")
-                   + "<p class='sub'>They get an account right away and sign in with that email.</p>")
-    out.append('<p class="sub">To remove, suspend or link an email, ask your agent.</p>')
-    try:
-        out.append(requests_section(btn))
-    except Exception as ex:  # noqa: BLE001
-        print(f"requests section: {ex!r}", file=sys.stderr, flush=True)
+                   + "<p class='sub' style='margin-bottom:0'>They get an account right away and sign in with that "
+                   "email.</p></section>")
+    return "".join(out)
+
+
+def events_section(n_events=40):
+    e = html.escape
     # -- every event, newest first; runs of the same kind+user fold into one line
     evs, folded = list(reversed(sb.recent_events(200))), []
     for ev in evs:
@@ -1428,44 +1485,110 @@ def box_section(n_events=30, btn=None):
         folded.append([key, ev, 1])
         if len(folded) >= n_events:
             break
-    out.append("<h2>Box events</h2><ul class='ev'>" + ("".join(
+    out = []
+    out.append("<section class='sec'><ul class='ev'>" + ("".join(
         f"<li><span class='mut'>{e(ago_text(ev.get('ts', 0)))}</span> · {event_text(ev)}"
         + (f" <span class='pill'>×{cnt}</span>" if cnt > 1 else "") + "</li>" for _, ev, cnt in folded)
-        or "<li class='mut'>nothing yet</li>") + "</ul>")
+        or "<li class='mut'>nothing yet</li>") + "</ul></section>")
     return "".join(out)
 
 
-def owner_page(ip, who, name, rec, result=None, rng="24h"):
-    """The owner's /_box/me: the friends' dashboard for their own account, a way into their own T3 Code,
-    and the box section. No setup steps: their logins and T3 are set up on the box itself."""
+def hackathon_section(btn):
+    """Owner settings: hackathon mode (sharedbox-admin hackathon_set: op on|off, until "YYYY-MM-DD HH:MM", users)."""
+    e = html.escape
+    cfg = sb.load_config()  # live: `box hackathon` and this form change it while we run
+    until = sb.hackathon_until(cfg)
+    chosen = set(u for u in re.split(r"[\s,]+", cfg.get("HACKATHON_USERS") or "") if u)
+    friends = sorted(sb.friend_users())
+    if until:
+        state = (f'<span class="dot ok"></span><b>On</b> until {e(time.strftime("%a %b %d, %H:%M", time.localtime(until)))}'
+                 + (f' · for {e(", ".join(sorted(chosen)))} and you' if chosen else " · for you"))
+    else:
+        state = '<span class="dot"></span><b>Off</b>'
+    default = time.strftime("%Y-%m-%dT%H:%M", time.localtime(until or time.time() + 12 * 3600))
+    boxes = "".join(f"<label><input type='checkbox' name='hu_{e(n)}' value='1'{' checked' if n in chosen else ''}>"
+                    f"{e(n)}</label>" for n in friends) or "<span class='mut'>No friends yet.</span>"
+    form = btn("hackathon", "Turn on" if not until else "Save", primary=not until, small=True, attrs=" class='hk'",
+               extra="<input type='hidden' name='op' value='on'>"
+                     "<label>Ends</label><div class='when'>"
+                     f"<input type='datetime-local' name='until' value='{default}' aria-label='Ends at'>"
+                     "<span class='sub'>or in</span><input type='number' name='hours' min='1' max='168' "
+                     "placeholder='hours' style='width:90px' aria-label='Hours from now'><span class='sub'>hours</span></div>"
+                     "<label>Who gets open package requests (you always do)</label>"
+                     f"<div class='grid'>{boxes}</div>")
+    off = btn("hackathon", "Turn off", primary=False, small=True,
+              extra="<input type='hidden' name='op' value='off'>") if until else ""
+    return ("<h3 id='settings' style='margin:0 0 10px'>Hackathon mode</h3><section class='sec'>"
+            f"<p style='margin-top:0'>{state}</p>"
+            "<p class='sub'>For a build day: no trap or tripwire, more builds at once, and package requests from the "
+            "people you pick skip the deny list. It ends by itself at the time you set (at most 7 days).</p>"
+            f"{form}<div style='margin-top:10px'>{off}</div></section>")
+
+
+ADMIN_TABS = (("people", "Friends"), ("requests", "Requests"), ("boxes", "Boxes"), ("settings", "Settings"),
+              ("events", "Events"))
+
+
+def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
+    """The owner's /_box/me: same top as a friend's (open T3, you, your servers), then an Admin area in tabs."""
     e = html.escape
     base = "/_box"
     btn = portal_btn(token_for(ip, who["id"]), base)
     st, shared = status_and_shared(ip, who)
-    out = [f"<h2>Hi {e(name)}</h2><p class='mut'>Signed in as <b>{e(who.get('login', ''))}</b>. "
-           f"You're the owner of {e(HOST)}.</p>"]
+    view = str((result or {}).get("_view") or "")
+    out = []
+    start = [f"<h2>Hi {e(name)}</h2><p class='mut'>You're the owner of {e(HOST)}, signed in as "
+             f"<b>{e(who.get('login', ''))}</b>.</p>"]
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
-        out.append('<p><a class="btn" href="/_box/app">Open T3 in browser</a></p>')
-    if result:
+        start.append('<div class="line"><a class="btn" href="/_box/app">Open T3</a></div>')
+    out.append("<section class='start' id='start'>" + "".join(start) + "</section>")
+    if result and view in ("boost",) or result and view.endswith(("-ctl", "-logs")):
         out.append(portal_result(result, btn, base))
     try:
-        out.append(friend_dashboard(name, rec, rng, base))
+        out.append(you_strip(name, rec, st, btn, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
     out.append(servers_section(st, shared, btn, base, own_public=False))
+    # ---- admin ----
     try:
-        out.append(boxes_section())
+        boxes = boxes_section()
     except Exception as ex:  # noqa: BLE001 - a bad peer answer must never take the page down
         print(f"boxes section: {ex!r}", file=sys.stderr, flush=True)
+        boxes = ""
+    nreq = len([r for r in (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") or [] if isinstance(r, dict)])
+    tabs = [(k, label) for k, label in ADMIN_TABS if k != "boxes" or boxes]
+    if tab not in dict(tabs):
+        tab = "requests" if nreq else "people"
+    out.append("<div class='admin-h' id='admin'><h2>Admin</h2><span class='sub'>only you see this</span></div>"
+               "<nav class='tabs' aria-label='Admin'>" + "".join(
+                   f"<a href='{base}/me?tab={k}#admin' class='{'on' if k == tab else ''}'>{e(label)}"
+                   + (f"<span class='pill warn'>{nreq}</span>" if k == "requests" and nreq else "") + "</a>"
+                   for k, label in tabs) + "</nav>")
+    if result and not (view == "boost" or view.endswith(("-ctl", "-logs"))):
+        out.append(portal_result(result, btn, base))
     try:
-        out.append(update_section(btn))
-        out.append(box_section(btn=btn))
+        if tab == "people":
+            out.append(box_section(btn=btn))
+        elif tab == "requests":
+            out.append(requests_section(btn))
+        elif tab == "boxes":
+            out.append(boxes)
+        elif tab == "settings":
+            out.append(hackathon_section(btn))
+            out.append(update_section(btn))
+        else:
+            out.append(events_section())
     except Exception as ex:  # noqa: BLE001
-        print(f"box section: {ex!r}", file=sys.stderr, flush=True)
-        out.append("<p class='err'>Couldn't load the box section.</p>")
+        print(f"admin {tab}: {ex!r}", file=sys.stderr, flush=True)
+        out.append("<p class='err'>Couldn't load this part of the page.</p>")
+    try:
+        out.append(activity_section(name, owner=True))
+    except Exception as ex:  # noqa: BLE001
+        print(f"activity: {ex!r}", file=sys.stderr, flush=True)
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
-    out.append('<p style="margin-top:30px"><a class="btn secondary" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
+    out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
+    out.append(f"<script>{START_JS}</script>")
     return page("Owner dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
@@ -1479,9 +1602,9 @@ function copyText(v){if(navigator.clipboard&&window.isSecureContext)return navig
 const t=document.createElement("textarea");t.value=v;t.style.position="fixed";t.style.opacity="0";
 document.body.appendChild(t);t.select();try{document.execCommand("copy")}finally{t.remove()}return Promise.resolve()}
 document.querySelectorAll("[data-copy]").forEach(function(b){b.addEventListener("click",function(){
-const src=document.getElementById(b.getAttribute("data-copy"));const label=b.textContent;
-copyText(src.value).catch(function(){}).then(function(){b.textContent="Copied";
-setTimeout(function(){b.textContent=label},2000)})})});
+const src=document.getElementById(b.getAttribute("data-copy"));const label=b.dataset.label||(b.dataset.label=b.textContent);
+b.textContent="Copied";setTimeout(function(){b.textContent=label},2000);
+copyText(src.value).catch(function(){})})});
 document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){
 const n=document.getElementById("start-busy");if(n)n.hidden=false;
 setTimeout(function(){f.querySelectorAll("button").forEach(function(b){b.disabled=true})},0)})});
@@ -1543,11 +1666,11 @@ aria-label="Pairing link"><button type="button" class="sm secondary" data-copy="
 </details>"""
 
 
-def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
+def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab=""):
     """The friend's home page: one start card (log in to an AI, then get the T3 app), their dashboard and
     servers, a few account lines, and the rest under "More options". No terminal anywhere."""
     if who.get("owner"):
-        return owner_page(ip, who, name, rec, result, rng)
+        return owner_page(ip, who, name, rec, result, rng, tab)
     e = html.escape
     tok = token_for(ip, who["id"])
     gate = bool(who.get("session") or who.get("cf_jwt"))
@@ -1625,37 +1748,43 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
 
     out = []
     if who["display"] != name:  # the start card is the greeting; only say which account this is when it differs
-        out.append(f"<p class='mut'>Hi {e(who['display'])}. Your account on {e(HOST)} is <b>{e(name)}</b>.</p>")
+        out.append(f"<p class='greet'>Hi {e(who['display'])}. Your account on {e(HOST)} is <b>{e(name)}</b>.</p>")
     out.append("<section class='start' id='start'>" + "".join(card) + "</section>")
 
-    # ---- dashboard and servers ----
-    if result and view.endswith(("-ctl", "-logs")):
+    # ---- you, now ----
+    if result and (view.endswith(("-ctl", "-logs")) or view == "boost"):
         out.append(portal_result(result, btn, base))
     try:
-        out.append(friend_dashboard(name, rec, rng, base))
+        out.append(you_strip(name, rec, st, btn, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
     out.append(servers_section(st, shared, btn, base))
 
-    # ---- your account: short lines ----
+    # ---- your account: one row per thing, buttons on the right ----
     acct = []
+
+    def row(k, d, a=""):
+        acct.append(f"<li><span class='k'>{k}</span><span class='d'>{d}</span>"
+                    + (f"<span class='a'>{a}</span>" if a else "") + "</li>")
     if ai:
         names = " and ".join(AI_NAMES.get(k, logins[k]["label"]) for k in ai if logins[k]["ok"])
-        acct.append(f"AI: {e(names)}, logged in." if ai_ok else "AI: not logged in yet.")
+        row("AI", f'<span class="dot ok"></span>{e(names)}, logged in' if ai_ok else
+            '<span class="dot warn"></span>Not logged in yet', "" if ai_ok else
+            "<a class='btn sm' href='#start'>Log in</a>")
     if "gh" in logins:
-        acct.append("GitHub: connected." if logins["gh"]["ok"] else
-                    "GitHub: not connected. " + btn("login", "Connect GitHub", "gh", primary=False, small=True)
-                    + " so your agent can save your code.")
+        row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
+            '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
+            "" if logins["gh"]["ok"] else btn("login", "Connect GitHub", "gh", primary=False, small=True))
     if st.get("updates") in ("auto", "manual"):
         auto = st["updates"] == "auto"
-        acct.append(("Agents update every night. " if auto else "Agents stay on your current versions. ")
-                    + btn("updates", "Keep my current versions" if auto else "Update automatically",
-                          "manual" if auto else "auto", primary=False, small=True))
-    acct.append(f"Projects you don't touch for {e(CFG['PROJECT_TTL_DAYS'])} days get archived. "
-                "Ask your agent to put them on GitHub.")
+        row("Agent updates", "Every night, automatically" if auto else "Staying on your current versions",
+            btn("updates", "Keep current versions" if auto else "Update automatically",
+                "manual" if auto else "auto", primary=False, small=True))
+    row("Projects", f"Live in your home folder. Archived after {e(CFG['PROJECT_TTL_DAYS'])} days untouched, "
+        "and only once they're pushed to git. Ask your agent to put them on GitHub.")
     out.append("<h2 id='account'>Your account</h2>"
                + (portal_result(result, btn, base) if result and view == "updates" else "")
-               + "<ul class='acct'>" + "".join(f"<li>{x}</li>" for x in acct) + "</ul>")
+               + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
 
     # ---- more options ----
     more = []
@@ -1678,7 +1807,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         term.append(connect_section(name))
     key_open = bool(result and view == "add-key")
     ssh_cmd = f"ssh {name}@{box_ip()}"
-    term.append(f"""<details{' open' if key_open else ''}><summary>Add an SSH key yourself</summary>
+    term.append(f"""<details{' open' if key_open else ''}><summary class="sub" style="cursor:pointer">Add an SSH key yourself</summary>
 {portal_result(result, btn, base) if key_open else ''}
 {('<p>Your key is set up. Connect with:</p><pre>' + e(ssh_cmd) + '</pre>' if on_tailnet else
   '<p>Your key is set up.</p>') if st.get('ssh') else
@@ -1696,13 +1825,17 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h"):
         more.append("<h3>This page</h3><p>" + ("<a href='/_box/direct-off'>Show this page first again</a>"
                                               if who.get("direct") else
                                               "<a href='/_box/direct-on'>Go straight to T3 next time</a>") + ".</p>")
-    out.append(f"<details class='more'{' open' if key_open or view == 'device-link' else ''}>"
-               "<summary>More options</summary>" + "".join(more) + "</details>")
+    out.append(f"<details class='sec more'{' open' if key_open or view == 'device-link' else ''}>"
+               "<summary>More options<span class='sub'>phone, terminal, SSH</span></summary>" + "".join(more) + "</details>")
+    try:
+        out.append(activity_section(name))
+    except Exception as ex:  # noqa: BLE001
+        print(f"activity: {ex!r}", file=sys.stderr, flush=True)
 
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
-        out.append('<p><a class="btn secondary" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
+        out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
     elif gate:
         out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
 <button class="secondary">Log out of this browser</button></form>""")
@@ -1741,6 +1874,15 @@ def portal_result(res, btn, base=""):
     view = str(res.get("_view") or "")
     if view.endswith("-logs"):
         return logs_card(res, btn)
+    if view == "boost":
+        try:
+            until = time.strftime("%H:%M", time.localtime(float(res.get("until"))))
+        except (TypeError, ValueError):
+            until = ""
+        return notice(f"Boosted to {e(str(res.get('memory') or boost_size()))}" + (f" until {e(until)}" if until else "")
+                      + ". It goes back to normal by itself.")
+    if view == "hackathon":
+        return notice(e(str(res.get("message") or "Saved.")))
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
         busy = view == "request-update"  # the update has only started; a check mark would claim it's done
@@ -1946,6 +2088,10 @@ class Handler(BaseHTTPRequestHandler):
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
         anchor = "#start" if view in START_VIEWS else "#account" if view == "updates" else ""
+        tab = {"invite": "people", "hackathon": "settings", "request-update": "settings"}.get(
+            view, "requests" if view.startswith("request-") else "")
+        if tab and who.get("owner"):
+            return self.redirect(f"/_box/me?r={fid}&tab={tab}#admin")
         return self.redirect(f"/_box/me?r={fid}{anchor}")
 
     def portal_post(self, ip, who, form):
@@ -1974,6 +2120,32 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": err or "type their email address"})
             res = portal_call(ip, who, "invite", email=email, note=form.get("note", "")[:120])
             return self.after_post(ip, who, name, rec, dict(res, _view="invite"))
+        if who.get("owner") and action == "hackathon":
+            op = form.get("op", "")
+            kw = {"op": op}
+            if op == "on":
+                hours = form.get("hours", "").strip()
+                if hours:
+                    try:
+                        h = float(hours)
+                        if not 0 < h <= 24 * 7:
+                            raise ValueError
+                    except ValueError:
+                        return self.after_post(ip, who, name, rec, {"ok": False, "error": "hours must be 1 to 168",
+                                                                    "_view": "hackathon"})
+                    kw["until"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + h * 3600))
+                else:  # <input type=datetime-local> sends 2026-11-15T18:00
+                    kw["until"] = form.get("until", "").strip().replace("T", " ")[:16]
+                kw["users"] = " ".join(n for n in sorted(sb.friend_users()) if form.get(f"hu_{n}") == "1")
+            elif op != "off":
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "hackathon"})
+            res = portal_call(ip, who, "hackathon", **kw)
+            if res.get("ok"):
+                res = dict(res, message="Hackathon mode is on." if res.get("active") else "Hackathon mode is off.")
+            return self.after_post(ip, who, name, rec, dict(res, _view="hackathon"))
+        if action == "boost":  # everyone: root raises this account's memory limit for a few hours if there's room
+            res = portal_call(ip, who, "boost", user=name)
+            return self.after_post(ip, who, name, rec, dict(res, _view="boost"))
         if who.get("owner") and action == "self-update":
             res = portal_call(ip, who, "self-update")
             return self.after_post(ip, who, name, rec, dict(res, _view="request-update"))
@@ -2100,10 +2272,8 @@ invite for this one.</p></div>""", gate=True, member=False)
 <button type="submit">Create my account</button></form>
 <h2>What you get</h2><ul>
 <li>Your own T3 Code: a web app where you chat with Claude or Codex and it builds things for you. Use your own subscription.</li>
-<li>Fair-share limits: {e(CFG['MEMORY_HIGH'])} RAM and {e(cores(CFG['CPU_QUOTA']))} cores, more while the box is quiet.
-{e(CFG['DISK_BUDGET_GB'])}G of disk.</li>
-<li>Projects idle for {e(CFG['PROJECT_TTL_DAYS'])} days are archived (restorable for {e(CFG['ARCHIVE_DAYS'])} days).
-Use git. Nothing here is backed up.</li>
+<li>{e(limits_text())}</li>
+<li>{e(archive_text())}</li>
 </ul></div>""", gate=True, member=False)
 
 
@@ -2258,6 +2428,8 @@ class GateHandler(Handler):
             return "features", None
         if path in ("/_box", "/_box/", "/_box/me"):
             return "me", None
+        if path == "/_box/settings":
+            return "settings", None
         if path in ("/_box/direct-on", "/_box/direct-off"):
             return path[6:], None
         if path in ("/_box/logout", "/_box/healthz", "/_box/open", "/_box/app"):
@@ -2277,6 +2449,8 @@ class GateHandler(Handler):
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
             return self.redirect("/") if CF else self.send(200, login_page(arg))
+        if kind == "settings":  # the owner's settings live in the dashboard's Admin area
+            return self.redirect("/_box/me?tab=settings#admin")
         if kind in ("direct-on", "direct-off"):  # remember: visiting the site opens T3 directly (or the dashboard)
             c = ("tb_direct=1; Path=/; Max-Age=31536000" if kind == "direct-on" else "tb_direct=; Path=/; Max-Age=0")
             return self.redirect("/_box/app" if kind == "direct-on" else "/_box/me",
@@ -2308,7 +2482,7 @@ class GateHandler(Handler):
             fl = FLASH.get((q.get("r") or [""])[0])
             result = fl[2] if fl and fl[1] == who["id"] else None  # a button's outcome, after post/redirect/get
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], result, welcome="welcome" in q,
-                                              rng=(q.get("range") or ["24h"])[0]))
+                                              rng=(q.get("range") or ["24h"])[0], tab=(q.get("tab") or [""])[0]))
         if kind == "landing" and who and who.get("owner"):
             return self.redirect("/_box/me")  # the owner always has a page: their dashboard
         if kind == "landing" and arg not in ("/", "/_box/me", "/_box/", "/_box"):
