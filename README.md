@@ -5,7 +5,7 @@
 ### One spare computer, shared by your friends' AI coding agents.
 
 Friends sign in from a browser. Their Claude Code, Codex and opencode sessions run on your machine,
-each with a fair, enforced share of it. No VPN, no SSH keys, no per-friend setup.
+each with the same generous, enforced limits as the owner. No VPN, no SSH keys, no per-friend setup.
 
 `stdlib Python` · `systemd` · `cgroup v2` · no containers, no database
 
@@ -51,20 +51,18 @@ No terminal, no VPN invites, no "can you run this command for me".
   `ssh treehouse` (through Cloudflare, no VPN), VS Code Remote-SSH included.
 
 **For you (the owner)**
-- ⚖️ **Dynamic fair-share limits.** Per-friend cgroups: up to **15 GB / 5 cores while the box is quiet**,
-  falling back to **7 GB / 3 cores when it's busy**. You and system services always win.
-  Fork bombs, `-j64` builds and runaway agents stay inside their own slice.
-- 🧹 **A janitor.** It cleans caches and build output in idle projects, archives projects untouched for
-  7 days (an email warns the friend first; `box restore NAME` brings one back for 14 days), and enforces a
-  per-user disk budget. Root never deletes inside a home; cleanup runs *as the user*.
-- 💤 **Idle T3 servers sleep.** A friend's T3 Code server (~450 MB) unused for 3 days is stopped and starts
-  again by itself on their next visit. Yours never sleeps.
+- ⚖️ **Equal limits, owner included.** Every account gets the same cgroup slice: **16 GB RAM**, no CPU cap
+  (equal CPU weight shares it when several people want it), 2048 processes. Runaway agents stay inside their
+  own slice. Nothing slows agents down on purpose: no naps, no build throttling, no "busy box" limits.
+- 🚀 **Emergency boost.** `box boost` (or the dashboard button) raises your own RAM to 28 GB for 4 hours when
+  the box has it free. No approval needed; it ends by itself.
+- 🧹 **A janitor that never loses work.** A project (a git repo in your home) is archived only when it's
+  untouched for 20 days *and* fully pushed to a remote; `box restore NAME` brings it back for 14 days. Unused
+  caches go after 30 days; build outputs only when someone is over their disk budget. Cleanup runs *as the user*.
 - ⚡ **Tuned out of the box.** The installer makes the machine itself fast for agent work: compressed memory
   before swap (and a swap file if there's none), file-watch limits for many dev servers, network settings for the
   Cloudflare tunnel and phones, T3 Code reopening from the browser's cache, agents installed in parallel.
   `box tune` shows what's left on your machine; agents use it to find more and suggest it.
-- 🗄️ **Idle databases sleep.** A Docker database nobody connected to for an hour (and no agent working) is
-  stopped, data kept; agents start it again when they need it. Everyone's, the owner's too.
 - 📊 **Dashboard.** Live CPU/RAM per person with sparklines, disk vs. budget, running servers.
 - 📬 **Health email.** A weekly report plus hourly urgent checks: disk, failed services, SMART, pending
   updates, security audit, and a section for **what slowed agents down**, logged by the agents themselves
@@ -105,8 +103,8 @@ box invite --note "Sam"                              # a one-time link to send y
 </details>
 
 The installer is additive and safe on a live machine. It **never** touches sshd, tailscaled or the firewall,
-never restarts networking (its network tuning applies live), never changes limits for existing users, and
-never reboots. `./uninstall.sh` reverses it.
+never restarts networking (its network tuning applies live), and never reboots. It does rewrite every account's
+limits to the current config (equal for everyone). `./uninstall.sh` reverses it.
 
 **Requirements:** Linux with systemd + cgroup v2, Python ≥ 3.12, Tailscale on the server (friends don't
 need it), and for the recommended public site a domain on Cloudflare (free plan). Tested on Ubuntu 24.04; Omarchy/Arch support is new. Please [open an issue](../../issues) with
@@ -125,8 +123,8 @@ emails you invited get through. The tunnel is outbound-only: nothing on the box 
                  sharedbox-gate (unprivileged, 127.0.0.1) checks Cloudflare's signed token on every request
                    │ /_box/*: dashboard, logins            │ everything else
                    ▼                                       ▼
-          sharedbox-web (unprivileged)          the friend's own T3 Code (started on visit,
-                   │ drops a request in a spool dir      sleeps after 3 days unused)
+          sharedbox-web (unprivileged)          the friend's own T3 Code (started on
+                   │ drops a request in a spool dir      the first visit)
                    ▼
           sharedbox-admin (root, path-activated): re-verifies the token itself,
           creates the account / runs the action AS the friend
@@ -134,7 +132,7 @@ emails you invited get through. The tunnel is outbound-only: nothing on the box 
      ┌─────────────┼──────────────────────┐
      ▼             ▼                      ▼
  user-UID.slice  agent rule files     janitor: cleanup as the user,
- limits (guard)  + session snapshot   archives, idle T3, notices
+ limits, boost   + session snapshot   archives, notices
 ```
 
 Two other ways in, both still supported: **Tailscale only** (each friend joins your tailnet; the
@@ -142,13 +140,12 @@ dashboard and `/join` trust `tailscale whois`, nothing is public) and **Tailscal
 `*.ts.net` link with one-time login links instead of Cloudflare; simpler, but the login pages face the
 internet). The installer prints the steps for each; `INSTALL.md` walks an agent through choosing.
 
-| | Per friend (default) | Mechanism |
+| | Per account, owner included (default) | Mechanism |
 |---|---|---|
-| CPU | 3 cores, 5 when quiet; weight 20 (owner 100) | `CPUQuota`, `CPUWeight` |
-| RAM | 7G soft, 15G when quiet, 16G hard | `MemoryHigh`, `MemoryMax` |
+| CPU | no cap; equal weight (100) for everyone | `CPUWeight` |
+| RAM | 16G soft, 17G hard; `box boost`: 28G for 4 h | `MemoryHigh`, `MemoryMax` |
 | Disk | 40G budget, soft-enforced | janitor |
 | Processes | 2048 | `TasksMax` |
-| Heavy jobs | 2 at a time box-wide | `box heavy` queue + `nice`/`ionice` |
 
 Everything is tunable in `/etc/sharedbox/sharedbox.conf` (documented inline), per user with
 `sharedbox-admin limits NAME KEY=VALUE`.
@@ -161,14 +158,23 @@ so symlink tricks can't redirect deletions.
 
 | What | When |
 |---|---|
-| Cache entries (`~/.cache/*`, npm, Gradle, Cargo, Go, uv, …) | unused 7 days, or now if over budget |
-| Build outputs in `~/projects/*` | project idle 3 days, or now if over budget |
-| A whole `~/projects/<name>` | untouched 7 days, no process, no service: **archived** to `~/.sharedbox/archive/` (announced 3 days ahead in `box status` and by email) |
+| Cache entries (`~/.cache/*`, npm, Gradle, Cargo, Go, uv, …) | unused 30 days, or now if over budget |
+| Build outputs (`node_modules`, `.venv`, `target`, …) | only when over budget |
+| A project (a git repo directly in `~`) | untouched 20 days, no process, no service, **and fully pushed** (a remote, clean tree, no untracked files, every branch pushed, no stash): **archived** to `~/.sharedbox/archive/` (announced 3 days ahead). Non-git folders and unpushed work: never |
 | An archived project | 14 days after archiving (`box restore NAME` until then), or first when over budget |
 | `~/services`, `~/keep`, dotfiles | never |
 | `/srv/shared` (shared servers' code) | never (`box shared rm` only moves code to `/srv/shared/.trash`) |
 
 Below 20% free disk all TTLs halve; below 10% caches are wiped.
+</details>
+
+<details>
+<summary><b>Solo mode (one person, no friends)</b></summary>
+
+Set `SOLO=1` in `/etc/sharedbox/sharedbox.conf` and re-run `sudo ./install.sh --apply`. treehouse then runs as a
+lean personal server: equal limits, `box boost`, the janitor, agent rules, `box serve`, health email and T3 all
+work as usual, while the friend-only parts are off: the decoy-port trap, the decoy-secrets tripwire, signups and
+invites (`/join`, `box invite`), and Cloudflare seat alerts.
 </details>
 
 <details>
@@ -179,7 +185,8 @@ box invite [--note WHO] [--json]        # owner accounts, no sudo: one-time invi
 box skills share DIR | unshare NAME     # owner accounts, no sudo: publish a skill to everyone
 box shared ls | create NAME | set NAME -- CMD... | logs NAME   # anyone: group-owned servers in /srv/shared
 sharedbox-admin list | invite | sessions | issues | requests
-sharedbox-admin limits NAME MEMORY_MAX=10G CPU_QUOTA=400% DISK_BUDGET_GB=50
+sharedbox-admin limits NAME MEMORY_HIGH=10G MEMORY_MAX=11G DISK_BUDGET_GB=50
+sharedbox-admin boost NAME [--why TEXT] # same as `box boost` for that account
 sharedbox-admin suspend NAME | resume NAME | remove NAME --archive
 sharedbox-tools add pkg ffmpeg          # install for everyone, remembered across reinstalls
 sharedbox-health report | test-email

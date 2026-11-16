@@ -25,7 +25,6 @@ USAGE = os.path.join(STATE_DIR, "usage.json")
 EVENTS = os.path.join(STATE_DIR, "events.jsonl")
 SPOOL = os.path.join(STATE_DIR, "spool")
 PENDING = os.path.join(STATE_DIR, "pending")
-SLOTS = os.path.join(STATE_DIR, "slots")
 REQUESTS = os.path.join(STATE_DIR, "requests")
 TOOLS_JSON = os.path.join(STATE_DIR, "tools.json")
 # versioned coding agents: AGENTS_DIR/<slug>/<version>/ (npm prefix) + <slug>/current -> newest
@@ -53,9 +52,6 @@ SKILLS_SHARED = os.path.join(STATE_DIR, "skills")
 SKILL_NAME_RE = r"^[a-z0-9][a-z0-9-]{0,47}$"
 SKILL_MAX_FILES, SKILL_MAX_BYTES = 40, 256 << 10
 CF_CERTS_CACHE = os.path.join(GATE_DIR, "cf-certs.json")  # Cloudflare Access signing keys (root writes)
-# last time each friend's T3 Code was opened through the public gate: the gate (user sharedbox) touches
-# T3_SEEN/<user>, the janitor reads the mtimes to put idle T3 servers to sleep (T3_IDLE_DAYS)
-T3_SEEN = os.path.join(STATE_DIR, "t3-seen")
 # the scheduled reboot's state while it waits for agents to finish a turn (root writes, 0644)
 REBOOT_STATE = os.path.join(STATE_DIR, "reboot.json")
 
@@ -81,49 +77,35 @@ DEFAULTS = {
     # per-friend port block: PORT_BASE + index*PORT_BLOCK .. +PORT_BLOCK-1
     "PORT_BASE": "20000",
     "PORT_BLOCK": "100",
-    # per-friend resource limits (systemd slice properties)
-    "CPU_QUOTA": "300%",
-    "CPU_WEIGHT": "20",
-    "IO_WEIGHT": "20",
-    "MEMORY_HIGH": "7G",
-    "MEMORY_MAX": "16G",
-    # dynamic balancing: while the box has room, friends may use up to these instead
-    # (sharedbox-janitor guard drops them back to CPU_QUOTA / MEMORY_HIGH when the box gets busy)
-    "BURST_CPU_QUOTA": "500%",
-    "BURST_MEMORY_HIGH": "15G",
-    "BALANCE_MEM_TIGHT_PCT": "25",   # box free memory below this % -> everyone back to MEMORY_HIGH
-    "BALANCE_MEM_OK_PCT": "40",      # ...and bursting is allowed again once it's back above this %
-    "BALANCE_CPU_BUSY": "0.75",      # 1-min load above this x cores -> everyone back to CPU_QUOTA
+    # per-user resource limits (systemd slice properties). The same for everyone, the owner's accounts included:
+    # no CPU cap (CPUWeight shares CPU fairly when several people want it at once), MEMORY_HIGH soft / MEMORY_MAX
+    # hard RAM. Changing them: sudo sharedbox-admin reapply
+    "CPU_WEIGHT": "100",
+    "IO_WEIGHT": "100",
+    "MEMORY_HIGH": "16G",
+    "MEMORY_MAX": "17G",
     "MEMORY_SWAP_MAX": "1G",
     "TASKS_MAX": "2048",
-    "OOM_SCORE_ADJ": "500",
-    "BUILD_JOBS": "2",
+    # `box boost`: anyone may raise their own RAM to BOOST_MEMORY for BOOST_HOURS when the box has that much free
+    "BOOST_MEMORY": "28G",
+    "BOOST_HOURS": "4",
     # disk + cleanup policy
     "DISK_BUDGET_GB": "40",
-    "PROJECT_TTL_DAYS": "7",
-    "ARTIFACT_TTL_DAYS": "3",
-    "CACHE_TTL_DAYS": "7",
+    # a project (git repo directly in ~) untouched this long AND fully pushed to a remote is archived
+    "PROJECT_TTL_DAYS": "20",
+    "CACHE_TTL_DAYS": "30",
     "TMP_TTL_DAYS": "2",
     "WARN_DAYS": "3",
     # an expired project is moved to ~/.sharedbox/archive/ (restorable: `box restore NAME`) and deleted this
     # many days later; archives still count toward the disk budget and go first when someone is over it
     "ARCHIVE_DAYS": "14",
-    # a friend's T3 Code server (~0.4 GB RAM) naps after this many minutes unused; its port stays open and the
-    # next connection (T3 app, browser) wakes it in a few seconds. Accounts linked to T3 Connect use T3_IDLE_DAYS
-    # instead (T3's relay only runs while T3 does, so a napping T3 is unreachable that way until a visit wakes it)
-    "T3_NAP_MINUTES": "60",
-    "T3_IDLE_DAYS": "3",
-    # a Docker database stack (Postgres, Supabase, Redis, ...) is stopped after this many minutes with no connection
-    # and no queries; everyone's, the owner's too. Volumes are kept: `supabase start` / `docker compose up -d`
-    "DOCKER_NAP_MINUTES": "60",
     # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
     "TUNE_SWAP": "auto",
+    # SOLO=1: a lean server for one person. No trap, no tripwire, no signups/invites (see apply_solo)
+    "SOLO": "0",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
     "DISK_CRITICAL_FREE_PCT": "10",
-    # heavy-job queue (box heavy)
-    "HEAVY_SLOTS": "2",
-    "HEAVY_WAIT_MAX_MIN": "30",
     # when the box may reboot for security updates (only told to agents; on Debian/Ubuntu the actual
     # schedule is Unattended-Upgrade::Automatic-Reboot-Time in /etc/apt/apt.conf.d; Arch has no
     # automatic updates, so only SCHEDULED_REBOOT_DAYS reboots it there)
@@ -276,17 +258,23 @@ def load_config(path=CONF_PATH):
     if "JOIN_MODE" not in explicit and (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare":
         cfg["JOIN_MODE"] = "closed"
     apply_hackathon(cfg)
+    if solo(cfg):
+        cfg.update(SOLO_OVERRIDES)
     return cfg
 
 
 # ---------- hackathon mode: one switch for "develop freely" ----------
 # HACKATHON_UNTIL="YYYY-MM-DD HH:MM" (local time, in the future) turns it on; it ends by itself at that time.
-# While on: no T3 or Docker naps, no trap or tripwire, and package requests from the owner and HACKATHON_USERS
-# skip the deny list and limits (REQUEST_NEVER still applies). `box hackathon on|off|status`.
-HACKATHON_OVERRIDES = {"T3_NAP_MINUTES": "0", "T3_IDLE_DAYS": "0", "DOCKER_NAP_MINUTES": "0",
-                       "TRAP_ENABLED": "0", "CANARY_ENABLED": "0",
-                       # more builds at once, barely any queue wait
-                       "HEAVY_SLOTS": "4", "BUILD_JOBS": "4", "HEAVY_WAIT_MAX_MIN": "3"}
+# While on: no trap or tripwire, and package requests from the owner and HACKATHON_USERS skip the deny list and
+# limits (REQUEST_NEVER still applies). `box hackathon on|off|status`.
+HACKATHON_OVERRIDES = {"TRAP_ENABLED": "0", "CANARY_ENABLED": "0"}
+# SOLO=1: one person, no friends. The friend-only machinery is off: decoy-port trap, decoy-secrets tripwire,
+# self-signup and invites.
+SOLO_OVERRIDES = {"TRAP_ENABLED": "0", "CANARY_ENABLED": "0", "JOIN_MODE": "closed", "MAX_USERS": "0"}
+
+
+def solo(cfg):
+    return (cfg.get("SOLO") or "").strip().lower() in ("1", "yes", "true", "on")
 
 
 def parse_local_time(text):
@@ -323,14 +311,9 @@ HACKATHON_UNITS = (("TRAP_ENABLED", "sharedbox-trap.service"), ("CANARY_ENABLED"
 
 def hackathon_reconcile(cfg):
     """Root: when hackathon mode turns on or off, stop or bring back the trap and tripwire. Returns
-    "on"/"off" when it acted, None when nothing changed. Called by the janitor's t3-naps timer and `box hackathon`."""
+    "on"/"off" when it acted, None when nothing changed. Called by the janitor's tick timer and `box hackathon`."""
     path = os.path.join(STATE_DIR, "hackathon.json")
     active = cfg.get("HACKATHON") == "1"
-    for i in range(cfg_int(cfg, "HEAVY_SLOTS")):  # `box heavy` only uses slot files that exist
-        slot = os.path.join(SLOTS, f"slot-{i}")
-        if os.path.isdir(SLOTS) and not os.path.exists(slot):
-            open(slot, "a").close()
-            os.chmod(slot, 0o644)
     st = read_json(path, {}) or {}
     if bool(st.get("active")) == active:
         return None
@@ -486,12 +469,13 @@ def port_range(cfg, uid):
     return base, base + cfg_int(cfg, "PORT_BLOCK") - 1
 
 
+LIMIT_KEYS = ("CPU_WEIGHT", "IO_WEIGHT", "MEMORY_HIGH", "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX", "DISK_BUDGET_GB")
+
+
 def user_limits(cfg, rec=None):
-    lim = {k: cfg[k] for k in ("CPU_QUOTA", "CPU_WEIGHT", "IO_WEIGHT", "MEMORY_HIGH",
-                               "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX",
-                               "DISK_BUDGET_GB", "BURST_CPU_QUOTA", "BURST_MEMORY_HIGH")}
+    lim = {k: cfg[k] for k in LIMIT_KEYS}
     if rec:
-        lim.update(rec.get("limits", {}))
+        lim.update({k: v for k, v in rec.get("limits", {}).items() if k in LIMIT_KEYS})
     return lim
 
 
@@ -1139,3 +1123,139 @@ def validate_pubkey(key):
     if parts[0] == "ssh-rsa" and bits < 3072:
         return None, "RSA keys must be at least 3072 bits (ed25519 recommended)"
     return norm, None
+
+
+# ---------- equal limits for every account, the owner's included ----------
+
+def limited_accounts(cfg):
+    """{name: (uid, registry record or None)}: every friend plus the owner's own accounts (ADMIN_USERS,
+    OWNER_T3_USER). All of them get the same slice limits."""
+    out = {n: (r["uid"], r) for n, r in friend_users().items()}
+    names = set(admin_users(cfg))
+    owner = owner_account(cfg)
+    if owner:
+        names.add(owner.pw_name)
+    for n in names - set(out):
+        try:
+            out[n] = (pwd.getpwnam(n).pw_uid, None)
+        except KeyError:
+            pass
+    return out
+
+
+# ---------- emergency memory boost (`box boost`, the dashboard's Boost button) ----------
+# Root raises one account's slice to BOOST_MEMORY for BOOST_HOURS with `systemctl set-property --runtime`
+# (a /run drop-in: gone after a reboot). BOOSTS records it (0644, the dashboard reads it):
+#   {"<user>": {"until": epoch, "since": epoch, "memory": "28G", "why": "..."}}
+# The janitor's tick (every 10 min, also 1 min after boot) ends expired boosts and re-applies live ones a
+# reboot dropped. Nobody needs to approve one; refused only when the box hasn't got the memory free.
+
+BOOSTS = os.path.join(STATE_DIR, "boosts.json")
+RUNTIME_CONTROL = "/run/systemd/system.control"
+
+
+def boosts(now=None):
+    """{user: until} for boosts still running (what the dashboard shows)."""
+    now = now or time.time()
+    st = read_json(BOOSTS, {}) or {}
+    return {n: int(r["until"]) for n, r in st.items()
+            if isinstance(r, dict) and isinstance(r.get("until"), (int, float)) and r["until"] > now}
+
+
+def _mem_available():
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    return 0
+
+
+def _slice_mem_current(uid):
+    try:
+        with open(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/memory.current") as f:
+            return int(f.read())
+    except (OSError, ValueError):
+        return 0
+
+
+def _boost_props(cfg, rec):
+    lim = user_limits(cfg, rec)
+    gap = max(0, parse_size(lim["MEMORY_MAX"]) - parse_size(lim["MEMORY_HIGH"]))
+    high = parse_size(cfg["BOOST_MEMORY"])
+    return high, [f"MemoryHigh={high}", f"MemoryMax={high + gap}"]
+
+
+def boost_start(cfg, name, why="", now=None):
+    """Root. -> {"ok": bool, "until": epoch, "error": str}"""
+    now = int(now or time.time())
+    acct = limited_accounts(cfg).get(name)
+    if not acct:
+        return {"ok": False, "until": 0, "error": f"{name} has no account on this box"}
+    uid, rec = acct
+    if rec and rec.get("status", "active") != "active":
+        return {"ok": False, "until": 0, "error": "the account is suspended"}
+    high, props = _boost_props(cfg, rec)
+    st = read_json(BOOSTS, {}) or {}
+    cur = st.get(name) if isinstance(st.get(name), dict) else None
+    if not (cur and cur.get("until", 0) > now):
+        # the extra room the boost allows must actually be free right now
+        need = high - max(_slice_mem_current(uid), parse_size(user_limits(cfg, rec)["MEMORY_HIGH"]))
+        avail = _mem_available()
+        if need > 0 and avail < need:
+            return {"ok": False, "until": 0,
+                    "error": f"the box doesn't have enough free memory for a boost right now ({human(avail)} free, "
+                             f"{human(need)} needed). Try again later, or stop something you don't need."}
+    until = now + int(float(cfg["BOOST_HOURS"]) * 3600)
+    r = subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return {"ok": False, "until": 0, "error": "couldn't raise the limit: " + (r.stderr or "")[-200:]}
+    st[name] = {"until": until, "since": now, "memory": cfg["BOOST_MEMORY"], "why": str(why or "")[:200]}
+    write_json(BOOSTS, st, mode=0o644)
+    log_event("boost", name, memory=cfg["BOOST_MEMORY"], until=until, why=str(why or "")[:200])
+    return {"ok": True, "until": until, "error": ""}
+
+
+def boost_end(cfg, name, uid):
+    """Back to the normal limits: drop the runtime drop-ins (the /etc one applies again)."""
+    d = os.path.join(RUNTIME_CONTROL, f"user-{uid}.slice.d")
+    for prop in ("MemoryHigh", "MemoryMax"):
+        try:
+            os.unlink(os.path.join(d, f"50-{prop}.conf"))
+        except FileNotFoundError:
+            pass
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+
+
+def boost_reconcile(cfg, now=None):
+    """Root, from the janitor's tick: end expired boosts; re-apply live ones a reboot dropped."""
+    now = now or time.time()
+    st = read_json(BOOSTS, {}) or {}
+    if not st:
+        return
+    accts = limited_accounts(cfg)
+    changed = False
+    for name, r in list(st.items()):
+        acct = accts.get(name)
+        if not acct or not isinstance(r, dict) or not isinstance(r.get("until"), (int, float)):
+            st.pop(name)
+            changed = True
+            continue
+        uid, rec = acct
+        if r["until"] <= now:
+            boost_end(cfg, name, uid)
+            st.pop(name)
+            changed = True
+            log_event("boost_ended", name)
+            continue
+        high, props = _boost_props(cfg, rec)
+        try:
+            with open(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/memory.high") as f:
+                cur = f.read().strip()
+        except OSError:
+            continue  # nothing running for them right now
+        if cur != str(high):
+            subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],
+                           capture_output=True)
+    if changed:
+        write_json(BOOSTS, st, mode=0o644)

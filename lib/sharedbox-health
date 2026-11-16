@@ -359,7 +359,8 @@ def build_report(cfg, g, findings, new_ids, resolved):
         sec.append(f"Packages updated: {len(g['apt'])} (" + ", ".join(g["apt"][:12])
                    + (", …" if len(g["apt"]) > 12 else "") + ")")
     S.append(("Security activity", sec))
-    S.append(("Trap wins", trap_wins(7)))
+    if cfg.get("TRAP_ENABLED") != "0":
+        S.append(("Trap wins", trap_wins(7)))
 
     iss = g.get("issues") or []
     if iss:
@@ -426,7 +427,7 @@ def cmd_report(cfg, a):
 
 def cloudflare_usage(cfg):
     """Zero Trust Free is 50 users at $0. Warn early (CF_SEAT_LIMIT) so the owner never has to pay."""
-    if sb.public_mode(cfg) != "cloudflare":
+    if sb.public_mode(cfg) != "cloudflare" or sb.solo(cfg):  # solo: one person, no seats to run out of
         return []
     try:
         import sbcloudflare

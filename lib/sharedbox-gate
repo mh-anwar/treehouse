@@ -80,27 +80,6 @@ _refreshing = {}   # sha256 -> monotonic time of the last refresh request
 _rate = {}         # bucket -> deque[timestamps]
 _cf_tokens = {}    # sha256(jwt) -> (checked_at, claims | None)
 _shared = (0.0, {})
-_t3_seen = {}      # user -> monotonic time we last touched T3_SEEN/<user>
-T3_SEEN_EVERY = 300
-
-
-def t3_seen(user):
-    """Note that `user` is using their T3 Code (the janitor stops T3 servers nobody used for T3_IDLE_DAYS).
-    At most one touch per user every few minutes; never fails a request."""
-    now = time.monotonic()
-    if user == OWNER or now - _t3_seen.get(user, -T3_SEEN_EVERY) < T3_SEEN_EVERY:
-        return
-    _t3_seen[user] = now
-    if not sb.USERNAME_RE.match(user or ""):
-        return
-    try:
-        fd = os.open(os.path.join(sb.T3_SEEN, user), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
-        try:
-            os.utime(fd)
-        finally:
-            os.close(fd)
-    except OSError:
-        pass
 
 
 def users(max_age=SESSION_CACHE_SECS):
@@ -694,7 +673,6 @@ async def handle_request(reader, writer, head, peer):
                                             "Try again in a minute; if it keeps happening, tell the owner."))
             return False
         dest = ("tcp", host, port)
-        t3_seen(sess[0])
         if not CF and maybe_refresh(secret, sess):
             set_cookie.append(session_cookie(secret))
     elif method in ("GET", "HEAD") and not upgrade:

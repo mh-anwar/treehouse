@@ -1,5 +1,5 @@
 [Unit]
-Description=Nap friends' unused T3 Code servers every 10 minutes
+Description=sharedbox tick every 10 minutes
 
 [Timer]
 OnBootSec=1min

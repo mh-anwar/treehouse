@@ -22,10 +22,12 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
 - `lib/box`: the CLI friends' agents use. `share/AGENTS.md` + `share/HELP.md`: the rules every agent on the
   box gets (keep AGENTS.md lean, ~1k tokens; details go in HELP.md).
 - `install.sh`: must stay additive and idempotent. Never restart sshd/tailscale/network/firewall, never reboot.
-- Friends' T3 Code naps: `sb-t3.socket` holds their T3 port (first of their block) and wakes T3, which listens
-  on the block's last port on the same Tailscale IP (never loopback: T3 then revokes pairings and Connect).
-  `sharedbox-janitor t3-naps` (every 10 min) decides; the friend-side checks are `box _t3-nap` / `_t3-wake`.
-  T3 must stay up for a running agent turn or enabled scheduled tasks (T3 skips fixed-time runs it missed).
+- Friends' T3 Code: `sb-t3.socket` holds their T3 port (first of their block) and starts T3 on the first connection;
+  T3 listens on the block's last port on the same Tailscale IP (never loopback: T3 then revokes pairings and
+  Connect). Nothing stops an idle T3. `sharedbox-janitor tick` (every 10 min) starts it after a reboot when it has
+  scheduled tasks on (`box _t3-wake`), ends expired `box boost`s, and refreshes agent rules.
+- Owner rule: nothing may make agents slower. Equal limits for everyone (owner included), no CPU caps, no naps,
+  no build throttling; unpushed work is never archived or deleted.
 
 ## Checking a change
 Run only what the change needs:
@@ -44,8 +46,7 @@ Every treehouse box should feel fast even when everyone is busy, and what one bo
   in `sharedbox-tune apply` (runs at install and every boot), and a matching check in `sharedbox-tune` CHECKS so
   `box tune` reports it. Must be safe live: no network restart, no reboot, nothing that drops security.
 - Machine-specific findings (desktop services, swap size, CPU power mode) are "owner" checks: suggestions only.
-- Agents never turn off things people may use to save resources; automatic idle stops (T3 naps, Docker database
-  naps) live in timers that wait while an agent is working.
+- Nothing turns off things people may use to save resources (no T3 or Docker naps).
 
 ## UI taste (the owner notices)
 - No emojis, no "AI-sounding" copy, no decorative highlight strips. Sentences start with a capital letter.

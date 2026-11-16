@@ -3,6 +3,11 @@ so a symlink planted in a home directory can never make root delete the wrong th
 
 Input: a plan dict from the janitor. Output: a report dict.
 
+Projects are the git repositories directly in ~ (and, from older versions, in ~/projects). One is archived only
+when it's untouched for PROJECT_TTL_DAYS AND fully backed up to a git remote (backed_up()); nothing else is ever
+archived or deleted. Build outputs (node_modules, .venv, target, ...) are only removed when the user is over their
+disk budget, and caches only when unused for CACHE_TTL_DAYS or over budget.
+
 Expired projects aren't deleted: they move to ~/.sharedbox/archive/<name>-<date>/<name>/ (with a note,
 ARCHIVED.txt), `box restore NAME` puts one back, and archives are deleted ARCHIVE_DAYS later (or first,
 when the user is over the disk budget).
@@ -51,6 +56,10 @@ ARTIFACTS = {
     "target": ("Cargo.toml", "pom.xml"),
     ".venv": (), "venv": (),
 }
+# top-level folders in ~ that are never projects
+HOME_SKIP = {"keep", "services", "go", "opt", "Downloads", "snap", "projects"}
+LEGACY_PROJECTS = "projects"  # older versions kept projects in ~/projects/<name>
+
 TMP_SKIP_PREFIX = ("tmux-", "ssh-", ".X11-unix", ".ICE-unix", "systemd-private", "snap-private")
 
 
@@ -267,6 +276,54 @@ def remove(path, dry_run):
     return size
 
 
+# ---------- projects ----------
+
+def _git(path, *args):
+    r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"})
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip()[:200] or f"git {args[0]} failed")
+    return r.stdout
+
+
+def is_git_repo(path):
+    return os.path.isdir(os.path.join(path, ".git"))
+
+
+def backed_up(path):
+    """True only if everything in the repo is on a git remote: at least one remote, a clean work tree (untracked
+    files count as not backed up), no local branch commits missing from the remotes, no stash. Any doubt -> False."""
+    if not is_git_repo(path):
+        return False
+    try:
+        if not _git(path, "remote").split():
+            return False
+        if _git(path, "status", "--porcelain", "--untracked-files=all").strip():
+            return False
+        if _git(path, "rev-list", "--branches", "--not", "--remotes").strip():
+            return False
+        if _git(path, "stash", "list").strip():
+            return False
+    except (OSError, subprocess.SubprocessError, RuntimeError):
+        return False
+    return True
+
+
+def find_projects(home):
+    """[(name, path)]: git repos directly in ~ (not dot folders, not HOME_SKIP), then ones in ~/projects/."""
+    out, seen = [], set()
+    for base in (home, os.path.join(home, LEGACY_PROJECTS)):
+        if not _is_real_dir(base):
+            continue
+        for e in sorted(os.scandir(base), key=lambda e: e.name):
+            if e.name.startswith(".") or (base == home and e.name in HOME_SKIP) or e.name in seen:
+                continue
+            if _is_real_dir(e.path) and is_git_repo(e.path):
+                seen.add(e.name)
+                out.append((e.name, e.path))
+    return out
+
+
 # ---------- archive ----------
 
 def archive_root(home):
@@ -317,22 +374,8 @@ def git_remote(path):
     return url[:300] or None
 
 
-_gh = None
-
-
-def github_connected():
-    """`gh auth status` succeeds for this user (asked once per pass)."""
-    global _gh
-    if _gh is None:
-        try:
-            _gh = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=30).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            _gh = False
-    return _gh
-
-
 def archive_project(home, path, name, now, idle_days, archive_days, dry_run):
-    """Move ~/projects/NAME into the archive. Returns (archive dir, bytes)."""
+    """Move the project at `path` into the archive. Returns (archive dir, bytes)."""
     size = tree_size(path)
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     root = archive_root(home)
@@ -342,7 +385,6 @@ def archive_project(home, path, name, now, idle_days, archive_days, dry_run):
     if dry_run:
         return dest, size
     remote = git_remote(path)
-    gh = bool(remote) and github_connected()
     os.makedirs(root, mode=0o700, exist_ok=True)
     os.mkdir(dest, 0o700)
     try:
@@ -351,19 +393,15 @@ def archive_project(home, path, name, now, idle_days, archive_days, dry_run):
         os.rmdir(dest)
         raise
     until = time.strftime("%a %b %d", time.localtime(now + archive_days * DAY))
-    note = (f"~/projects/{name} was archived on {time.strftime('%a %b %d %Y', time.localtime(now))}: nothing in it "
-            f"was used for {idle_days:g} days.\n\nRestore it until {until}: box restore {name}\n"
-            f"(or ask your agent: \"restore my project {name}\"). After that it's deleted for good.\n")
-    if remote:
-        note += (f"\nIt's a git repository with a remote ({remote}). "
-                 + ("Your GitHub login is connected here, so everything you pushed is also on GitHub."
-                    if gh else "Anything you pushed is also there; commits you didn't push are only in this archive.")
-                 + "\n")
+    note = (f"~/{name} was archived on {time.strftime('%a %b %d %Y', time.localtime(now))}: nothing in it "
+            f"was used for {idle_days:g} days, and everything in it was pushed to git ({remote}).\n\n"
+            f"Restore it until {until}: box restore {name}\n"
+            f"(or ask your agent: \"restore my project {name}\"), or clone it again from the remote.\n")
     with open(os.path.join(dest, ARCHIVE_NOTE), "w") as f:
         f.write(note)
     with open(os.path.join(dest, ARCHIVE_META), "w") as f:
         json.dump({"name": name, "from": path, "archived_at": int(now), "bytes": size, "idle_days": idle_days,
-                   "git_remote": remote, "github": gh}, f)
+                   "git_remote": remote}, f)
     return dest, size
 
 
@@ -395,7 +433,8 @@ def _tool_running(name):
 
 
 def clean_caches(plan, home, now, cwds, over, dry):
-    """Caches: stale entries always, everything when over budget; then native prunes. Returns deleted rows."""
+    """Caches: entries unused for CACHE_TTL_DAYS, everything when over budget (then native prunes too: those remove
+    entries an agent may want again soon, so only when space is really needed). Returns deleted rows."""
     cache_ttl = plan["cache_ttl_days"] * DAY
     tmp_ttl = plan["tmp_ttl_days"] * DAY
     deleted = []
@@ -429,7 +468,7 @@ def clean_caches(plan, home, now, cwds, over, dry):
     for name, args, rel in NATIVE_PRUNERS:
         d = os.path.join(home, rel)
         exe, path = _tool(home, name)
-        if dry or not exe or not _is_real_dir(d) or _tool_running(name):
+        if not over or dry or not exe or not _is_real_dir(d) or _tool_running(name):
             continue
         before = tree_size(d)
         try:
@@ -484,7 +523,6 @@ def run_pass(plan):
     now = time.time()
     dry = plan.get("dry_run", False)
     ttl = plan["project_ttl_days"] * DAY
-    art_ttl = plan["artifact_ttl_days"] * DAY
     warn = plan["warn_days"] * DAY
     usage = plan.get("usage", 0)
     budget = plan.get("budget")
@@ -506,17 +544,15 @@ def run_pass(plan):
 
     # 3. projects
     projects = []
-    pdir = os.path.join(home, "projects")
-    if _is_real_dir(pdir):
-        for e in sorted(os.scandir(pdir), key=lambda e: e.name):
-            if not _is_real_dir(e.path):
-                continue
-            size, newest, arts = scan_project(e.path)
-            idle = now - newest
-            active = _inside(e.path, cwds) or _inside(e.path, pinned)
-            projects.append({"name": e.name, "path": e.path, "size": size,
-                             "idle_days": round(idle / DAY, 1), "active": active,
-                             "artifacts": arts, "newest": newest})
+    for name, path in find_projects(home):
+        size, newest, arts = scan_project(path)
+        idle = now - newest
+        active = _inside(path, cwds) or _inside(path, pinned)
+        p = {"name": name, "path": path, "size": size, "idle_days": round(idle / DAY, 1), "active": active,
+             "artifacts": arts, "newest": newest, "backed_up": False}
+        if not active and idle > ttl - plan["warn_days"] * DAY:  # git is only asked about projects near the TTL
+            p["backed_up"] = backed_up(path)
+        projects.append(p)
 
     # 3b. archives past ARCHIVE_DAYS are deleted
     archive_days = plan.get("archive_days", 14)
@@ -531,7 +567,7 @@ def run_pass(plan):
     for p in projects:
         if p["active"]:
             continue
-        if p["idle_days"] * DAY > ttl:
+        if p["idle_days"] * DAY > ttl and p["backed_up"]:
             # moved, not deleted: `box restore NAME` for ARCHIVE_DAYS. Build outputs go now (regenerable).
             for apath, _ in p["artifacts"]:
                 freed += rm(apath, "build artifacts of archived project")
@@ -545,9 +581,9 @@ def run_pass(plan):
             archives.insert(0, {"name": p["name"], "dir": dest, "path": os.path.join(dest, p["name"]),
                                 "archived_at": now, "until": int(now + archive_days * DAY)})
             continue
-        if over or p["idle_days"] * DAY > art_ttl:
+        if over:  # build outputs only go when space is really needed
             for apath, _ in p["artifacts"]:
-                freed += rm(apath, "build artifacts of idle project")
+                freed += rm(apath, "build artifacts (over disk budget)")
 
     # 4. still over budget after the grace period: archives go first (oldest first), then the oldest idle projects
     if over and plan.get("over_budget_delete"):
@@ -560,8 +596,8 @@ def run_pass(plan):
         for p in sorted(projects, key=lambda p: -p["idle_days"]):
             if est <= budget:
                 break
-            # only projects already past the TTL (they'd be archived anyway): over budget never takes recent work
-            if p.get("deleted") or p["active"] or p["idle_days"] * DAY < ttl:
+            # only projects past the TTL and fully pushed (they'd be archived anyway): never recent or unpushed work
+            if p.get("deleted") or p["active"] or p["idle_days"] * DAY < ttl or not p["backed_up"]:
                 continue
             p["deleted"] = True
             est -= rm(p["path"], "over disk budget, oldest idle project")
@@ -571,7 +607,7 @@ def run_pass(plan):
         if p.get("deleted"):
             continue
         r = {k: p[k] for k in ("name", "size", "idle_days", "active")}
-        if not p["active"] and p["idle_days"] * DAY > ttl - warn:
+        if not p["active"] and p["backed_up"] and p["idle_days"] * DAY > ttl - warn:
             r["delete_on"] = int(p["newest"] + ttl)
         report_projects.append(r)
 

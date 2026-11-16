@@ -4,13 +4,14 @@
   sharedbox-admin list
   sharedbox-admin add USER --key 'ssh-ed25519 AAAA...' [--login someone@example.com]
   sharedbox-admin pending | approve ID | deny ID
-  sharedbox-admin limits USER [KEY=VALUE ...]     e.g. MEMORY_MAX=8G CPU_QUOTA=400% DISK_BUDGET_GB=40
+  sharedbox-admin limits USER [KEY=VALUE ...]     e.g. MEMORY_HIGH=8G MEMORY_MAX=9G DISK_BUDGET_GB=40
+  sharedbox-admin boost USER [--why TEXT]         raise USER's RAM to BOOST_MEMORY for BOOST_HOURS
   sharedbox-admin suspend USER | resume USER
   sharedbox-admin kill USER                       stop every process the user has (account stays)
   sharedbox-admin remove USER [--archive]
   sharedbox-admin requests [--done ID]            package/other requests filed with `box request`
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
-  sharedbox-admin reapply                         rewrite every friend's limit drop-ins (+ shared-sync)
+  sharedbox-admin reapply                         rewrite every account's limit drop-ins, owner's too (+ shared-sync)
   sharedbox-admin shared-sync                     shared servers: dirs, slice, SHARED_GROUP membership
   sharedbox-admin shared ls | ACTION NAME ...     act on a shared server as root (same as `box shared`)
   sharedbox-admin invite [--days N] [--note TEXT] [--tailscale] [--email ADDR]   a message to paste to a new
@@ -53,7 +54,6 @@ import sbshared  # noqa: E402
 
 SYSTEMD_DIR = "/etc/systemd/system"
 MANAGED_PROPS = {
-    "CPU_QUOTA": "CPUQuota",
     "CPU_WEIGHT": "CPUWeight",
     "IO_WEIGHT": "IOWeight",
     "MEMORY_HIGH": "MemoryHigh",
@@ -92,24 +92,32 @@ def daemon_reload():
 # ---------- limits ----------
 
 def write_dropins(cfg, name, rec, uid):
+    """The same limits for every account (friends and the owner's own): no CPU cap, equal CPU/IO weight."""
     lim = sb.user_limits(cfg, rec)
-    lines = ["# managed by sharedbox — edit with: sharedbox-admin limits " + name,
-             "# CPUQuota/MemoryHigh are the burst values; sharedbox-janitor guard lowers them at runtime",
-             "# to CPU_QUOTA/MEMORY_HIGH while the box is busy", "[Slice]"]
+    lines = ["# managed by sharedbox: edit with sharedbox-admin limits " + name + " (or sharedbox.conf + reapply)",
+             "[Slice]"]
     for key, prop in MANAGED_PROPS.items():
-        val = lim.get("BURST_" + key) or lim.get(key)
-        if val:
-            lines.append(f"{prop}={val}")
+        if lim.get(key):
+            lines.append(f"{prop}={lim[key]}")
+    lines.append("CPUQuota=")  # no CPU cap (older versions set one)
     d = os.path.join(SYSTEMD_DIR, f"user-{uid}.slice.d")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
         f.write("\n".join(lines) + "\n")
-    # user manager (and so the friend's long-running services) is first in line for the OOM killer
-    d = os.path.join(SYSTEMD_DIR, f"user@{uid}.service.d")
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
-        f.write("# managed by sharedbox\n[Service]\n"
-                f"OOMScoreAdjust={cfg['OOM_SCORE_ADJ']}\n")
+    # older versions: friends' user managers first in line for the OOM killer, and runtime CPU/RAM values the
+    # busy-box guard set (they'd override the drop-in above until a reboot). Everyone is equal now.
+    for old in (os.path.join(SYSTEMD_DIR, f"user@{uid}.service.d", "60-sharedbox.conf"),
+                os.path.join(sb.RUNTIME_CONTROL, f"user-{uid}.slice.d", "50-CPUQuota.conf")):
+        try:
+            os.unlink(old)
+        except FileNotFoundError:
+            pass
+    if name not in sb.boosts():  # a running `box boost` keeps its runtime values until it ends
+        for prop in ("MemoryHigh", "MemoryMax"):
+            try:
+                os.unlink(os.path.join(sb.RUNTIME_CONTROL, f"user-{uid}.slice.d", f"50-{prop}.conf"))
+            except FileNotFoundError:
+                pass
 
 
 def remove_dropins(uid):
@@ -450,6 +458,8 @@ def process_shared_drop(cfg):
     _secure_dir(sb.SHARED_DROP, 0o1733)
     _secure_dir(sb.SHARED_REPLIES, 0o711)
     allowed = shared_uids(cfg)
+    owner = sb.owner_account(cfg)
+    boosters = dict(allowed, **({owner.pw_uid: owner.pw_name} if owner else {}))  # `box boost` from any account
     for path in sorted(glob.glob(os.path.join(sb.SHARED_DROP, "*.json"))):
         rid = os.path.basename(path)[:-5]
         try:
@@ -461,16 +471,20 @@ def process_shared_drop(cfg):
             os.unlink(path)
         except FileNotFoundError:
             continue
-        if owner not in allowed or raw is None or not (rid.isascii() and rid.isalnum() and len(rid) <= 64):
-            if owner not in allowed:
+        if owner not in boosters or raw is None or not (rid.isascii() and rid.isalnum() and len(rid) <= 64):
+            if owner not in boosters:
                 sb.log_event("shared_drop_refused", None, uid=owner)
             continue
         try:
             req = json.loads(raw)
         except ValueError:
             req = None
-        res = shared_handle(cfg, allowed[owner], req) if isinstance(req, dict) else \
-            {"ok": False, "error": "unknown request"}
+        if isinstance(req, dict) and req.get("action") == "boost":
+            res = handle_boost(cfg, boosters[owner], req)
+        elif isinstance(req, dict) and owner in allowed:
+            res = shared_handle(cfg, allowed[owner], req)
+        else:
+            res = {"ok": False, "error": "unknown request"}
         sb.write_json(os.path.join(sb.SHARED_REPLIES, f"{rid}.json"), res, mode=0o600, owner=(owner, 0))
     for path in glob.glob(os.path.join(sb.SHARED_REPLIES, "*.json")):
         try:
@@ -551,6 +565,8 @@ def process_spool(cfg):
 
 
 def handle_join(cfg, rid, req):
+    if sb.solo(cfg):
+        return {"ok": False, "error": "this box is for one person only (solo mode): no signups"}
     if req.get("invite") is not None:
         return handle_invite_join(cfg, rid, req)
     ip = str(req.get("ip", ""))
@@ -829,7 +845,16 @@ def handle_owner_pair(cfg, rid, req):
 # Their logins, SSH keys, agent updates and T3 Code are their own business, set up on the box itself.
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
-                        "shared-logs", "self-update", "invite") + REQUEST_PORTAL_ACTIONS
+                        "shared-logs", "self-update", "invite", "boost") + REQUEST_PORTAL_ACTIONS
+
+
+def handle_boost(cfg, name, req):
+    """Spool/drop act "boost": {"user": name (optional; must be the verified caller), "why": text}.
+    Answer: {"ok": bool, "until": epoch seconds, "error": str}. Anyone may boost themselves, nobody anyone else."""
+    want = req.get("user")
+    if want not in (None, "", name):
+        return {"ok": False, "until": 0, "error": "you can only boost your own account"}
+    return sb.boost_start(cfg, name, str(req.get("why") or "")[:200])
 
 
 def start_update(cfg, by):
@@ -876,6 +901,8 @@ def handle_portal(cfg, rid, req):
     if owner:
         if req.get("action") not in OWNER_PORTAL_ACTIONS:
             return {"ok": False, "error": "not available for the owner's account"}
+        if req.get("action") == "boost":
+            return handle_boost(cfg, name, req)
         if req.get("action") == "self-update":
             return start_update(cfg, name)
         if req.get("action") == "invite":  # the owner's dashboard: same as `box invite --email ... --note ...`
@@ -901,6 +928,8 @@ def handle_portal(cfg, rid, req):
             save_registry(reg)
     pw = pwd.getpwnam(name)
     action, key = req.get("action"), req.get("key")
+    if action == "boost":
+        return handle_boost(cfg, name, req)
     if action == "status":
         return box_portal(pw, ["status"])
     if action == "t3":
@@ -1039,6 +1068,8 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
 
     cloudflare: the account is bound to `email`, which goes on the Access allow list; signing in with it is
     the whole login. funnel: a one-time login link, valid for the invite's lifetime, logs them in."""
+    if sb.solo(cfg):
+        raise InviteError("this box is in solo mode (SOLO=1 in sharedbox.conf): no friend accounts")
     pub, cf = sb.public_url(cfg), cf_mode(cfg)
     days = max(1, min(int(days or sb.cfg_int(cfg, "INVITE_DAYS")), 30))
     note = sb.printable(note or "")[:120]
@@ -2613,7 +2644,7 @@ def cmd_limits(cfg, a):
     if not a.settings:
         print(json.dumps(sb.user_limits(cfg, rec), indent=2))
         return
-    allowed = set(MANAGED_PROPS) | {"DISK_BUDGET_GB", "BURST_CPU_QUOTA", "BURST_MEMORY_HIGH"}
+    allowed = set(MANAGED_PROPS) | {"DISK_BUDGET_GB"}
     for s in a.settings:
         k, _, v = s.partition("=")
         if k not in allowed:
@@ -2723,9 +2754,16 @@ def cmd_issues(cfg, a):
     print("\nraw lines: sharedbox-admin issues --raw   files: ~USER/.sharedbox/issues.jsonl")
 
 
+def cmd_boost(cfg, a):
+    res = sb.boost_start(cfg, a.user, a.why or "")
+    if not res["ok"]:
+        die(res["error"])
+    print(f"{a.user}: RAM raised to {cfg['BOOST_MEMORY']} until {time.strftime('%a %H:%M', time.localtime(res['until']))}")
+
+
 def cmd_reapply(cfg, a):
-    for name, rec in sb.friend_users().items():
-        write_dropins(cfg, name, rec, rec["uid"])
+    for name, (uid, rec) in sorted(sb.limited_accounts(cfg).items()):
+        write_dropins(cfg, name, rec, uid)
         print(f"rewrote limits for {name}")
     daemon_reload()
     cmd_shared_sync(cfg, a)
@@ -2784,6 +2822,7 @@ def main():
     x = s.add_parser("remove"); x.add_argument("user"); x.add_argument("--archive", action="store_true")
     x.set_defaults(fn=cmd_remove)
     s.add_parser("reapply").set_defaults(fn=cmd_reapply)
+    x = s.add_parser("boost"); x.add_argument("user"); x.add_argument("--why"); x.set_defaults(fn=cmd_boost)
     s.add_parser("shared-sync").set_defaults(fn=cmd_shared_sync)
     x = s.add_parser("shared"); x.add_argument("action", choices=("ls",) + sbshared.ACTIONS)
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)

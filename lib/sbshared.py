@@ -165,7 +165,7 @@ def render_unit(cfg, name, argv, port):
         "Environment=PATH=/usr/local/bin:/usr/bin:/bin",
         "ExecStart=" + " ".join(sd_quote(a) for a in argv),
         "Restart=on-failure", "RestartSec=5",
-        f"Slice={SLICE}", f"OOMScoreAdjust={cfg['OOM_SCORE_ADJ']}",
+        f"Slice={SLICE}", "OOMScoreAdjust=500",
         "UMask=0002",
         # every member can edit the code, so the code gets nothing but its own folder
         "NoNewPrivileges=yes", "ProtectSystem=strict", f"ReadWritePaths={esc(d)}", "ProtectHome=yes",

@@ -242,7 +242,7 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
 - It's a shared machine with no sudo for anyone. Never run `sudo` or ask for root/admin. Read
   `ssh {alias} 'box rules'` once before doing real work there and follow it.
 - Files live on the box, not on this computer: edit them there (`ssh`, Remote-SSH) or move them with
-  `scp`/`git`. Keep projects in `~/projects/<name>/`; idle projects are cleaned up, so push work to git.
+  `scp`/`git`. Keep each project as a git repo in `~/<name>/` and push it: idle projects are archived only once fully pushed.
 - Anything long-running goes in `box serve add <name> -- <command>` (or `box shared` for something the whole
   group runs). Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
 - Heavy builds: `box heavy -- <command>`. `box help` lists more topics.

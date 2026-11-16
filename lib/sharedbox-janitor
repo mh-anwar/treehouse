@@ -2,14 +2,12 @@
 """sharedbox-janitor: periodic housekeeping (root).
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
-  sharedbox-janitor t3-naps [--dry-run]              stop friends' T3 Code servers nobody is using (every few
-                                                     minutes; the T3 port stays open and wakes T3 on use), and
-                                                     everyone's idle Docker databases (DOCKER_NAP_MINUTES)
-  sharedbox-janitor guard                            make friend processes first in line for the OOM killer
+  sharedbox-janitor tick [--dry-run]                 every 10 min: end expired `box boost`s, start T3 Code for
+                                                     scheduled tasks after a reboot, hackathon on/off, rule refresh
   sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
 
-Root only *reads* (du, /proc) and decides. Every deletion, archive move and T3 stop runs as the friend via
+Root only *reads* (du, /proc) and decides. Every deletion and archive move runs as the friend via
 setpriv. Scope: friends' homes and their own files in /tmp, /var/tmp. Never SHARED_DIR (box shared code).
 """
 
@@ -18,7 +16,6 @@ import json
 import os
 import pwd
 import selectors
-import re
 import subprocess
 import sys
 import time
@@ -27,15 +24,10 @@ sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 
 STATE = os.path.join(sb.STATE_DIR, "janitor-state.json")
-NAP_STATE = os.path.join(sb.STATE_DIR, "t3-naps.json")
+TICK_STATE = os.path.join(sb.STATE_DIR, "tick.json")
 PASS_TIMEOUT = 900          # per user; a friend must not stall the whole run
 PASS_MAX_OUT = 4 << 20      # reply cap; root never buffers more than this from a friend
 REBOOT_WAIT_MAX = 2 * 3600  # a scheduled reboot waits at most this long for agents to finish their turn
-CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
-T3_BUSY_USEC = 20_000_000   # CPU used under a T3 (besides T3 itself) between two nap checks that counts as "in use"
-# T3's own processes: the launcher (node .../t3.mjs or /usr/local/bin/t3), the server it runs from ~/.t3/runtime,
-# and its resource monitor. Anything else in its cgroup was started from T3 (agents, their tools, dev servers).
-T3_OWN_RE = re.compile(r"(^|/)(t3|t3\.mjs|t3-resource-monitor)$")
 
 
 def du(path):
@@ -125,207 +117,51 @@ def valid_reply(rep):
             and isinstance(rep.get("t3_stopped", False), bool))
 
 
-# ---------- idle T3 Code servers ----------
-# A friend's T3 (sb-t3.service in their systemd --user, ~0.4 GB) naps when nobody uses it: `t3-naps` (every few
-# minutes) asks the friend's own `box _t3-nap` to stop it. Their T3 port stays open (sb-t3.socket), so the next
-# connection from the T3 app, a browser or the gate starts it again in a few seconds; nothing else to click.
-# Accounts linked to T3 Connect reach T3 through T3's relay, which only exists while T3 runs, so those nap
-# only after T3_IDLE_DAYS. Everyone else after T3_NAP_MINUTES.
-# "Used" = opened through the public gate (it touches T3_SEEN/<user>), an open TCP connection to its port
-# (T3 app, a T3 tab), or agents working under it: CPU used by anything in its cgroup besides T3's own processes
-# since the last check (agent turns and their tools, even ones that already ended), an agent using CPU right
-# now, or something started from T3 that listens on a port (a dev server, a bot). Agents that merely sit there
-# waiting don't count. Last word goes to the friend's own `box _t3-nap`, which reads T3's database: an agent
-# turn still running (even a quiet one, waiting on a download or CI) or scheduled tasks turned on keep T3 up.
-# And a T3 that isn't running (napping, or after a reboot) is started again if it has scheduled tasks on
-# (`box _t3-wake`): T3 skips a fixed-time run it was down for, so it must be up within minutes of boot.
+# ---------- tick (every 10 minutes) ----------
+# A T3 that isn't running (after a reboot: its port is held by sb-t3.socket and the first connection starts it) is
+# started if it has scheduled tasks on (`box _t3-wake`): T3 skips a fixed-time run it was down for.
 
-def t3_cgroup(uid):
-    """(cgroup dir, PIDs) of the friend's sb-t3.service (T3 and every agent it started); (None, []) if not running."""
+def t3_running(uid):
     base = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
     for cg in (f"{base}/app.slice/sb-t3.service", f"{base}/sb-t3.service"):
-        if not os.path.isdir(cg):
-            continue
-        pids = []
         for root, _, files in os.walk(cg):
-            if "cgroup.procs" in files:
-                try:
-                    with open(os.path.join(root, "cgroup.procs")) as f:
-                        pids += [int(x) for x in f.read().split()]
-                except (OSError, ValueError):
-                    pass
-        return cg, pids
-    return None, []
+            try:
+                with open(os.path.join(root, "cgroup.procs")) as f:
+                    if f.read().split():
+                        return True
+            except OSError:
+                pass
+    return False
 
 
-def cgroup_cpu_usec(cg):
-    try:
-        with open(os.path.join(cg, "cpu.stat")) as f:
-            return next(int(l.split()[1]) for l in f if l.startswith("usage_usec "))
-    except (OSError, ValueError, StopIteration):
-        return 0
-
-
-def proc_cpu_usec(pid):
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            st = f.read().rsplit(")", 1)[1].split()
-        return (int(st[11]) + int(st[12])) * 1_000_000 // CLK_TCK
-    except (OSError, ValueError, IndexError):
-        return 0
-
-
-def port_connections(port):
-    """Established TCP connections to local `port` (IPv4 and IPv6)."""
-    n = 0
-    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
-        try:
-            with open(path) as f:
-                next(f, None)
-                for line in f:
-                    parts = line.split()
-                    if len(parts) > 3 and parts[3] == "01" and int(parts[1].rsplit(":", 1)[1], 16) == port:
-                        n += 1
-        except (OSError, ValueError):
-            pass
-    return n
-
-
-def proc_started(pid):
-    """Epoch seconds a process started, or 0."""
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            ticks = int(f.read().rsplit(")", 1)[1].split()[19])
-        with open("/proc/stat") as f:
-            btime = next(int(l.split()[1]) for l in f if l.startswith("btime "))
-        return btime + ticks / CLK_TCK
-    except (OSError, ValueError, StopIteration, IndexError):
-        return 0
-
-
-def t3_own(pid):
-    """Is `pid` one of T3's own processes (launcher, server, resource monitor)?"""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            argv = f.read().split(b"\0")[:2]
-    except OSError:
-        return False
-    return any(T3_OWN_RE.search(x.decode(errors="replace")) for x in argv if x)
-
-
-def listening_ports_by_pid():
-    """{pid: {ports}} for listening TCP sockets (root sees everyone's)."""
-    try:
-        out = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    res = {}
-    for line in out.splitlines():
-        cols = line.split()
-        if len(cols) < 4:
-            continue
-        try:
-            port = int(cols[3].rsplit(":", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        for pid in re.findall(r"pid=(\d+)", line):
-            res.setdefault(int(pid), set()).add(port)
-    return res
-
-
-def t3_linked(home):
-    """Is this account's T3 linked to T3 Connect (reached through T3's relay, which needs T3 running)?"""
-    return os.path.exists(os.path.join(home, ".t3", "userdata", "secrets", "cloud-linked-user-id.bin"))
-
-
-def t3_should_sleep(cfg, name, rec, st, now, home=""):
-    """True if this friend's running T3 is unused for long enough to nap. Remembers the last busy moment in `st`."""
-    owner = sb.owner_account(cfg)
-    if name in sb.admin_users(cfg) or (owner and owner.pw_name == name):
-        return False
-    if home and t3_linked(home):
-        idle = float(cfg.get("T3_IDLE_DAYS") or 0) * 86400
-    else:
-        idle = float(cfg.get("T3_NAP_MINUTES") or 0) * 60
-    if idle <= 0:
-        return False
-    cg, pids = t3_cgroup(rec["uid"])
-    if not pids:
-        st.pop("t3_other_cpu", None)
-        return False
-    own = {p for p in pids if t3_own(p)}
-    if not own:
-        return False  # can't tell T3 from the rest: leave it alone
-    started = min((proc_started(p) for p in own), default=0) or now
-    other = max(0, cgroup_cpu_usec(cg) - sum(proc_cpu_usec(p) for p in own))  # agents + tools, exited ones too
-    prev = st.get("t3_other_cpu")
-    # a drop means T3 restarted (counts as use); a few ms either way is just rounding (cgroup µs vs /proc ticks)
-    working = ((isinstance(prev, int) and (other < prev - 1_000_000 or other - prev >= T3_BUSY_USEC))
-               or bool(sb.busy_agents(pids=[p for p in pids if p not in own], seconds=2)))
-    st["t3_other_cpu"] = other
-    public, inner = sb.port_range(cfg, rec["uid"])
-    # something started from T3 is serving (a dev server, a bot): stopping T3 would kill it
-    lp = listening_ports_by_pid()
-    working = working or any(lp.get(p, set()) - {public, inner} for p in pids if p not in own)
-    connected = port_connections(public) + port_connections(inner) > 0
-    if working or connected:
-        st["t3_busy"] = now
-    try:
-        seen = os.lstat(os.path.join(sb.T3_SEEN, name)).st_mtime
-    except OSError:
-        seen = 0
-    last = max(seen, started, st.get("t3_busy", 0))
-    return not working and not connected and now - last > idle
-
-
-def cmd_t3_naps(cfg, a):
-    """Nap every friend's T3 nobody is using. Light (no du), so it can run every few minutes."""
+def cmd_tick(cfg, a):
     if not a.dry_run:
-        try:  # hackathon mode starting or ending: the trap and tripwire follow it (same timer, every few minutes)
-            done = sb.hackathon_reconcile(cfg)
-            if done:
-                print(f"hackathon mode {done}")
-        except Exception as e:  # noqa: BLE001 - never let this stop the naps
-            print(f"hackathon reconcile: {e!r}", file=sys.stderr)
-    state = sb.read_json(NAP_STATE, {}) or {}
-    now = int(time.time())
+        for what, fn in (("hackathon reconcile", sb.hackathon_reconcile), ("boosts", sb.boost_reconcile)):
+            try:
+                done = fn(cfg)
+                if done:
+                    print(f"hackathon mode {done}")
+            except Exception as e:  # noqa: BLE001 - one part never stops the rest
+                print(f"{what}: {e!r}", file=sys.stderr)
+    state = sb.read_json(TICK_STATE, {}) or {}
     users = sb.friend_users()
     for name, rec in sorted(users.items()):
+        if a.dry_run:
+            continue
         try:
             pw = pwd.getpwnam(name)
-            st = state.setdefault(name, {})
-            if not t3_cgroup(rec["uid"])[1]:
-                # not running (napping, or the box just rebooted): scheduled tasks need it up, or they're skipped
-                if a.dry_run:
-                    continue
-                if os.path.exists(os.path.join(pw.pw_dir, ".config", "systemd", "user", "sb-t3.socket")):
-                    rep = user_pass(pw, {}, "_t3-wake",
-                                    check=lambda r: isinstance(r, dict) and isinstance(r.get("woke"), bool))
-                    if rep["woke"]:
-                        st["t3_busy"] = now
-                        print(f"{name}: woke T3 Code for scheduled tasks")
+            if t3_running(rec["uid"]) or not os.path.exists(
+                    os.path.join(pw.pw_dir, ".config", "systemd", "user", "sb-t3.socket")):
                 continue
-            if not t3_should_sleep(cfg, name, rec, st, now, home=pw.pw_dir):
-                continue
-            if a.dry_run:
-                print(f"{name}: would nap T3 Code")
-                continue
-            rep = user_pass(pw, {}, "_t3-nap",
-                            check=lambda r: isinstance(r, dict) and isinstance(r.get("t3_stopped"), bool)
-                            and isinstance(r.get("busy", False), bool))
-            if rep.get("busy"):  # an agent turn still running, or scheduled tasks on: the quiet hour starts over
-                st["t3_busy"] = now
-            elif rep["t3_stopped"]:
-                st.pop("t3_other_cpu", None)
-                st["napped"] = now
+            rep = user_pass(pw, {}, "_t3-wake",
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("woke"), bool))
+            if rep["woke"]:
+                print(f"{name}: woke T3 Code for scheduled tasks")
         except Exception as e:  # one friend's trouble must not stop the others
-            print(f"{name}: t3 nap error: {str(e)[-500:]!r}", file=sys.stderr)
-    for gone in set(state) - set(users) - {"_rules"}:
-        state.pop(gone)
+            print(f"{name}: t3 wake error: {str(e)[-500:]!r}", file=sys.stderr)
     if not a.dry_run:
         refresh_rules(cfg, users, state)
-        sb.write_json(NAP_STATE, state, mode=0o600)
-    docker_naps(cfg, users, a.dry_run)
+        sb.write_json(TICK_STATE, state, mode=0o600)
 
 
 def boot_id():
@@ -360,29 +196,6 @@ def refresh_rules(cfg, users, state):
     meta["key"] = key
 
 
-def docker_naps(cfg, users, dry_run):
-    """Stop idle Docker databases: every friend's and the owner's own (nobody gets to keep an idle database
-    running). The account's own `box _docker-nap` decides and stops only its own containers; see its comment."""
-    if sb.cfg_int(cfg, "DOCKER_NAP_MINUTES") <= 0 or dry_run:
-        return
-    names = set(users)
-    owner = sb.owner_account(cfg)
-    if owner:
-        names.add(owner.pw_name)
-    for name in sorted(names):
-        try:
-            pw = pwd.getpwnam(name)
-            if not os.path.exists(f"/run/user/{pw.pw_uid}/docker.sock"):
-                continue  # no Docker daemon running: nothing to check (and no process to start)
-            rep = user_pass(pw, {}, "_docker-nap",
-                            check=lambda r: isinstance(r, dict) and isinstance(r.get("stopped"), list))
-            if rep["stopped"]:
-                print(f"{name}: stopped idle Docker databases: {', '.join(map(str, rep['stopped']))[:300]}")
-                sb.log_event("docker_nap", user=name, stacks=[str(x)[:60] for x in rep["stopped"]][:20])
-        except Exception as e:  # one account's trouble must not stop the others
-            print(f"{name}: docker nap error: {str(e)[-500:]!r}", file=sys.stderr)
-
-
 # ---------- archive warnings ----------
 
 def archive_warning(cfg, name, rec, st, projects, dry):
@@ -395,13 +208,12 @@ def archive_warning(cfg, name, rec, st, projects, dry):
         st["warned"] = warned
         return
     days = sb.cfg_int(cfg, "ARCHIVE_DAYS")
-    lines = "\n".join(f"  - ~/projects/{n}  (on {time.strftime('%a %b %d', time.localtime(due[n]))})" for n in new)
+    lines = "\n".join(f"  - ~/{n}  (on {time.strftime('%a %b %d', time.localtime(due[n]))})" for n in new)
     who = sb.brand_host(cfg)
     body = (f"Hi {name},\n\nThese projects on {who} haven't been touched in a while, so they'll be archived soon:\n\n"
-            f"{lines}\n\nNothing is lost right away: archived projects can be restored for {days} days (ask your "
-            f"agent: \"restore my project NAME\", or run `box restore NAME`). After that they're deleted.\n\n"
-            "To keep one where it is, open it in T3 Code and ask your agent anything about it, or ask it to push the "
-            "project to GitHub.\n")
+            f"{lines}\n\nEverything in them is pushed to git, so nothing is lost. Archived projects can also be "
+            f"restored for {days} days (ask your agent: \"restore my project NAME\", or run `box restore NAME`).\n\n"
+            "To keep one where it is, open it in T3 Code and ask your agent anything about it.\n")
     if dry:
         print(f"{name}: would email {email}: archive warning for {', '.join(new)}")
         return
@@ -457,18 +269,16 @@ def cmd_run(cfg, a):
                 "over_budget_delete": bool(over and now >= deadline),
                 "force_caches": critical,
                 "project_ttl_days": sb.cfg_int(cfg, "PROJECT_TTL_DAYS") * scale,
-                "artifact_ttl_days": sb.cfg_int(cfg, "ARTIFACT_TTL_DAYS") * scale,
                 "cache_ttl_days": sb.cfg_int(cfg, "CACHE_TTL_DAYS") * scale,
                 "tmp_ttl_days": sb.cfg_int(cfg, "TMP_TTL_DAYS"),
                 "warn_days": sb.cfg_int(cfg, "WARN_DAYS"),
                 "archive_days": sb.cfg_int(cfg, "ARCHIVE_DAYS"),
-                "t3_sleep": False,  # T3 naps are `t3-naps`, every few minutes
                 "dry_run": a.dry_run, "box": box,
             }
             rep = user_pass(pw, plan)
             for d in rep.get("archived", []):
                 if a.dry_run:
-                    print(f"{name}: would archive {sb.human(d['bytes']):>8} ~/projects/{sb.printable(d['name'])}")
+                    print(f"{name}: would archive {sb.human(d['bytes']):>8} ~/{sb.printable(d['name'])}")
                 else:
                     sb.log_event("archived", name, project=d["name"], bytes=d["bytes"])
             archive_warning(cfg, name, rec, st, rep["projects"], a.dry_run)
@@ -525,35 +335,6 @@ def owner_cache_passes(cfg, users, a):
             print(f"{name}: cache pass error: {str(e)[-500:]!r}", file=sys.stderr)
 
 
-def cmd_guard(cfg, a):
-    try:
-        balance(cfg)
-    except Exception as e:  # balancing must never stop the OOM guard below
-        print(f"balance: {e!r}", file=sys.stderr)
-    adj = sb.cfg_int(cfg, "OOM_SCORE_ADJ")
-    lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
-    # hackathon mode: the listed friends aren't the OOM killer's first pick (they're working as hard as the owner)
-    spared = set()
-    if cfg.get("HACKATHON") == "1":
-        names = set(re.split(r"[\s,]+", cfg.get("HACKATHON_USERS") or ""))
-        spared = {rec["uid"] for n, rec in sb.friend_users().items() if n in names}
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            uid = os.stat(f"/proc/{pid}").st_uid
-            if not lo <= uid <= hi or uid in spared:
-                continue
-            path = f"/proc/{pid}/oom_score_adj"
-            with open(path) as f:
-                cur = int(f.read())
-            if cur < adj:
-                with open(path, "w") as f:
-                    f.write(str(adj))
-        except (OSError, ValueError):
-            pass
-
-
 # ---------- scheduled reboot ----------
 
 def cmd_reboot(cfg, a):
@@ -596,69 +377,6 @@ def cmd_reboot(cfg, a):
     sys.exit(subprocess.run(cmd).returncode)
 
 
-# ---------- dynamic balancing ----------
-# Friends get the burst limits (BURST_CPU_QUOTA / BURST_MEMORY_HIGH) while the box has room, and
-# their base limits (CPU_QUOTA / MEMORY_HIGH) while it's busy. Runtime-only changes: after a
-# reboot the drop-ins (burst values) apply until the next guard run. CPU is also shared fairly by
-# CPUWeight whenever several people want it at once.
-
-BALANCE_STATE = os.path.join(sb.STATE_DIR, "balance.json")
-
-
-def box_pressure(cfg, prev):
-    mem = {}
-    with open("/proc/meminfo") as f:
-        for line in f:
-            k, v = line.split(":", 1)
-            mem[k] = int(v.split()[0]) * 1024
-    free_pct = 100 * mem["MemAvailable"] / mem["MemTotal"]
-    tight_at, ok_at = float(cfg["BALANCE_MEM_TIGHT_PCT"]), float(cfg["BALANCE_MEM_OK_PCT"])
-    mem_tight = free_pct < (ok_at if prev.get("mem_tight") else tight_at)  # hysteresis
-    load, ncpu = os.getloadavg()[0], os.cpu_count() or 1
-    busy_at = float(cfg["BALANCE_CPU_BUSY"])
-    cpu_busy = load > ncpu * (busy_at - 0.15 if prev.get("cpu_busy") else busy_at)
-    return {"mem_tight": mem_tight, "cpu_busy": cpu_busy, "free_pct": round(free_pct, 1),
-            "load": round(load, 2), "ts": int(time.time())}
-
-
-def read_cg(uid, name):
-    try:
-        with open(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/{name}") as f:
-            return f.read().strip()
-    except OSError:
-        return None
-
-
-def cpu_quota_us(pct):
-    return int(float(str(pct).rstrip("%")) * 1000)  # per 100 ms period: 300% -> 300000
-
-
-def balance(cfg):
-    prev = sb.read_json(BALANCE_STATE, {}) or {}
-    st = box_pressure(cfg, prev)
-    for name, rec in sb.friend_users().items():
-        uid, lim = rec["uid"], sb.user_limits(cfg, rec)
-        if read_cg(uid, "cpu.max") is None:
-            continue  # not logged in / nothing running
-        cpu = lim["CPU_QUOTA"] if st["cpu_busy"] or not lim.get("BURST_CPU_QUOTA") else lim["BURST_CPU_QUOTA"]
-        mem = (lim["MEMORY_HIGH"] if st["mem_tight"] or not lim.get("BURST_MEMORY_HIGH")
-               else lim["BURST_MEMORY_HIGH"])
-        props = []
-        cur_cpu = (read_cg(uid, "cpu.max") or "").split()
-        if not cur_cpu or cur_cpu[0] == "max" or int(cur_cpu[0]) != cpu_quota_us(cpu):
-            props.append(f"CPUQuota={cpu}")
-        cur_mem = read_cg(uid, "memory.high")
-        if cur_mem is None or cur_mem == "max" or int(cur_mem) != sb.parse_size(mem):
-            props.append(f"MemoryHigh={mem}")
-        if props:
-            subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],
-                           capture_output=True)
-    if (st["mem_tight"], st["cpu_busy"]) != (prev.get("mem_tight"), prev.get("cpu_busy")):
-        sb.log_event("balance", None, mem_tight=st["mem_tight"], cpu_busy=st["cpu_busy"],
-                     free_pct=st["free_pct"], load=st["load"])
-    sb.write_json(BALANCE_STATE, st, mode=0o644)
-
-
 def main():
     if os.geteuid() != 0:
         sys.exit("sharedbox-janitor: must run as root")
@@ -668,8 +386,8 @@ def main():
     s = p.add_subparsers(dest="cmd", required=True)
     x = s.add_parser("run"); x.add_argument("--dry-run", action="store_true")
     x.add_argument("--user"); x.set_defaults(fn=cmd_run)
-    s.add_parser("guard").set_defaults(fn=cmd_guard)
-    x = s.add_parser("t3-naps"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_t3_naps)
+    for n in ("tick", "t3-naps"):  # t3-naps: the old name, until install.sh swaps the timer
+        x = s.add_parser(n); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_tick)
     x = s.add_parser("reboot"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_reboot)
     a = p.parse_args()
     a.fn(cfg, a)

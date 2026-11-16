@@ -871,9 +871,9 @@ class HelpTopic(unittest.TestCase):
         topics = {c.partition("\n")[0].strip(): c.partition("\n")[2] for c in raw.split("@@ ")[1:]}
         self.assertIn("connect", topics)
         fields = {k: "X" for k in ("portal", "user", "host", "ip", "connect", "project_ttl", "warn", "cache_ttl",
-                                   "artifact_ttl", "tmp_ttl", "slots", "jobs", "updates", "reboot_time",
+                                   "tmp_ttl", "updates", "reboot_time", "boost_mem", "boost_hours",
                                    "reboot_days", "ports", "shared_dir", "shared_ports",
-                                   "serve_public", "shared_public", "archive_days", "t3_idle", "t3_nap", "t3_ports", "docker_nap")}
+                                   "serve_public", "shared_public", "archive_days", "t3_ports")}
         for name, body in topics.items():
             body.format(**fields)  # no stray braces
 
