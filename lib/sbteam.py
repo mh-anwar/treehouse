@@ -833,7 +833,7 @@ def main(argv, cfg, request=None):
     if a.cmd == "create":
         res = root({"action": "team-create", "name": a.name,
                     "members": [m for m in re.split(r"[\s,]+", a.members) if m]})
-        out(res, res["message"] + f"\nnext: box team clone; tell your agents `box team board`")
+        out(res, res["message"] + "\nnext: box team clone; tell your agents `box team board`")
         return 0
     if a.cmd == "_relay":
         tdir = resolve(a.name, cfg)[1]

@@ -217,7 +217,7 @@ def cmd_boxes(sb, cfg, user, home, as_json=False):
               f"{d.get('level', ''):<9} mem {d.get('mem', '?')}%  disk free {d.get('disk_free', '?')}%  "
               f"room {r['score']}" + ("" if r["ok"] else f"  ({r['why']})"))
     print(f"best place for heavy work now: {best}" + (" (here)" if best == me else
-                                                      f"  ->  box run --anywhere -- CMD"))
+                                                      "  ->  box run --anywhere -- CMD"))
 
 
 # ---------- sync + run ----------
