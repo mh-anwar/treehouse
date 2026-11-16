@@ -51,6 +51,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbshared  # noqa: E402
+import sbteam  # noqa: E402
 
 SYSTEMD_DIR = "/etc/systemd/system"
 MANAGED_PROPS = {
@@ -443,6 +444,8 @@ def shared_uids(cfg):
 def shared_handle(cfg, user, req):
     """sbshared.handle, with every failure turned into a reply (one bad request never wedges the path unit)."""
     try:
+        if str(req.get("action", "")).startswith("team-"):  # team mode (box team): same drop box, same identity
+            return sbteam.handle(cfg, user, req)
         return sbshared.handle(cfg, user, req)
     except KeyError as e:
         return {"ok": False, "error": f"shared servers aren't set up on this box yet ({e} is missing); "

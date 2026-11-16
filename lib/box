@@ -18,6 +18,8 @@
   box request "TEXT"               ask the owner for something (e.g. a system package)
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
+  box team create NAME --members a,b | board | task | claim | done | wait | inbox set | crew start ROLE
+                                   hackathon team: one board, agents hand off directly (box team -h)
 """
 
 import argparse
@@ -617,7 +619,7 @@ def updates_text():
 
 
 def sync_agent_files(notices=()):
-    block = f"{BEGIN}\n{render_rules(notices)}\n{END}"
+    block = f"{BEGIN}\n{render_rules(notices)}{team_rules()}\n{END}"
     for rel in AGENT_FILES:
         p = os.path.join(HOME, rel)
         try:
@@ -2646,7 +2648,25 @@ def cmd_pass(a):
     json.dump(rep, sys.stdout)
 
 
+# ---------- team mode (box team; all logic in sbteam.py) ----------
+
+def team_rules():
+    """Team section for the managed agent block while this user is in a team ("" otherwise)."""
+    try:
+        import sbteam
+        return sbteam.rules_section(ME.pw_name, CFG)
+    except Exception:  # noqa: BLE001 - never break the rules sync
+        return ""
+
+
+def cmd_team(a):
+    import sbteam
+    sys.exit(sbteam.main(a.rest, CFG, request=lambda req: shared_request(req, 60)) or 0)
+
+
 def main():
+    if sys.argv[1:2] == ["team"]:  # argparse's REMAINDER drops leading options (--team, -h): hand over raw argv
+        return cmd_team(argparse.Namespace(rest=sys.argv[2:]))
     p = argparse.ArgumentParser(prog="box", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest="sub")
@@ -2705,6 +2725,8 @@ def main():
     x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_issue)
     x = s.add_parser("issues"); x.add_argument("--days", type=int, default=14)
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_issues)
+    x = s.add_parser("team", add_help=False, help="hackathon team: shared board, tasks, wait, inbox, crew (box team -h)")
+    x.add_argument("rest", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_team)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
