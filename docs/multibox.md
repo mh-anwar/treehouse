@@ -71,10 +71,12 @@ commands hold shared locks; cleanup takes an exclusive lock and skips active or 
 
 Teams record their home box at creation. CLI board commands forward through SSH when local metadata
 names another home; arguments are shell-quoted for SSH. Existing teams without a home remain local.
-Metadata must be available on the calling box; distributing it is a separate concern.
+Federation copies each team's metadata to every box (see "Team metadata on every box" below), so this works
+from any box in BOXES.
 
-`box heavy` now executes immediately, with no slot or queue. The proposed suggestion when queued
-therefore has no trigger; it does not survey peers or add network latency.
+`box heavy` now executes immediately, with no slot or queue, so the old idea of having it suggest
+`box run --anywhere` when it would queue has nothing to hang on. It is dropped; `box heavy` does not survey
+peers or add network latency.
 
 ## What's needed at deploy
 
@@ -151,6 +153,26 @@ Mirroring (a)'s *result* (same UID, groups, limits, port block) with (d)'s *tran
   and prints the link (and for Claude takes the code back with `--code`). The human clicks a link, as on
   day one; the agent does the rest. Each box then refreshes its own tokens independently.
 
+### Team metadata on every box
+
+Each box's roster also carries a `teams` map with the teams whose home is that box: name, members, home,
+created_by and created. Board events, notes, the repo and folder paths stay on the home box. fed-sync on every
+box writes the other boxes' teams into its own team metadata dir (`/var/lib/sharedbox/teams/NAME.json`, root,
+0644, the same as a local team) with `"mirror": true` and the home box's name. `box team ls` on any box then
+lists the teams you are a member of, with the box each one lives on, and every other `box team` command for such
+a team runs on its home box over SSH, the same way as before. `box team clone` is the exception: it clones the
+home box's `repo.git` into `~/NAME` on the box you ran it on.
+
+The home box is the only source. A team removed there, or with new members, changes the copies on the next
+sync. A copy never replaces a team whose home is this box: the name clash is logged once in `fed-status`, and
+`box team create` refuses a name that is already a copy. Only fresh rosters (under two days old, signature and
+serial checked as for accounts) change copies. A roster from an older box has no `teams` key and changes
+nothing, so mixed versions never lose teams. Copies are never passed on, and a peer can only publish teams
+homed on itself. Tests: `tests/test_team_federation.py`.
+
+Still open: `box team inbox set` and `box team crew start` run on the home box, so the inbox can only deliver
+into a T3 thread on that box. Copies whose home box is later removed from BOXES stay until someone deletes them.
+
 ### Same rules on both boxes
 
 Limits, janitor, tick, agent rules, `box` CLI: identical code and the same sharedbox.conf (except BOX_ROLE and
@@ -182,18 +204,17 @@ run` mirrors are caches.
 
 ## Next
 
-**Team metadata on every box.** `box team` forwards to a team's home box, but only when this box has the
-team's metadata. Publishing team metadata in the federation roster would make a team usable from any box.
+Built since this list was written: team metadata on every box (see "Accounts across boxes").
 
-**Placement of new agents.** Keep it in T3:
+**Placement of new agents.** Not built yet. Keep it in T3:
 - Give every user's T3 a home box chosen at invite time by memory headroom (`box boxes --json`). Set it via the
   gate's existing `backend_for()` hook (`rec["box"]`), so the public URL stays the same.
 - (Built: federation links each user's T3s on the two boxes, see "Accounts across boxes".)
 - Don't migrate live threads: the session state and dev servers stay where they started.
 
 **Later**: `box run --anywhere` for Docker builds (send build context through the mirror and use the far
-side's layer cache). Teach `box heavy` to suggest `box run --anywhere` when it would queue for more than
-a minute and another box has room.
+side's layer cache). Not built yet. The idea of having `box heavy` suggest `box run --anywhere` is dropped
+because `box heavy` no longer queues.
 
 ### Key exchange is automatic (2026-11-15)
 Each box serves its public roster-signing key at `/api/peer/key` to the boxes in its BOXES (root config) only.
