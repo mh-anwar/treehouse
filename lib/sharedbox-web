@@ -2043,6 +2043,15 @@ class Handler(BaseHTTPRequestHandler):
             if not peer_allowed(self.client_address[0]):
                 return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
             self.send(200, json.dumps(box_summary()), "application/json")
+        elif path == "/api/peer/key":  # federation: this box's public roster key, for first-contact pinning
+            if not peer_allowed(self.client_address[0]):
+                return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
+            try:
+                with open(os.path.join(sb.STATE_DIR, "fed", "box_key.pub")) as f:
+                    body = f.read(4096)
+            except OSError:
+                return self.send(404, '{"error": "no key yet"}', "application/json")
+            self.send(200, body, "text/plain")
         elif path == "/api/peer/roster":  # federation (lib/sbfed.py): root's signed roster, for the other boxes only
             if not peer_allowed(self.client_address[0]):
                 return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
