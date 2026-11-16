@@ -14,6 +14,7 @@ when the user is over the disk budget).
 """
 
 import fcntl
+import glob
 import json
 import os
 import re
@@ -544,11 +545,33 @@ def clean_caches(plan, home, now, cwds, over, dry):
         exes = my_exes()
         vers = sorted((e for e in os.scandir(vdir) if _is_real_dir(e.path)),
                       key=lambda e: _lstat(e.path).st_mtime, reverse=True)
+        named = t3_versions_named(home)
         for e in vers[2:]:
-            if not any(x.startswith(e.path + "/") for x in exes):
+            if e.name not in named and not any(x.startswith(e.path + "/") for x in exes):
                 rm(e.path, "old T3 Code version")
 
     return deleted
+
+
+def t3_versions_named(home):
+    """T3 versions something still points at, running or not: a user unit's ExecStart (T3's own t3code.service
+    launcher is the way back if `box t3 switch` has to roll back) and T3's service-state.json activeVersion."""
+    names = set()
+    units = os.path.join(home, ".config", "systemd", "user")
+    for path in glob.glob(os.path.join(units, "*.service")) + glob.glob(os.path.join(units, "*.service.d", "*.conf")):
+        try:
+            with open(path, errors="replace") as f:
+                names.update(re.findall(r"\.t3/runtime/versions/([^/\s\"']+)/", f.read(65536)))
+        except OSError:
+            pass
+    try:
+        with open(os.path.join(home, ".t3", "runtime", "service-state.json")) as f:
+            v = json.load(f).get("activeVersion")
+        if isinstance(v, str) and v:
+            names.add(v)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return names
 
 
 def run_cache_pass(plan):
