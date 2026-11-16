@@ -168,7 +168,8 @@ def advice(g):
                    f"is mid-turn it waits up to 2 hours. {REBOOT_BACK}")
     b = g["box"]
     live = g["live"] or {}
-    if live.get("mem_high") and live["mem"] > 0.85 * live["mem_high"]:
+    used = live.get("mem_used") if live.get("mem_used") is not None else live.get("mem", 0)
+    if live.get("mem_high") and used > 0.85 * live["mem_high"]:
         out.append("You are close to your RAM limit. If the work really needs more, run `box boost` (more RAM for a "
                    f"few hours) and tell the user in a line.")
     boost = sb.boosts().get(ME.pw_name)
@@ -262,7 +263,7 @@ def cmd_status(a):
     if lim:
         boost = sb.boosts().get(ME.pw_name)
         lines.append(f"You: CPU {live.get('cpu_pct', 0)}% | "
-                     f"RAM {sb.human(live.get('mem', 0))} (limit {CFG['BOOST_MEMORY'] + ', boosted' if boost else lim['MEMORY_HIGH']}) | "
+                     f"RAM {sb.human(live.get('mem_used') if live.get('mem_used') is not None else live.get('mem', 0))} (limit {CFG['BOOST_MEMORY'] + ', boosted' if boost else lim['MEMORY_HIGH']}) | "
                      f"procs {live.get('pids', 0)}/{lim['TASKS_MAX']} | "
                      f"disk {sb.human(j.get('disk')) if j.get('disk') else '?'} / {lim['DISK_BUDGET_GB']}G"
                      + (f" (measured {fmt_ts(j['measured'])})" if j.get('measured') else ""))
