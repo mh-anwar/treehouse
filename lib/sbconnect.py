@@ -243,8 +243,7 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
   `ssh {alias} 'box rules'` once before doing real work there and follow it.
 - Files live on the box, not on this computer: edit them there (`ssh`, Remote-SSH) or move them with
   `scp`/`git`. Keep each project as a git repo in `~/<name>/` and push it: idle projects are archived only once fully pushed.
-- Anything long-running goes in `box serve add <name> -- <command>` (or `box shared` for something the whole
-  group runs). Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
+- Anything long-running goes in `box serve add <name> -- <command>`. Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
 - Out of memory for a big build: `box boost` (28G for a few hours). `box help` lists more topics.
 
 To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`

@@ -16,13 +16,10 @@ WT = sys.argv[1]
 import tempfile
 TMP = tempfile.mkdtemp(prefix="e2e-gate-")
 conf = os.path.join(TMP, "gate.conf")
-shared_json = os.path.join(TMP, "shared.json")
 with open(conf, "w") as f:
     f.write("PUBLIC_URL=https://treehouse.test\nPUBLIC_MODE=cloudflare\nCF_TEAM_DOMAIN=x.cloudflareaccess.com\n"
             "CF_ACCESS_AUD=aaaaaaaaaaaaaaaaaaaa\nGATE_BACKEND_HOST=127.0.0.1\nCF_OWNER_EMAILS=owner@x.io\n"
-            "PORT_BASE=31000\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT=31018\nSHARED_PUBLIC_LINKS=yes\n")
-with open(shared_json, "w") as f:
-    json.dump({"web": {"port": 31100}, "down": {"port": 31101}, "BAD": {"port": 1}}, f)
+            "PORT_BASE=31000\nPORT_BLOCK=10\nFRIEND_UID_MIN=2000\nOWNER_T3_PORT=31018\n")
 os.environ.update(SHAREDBOX_CONF=conf, SHAREDBOX_LIB=os.path.join(WT, "lib"), SHAREDBOX_STATE=TMP)
 sys.path.insert(0, os.path.join(WT, "lib"))
 loader = importlib.machinery.SourceFileLoader("gate", os.path.join(WT, "lib/sharedbox-gate"))
@@ -30,7 +27,6 @@ g = importlib.util.module_from_spec(importlib.util.spec_from_loader("gate", load
 loader.exec_module(g)
 import sbaccess  # noqa: E402
 
-g.sb.SHARED_JSON = shared_json
 g.sb.friend_users = lambda reg=None: {"alice": {"uid": 2000, "email": "alice@x.io"},
                                       "bob": {"uid": 2001, "email": "bob@x.io"}}
 TOKENS = {"A": "alice@x.io", "B": "bob@x.io", "O": "owner@x.io", "N": "nobody@x.io"}
@@ -133,45 +129,26 @@ def check(name, cond, info=""):
 
 
 def run_tests():
-    # group server: friend, other friend, owner, no account, no token
-    for tok in "ABO":
-        c, h, b = req("/s/web/hello/x?q=1", tok)
-        j = json.loads(b) if c == 200 else {}
-        check(f"/s/web as {tok}", c == 200 and j["port"] == 31100 and j["path"] == "/hello/x?q=1", (c, b[:200]))
-    c, h, b = req("/s/web/", "N")
-    check("/s/web no account -> 403", c == 403, c)
-    c, h, b = req("/s/web/")
-    check("/s/web no token -> 403", c == 403, c)
-    c, h, b = req("/s/nope/", "A")
-    check("/s/unknown -> 404", c == 404, c)
-    c, h, b = req("/s/BAD/", "A")
-    check("/s/BAD (bad name) -> 404", c == 404, c)
-    c, h, b = req("/s/web?x=1", "A")
-    check("/s/web -> 308 /s/web/?x=1", c == 308 and hv(h, "location") == ["/s/web/?x=1"], (c, h))
-    c, h, b = req("/s/down/", "A")
-    check("/s/down not running -> 502 with hint", c == 502 and b"isn't running" in b and b"box shared start" in b,
-          (c, b[:300]))
-
     # headers / cookies
-    c, h, b = req("/s/web/h", "A", extra=["Cookie: CF_Authorization=A; __Host-sbgate=zz; t3_session_1=secret; app=1",
+    c, h, b = req("/p/31001/h", "A", extra=["Cookie: CF_Authorization=A; __Host-sbgate=zz; t3_session_1=secret; app=1",
                                          "X-Forwarded-Prefix: /evil", "X-Sharedbox-Cf-Email: owner@x.io"])
     j = json.loads(b)
     hd = j["headers"]
     check("cookie filtered to app's only", hd.get("cookie") == "app=1", hd.get("cookie"))
-    check("X-Forwarded-Prefix set by gate", hd.get("x-forwarded-prefix") == "/s/web", hd.get("x-forwarded-prefix"))
+    check("X-Forwarded-Prefix set by gate", hd.get("x-forwarded-prefix") == "/p/31001", hd.get("x-forwarded-prefix"))
     check("no sharedbox/CF headers forwarded", not any(k.startswith(("x-sharedbox", "cf-")) for k in hd), list(hd))
     check("host + xfh", hd.get("host") == "treehouse.test" and hd.get("x-forwarded-host") == "treehouse.test", hd)
     sc = hv(h, "set-cookie")
     check("Set-Cookie confined to prefix, t3 cookie dropped, Domain removed",
-          sc == ["app=1; Path=/s/web/; HttpOnly", "deep=2; Path=/s/web/api"], sc)
+          sc == ["app=1; Path=/p/31001/; HttpOnly", "deep=2; Path=/p/31001/api"], sc)
     check("Service-Worker-Allowed / Clear-Site-Data dropped",
           not hv(h, "service-worker-allowed") and not hv(h, "clear-site-data"), h)
-    c, h, b = req("/s/web/go", "A")
-    check("Location /login -> /s/web/login", c == 302 and hv(h, "location") == ["/s/web/login?next=1"], h)
+    c, h, b = req("/p/31001/go", "A")
+    check("Location /login -> /p/31001/login", c == 302 and hv(h, "location") == ["/p/31001/login?next=1"], h)
     c, h, b = req("/p/31001/abs", "A")
     check("absolute backend Location -> public prefixed",
           hv(h, "location") == ["https://treehouse.test/p/31001/x"], h)
-    c, h, b = req("/s/web/p", "A", method="POST", body=b"hello")
+    c, h, b = req("/p/31001/p", "A", method="POST", body=b"hello")
     check("POST with body", c == 200 and json.loads(b)["path"] == "/p", (c, b[:200]))
 
     # own ports
@@ -183,10 +160,6 @@ def run_tests():
     check("/p/alice port as owner -> 403", c == 403, c)
     c, h, b = req("/p/31000/", "A")
     check("/p/T3 port -> 403", c == 403 and b"T3" in b, (c, b[:200]))
-    c, h, b = req("/p/31100/", "B")
-    check("/p/group port as bob ok", c == 200, c)
-    c, h, b = req("/p/31100/", "O")
-    check("/p/group port as owner ok", c == 200, c)
     c, h, b = req("/p/31005/", "A")
     check("/p/own port not listening -> 502 hint", c == 502 and b"box serve start" in b, (c, b[:200]))
     c, h, b = req("/p/31011", "B")
@@ -260,7 +233,7 @@ def run_tests():
     for path in ("/assets/main.js", "/index.html", "/assets/sub/x-D8OUUT-k.js", "/assets/x-D8OUUT-k.html"):
         c, h, b = req(path, "A", extra=[T3C])
         check(f"not cached forever: {path}", "immutable" not in " ".join(hv(h, "cache-control")), h)
-    c, h, b = req("/s/web/assets/utils-D8OUUT-k.js", "A")
+    c, h, b = req("/p/31001/assets/utils-D8OUUT-k.js", "A")
     check("friend's app asset not touched", c == 200 and not hv(h, "cache-control"), h)
 
     # ---- sharedbox-web never sees cookies, only a flag for the one it needs (tb_direct) ----

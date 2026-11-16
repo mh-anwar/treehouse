@@ -1,6 +1,6 @@
 """Team mode (`box team`): one shared board per hackathon team, agents talk to each other directly.
 
-A team is a folder TEAMS_DIR/NAME that root creates (sharedbox-admin, via the `box shared` drop box) and
+A team is a folder TEAMS_DIR/NAME that root creates (sharedbox-admin, via the member request drop box) and
 gives every member read/write through POSIX ACLs. ACLs work the moment they're set, unlike a new group,
 which only reaches a running T3 server after a restart. Inside:
 
