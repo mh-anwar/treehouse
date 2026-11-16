@@ -356,6 +356,32 @@ def share_skill(req, user):
                                    f"people install it with `box skills add {name}`"}
 
 
+def drop_entries(directory, pattern="*.json"):
+    """Paths in a world-writable drop dir, after clearing out anything that isn't a plain file: a directory or
+    other odd entry named *.json can't be unlinked, would sit there forever and keep re-triggering the path unit
+    (it once stopped all joins/logins/box shared). Empty dirs are removed; anything else is moved aside."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(directory, pattern))):
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            out.append(path)
+            continue
+        try:
+            os.rmdir(path)
+        except OSError:
+            jail = os.path.join(sb.STATE_DIR, "drop-quarantine")
+            os.makedirs(jail, mode=0o700, exist_ok=True)
+            try:
+                os.rename(path, os.path.join(jail, f"{int(time.time())}-{os.path.basename(path)}.bad"))
+            except OSError as e:
+                print(f"can't clear {path}: {e!r}", file=sys.stderr)
+        sb.log_event("drop_junk_removed", None, uid=st.st_uid, name=os.path.basename(path)[:80])
+    return out
+
+
 def process_admin_drop(cfg):
     """Requests from ADMIN_USERS accounts, without sudo (`box invite`).
 
@@ -366,7 +392,7 @@ def process_admin_drop(cfg):
     _secure_dir(sb.ADMIN_DROP, 0o1733)
     _secure_dir(sb.ADMIN_REPLIES, 0o711)
     admins = admin_uids(cfg)
-    for path in sorted(glob.glob(os.path.join(sb.ADMIN_DROP, "*.json"))):
+    for path in drop_entries(sb.ADMIN_DROP):
         rid = os.path.basename(path)[:-5]
         try:
             owner = os.lstat(path).st_uid
@@ -471,7 +497,7 @@ def process_shared_drop(cfg):
     allowed = shared_uids(cfg)
     owner = sb.owner_account(cfg)
     boosters = dict(allowed, **({owner.pw_uid: owner.pw_name} if owner else {}))  # `box boost` from any account
-    for path in sorted(glob.glob(os.path.join(sb.SHARED_DROP, "*.json"))):
+    for path in drop_entries(sb.SHARED_DROP):
         rid = os.path.basename(path)[:-5]
         try:
             owner = os.lstat(path).st_uid
@@ -531,7 +557,7 @@ def process_spool(cfg):
     with ThreadPoolExecutor(max_workers=8) as pool:
         running = set()
         while True:
-            paths = sorted(glob.glob(os.path.join(sb.SPOOL, "req-*.json")))
+            paths = drop_entries(sb.SPOOL, "req-*.json")
             running = {f for f in running if not f.done()}
             if glob.glob(os.path.join(sb.ADMIN_DROP, "*.json")) or glob.glob(os.path.join(sb.SHARED_DROP, "*.json")):
                 process_drops(cfg)
