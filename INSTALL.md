@@ -6,15 +6,15 @@ may not be technical. Ask them only what is listed under "Ask first", plus anyth
 or a browser click. Keep your messages short and plain.
 
 ## Rules for you
-- **Never ask the owner to paste a multi-line block into a terminal.** A pasted block can swallow
+- Never ask the owner to paste a multi-line block into a terminal. A pasted block can swallow
   password prompts, and lines get lost. If something has to run in their terminal, write a script to a
   file and give them **one short line** to type, e.g. `sudo bash /tmp/treehouse-step.sh`.
-- **Never ask for passwords, tokens or app passwords in the chat.** If one is needed, write a script that
+- Never ask for passwords, tokens or app passwords in the chat. If one is needed, write a script that
   reads it with `read -rs VAR </dev/tty` and saves it with mode 600, and have the owner run that.
-- **sudo:** first try `sudo -n true`. If it works, run the root steps yourself. If it needs a password and
+- For sudo, first try `sudo -n true`. If it works, run the root steps yourself. If it needs a password and
   you can't type it, bundle the root steps into one script and hand the owner the one-line command (see
   above). Never use `sudo -S` with a password from the chat.
-- **Don't break a live machine.** Don't restart or edit sshd, tailscaled, networking or the firewall, and
+- Don't break a live machine. Don't restart or edit sshd, tailscaled, networking or the firewall, and
   don't reboot. The installer already promises this; keep the promise in your own commands too.
 - Show the dry run's summary before applying, and wait for the owner's OK.
 
@@ -29,20 +29,20 @@ Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python
   missing, stop and tell the owner plainly.
 
 ## 1. Ask first (one message, all at once)
-1. **Admins:** which accounts on this machine are the owner's own? They are never limited. Suggest the
+1. Admins: which accounts on this machine are the owner's own? They are never limited. Suggest the
    current user (`id -un`).
-2. **Email for alerts** (weekly health report, urgent problems, security alerts). Suggest skipping it
+2. An email address for alerts (weekly health report, urgent problems, security alerts). Suggest skipping it
    for now if they don't have a Gmail address handy.
-3. **How friends connect.** Don't make the owner choose from jargon. Ask one question, "Do you have a
+3. How friends connect. Don't make the owner choose from jargon. Ask one question, "Do you have a
    domain on Cloudflare?" (check yourself first if you can), and recommend the route that fits:
-   - **Cloudflare login (most secure, recommended if they have a domain on Cloudflare):** friends open
+   - Cloudflare login is the most secure, and the one to recommend if they have a domain on Cloudflare. Friends open
      `https://box.<their-domain>` on any device and log in with an email code. Only emails the owner
      invited ever reach the machine. The owner clicks one pre-filled link and copies one token; you do
      everything else, including turning on Cloudflare Zero Trust.
-   - **Private (Tailscale only):** nothing is exposed at all. Each friend installs Tailscale and the owner
+   - With the private route (Tailscale only), nothing is exposed at all. Each friend installs Tailscale and the owner
      shares the machine with them in the Tailscale admin console. Good for a few technical friends; free
      Tailscale limits how many people you can add.
-4. **Who can join:** Cloudflare uses owner invitations. Private Tailscale `/join` supports immediate
+4. Who can join: Cloudflare uses owner invitations. Private Tailscale `/join` supports immediate
    self-join (`JOIN_MODE=open`) or refuses it (`closed`); there is no approval queue. Unset defaults to
    `closed` with Cloudflare and `open` otherwise. Legacy `approve` refuses signup. Root re-verifies whois.
    Private `box invite` prints the tailnet `/join` message, so this path needs `open`.
@@ -50,11 +50,11 @@ Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python
 ## 2. Prerequisites
 - `git`: install it with the system package manager if missing (`apt-get install -y git` or
   `pacman -S --needed --noconfirm git`; never `pacman -Sy` on its own).
-- **Tailscale** on the server: needed for both connection options. If `tailscale status` fails, install it
+- Tailscale on the server is needed for both connection options. If `tailscale status` fails, install it
   from the official script (`curl -fsSL https://tailscale.com/install.sh | sh`) or the distro package, then
   run `sudo tailscale up --qr=false` in the background, read the login URL it prints, and send the owner
   **only that link** to open and approve. Wait until `tailscale status` shows the machine online.
-- **sshd:** only needed for friends who want a terminal. Don't install or configure it unless the owner
+- sshd is only needed for friends who want a terminal. Don't install or configure it unless the owner
   asks.
 
 ## 3. Install
