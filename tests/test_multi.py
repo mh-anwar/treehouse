@@ -9,7 +9,8 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "lib"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 import sbmulti as m  # noqa: E402
 
 
@@ -90,6 +91,7 @@ def run_script(script, home, close_after=None):
         p.stdin.close()
     out = p.stdout.read()
     rc = p.wait(20)
+    p.stdout.close()
     if not p.stdin.closed:
         p.stdin.close()
     return rc, out

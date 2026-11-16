@@ -14,12 +14,10 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 TMP = tempfile.mkdtemp(prefix="sbrules-")
-CONF = os.path.join(TMP, "sharedbox.conf")
-open(CONF, "w").close()
-os.environ.update(SHAREDBOX_CONF=CONF, SHAREDBOX_STATE=os.path.join(TMP, "state"), SHAREDBOX_LIB=LIB,
-                  SHAREDBOX_SHARE=os.path.join(ROOT, "share"), HOME=TMP)
-sys.path.insert(0, LIB)
+os.environ["HOME"] = TMP
 
 loader = importlib.machinery.SourceFileLoader("janitor_rules", os.path.join(LIB, "sharedbox-janitor"))
 jan = importlib.util.module_from_spec(importlib.util.spec_from_loader("janitor_rules", loader))

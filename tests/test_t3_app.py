@@ -13,13 +13,10 @@ import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 TMP = tempfile.mkdtemp(prefix="sbt3-")
-CONF = os.path.join(TMP, "sharedbox.conf")
-with open(CONF, "w") as f:
-    f.write("WEB_PORT=8090\n")
-os.environ.update(SHAREDBOX_CONF=CONF, SHAREDBOX_STATE=os.path.join(TMP, "state"), SHAREDBOX_LIB=LIB,
-                  SHAREDBOX_SHARE=os.path.join(ROOT, "share"), HOME=TMP)
-sys.path.insert(0, LIB)
+os.environ["HOME"] = TMP
 
 loader = importlib.machinery.SourceFileLoader("box_t3", os.path.join(LIB, "box"))
 box = importlib.util.module_from_spec(importlib.util.spec_from_loader("box_t3", loader))
@@ -61,9 +58,6 @@ class T3Urls(unittest.TestCase):
             box.CFG.update(cfg)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class AppPaired(unittest.TestCase):
     """The start card leads with "Open T3" only once the app really connected, not when a prompt was made."""
@@ -101,3 +95,23 @@ class AppPaired(unittest.TestCase):
                 os.environ.pop("T3CODE_HOME", None)
             else:
                 os.environ["T3CODE_HOME"] = old
+
+
+class HelpAndRules(unittest.TestCase):
+    """`box help` and the agents' rule file fill every {placeholder} from rule_fields(): a placeholder added to
+    HELP.md or AGENTS.md without its field (or a stray brace) would crash `box help` / `box rules` for everyone."""
+
+    def test_help_topics_render(self):
+        topics = box.help_topics()
+        self.assertIn("connect", topics)
+        for name, body in topics.items():
+            self.assertNotRegex(body, r"\{[a-z_]+\}", name)
+
+    def test_rules_render(self):
+        out = box.render_rules(["a notice"])
+        self.assertIn("a notice", out)
+        self.assertNotRegex(out, r"\{[a-z_]+\}")
+
+
+if __name__ == "__main__":
+    unittest.main()

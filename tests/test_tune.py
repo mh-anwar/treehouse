@@ -1,4 +1,4 @@
-"""sharedbox-tune: the shipped settings parse, every check runs on this machine without crashing, and the
+"""sharedbox-tune: the shipped settings parse, every check runs without crashing (commands faked), and the
 report sorts treehouse fixes from owner suggestions. Stdlib only, no root.
     python3 -m unittest discover -s tests -v"""
 
@@ -6,10 +6,13 @@ import glob
 import importlib.machinery
 import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 loader = importlib.machinery.SourceFileLoader("sbtune", os.path.join(ROOT, "lib", "sharedbox-tune"))
 tune = importlib.util.module_from_spec(importlib.util.spec_from_loader("sbtune", loader))
 loader.exec_module(tune)
@@ -28,6 +31,7 @@ class Tune(unittest.TestCase):
             self.assertTrue(want[k][2], f"{k} has no comment saying why")
         self.assertEqual(want["net.ipv4.tcp_wmem"][0], "4096 65536 16777216")  # whitespace normalised
 
+    @unittest.skipUnless(os.path.isdir("/proc/sys/net/core"), "needs a Linux /proc/sys")
     def test_every_shipped_setting_is_a_real_kernel_key(self):
         want, _ = tune.shipped_sysctls()
         missing = [k for k in want if not os.path.exists(tune.sysctl_path(k))
@@ -35,7 +39,13 @@ class Tune(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_all_checks_run_and_are_well_formed(self):
-        res = tune.run_checks()
+        # commands (systemctl, tailscale, a login shell) are faked: fast, and the same on any machine
+        orig = tune.subprocess.run
+        tune.subprocess.run = lambda cmd, **k: tune.subprocess.CompletedProcess(cmd, 1, "", "")
+        try:
+            res = tune.run_checks()
+        finally:
+            tune.subprocess.run = orig
         self.assertTrue(res)
         for r in res:
             self.assertEqual(set(r), {"name", "ok", "now", "want", "why", "kind"})
