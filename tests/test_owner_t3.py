@@ -303,6 +303,25 @@ class ReviewFixes(unittest.TestCase):
         dest.unlink()
         self.assertIn('box _t3-backup-upgrade', tools.shim_text({}, "t3", "t3"))
 
+    def test_friend_upgrade_backups_keep_newest_two(self):
+        userdata = Path(TMP, ".t3", "userdata")
+        userdata.mkdir(parents=True, exist_ok=True)
+        (userdata / "statev2.sqlite").touch()
+        (userdata / "server-runtime.json").write_text('{"serverVersion":"0.1.9"}')
+        folder = Path(TMP, ".t3", "sb-backup")
+        def backup(db, path):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).touch()
+        vers = [f"0.1.10-nightly.2026111{i}.{4600 + i}" for i in range(4)]
+        with patch.object(box, "is_friend", return_value=True), patch.object(box, "t3_backup", side_effect=backup):
+            for i, v in enumerate(vers):
+                box.cmd_t3_backup_upgrade(type("A", (), {"version": v})())
+                os.utime(folder / f"before-{v}.sqlite", (1000 + i, 1000 + i))
+        left = sorted(p.name for p in folder.glob("before-*.sqlite"))
+        self.assertEqual(left, [f"before-{v}.sqlite" for v in vers[-2:]])
+        for p in folder.glob("before-*.sqlite"):
+            p.unlink()
+
     def test_t3_downgrade_is_refused(self):
         with patch.object(tools, "current_version", return_value="0.1.10"), patch.object(tools.os, "symlink") as link, patch.object(tools, "log") as log:
             tools.set_current("t3", "0.1.9")

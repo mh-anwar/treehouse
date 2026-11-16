@@ -23,6 +23,7 @@
 
 import argparse
 import fcntl
+import glob
 import json
 import os
 import pwd
@@ -1359,9 +1360,17 @@ def cmd_t3_backup_upgrade(a):
     db = t3_db_path()
     if not os.path.exists(db) or old == ver:
         return
-    dest = os.path.join(HOME, ".t3", "sb-backup", "before-" + ver + ".sqlite")
+    folder = os.path.join(HOME, ".t3", "sb-backup")
+    dest = os.path.join(folder, "before-" + ver + ".sqlite")
     if not os.path.exists(dest):
         t3_backup(db, dest)
+    # one full copy per new version adds up on a nightly channel: keep the newest two
+    olds = sorted(glob.glob(os.path.join(folder, "before-*.sqlite")), key=os.path.getmtime)
+    for p in olds[:-2]:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 def t3_switch_line():
