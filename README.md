@@ -137,6 +137,8 @@ the install test on Ubuntu 24.04, Debian 13 and Arch, the agents and T3 switch t
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. There is nothing to build.
 
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 [MIT](LICENSE)
