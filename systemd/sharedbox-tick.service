@@ -1,0 +1,6 @@
+[Unit]
+Description=sharedbox tick: end expired memory boosts, wake T3 for scheduled tasks, refresh agent rules
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-janitor tick

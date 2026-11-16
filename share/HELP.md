@@ -11,33 +11,25 @@ Claude / Codex logins: send the user to their page {portal}, which does them in 
 Never ask for passwords or tokens in chat.
 
 @@ files
-- `~/projects/<name>/`: your work. A project **untouched for {project_ttl} days (no file read or written) is
-  archived**, with {warn} days of warning in `box status` (and an email to the user). Never while a process runs
-  from it or a `box serve` service points at it (even a stopped one).
+- Projects are git repos directly in your home: `~/<name>/`. A project is **archived only when both hold**: untouched
+  for {project_ttl} days (no file read or written, no process running from it, no `box serve` service pointing at it),
+  and fully backed up: it has a remote, nothing uncommitted or untracked, every local branch pushed, no stash.
+  Folders that aren't git repos are never archived. `box status` warns {warn} days ahead.
 - Archived = moved to `~/.sharedbox/archive/<name>-<date>/`, **restorable for {archive_days} days: `box restore NAME`**
-  (`box restore` lists them), then deleted. Archives count toward the disk budget and are deleted first when the
-  user is over it. If the user asks where a project went, check `box restore` before anything else.
-- `~/services/<name>/`: code for long-running servers. Never auto-deleted; counts toward the disk budget.
-- `~/keep/`: small files that must survive. Never auto-deleted.
-- Caches (`~/.cache`, `~/.npm`, `~/.gradle/caches`, `~/.cargo/registry`, …) unused {cache_ttl} days are deleted.
-  Build outputs (`node_modules`, `build/`, `target/`, `.next`, `.venv`, …) in projects idle {artifact_ttl} days are
-  deleted. Over the disk budget, everything regenerable is wiped right away.
+  (`box restore` lists them), then deleted (it's still on the remote). If the user asks where a project went, check
+  `box restore` first.
+- `~/services/<name>/`: code for long-running servers. `~/keep/`: must-keep files. Never auto-deleted.
+- Caches (`~/.cache`, `~/.npm`, `~/.gradle/caches`, …) unused for {cache_ttl} days are deleted. Over the disk budget,
+  caches and build outputs (`node_modules`, `target/`, `.venv`, …) go right away, then archives, then the oldest
+  idle fully-pushed projects. Unpushed work is never deleted.
 - `/tmp` files older than {tmp_ttl} days are deleted.
-- The user's T3 Code server naps after {t3_nap} minutes unused (no app or tab connected, no agent working, nothing
-  it started still serving) to free memory. Its port stays open: opening T3 (app, browser, their page) wakes it in
-  a few seconds. Linked to T3 Connect: it naps after {t3_idle} days instead. `box t3 status` shows which.
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
-- Nothing is backed up. Push to git often.
 
-@@ heavy
-- Prefix heavy commands with `box heavy --` (e.g. `box heavy -- ./gradlew assembleDebug`). It queues behind other
-  users' heavy jobs ({slots} at a time) and runs at low priority.
-- Parallelism **{jobs} jobs**: `make -j{jobs}`, `cargo build -j {jobs}`, Gradle `--max-workers={jobs}` (preset).
-- One heavy build at a time. Afterwards stop only the build helpers you started for it (Gradle daemons with
-  `./gradlew --stop`, emulators); leave the user's dev servers and databases running unless they ask.
-- If the box is `busy` in `box status`, avoid heavy work unless the user insists.
-- Docker works, rootless, under your own account (`box help docker`). Other tools install into your home (`~/.local`, nvm, uv, rustup, …).
+@@ boost
+- `box boost [--why "<why>"]` raises your RAM limit to {boost_mem} for {boost_hours} hours, if the box has that much
+  free right now (otherwise it says so; try later or free memory). It ends by itself. The user can also press Boost
+  on their page {portal}. Use it when a real job needs it (a big build, a model, many test browsers), not by default.
 
 @@ git
 Faster clones and CI. Measured on this box (ruff, a medium repo): full clone 17 s / 245 MB, blobless 9 s / 68 MB,
@@ -63,7 +55,7 @@ shallow 5 s / 18 MB.
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
 - Never start a long job (big build, long test run) close to a reboot `box status` announces.
 - Comes back: `box serve` services, group servers, the user's T3 Code, everything on disk.
-- Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, `box heavy` jobs, memory.
+- Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, memory, a running `box boost`.
 - Make servers safe to restart any time: keep state in files or a database.
 
 @@ servers
@@ -71,7 +63,7 @@ shallow 5 s / 18 MB.
   restarts on crash. The port is in `$PORT` (your range: {ports}). Listen on `0.0.0.0`.
 - Manage: `box serve ls`, `box serve logs <name>`, `box serve restart|stop|start|rm <name>`.
 - The user also sees and controls these on their page {portal}.
-- Their T3 Code isn't one of these: it naps when unused and wakes when they open it. Ports {t3_ports} are its.
+- Their T3 Code isn't one of these (it starts when they open it). Ports {t3_ports} are its.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
 - Others on the tailnet reach it at `http://{ip}:<port>`.{serve_public}
 
@@ -179,7 +171,7 @@ Typical waste:
   `box serve ls`, `ss -ltnp`). Point new work at the existing one.
 - Dev modes left as servers: `next dev`, watchers (`--watch`, nodemon, `tsc -w`) for something long-running; a
   production build (`next build && next start`) uses far less.
-- No limits: compose `mem_limit:`, `org.gradle.jvmargs=-Xmx2g`, `--max-workers` from `box help heavy`, slim images.
+- No limits: compose `mem_limit:`, `org.gradle.jvmargs=-Xmx2g`, slim images.
 - Leaks: test browsers (Playwright, Puppeteer) not closed in teardown, 300+ MB each; background jobs your own runs
   started and forgot.
 - Waiting on the disk: every save that must reach the disk (database commits, `git commit`, package installs) waits
@@ -225,19 +217,14 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
 - Images live in `~/.local/share/docker` and count toward your disk budget. Prune (`docker image prune`) only when
   the user asks or you're over budget. Never `docker system prune` (it deletes stopped databases' containers) and never
   anything with `--volumes` (it deletes their data).
-- Idle databases (Postgres, Supabase, MySQL, Redis, Mongo, ...) are {docker_nap}: no connection to their ports, no
-  queries, and no agent of yours working. Data volumes are kept. Start one again when the work needs it: `supabase
-  start` (in the project), `docker compose up -d`, or `docker start NAME`. Never stop one yourself because a task
-  seems done; the user decides that, or this timer does. One that must stay up (a bot's database): add the label
-  `treehouse.keep=true`, or its stack name on a line of `~/.sharedbox/docker-keep`, only if the user wants that.
+- Never stop a database yourself because a task seems done; the user decides that.
 - Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
 - `docker compose` works the same way.
 
 
 @@ hackathon
 Hackathon mode = develop freely until a set time. `box status` shows a line while it's on; `box hackathon` shows
-the state. While on: T3 Code and idle Docker databases never nap, the decoy-port trap and the decoy-secrets
-tripwire are off (so ports like 5432, 6379, 8080 are free for real servers), and package requests from the owner
+the state. While on: the decoy-port trap and the decoy-secrets tripwire are off (so ports like 5432, 6379, 8080 are free for real servers), and package requests from the owner
 and the listed friends install without the deny list, the size cap or the daily limit (packages that could break
 the box itself, like sudo, the kernel, SSH or the firewall, are still refused). It ends by itself at its end time.
 Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2` (or `--hours N`), `box hackathon off`.
@@ -246,12 +233,11 @@ Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2` (o
 The owner may have more than one box. The owner's own agents can reach the second box, minastirith (a Dell,
 Tailscale 100.94.44.25), with `ssh minastirith`. It's SLOWER than sietchtabr (i3, 2 cores/4 threads, about 40-45%
 of the CPU power, 16 GB, Wi-Fi), so it's overflow capacity, not a speed-up. Move a job there only when all hold:
-1. sietchtabr is contended: `box status` says busy, `box heavy` would wait, load is above ~6 of 8, or you're near
-   your own limits.
+1. sietchtabr is contended: load is above ~6 of 8, or you're near your own limits.
 2. The job is long (~10+ min here) and self-contained (full test suite, image build, benchmark, crawl, batch job),
    and doesn't need this box's databases, dev servers or files you're editing.
 3. Little to copy: push to git and pull there, or rsync under ~1 GB; install dependencies there instead of
    copying node_modules or Docker contexts over Wi-Fi.
 4. The other box is free: `ssh minastirith uptime` load below ~3 of 4.
-Otherwise run it here (`box heavy` for heavy work). Never keep the only copy of anything there; results go back
+Otherwise run it here. Never keep the only copy of anything there; results go back
 to git or this box. There you log in as its admin: no sudo or system changes unless the owner asks.

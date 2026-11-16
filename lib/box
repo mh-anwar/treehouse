@@ -3,13 +3,13 @@
 
   box status [--agent|--json]      usage, limits, box load, pending deletions
   box ports                        your port range (+ which are in use)
-  box heavy -- CMD...              run a heavy job: queued, low priority, capped parallelism
+  box boost [--why TEXT]           more RAM for a few hours (BOOST_MEMORY for BOOST_HOURS), if the box has it free
   box serve add NAME [--port P] -- CMD...   long-running server (survives logout/reboot)
   box serve ls | logs NAME | restart NAME | stop NAME | start NAME | rm NAME
   box shared ls | create NAME | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
                                    servers the whole group owns (code in /srv/shared/NAME); add --json
-  box clean [--dry-run]            clean caches/old tmp/idle build outputs now
-  box restore [NAME]               put an archived project back in ~/projects (lists archives without NAME)
+  box clean [--dry-run]            clean unused caches and old tmp files now
+  box restore [NAME]               put an archived project back in ~ (lists archives without NAME)
   box rules                        the rules your agents are given
   box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
   box setup [--check]              guided setup: git identity, GitHub, agent logins
@@ -110,7 +110,7 @@ def gather(sample=0.5):
         cg2["throttled"] = cg2["throttled_usec"] > cg["throttled_usec"] or cpu_pressure() > 10
         cg = cg2
     return {"user": ME.pw_name, "friend": is_friend(), "ports": ports(),
-            "limits": my_limits() if is_friend() else None, "live": cg,
+            "limits": my_limits(), "live": cg,
             "box": sb.box_load(), "janitor": st}
 
 
@@ -165,27 +165,23 @@ def advice(g):
         out.append(f"The box will REBOOT on {fmt_ts(rb['at'])}: its scheduled reboot, {rb['schedule']}. If an agent "
                    f"is mid-turn it waits up to 2 hours. {REBOOT_BACK}")
     b = g["box"]
-    if b["level"] == "busy":
-        out.append("The box is BUSY right now. Postpone heavy builds/tests if possible; "
-                   "if not, use `box heavy --` and reduce parallelism.")
-    elif b["level"] == "moderate":
-        out.append("The box is moderately loaded. Use `box heavy --` for builds.")
     live = g["live"] or {}
     if live.get("mem_high") and live["mem"] > 0.85 * live["mem_high"]:
-        out.append("You are close to your RAM limit. Don't start more; stop build helpers you started yourself "
-                   "(e.g. `./gradlew --stop`). Ask the user before stopping any of their servers or databases.")
-    if live.get("throttled"):
-        out.append("Your CPU is being throttled at your quota. Lower parallelism.")
+        out.append("You are close to your RAM limit. If the work really needs more, run `box boost` (more RAM for a "
+                   f"few hours) and tell the user in a line.")
+    boost = sb.boosts().get(ME.pw_name)
+    if boost:
+        out.append(f"Memory boost on until {fmt_ts(boost)} ({CFG['BOOST_MEMORY']} RAM).")
     j = g["janitor"]
     if j.get("over_budget"):
         out.append(f"You are OVER your disk budget. Caches and build outputs were wiped. "
-                   f"Delete things you don't need, or the oldest idle projects will be removed "
+                   f"Delete things you don't need, or the oldest idle, fully pushed projects will be removed "
                    f"after {fmt_ts(j['over_budget_deadline'])}." if j.get("over_budget_deadline")
                    else "You are OVER your disk budget. Free space now.")
     for p in j.get("projects", []):
         if p.get("delete_on"):
-            out.append(f"Project ~/projects/{p['name']} will be ARCHIVED on {fmt_ts(p['delete_on'])} "
-                       f"(idle {p['idle_days']}d; then {archive_until_text()}). Touch it to keep it, or push it to git.")
+            out.append(f"Project ~/{p['name']} will be ARCHIVED on {fmt_ts(p['delete_on'])} "
+                       f"(idle {p['idle_days']}d, everything pushed; then {archive_until_text()}). Touch it to keep it.")
     try:  # live from disk (a restore shows up right away); the janitor's last report otherwise
         import sbclean
         arch = [{"name": x["name"], "until": x["until"]}
@@ -206,11 +202,6 @@ def advice(g):
         out.append("This account's shell loads nvm the slow way (" + ", ".join("~/" + f for f in slow_shell) + "): "
                    "~100 ms added to every command agents run. Run `box tune shell` now (keeps a backup, undoes itself "
                    "if Node would change) and tell the user in a line.")
-    naps = recent_docker_naps()
-    if naps:
-        out.append("Idle Docker databases were stopped to free memory: " + ", ".join(
-            f"{sb.printable(n)[:40]} ({fmt_ts(t)})" for n, t in naps[-5:]) + ". Start one again only when the "
-            "work needs it (`supabase start`, `docker compose up -d`, `docker start NAME`); data is kept.")
     return out
 
 
@@ -219,7 +210,7 @@ def hackathon_line(cfg=None):
     cfg = cfg or CFG
     if cfg.get("HACKATHON") != "1":
         return ""
-    return (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: no naps, trap/tripwire off, package requests open for "
+    return (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: trap/tripwire off, package requests open for "
             f"{cfg.get('REQUEST_OPEN_USERS') or 'the owner'} (`box help hackathon`)")
 
 
@@ -267,19 +258,22 @@ def cmd_status(a):
     if hackathon_line():
         lines.append(hackathon_line())
     if lim:
-        lines.append(f"You: CPU {live.get('cpu_pct', 0)}% (cap {burst_now(lim, 'CPU_QUOTA')}) | "
-                     f"RAM {sb.human(live.get('mem', 0))} (soft {burst_now(lim, 'MEMORY_HIGH')}, hard {lim['MEMORY_MAX']}) | "
+        boost = sb.boosts().get(ME.pw_name)
+        lines.append(f"You: CPU {live.get('cpu_pct', 0)}% | "
+                     f"RAM {sb.human(live.get('mem', 0))} (limit {CFG['BOOST_MEMORY'] + ', boosted' if boost else lim['MEMORY_HIGH']}) | "
                      f"procs {live.get('pids', 0)}/{lim['TASKS_MAX']} | "
                      f"disk {sb.human(j.get('disk')) if j.get('disk') else '?'} / {lim['DISK_BUDGET_GB']}G"
                      + (f" (measured {fmt_ts(j['measured'])})" if j.get('measured') else ""))
-        lines.append(f"Ports: {g['ports'][0]}-{g['ports'][1]}  |  servers: "
-                     + (", ".join(f"{s['name']}({s['state']})" for s in j.get("services", [])) or "none"))
+        if g["ports"]:
+            lines.append(f"Ports: {g['ports'][0]}-{g['ports'][1]}  |  servers: "
+                         + (", ".join(f"{s['name']}({s['state']})" for s in j.get("services", [])) or "none"))
     for ad in advice(g):
         lines.append(("- " if a.agent else "! ") + ad)
-    if a.agent and lim:
-        lines.append("Rules: use ~/projects (archived when idle), ~/services, ~/keep; prefix heavy "
-                     "jobs with `box heavy --`; servers via `box serve`; log anything about this machine that "
-                     "slows you down or fails with `box issue \"...\"`. Full rules: `box rules`.")
+    if a.agent and g["friend"]:
+        lines.append("Rules: projects are git repos in ~ (archived after "
+                     f"{CFG['PROJECT_TTL_DAYS']} idle days, only if fully pushed), ~/keep is never touched; servers via "
+                     "`box serve`; more RAM: `box boost`; log anything about this machine that slows you down or "
+                     "fails with `box issue \"...\"`. Full rules: `box rules`.")
     print("\n".join(lines))
 
 
@@ -307,57 +301,29 @@ def cmd_ports(a):
     print("in use: " + (", ".join(map(str, used)) or "none"))
 
 
-# ---------- heavy ----------
+# ---------- heavy (kept so old scripts keep working: just runs the command) ----------
 
 def cmd_heavy(a):
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     if not cmd:
         sys.exit("usage: box heavy -- COMMAND...")
-    n = sb.cfg_int(CFG, "HEAVY_SLOTS")
-    deadline = time.time() + sb.cfg_int(CFG, "HEAVY_WAIT_MAX_MIN") * 60
-    fd, announced, last = None, False, 0
-    while fd is None and os.environ.get("SHAREDBOX_HEAVY") != "1":  # nested: parent holds a slot
-        opened = 0
-        for i in range(n):
-            try:
-                f = os.open(os.path.join(sb.SLOTS, f"slot-{i}"), os.O_RDONLY)
-            except OSError:
-                continue
-            opened += 1
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fd = f
-                break
-            except BlockingIOError:
-                os.close(f)
-        if fd is not None or opened == 0:  # no queue installed: just run
-            break
-        if time.time() > deadline:
-            print("box heavy: waited too long for a slot, running anyway at lowest priority",
-                  file=sys.stderr)
-            break
-        if not announced or time.time() - last > 60:
-            print(f"box heavy: {n} heavy job(s) already running on the box; waiting for a slot…",
-                  file=sys.stderr)
-            announced, last = True, time.time()
-        time.sleep(5)
-    waited = time.time() - (deadline - sb.cfg_int(CFG, "HEAVY_WAIT_MAX_MIN") * 60)
-    if announced and waited > 300:
-        try:
-            log_issue(f"`box heavy` waited {waited / 60:.0f} min for a slot ({n} slot(s)) before "
-                      f"running: {shlex.join(cmd)[:200]}", "slow", auto=True, dedupe_s=3600)
-        except OSError:
-            pass
-    if fd is not None:
-        os.set_inheritable(fd, True)  # lock is held until the command exits
-    jobs = CFG["BUILD_JOBS"]
-    env = dict(os.environ, MAKEFLAGS=f"-j{jobs}", CMAKE_BUILD_PARALLEL_LEVEL=jobs,
-               CARGO_BUILD_JOBS=jobs, SHAREDBOX_HEAVY="1")
-    prefix = ["nice", "-n", "10"] + (["ionice", "-c", "2", "-n", "7"] if shutil.which("ionice") else [])
     try:
-        os.execvpe(prefix[0], prefix + cmd, env)
+        os.execvp(cmd[0], cmd)
     except FileNotFoundError:
         sys.exit(f"box heavy: command not found: {cmd[0]}")
+
+
+# ---------- boost ----------
+
+def cmd_boost(a):
+    res = shared_request({"action": "boost", "why": a.why or ""}, wait=60)
+    if a.json:
+        print(json.dumps(res))
+        sys.exit(0 if res.get("ok") else 1)
+    if not res.get("ok"):
+        sys.exit(f"box boost: {res.get('error') or 'that did not work'}")
+    print(f"Memory boost on: up to {CFG['BOOST_MEMORY']} RAM until {fmt_ts(res['until'])}. "
+          "It ends by itself; nothing else to do.")
 
 
 # ---------- serve ----------
@@ -430,9 +396,9 @@ def cmd_serve(a):
         if r and port is not None and not (r[0] <= port <= r[1]):
             print(f"warning: port {port} is outside your range {r[0]}-{r[1]}", file=sys.stderr)
         wd = os.getcwd()
-        if wd.startswith(os.path.join(HOME, "projects") + "/"):
-            print("note: this runs from ~/projects. The project won't be auto-deleted while this "
-                  f"service exists (even if stopped). `box serve rm {a.name}` releases it.", file=sys.stderr)
+        if wd.startswith(HOME + "/") and wd != HOME:
+            print(f"note: the project this runs from won't be archived while this service exists (even if stopped). "
+                  f"`box serve rm {a.name}` releases it.", file=sys.stderr)
         os.makedirs(UNIT_DIR, exist_ok=True)
         body = [
             "[Unit]", f"Description=box serve {a.name}",
@@ -472,7 +438,6 @@ def cmd_serve(a):
 def cmd_clean(a):
     import sbclean
     plan = {"project_ttl_days": 10 ** 6,  # manual clean never deletes projects
-            "artifact_ttl_days": sb.cfg_int(CFG, "ARTIFACT_TTL_DAYS"),
             "cache_ttl_days": 0, "tmp_ttl_days": sb.cfg_int(CFG, "TMP_TTL_DAYS"),
             "warn_days": 0, "dry_run": a.dry_run}
     rep = sbclean.run_pass(plan)
@@ -500,14 +465,14 @@ def cmd_restore(a):
         for x in arch:
             print(f"  {x['name']:<24} archived {fmt_ts(x['archived_at'])}, deleted after {fmt_ts(x['until'])}")
         return
-    want = a.name.strip().rstrip("/").removeprefix("~/projects/")
+    want = a.name.strip().rstrip("/").removeprefix("~/projects/").removeprefix("~/")
     hits = [x for x in arch if want in (x["name"], os.path.basename(x["dir"]))]
     if not hits:
         sys.exit(f"box restore: no archived project called {want!r}. `box restore` lists them.")
     x = hits[0]  # newest
-    dest = os.path.join(HOME, "projects", x["name"])
+    dest = os.path.join(HOME, x["name"])
     if os.path.lexists(dest):
-        sys.exit(f"box restore: ~/projects/{x['name']} exists again. Rename or remove it first, or copy what you "
+        sys.exit(f"box restore: ~/{x['name']} exists again. Rename or remove it first, or copy what you "
                  f"need from {x['path']}")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     os.rename(x["path"], dest)
@@ -516,7 +481,7 @@ def cmd_restore(a):
     if a.json:
         print(json.dumps({"ok": True, "name": x["name"], "path": dest}))
     else:
-        print(f"Restored ~/projects/{x['name']}.")
+        print(f"Restored ~/{x['name']}.")
 
 
 # ---------- agent rules ----------
@@ -535,7 +500,7 @@ def render_rules(notices=()):
         android = (f"\n- Android: SDK at `{sdk}` (`ANDROID_HOME` is set), JDK 21, latest platforms/build-tools. "
                    "It's read-only. If a project pins a missing platform/build-tools version, raise "
                    "`compileSdk`/`buildToolsVersion` to an installed one (`ls $ANDROID_HOME/platforms`) "
-                   "or `box request` it. Always build APKs with `box heavy -- ./gradlew assembleDebug`.")
+                   "or `box request` it. ")
     extras = []
     if "xvfb-run" in tv:
         extras.append("- Headless browsers work without root (Playwright/Selenium/Puppeteer): install into your home "
@@ -571,30 +536,23 @@ BASE_PATH_NOTE = ("It's served under that path (prefix stripped, `X-Forwarded-Pr
                   "`--server.baseUrlPath`).")
 
 
-def docker_nap_text():
-    m = sb.cfg_int(CFG, "DOCKER_NAP_MINUTES")
-    if m <= 0:
-        return "never stopped automatically"
-    return "stopped automatically after " + ("an hour" if m == 60 else f"{m} minutes" if m % 60 else f"{m // 60} hours") + " unused"
-
-
 def rule_fields(tl="", extras=(), nt=""):
     """Values for the {placeholders} in AGENTS.md (always loaded) and HELP.md (`box help`, on demand)."""
     lim = my_limits()
     r = ports() or (0, 0)
     return dict(
-        host=socket.gethostname(), ip=sb.tailscale_ip4() or socket.gethostname(), user=ME.pw_name, cpu=burst_text(lim, "CPU_QUOTA", "cores"),
-        mem_high=burst_text(lim, "MEMORY_HIGH", "RAM"), mem_max=lim["MEMORY_MAX"], tasks=lim["TASKS_MAX"],
+        host=socket.gethostname(), ip=sb.tailscale_ip4() or socket.gethostname(), user=ME.pw_name,
+        mem_high=lim["MEMORY_HIGH"], mem_max=lim["MEMORY_MAX"], tasks=lim["TASKS_MAX"],
+        boost_mem=CFG["BOOST_MEMORY"], boost_hours=CFG["BOOST_HOURS"],
         disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}", t3_ports=f"{r[0]} and {r[1]}",
-        t3_nap=CFG["T3_NAP_MINUTES"],
         ports_line=(f"Ports: **{r[0]}-{r[1]}** only (the first and last are the user's T3 Code)." if r != (0, 0) else
                     "Ports: no fixed range for this account; check `ss -ltn` and pick a free one."),
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
-        cache_ttl=CFG["CACHE_TTL_DAYS"], artifact_ttl=CFG["ARTIFACT_TTL_DAYS"],
-        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], docker_nap=docker_nap_text(), updates=updates_text(),
+        cache_ttl=CFG["CACHE_TTL_DAYS"],
+        tmp_ttl=CFG["TMP_TTL_DAYS"], reboot_time=CFG["REBOOT_TIME"], updates=updates_text(),
         reboot_days=(f"It also reboots {sb.reboot_schedule_text(CFG)}, whether or not there are updates; that "
                      "reboot waits up to 2 hours while an agent is mid-turn.") if reboot_days() else "",
-        archive_days=CFG["ARCHIVE_DAYS"], t3_idle=CFG["T3_IDLE_DAYS"], brand=BRAND, slots=CFG["HEAVY_SLOTS"], jobs=CFG["BUILD_JOBS"],
+        archive_days=CFG["ARCHIVE_DAYS"], brand=BRAND,
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
         serve_public=(f"\n- Public link (behind the box's login, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
@@ -658,25 +616,6 @@ def updates_text():
             "update), the box")
 
 
-def burst_text(lim, key, what):
-    """'5 cores (500%) while the box is quiet, 3 cores when it's busy' style text for the rules."""
-    base, burst = lim[key], lim.get("BURST_" + key)
-    fmt = (lambda v: f"{float(str(v).rstrip('%')) / 100:g} cores") if what == "cores" else str
-    if not burst or burst == base:
-        return fmt(base)
-    return f"up to {fmt(burst)} while the box is quiet, {fmt(base)} when it's busy"
-
-
-def burst_now(lim, key):
-    """The limit in force right now, according to the guard's last balancing run."""
-    st = sb.read_json(os.path.join(sb.STATE_DIR, "balance.json"), {}) or {}
-    busy = st.get("cpu_busy") if key == "CPU_QUOTA" else st.get("mem_tight")
-    burst = lim.get("BURST_" + key)
-    if not burst or busy:
-        return f"{lim[key]}{' (box busy)' if burst else ''}"
-    return f"{burst} (box quiet; {lim[key]} when busy)"
-
-
 def sync_agent_files(notices=()):
     block = f"{BEGIN}\n{render_rules(notices)}\n{END}"
     for rel in AGENT_FILES:
@@ -700,13 +639,8 @@ def sync_agent_files(notices=()):
                 f.write(new)
 
 
-def cmd_t3_nap(a):
-    busy = t3_busy()
-    print(json.dumps({"t3_stopped": False if busy else t3_sleep(), "busy": bool(busy), "why": busy}))
-
-
 def cmd_t3_wake(a):
-    """The janitor's check on a napping (or rebooted) T3: scheduled tasks on = start it, so they run on time."""
+    """The janitor's check on a stopped (e.g. rebooted) T3: scheduled tasks on = start it, so they run on time."""
     woke = False
     if shutil.which("t3") and ports() and sb.tailscale_ip4() and t3_db_state()[1]:
         host, port, env = t3_env()
@@ -714,186 +648,6 @@ def cmd_t3_wake(a):
             t3_ensure(host, port, env, quiet=True)
             woke = True
     print(json.dumps({"woke": woke}))
-
-
-# ---------- idle Docker databases ----------
-# A local database stack (Supabase is ~0.6 GB and ~5 CPU-seconds a minute even when nobody uses it) is stopped
-# after DOCKER_NAP_MINUTES unused, for everyone, the owner included. The janitor runs `box _docker-nap` as each
-# account every few minutes; this decides and stops only that account's own containers. Volumes are kept, so
-# `supabase start` / `docker compose up -d` / `docker start NAME` brings it back with its data.
-# "Used" = an open TCP connection to one of the stack's published ports (an app's connection pool, psql, a
-# Studio tab) or the database container itself working (queries from short-lived connections between checks).
-# A stack started recently, or seen for the first time, gets the full quiet period first. Nothing is stopped while one of the account's agents
-# is working (a T3 turn running, or an agent process using CPU): the quiet period starts over after it.
-# Agents never stop databases themselves (the rules say so): only this timer does, and only after real quiet. Opt out: label `treehouse.keep=true`, or the stack's
-# name on a line of ~/.sharedbox/docker-keep.
-
-DOCKER_NAP_STATE = os.path.join(HOME, ".sharedbox", "docker-naps.json")
-DOCKER_KEEP = os.path.join(HOME, ".sharedbox", "docker-keep")
-DB_IMAGE_RE = re.compile(r"(?i)(^|[/_-])(postgres|postgis|timescale|mysql|mariadb|mongo|redis|valkey|keydb|"
-                         r"clickhouse|cockroach|elasticsearch|opensearch|neo4j|cassandra|scylla|couchdb|couchbase|"
-                         r"influxdb|surrealdb|meilisearch|typesense|qdrant|weaviate|milvus|chroma|minio|mssql|"
-                         r"memcached|rabbitmq|nats|kafka|redpanda)([:/_.-]|$)")
-# helpers that sit next to a database and poll it all day; their CPU says nothing about anyone using it
-DB_HELPER_RE = re.compile(r"(?i)(meta|exporter|admin|studio|commander|insight|-ui\b|dashboard|backup)")
-DOCKER_BUSY_CPU = 0.03  # cores the database container used since the last check (idle: Postgres ~0.004, Redis ~0.01)
-
-
-def docker_env():
-    sock = f"/run/user/{os.getuid()}/docker.sock"
-    if not os.path.exists(sock):
-        return None
-    return dict(os.environ, DOCKER_HOST=f"unix://{sock}")
-
-
-def docker_stacks(env):
-    """{stack: [container dict]} for running containers: grouped by Supabase/compose project, else alone."""
-    ids = subprocess.run(["docker", "ps", "-q", "--no-trunc"], env=env, capture_output=True, text=True,
-                         timeout=60).stdout.split()
-    if not ids:
-        return {}
-    info = json.loads(subprocess.run(["docker", "inspect", *ids], env=env, capture_output=True, text=True,
-                                     timeout=60).stdout or "[]")
-    stacks = {}
-    for c in info:
-        labels = (c.get("Config") or {}).get("Labels") or {}
-        name = c.get("Name", "").lstrip("/")
-        img = (c.get("Config") or {}).get("Image", "")
-        stack = labels.get("com.supabase.cli.project") or labels.get("com.docker.compose.project") or name
-        ports = set()
-        for binds in ((c.get("NetworkSettings") or {}).get("Ports") or {}).values():
-            for b in binds or []:
-                if str(b.get("HostPort", "")).isdigit():
-                    ports.add(int(b["HostPort"]))
-        try:  # docker reports UTC
-            started = calendar.timegm(time.strptime((c.get("State") or {}).get("StartedAt", "")[:19],
-                                                    "%Y-%m-%dT%H:%M:%S"))
-        except (ValueError, OverflowError):
-            started = 0
-        stacks.setdefault(stack, []).append({
-            "id": c["Id"], "name": name, "image": (c.get("Config") or {}).get("Image", ""), "ports": ports,
-            "keep": labels.get("treehouse.keep", "").lower() in ("1", "true", "yes"), "started": started,
-            "db": bool(DB_IMAGE_RE.search(img)) and not DB_HELPER_RE.search(img)})
-    return stacks
-
-
-def established_local_ports():
-    """Local ports with an ESTABLISHED TCP connection (this network namespace: where rootless Docker publishes)."""
-    out = set()
-    for fn in ("/proc/net/tcp", "/proc/net/tcp6"):
-        try:
-            with open(fn) as f:
-                next(f, None)
-                for line in f:
-                    parts = line.split()
-                    if len(parts) > 3 and parts[3] == "01":
-                        out.add(int(parts[1].rsplit(":", 1)[1], 16))
-        except OSError:
-            pass
-    return out
-
-
-def container_cpu_usec(cid):
-    base = f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service"
-    for cg in (f"{base}/user.slice/docker-{cid}.scope", f"{base}/docker-{cid}.scope"):
-        try:
-            with open(os.path.join(cg, "cpu.stat")) as f:
-                for line in f:
-                    if line.startswith("usage_usec "):
-                        return int(line.split()[1])
-        except OSError:
-            continue
-    return None
-
-
-def docker_nap(idle_minutes, dry_run=False):
-    env = docker_env()
-    if not env or not shutil.which("docker") or idle_minutes <= 0:
-        return {"stopped": [], "kept": []}
-    stacks = docker_stacks(env)
-    state = sb.read_json(DOCKER_NAP_STATE, {}) or {}
-    try:
-        with open(DOCKER_KEEP) as f:
-            keep = {ln.strip() for ln in f if ln.strip() and not ln.startswith("#")}
-    except OSError:
-        keep = set()
-    now = time.time()
-    conns = established_local_ports()
-    stopped, kept, due = [], [], []
-    for stack, cs in sorted(stacks.items()):
-        dbs = [c for c in cs if c["db"]]
-        if not dbs:
-            continue  # not a database: apps and bots are the user's business
-        if stack in keep or any(c["keep"] for c in cs):
-            kept.append(stack)
-            continue
-        st = state.setdefault(stack, {})
-        busy = bool(conns & set().union(*(c["ports"] for c in cs)))
-        cpu = {c["id"]: container_cpu_usec(c["id"]) for c in dbs}
-        prev, prev_t = st.get("cpu") or {}, st.get("t")
-        if prev_t and now > prev_t:
-            used = sum(v - prev[k] for k, v in cpu.items() if v is not None and isinstance(prev.get(k), int)
-                       and v >= prev[k])
-            busy = busy or used / 1e6 / (now - prev_t) > DOCKER_BUSY_CPU
-        st.update(cpu={k: v for k, v in cpu.items() if v is not None}, t=now)
-        if busy:
-            st["busy"] = now
-        st.setdefault("seen", now)  # only quiet this timer watched counts: never stop on the first look
-        last = max(st["busy"] if "busy" in st else 0, st["seen"], max(c["started"] for c in cs))
-        if now - last >= idle_minutes * 60:
-            due.append((stack, cs))
-    working = ""
-    if due:  # last word: an agent still working may need the database any second (its next query, the user's reply)
-        working = "agent turn running" if t3_db_state()[0] else ""
-        if not working and sb.busy_agents(uids=[os.getuid()]):
-            working = "agent working"
-    for stack, cs in due:
-        if working:
-            state[stack]["busy"] = now
-            continue
-        if not dry_run:
-            subprocess.run(["docker", "stop", *[c["id"] for c in cs]], env=env, capture_output=True, timeout=180)
-            state.pop(stack, None)
-        stopped.append(stack)
-    for gone in set(state) - set(stacks):
-        state.pop(gone)
-    if not dry_run:
-        os.makedirs(os.path.dirname(DOCKER_NAP_STATE), exist_ok=True)
-        sb.write_json(DOCKER_NAP_STATE, state, mode=0o600)
-        if stopped:
-            log_docker_naps(stopped)
-    return {"stopped": stopped, "kept": kept, "waited": working}
-
-
-def log_docker_naps(stopped):
-    """One line per stop, so `box status` (and the agent at session start) can say what was turned off."""
-    try:
-        with open(os.path.join(HOME, ".sharedbox", "docker-napped.log"), "a") as f:
-            for s in stopped:
-                f.write(f"{int(time.time())} {s}\n")
-    except OSError:
-        pass
-
-
-def recent_docker_naps(days=2):
-    try:
-        with open(os.path.join(HOME, ".sharedbox", "docker-napped.log")) as f:
-            rows = [ln.split(None, 1) for ln in f.read().splitlines()[-200:]]
-    except OSError:
-        return []
-    cut, out = time.time() - days * 86400, {}
-    for ts, name in (r for r in rows if len(r) == 2 and r[0].isdigit()):
-        if int(ts) >= cut:
-            out[name.strip()] = int(ts)
-    return sorted(out.items(), key=lambda kv: kv[1])
-
-
-def cmd_docker_nap(a):
-    try:
-        res = docker_nap(sb.cfg_int(CFG, "DOCKER_NAP_MINUTES"), dry_run=a.dry_run)
-    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
-        res = {"stopped": [], "kept": [], "error": str(e)[-300:]}
-    print(json.dumps(res))
 
 
 # ---------- fast shell start ----------
@@ -1040,35 +794,17 @@ def cmd_rules(a):
 # ---------- T3 Code (web UI for agents) ----------
 
 T3_UNIT = "sb-t3.service"
-T3_SOCKET = "sb-t3.socket"        # holds the friend's T3 port while T3 naps; the first connection starts it
+T3_SOCKET = "sb-t3.socket"        # holds the friend's T3 port; the first connection starts T3 (e.g. after a reboot)
 T3_PROXY = "sb-t3-proxy.service"  # passes connections from that port to T3's own port
-T3_SLEEPING = os.path.join(HOME, ".sharedbox", "t3-sleeping")  # napping: stopped for being unused, wakes on use
 PROXYD = "/usr/lib/systemd/systemd-socket-proxyd"
 
-# T3 Code naps when nobody uses it and wakes on the next connection, so it's always "there" for the T3 app
-# and the browser but only takes memory while in use:
+# T3 Code starts on the first connection (after a reboot, or after `box t3 stop`), so it's always "there" for
+# the T3 app and the browser:
 #   sb-t3.socket        listens on the friend's T3 port (first port of their block, what everyone connects to)
 #   sb-t3-proxy.service started by that socket; forwards to T3 on the last port of the block (same address,
 #                       so T3 still runs as a remote-reachable server: binding loopback instead would make it
 #                       refuse pairing links and revoke every paired device)
-#   sb-t3.service       T3 itself; counts as started only once it answers, so a waking connection just waits
-# The janitor's nap check stops sb-t3.service (the proxy goes with it); the socket stays.
-
-
-def t3_sleep():
-    """Nap: stop T3 Code (the janitor decides, this runs as the user). The socket stays, so the next connection
-    (T3 app, browser, the gate) wakes it. Older setups without the socket are switched over first."""
-    if shutil.which("t3") and ports() and sb.tailscale_ip4():
-        host, _, env = t3_env()
-        t3_write_units(host, env)
-    r = sctl("stop", T3_PROXY, T3_UNIT, capture=True)  # an older T3 holds the public port: free it first
-    sctl("reset-failed", T3_UNIT, T3_PROXY, capture=True)
-    sctl("enable", "--now", T3_SOCKET, capture=True)
-    if r.returncode == 0:
-        os.makedirs(os.path.dirname(T3_SLEEPING), exist_ok=True)
-        with open(T3_SLEEPING, "w") as f:
-            f.write(f"{int(time.time())}\n")
-    return r.returncode == 0
+#   sb-t3.service       T3 itself; counts as started only once it answers, so a first connection just waits
 
 
 def t3_db_state():
@@ -1140,12 +876,6 @@ def t3_app_paired():
     return bool(t3_app_sessions())
 
 
-def t3_busy():
-    """Why T3 must stay up even though nothing looks active, or ""."""
-    running, scheduled = t3_db_state()
-    return "agent turn running" if running else "scheduled tasks on" if scheduled else ""
-
-
 def t3_env():
     """(tailscale ip, public T3 port, env for `t3 serve`/`t3 pair`). T3 itself listens on the block's last port."""
     r = ports()
@@ -1153,11 +883,11 @@ def t3_env():
     if not r or not host:
         sys.exit("box t3: needs a friend account and Tailscale running on the box")
     return host, r[0], {"T3CODE_HOST": host, "T3CODE_PORT": str(r[1]),
-                        "T3CODE_PROJECT_ROOT": os.path.join(HOME, "projects"), "T3CODE_NO_BROWSER": "1"}
+                        "T3CODE_PROJECT_ROOT": HOME, "T3CODE_NO_BROWSER": "1"}
 
 
 def t3_legacy(host):
-    """An older T3 (from before naps) still running on the public port itself, without the socket?"""
+    """An older T3 (from before the socket) still running on the public port itself, without the socket?"""
     return (sctl("is-active", T3_SOCKET, capture=True).stdout.strip() != "active"
             and listening(host, ports()[0]))
 
@@ -1201,9 +931,9 @@ def t3_write_units(host, env):
     public, inner = ports()[0], env["T3CODE_PORT"]
     ready = (f"for i in $(seq 600); do c=$(curl -s -o /dev/null -w %{{http_code}} --max-time 2 "
              f"http://{host}:{inner}/api/auth/session); [ \"$c\" = 200 ] && exit 0; sleep 0.5; done; exit 1")
-    t3 = ["[Unit]", "Description=T3 Code (box t3; naps when unused, " + T3_SOCKET + " wakes it)",
+    t3 = ["[Unit]", "Description=T3 Code (box t3; " + T3_SOCKET + " starts it)",
           "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
-          "[Service]", "WorkingDirectory=%h/projects",
+          "[Service]", "WorkingDirectory=%h",
           "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"]
     t3 += [f"Environment={k}={sd_escape(v)}" for k, v in env.items()]
     t3 += ["ExecStart=/usr/local/bin/t3 serve",
@@ -1233,16 +963,12 @@ def t3_write_units(host, env):
 
 def t3_ensure(host, port, env, quiet=False):
     """Make sure the T3 units are current, the socket is on, and T3 is starting. Doesn't wait for it."""
-    try:
-        os.unlink(T3_SLEEPING)  # awake again
-    except OSError:
-        pass
-    os.makedirs(os.path.join(HOME, "projects"), exist_ok=True)
     os.makedirs(UNIT_DIR, exist_ok=True)
     if t3_legacy(host):
-        return  # an older T3 is running (maybe mid-task): leave it; it switches over when it next naps
-    if t3_write_units(host, env):
-        # an older T3 may hold the public port itself, or run with old settings: restart it the new way
+        return  # an older T3 is running (maybe mid-task): leave it; it switches over when it next restarts
+    if t3_write_units(host, env) and not listening(host, int(env["T3CODE_PORT"])):
+        # not running, or an older T3 holds the public port itself: start it the new way (a running T3 picks up
+        # new settings at its next start; never restarted under a working agent)
         sctl("stop", T3_PROXY, T3_UNIT, capture=True)
         sctl("restart", T3_SOCKET, capture=True)
     sctl("enable", "--now", T3_SOCKET, capture=True)
@@ -1280,7 +1006,7 @@ def cmd_t3(a):
     if a.action == "status":
         up = t3_up(host, env)
         wakes = sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active"
-        state = ("running" if up else "napping (unused for a while; it wakes in a few seconds when opened)"
+        state = ("running" if up else "stopped (it starts by itself in a few seconds when opened)"
                  if wakes else "not running (`box t3` starts it)")
         print(f"T3 Code: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in browser")
         return
@@ -1535,8 +1261,8 @@ def cmd_setup(a):
 All set. Tips:
   • Start agents inside tmux so they keep running when you disconnect:  tmux new -A -s main
     (detach: Ctrl-b d · come back later: tmux attach)
-  • Work in ~/projects/<name>. Projects idle for {CFG['PROJECT_TTL_DAYS']} days are archived ({archive_until_text()}),
-    so push to git.
+  • Keep each project as a git repo in your home folder (~/myapp) and push it to GitHub. Projects idle for
+    {CFG['PROJECT_TTL_DAYS']} days are archived ({archive_until_text()}), but only once everything is pushed.
   • `box` shows your usage · `box agents` shows agent logins · `box rules` shows what your agents are told
   • `box updates` shows whether your agents update nightly
 """)
@@ -1556,7 +1282,7 @@ Welcome to {BRAND} on {socket.gethostname()}, {ME.pw_name}!
   Your ports:        {f'{r[0]}-{r[1]}' if r else 'any'}
   Your page:         {portal_url()}
                      log in to your agent + GitHub with a click, then "Open T3 in browser"
-  Or terminal:       tmux new -A -s main   →   cd ~/projects && mkdir myapp && cd myapp && claude
+  Or terminal:       tmux new -A -s main   →   mkdir ~/myapp && cd ~/myapp && claude
                      (`box setup` does the logins here instead)
 
 Your agents already know the house rules (limits, where files go, how to run builds and servers).
@@ -2335,7 +2061,6 @@ def portal_status():
     if r and host and shutil.which("t3"):
         _, _, env = t3_env()
         out["t3"] = {"url": f"http://{host}:{r[0]}/", "running": t3_up(host, env)}
-        out["t3"]["sleeping"] = not out["t3"]["running"] and os.path.exists(T3_SLEEPING)
         out["t3"]["app"] = t3_app_paired()  # the start card leads with "Open T3" once the app has connected
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
@@ -2390,7 +2115,7 @@ def t3_starter(env):
     marker = os.path.join(HOME, ".sharedbox", "t3-starter")
     if os.path.exists(marker):
         return
-    d = os.path.join(HOME, "projects", "my-first-app")
+    d = os.path.join(HOME, "my-first-app")
     os.makedirs(d, exist_ok=True)
     if not os.path.exists(os.path.join(d, ".git")):
         subprocess.run(["git", "init", "-q", "-b", "main", d], capture_output=True)
@@ -2825,14 +2550,13 @@ def sync_hooks():
 def cmd_init_home(a):
     key = sys.stdin.read().strip()
     os.umask(0o077)
-    for d in ("projects", "services", "keep", ".sharedbox", ".ssh"):
+    for d in ("services", "keep", ".sharedbox", ".ssh"):
         os.makedirs(os.path.join(HOME, d), exist_ok=True)
     with open(os.path.join(HOME, ".ssh", "authorized_keys"), "w") as f:
         f.write(key + "\n")
     os.chmod(os.path.join(HOME, ".ssh"), 0o700)
     os.chmod(os.path.join(HOME, ".ssh", "authorized_keys"), 0o600)
     skel = os.path.join(sb.SHARE_DIR, "skel")
-    jobs = CFG["BUILD_JOBS"]
     for root, _, files in os.walk(skel):
         for fn in files:
             src = os.path.join(root, fn)
@@ -2841,7 +2565,7 @@ def cmd_init_home(a):
                 continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(src) as f:
-                txt = f.read().replace("@BUILD_JOBS@", jobs)
+                txt = f.read()
             with open(dst, "w") as f:
                 f.write(txt)
     sync_agent_files()
@@ -2861,7 +2585,33 @@ def rule_notices(box=None, janitor=None):
     return out[:5] + ([f"...and {len(out) - 5} more: run `box status`."] if len(out) > 5 else [])
 
 
+def drop_build_throttle():
+    """Older versions capped build parallelism in new homes (MAKEFLAGS=-j2, Gradle workers): take out exactly
+    those lines from the files we wrote, so builds use the machine. Idempotent; anything else is left alone."""
+    files = {os.path.join(HOME, ".config", "environment.d", "60-sharedbox.conf"):
+             re.compile(r"^(MAKEFLAGS=-j\d+|CMAKE_BUILD_PARALLEL_LEVEL=\d+|CARGO_BUILD_JOBS=\d+)$"),
+             os.path.join(HOME, ".gradle", "gradle.properties"):
+             re.compile(r"^(org\.gradle\.workers\.max=\d+|org\.gradle\.parallel=false)$")}
+    for path, pat in files.items():
+        try:
+            with open(path) as f:
+                cur = f.read()
+        except OSError:
+            continue
+        if not cur or "sharedbox" not in cur.splitlines()[0]:
+            continue  # not our file
+        new = "".join(ln for ln in cur.splitlines(keepends=True) if not pat.match(ln.strip()))
+        new = new.replace("this machine is shared. Keep builds polite.", "")
+        if new != cur:
+            with open(path, "w") as f:
+                f.write(new)
+
+
 def cmd_sync_rules(a):
+    try:
+        drop_build_throttle()
+    except OSError:
+        pass
     sync_agent_files(rule_notices())
     sync_hooks()
     print(json.dumps({"synced": True}))
@@ -2877,8 +2627,6 @@ def cmd_pass(a):
     import sbclean
     plan = json.load(sys.stdin)
     rep = sbclean.run_pass(plan)
-    if plan.get("t3_sleep") and not plan.get("dry_run"):
-        rep["t3_stopped"] = t3_sleep()
     rep["services"] = list_services()
     status = {"measured": int(time.time()), "disk": plan.get("usage"),
               "budget": plan.get("budget"), "over_budget": plan.get("over"),
@@ -2889,6 +2637,10 @@ def cmd_pass(a):
     if not plan.get("dry_run"):
         os.makedirs(os.path.dirname(STATUS_FILE), exist_ok=True)
         sb.write_json(STATUS_FILE, status, mode=0o600)
+        try:
+            drop_build_throttle()
+        except OSError:
+            pass
         sync_agent_files(rule_notices(plan.get("box"), status))
         sync_hooks()
     json.dump(rep, sys.stdout)
@@ -2904,8 +2656,10 @@ def main():
     x = s.add_parser("status"); x.add_argument("--agent", action="store_true")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_status)
     s.add_parser("ports").set_defaults(fn=cmd_ports)
-    x = s.add_parser("heavy"); x.add_argument("cmd", nargs=argparse.REMAINDER)
+    x = s.add_parser("heavy"); x.add_argument("cmd", nargs=argparse.REMAINDER)  # old scripts: just runs CMD
     x.set_defaults(fn=cmd_heavy)
+    x = s.add_parser("boost", help="more RAM for a few hours, if the box has it free")
+    x.add_argument("--why"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_boost)
     x = s.add_parser("serve")
     x.add_argument("action", choices=["add", "ls", "logs", "restart", "stop", "start", "rm"])
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
@@ -2918,10 +2672,10 @@ def main():
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_shared)
     x = s.add_parser("clean"); x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_clean)
-    x = s.add_parser("restore", help="put an archived project back in ~/projects (lists them without NAME)")
+    x = s.add_parser("restore", help="put an archived project back in ~ (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
-    x = s.add_parser("hackathon", help="develop freely until a set time: no naps, no trap/tripwire, open installs")
+    x = s.add_parser("hackathon", help="develop freely until a set time: no trap/tripwire, open installs")
     x.add_argument("op", nargs="?", choices=["status", "on", "off"])
     x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
     x.add_argument("--hours", type=float, help="or: end this many hours from now")
@@ -2979,11 +2733,7 @@ def main():
     x.add_argument("topic", nargs="?"); x.set_defaults(fn=cmd_help)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_cache-pass").set_defaults(fn=cmd_cache_pass)
-    s.add_parser("_t3-nap").set_defaults(fn=cmd_t3_nap)  # the janitor's nap check, run as the friend
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
-    x = s.add_parser("_docker-nap")  # the janitor: stop this account's idle Docker databases
-    x.add_argument("--dry-run", action="store_true")
-    x.set_defaults(fn=cmd_docker_nap)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     a = p.parse_args()

@@ -296,7 +296,7 @@ class Hackathon(unittest.TestCase):
     def test_on_overlays_and_opens_requests(self):
         c = self.cfg("2999-01-01 00:00", HACKATHON_USERS="krish")
         self.assertEqual(c["HACKATHON"], "1")
-        for k in ("T3_NAP_MINUTES", "T3_IDLE_DAYS", "DOCKER_NAP_MINUTES", "TRAP_ENABLED", "CANARY_ENABLED"):
+        for k in ("TRAP_ENABLED", "CANARY_ENABLED"):
             self.assertEqual(c[k], "0", k)
         self.assertEqual(c["REQUEST_OPEN_USERS"].split(), ["pippin", "krish"])
         self.assertTrue(adm.open_for(c, "krish"))

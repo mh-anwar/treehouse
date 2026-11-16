@@ -70,7 +70,6 @@ conf_eff() { SHAREDBOX_CONF="${ETC}/sharedbox.conf" PYTHONPATH="$SRC/lib" python
     "import sys, sbcommon; print(sbcommon.load_config().get(sys.argv[1], ''))" "$1" 2>/dev/null || conf_get "$1"; }
 SSH_GROUP=$(conf_get SSH_GROUP); SSH_GROUP=${SSH_GROUP:-ssh-users}
 FRIENDS_GROUP=$(conf_get FRIENDS_GROUP); FRIENDS_GROUP=${FRIENDS_GROUP:-friends}
-SLOTS=$(conf_get HEAVY_SLOTS); SLOTS=${SLOTS:-2}
 SHARED_USER=$(conf_get SHARED_USER); SHARED_USER=${SHARED_USER:-sbshared}
 SHARED_GROUP=$(conf_get SHARED_GROUP); SHARED_GROUP=${SHARED_GROUP:-sbshared}
 SHARED_DIR=$(conf_get SHARED_DIR); SHARED_DIR=${SHARED_DIR:-/srv/shared}
@@ -140,17 +139,12 @@ say "state directory"
 do_ install -d -m 755 "$STATE"
 do_ install -d -m 700 -o sharedbox -g sharedbox "$STATE/spool"
 do_ install -d -m 750 -g sharedbox "$STATE/pending"   # files inside are 0600; dir listable for the pending count
-do_ install -d -m 755 "$STATE/slots"
 do_ install -d -m 1753 -g sharedbox "$STATE/requests"   # anyone may drop a request; only root/dashboard can list
-for ((i = 0; i < SLOTS; i++)); do
-    [[ -e $STATE/slots/slot-$i ]] || do_ install -m 644 /dev/null "$STATE/slots/slot-$i"
-done
+# removed features (box heavy queue, T3 naps): their leftovers
+[[ -e $STATE/slots ]] && do_ rm -rf "$STATE/slots" "$STATE/t3-seen" "$STATE/t3-naps.json" "$STATE/balance.json"
 [[ -e $STATE/users.json ]] || do_ sh -c "echo '{\"users\": {}}' > $STATE/users.json"
 [[ -e $STATE/events.jsonl ]] || do_ install -m 644 /dev/null "$STATE/events.jsonl"
 do_ install -d -m 755 "$STATE/health"
-# when each friend last opened their T3 Code through the gate (it touches t3-seen/<user>; `sharedbox-janitor
-# t3-naps` naps T3 servers nobody is using)
-do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/t3-seen"
 do_ install -d -m 755 "$STATE/skills"   # skills admins publish with `box skills share`
 do_ install -d -m 700 "$STATE/audit"
 do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/trap"
@@ -197,15 +191,24 @@ fi
 
 # ---------- systemd ----------
 say "systemd units"
+# removed units: the busy-box guard (it lowered limits at runtime) and the T3/Docker nap timer (now sharedbox-tick)
+for u in sharedbox-guard.timer sharedbox-t3-naps.timer; do
+    if [[ -e /etc/systemd/system/$u ]]; then
+        do_ systemctl disable --now "$u" 2>/dev/null || true
+        do_ rm -f "/etc/systemd/system/$u" "/etc/systemd/system/${u%.timer}.service"
+    fi
+done
 for u in "$SRC"/systemd/*; do do_ install -m 644 "$u" "/etc/systemd/system/$(basename "$u")"; done
 do_ systemctl daemon-reload
+# equal limits for every account, the owner's included (16G RAM, no CPU cap, equal weight): rewrite every slice
+# drop-in, and drop what older versions left (OOM preference for friends, the guard's runtime CPU/RAM values)
+do_ "$LIB/sharedbox-admin" reapply >/dev/null
 # shared servers: slice limits, folder owners, SHARED_GROUP = friends + admins (never starts/stops a server)
-do_ "$LIB/sharedbox-admin" shared-sync
 do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path sharedbox-janitor.timer \
-    sharedbox-guard.timer sharedbox-tools-update.timer sharedbox-t3-naps.timer
+    sharedbox-tools-update.timer sharedbox-tick.timer
 do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too:
 do_ "$LIB/sharedbox-tune" apply || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
-do_ systemctl restart sharedbox-janitor.timer sharedbox-guard.timer sharedbox-tools-update.timer   # pick up schedule changes
+do_ systemctl restart sharedbox-janitor.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
 do_ systemctl enable sharedbox-web.service
 do_ systemctl restart sharedbox-web.service

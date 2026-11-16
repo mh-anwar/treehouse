@@ -1,7 +1,0 @@
-[Unit]
-Description=sharedbox guard: friends' processes go first under OOM
-
-[Service]
-Type=oneshot
-ExecStart=/usr/lib/sharedbox/sharedbox-janitor guard
-LogLevelMax=warning
