@@ -207,7 +207,7 @@ def portal_call(ip, who, action, **kw):
 # ---------- html ----------
 
 def page(title, body, gate=False, member=True):
-    # "treehouse · sietchtabr": the product first, this machine second
+    # "treehouse · mybox": the product first, this machine second
     here = "/_box/features" if title == "Features" else "/_box/me" if title.endswith("dashboard") else ""
 
     def cur(h):

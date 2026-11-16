@@ -268,7 +268,7 @@ def brand(cfg):
 
 
 def brand_host(cfg):
-    """"treehouse · sietchtabr": the name on pages and emails, with this machine's name second."""
+    """"treehouse · mybox": the name on pages and emails, with this machine's name second."""
     import socket
     return f"{brand(cfg)} · {socket.gethostname()}"
 
