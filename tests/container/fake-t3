@@ -1,0 +1,86 @@
+#!/usr/bin/python3
+"""A stand-in for T3 Code's `t3`, for scenario-t3switch.sh: only what `box t3` and `box t3 switch` use.
+
+  t3 --version                      the launcher: "downloads" the runtime into $T3CODE_HOME/runtime/versions/NEW/t3
+  t3 __service-preflight ...        the runtime: can it open this database? (JSON on the last line)
+  t3 serve | __service-launcher     the server: opens the database, applies its "migration", answers
+                                    GET /api/auth/session on T3CODE_HOST:T3CODE_PORT with {"version": ...}
+  t3 pair --ttl T --label L         prints a pairing URL
+
+A copy under runtime/versions/V/ is version V; anything else is NEW. Switches the test flips (files):
+  /etc/fake-t3/preflight-refuses    the new runtime says it can't open the database
+  /etc/fake-t3/serve-fails          the new version migrates the database, then dies (what a rollback undoes)
+"""
+import http.server
+import json
+import os
+import re
+import shutil
+import signal
+import sqlite3
+import sys
+
+NEW = "0.2.0"
+MIGRATION = {"0.1.0": 10, NEW: 11}   # the newer version's server adds one schema migration
+HOME = os.environ.get("T3CODE_HOME") or os.path.expanduser("~/.t3")
+m = re.search(r"/runtime/versions/([^/]+)/t3$", os.path.realpath(sys.argv[0]))
+VERSION = m.group(1) if m else NEW
+args = sys.argv[1:]
+
+
+def env_file():
+    out = {}
+    try:
+        for line in open(os.path.join(HOME, "service.env")):
+            k, _, v = line.strip().partition("=")
+            out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def host_port():
+    env = dict(env_file(), **os.environ)
+    return env.get("T3CODE_HOST", "127.0.0.1"), int(env.get("T3CODE_PORT", "3773"))
+
+
+if args[:1] == ["--version"]:
+    dest = os.path.join(HOME, "runtime", "versions", NEW, "t3")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copy(os.path.realpath(sys.argv[0]), dest)
+    os.chmod(dest, 0o755)
+    print(f"t3 {NEW}")
+elif args[:1] == ["__service-preflight"]:
+    ok = not os.path.exists("/etc/fake-t3/preflight-refuses")
+    print(json.dumps({"status": "ready" if ok else "incompatible", "version": VERSION}))
+elif args[:1] in (["serve"], ["__service-launcher"]):
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    db = os.path.join(HOME, "userdata", "statev2.sqlite")
+    con = sqlite3.connect(db)   # held open while serving, like the real server
+    con.execute("CREATE TABLE IF NOT EXISTS effect_sql_migrations (migration_id INTEGER)")
+    if (con.execute("SELECT max(migration_id) FROM effect_sql_migrations").fetchone()[0] or 0) < MIGRATION[VERSION]:
+        con.execute("INSERT INTO effect_sql_migrations VALUES (?)", (MIGRATION[VERSION],))
+    con.commit()
+    if VERSION == NEW and os.path.exists("/etc/fake-t3/serve-fails"):
+        print("fake t3: failing on purpose after migrating", file=sys.stderr)
+        sys.exit(1)
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"version": VERSION, "pid": os.getpid()}).encode()
+            self.send_response(200 if self.path == "/api/auth/session" else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    host, port = host_port()
+    print(f"fake t3 {VERSION} serving on {host}:{port}", flush=True)
+    http.server.ThreadingHTTPServer((host, port), H).serve_forever()
+elif args[:1] == ["pair"]:
+    host, port = host_port()
+    print(f"Pairing URL: http://{host}:{port}/pair#token=fake-{VERSION}")
+else:
+    sys.exit(f"fake t3: unsupported: {' '.join(args)}")

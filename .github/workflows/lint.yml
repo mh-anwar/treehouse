@@ -38,3 +38,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: install test (${{ matrix.base }})
         run: tests/container/run.sh "${{ matrix.base }}"
+  agents:
+    # full install with the coding agents and toolchains, then every advertised tool checked as a friend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: agents test (debian:trixie)
+        run: SCENARIO=agents tests/container/run.sh debian:trixie
+  t3switch:
+    # `box t3 switch`: waits for agents, rolls back a failed start, moves the owner's T3 to sb-t3.service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: t3 switch test (debian:trixie)
+        run: SCENARIO=t3switch tests/container/run.sh debian:trixie

@@ -30,8 +30,9 @@ tests/container/run.sh archlinux:latest   # the same on Arch Linux
 
 `tests/container/run.sh` installs, updates and uninstalls in throwaway Ubuntu and Debian containers (rootless
 Docker or Podman); give it `archlinux:latest` for Arch. `FROM=<older commit>` starts on an older version first.
-For Omarchy's desktop, or anything about Tailscale or Cloudflare logins, test on a throwaway VM and walk through
-the flow with a second account.
+`SCENARIO=agents` does a full install with the coding agents and checks every tool as a friend (10 to 15 min);
+`SCENARIO=t3switch` tests `box t3 switch` (about 2 min). For Omarchy's desktop, or anything about Tailscale or
+Cloudflare logins, test on a throwaway VM and walk through the flow with a second account.
 
 ## Commits and PRs
 
