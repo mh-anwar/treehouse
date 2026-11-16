@@ -199,7 +199,7 @@ sharedbox-health report | test-email
 - The web service and the gate are unprivileged and sandboxed; a root path unit re-validates every request.
   Requests from the box itself are rejected, so a local user can't impersonate the owner.
 - Friend homes are `0700`. No sudo, no docker group. Everything that touches a friend's files (cleanup,
-  archiving, stopping an idle T3) runs as that friend.
+  archiving, starting T3 for scheduled tasks) runs as that friend.
 - See [SECURITY.md](SECURITY.md) to report a vulnerability.
 </details>
 
@@ -221,3 +221,8 @@ bash, so there's nothing to build.
 ## License
 
 [MIT](LICENSE)
+
+The owner can move their T3 Code under `box t3` with `box t3 switch`, which waits for agents to be idle.
+Installation never performs that switch. T3 uses stable by default; `TOOLS_NPM` can opt in to `t3@nightly`.
+Before a friend starts a changed T3 launcher, the box saves their database in `~/.t3/sb-backup/`.
+Automatic T3 downgrades are refused; returning to stable may require restoring a compatible backup.
