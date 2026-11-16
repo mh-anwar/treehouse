@@ -244,3 +244,5 @@ so the human can start a thread "on NAME" from their usual T3. GitHub and git id
 Claude/Codex logins are not (copying them breaks both): `box boxes setup` lists what's missing, then
 `box boxes login claude --on NAME` prints a link (and for Claude asks for the code back with `--code X`).
 The human only clicks the link. Files are NOT shared between boxes: push to git, or use `box run`.
+Teams (`box team`) live on the box they were made on, but work from every box: `box team ls` shows where each
+one lives, and other `box team` commands run there over SSH. `box team clone` clones the team repo here.
