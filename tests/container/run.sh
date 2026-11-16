@@ -5,6 +5,7 @@
 #
 #   tests/container/run.sh                     Ubuntu 24.04 and Debian 13
 #   tests/container/run.sh ubuntu:24.04        one image
+#   tests/container/run.sh archlinux:latest    Arch Linux (Dockerfile.arch; any other base uses Dockerfile)
 #   FROM=v1 tests/container/run.sh             start on an older commit, then update to this tree (a live box's path)
 #   KEEP=1 tests/container/run.sh ...          leave the container running to poke at (docker exec -it ...)
 set -uo pipefail
@@ -18,8 +19,9 @@ BASES=("$@"); [[ ${#BASES[@]} -gt 0 ]] || BASES=(ubuntu:24.04 debian:trixie)
 rc=0
 for base in "${BASES[@]}"; do
     tag="treehouse-test:${base//[:\/]/-}" name="treehouse-test-${base//[:\/.]/-}-$$"
+    dockerfile=Dockerfile; [[ $base == *arch* ]] && dockerfile=Dockerfile.arch
     echo "### $base"
-    "$ENGINE" build -q --build-arg BASE="$base" -t "$tag" "$REPO/tests/container" >/dev/null || { echo "build failed"; rc=1; continue; }
+    "$ENGINE" build -q --build-arg BASE="$base" -f "$REPO/tests/container/$dockerfile" -t "$tag" "$REPO/tests/container" >/dev/null || { echo "build failed"; rc=1; continue; }
     "$ENGINE" run -d --name "$name" --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
         --hostname testbox "$tag" >/dev/null || { echo "run failed"; rc=1; continue; }
     for _ in $(seq 60); do

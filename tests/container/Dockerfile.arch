@@ -1,0 +1,14 @@
+# A throwaway Arch Linux box with systemd as PID 1, for tests/container/run.sh.
+# Only what a fresh server install has (sshd, cron, at, acl) plus python and git; no Tailscale.
+# The image build does a full `pacman -Syu` (the owner's job on a real box), so the sync database is fresh.
+ARG BASE=archlinux:latest
+FROM ${BASE}
+RUN pacman -Syu --noconfirm --needed python openssh git curl ca-certificates acl cronie at util-linux procps-ng \
+      iproute2 shadow which diffutils \
+ && pacman -Scc --noconfirm \
+ && systemctl mask getty@tty1.service sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
+      proc-sys-fs-binfmt_misc.automount systemd-binfmt.service systemd-firstboot.service \
+ && systemctl enable sshd.service cronie.service atd.service \
+ && ssh-keygen -A
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

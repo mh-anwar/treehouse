@@ -46,6 +46,7 @@ section "install"
 if ./install.sh --apply --no-tools --admins owner >/tmp/install1.log 2>&1; then pass "install --apply exits 0"
 else fail "install --apply exits 0"; tail -30 /tmp/install1.log | sed 's/^/     /'; fi
 grep -n -iE 'traceback|error' /tmp/install1.log | grep -viE 'error_|errors?=|no error' | head -5 | sed 's/^/     log: /'
+check "install ran no missing commands" sh -c '! grep -n "command not found" /tmp/install1.log'
 check "box CLI on PATH" test -x /usr/local/bin/box
 check "config written" grep -q '^ADMIN_USERS=owner' /etc/sharedbox/sharedbox.conf
 check "sharedbox-web active" systemctl is-active -q sharedbox-web.service
@@ -63,6 +64,9 @@ check "box status works for the owner" runuser -u owner -- box status
 check "box tune runs" runuser -u owner -- box tune
 check "the box never suspends (sleep drop-ins)" grep -q AllowSuspend=no /etc/systemd/sleep.conf.d/60-sharedbox-awake.conf
 check "box tune agrees it stays awake" sh -c 'runuser -u owner -- box tune --json 2>/dev/null | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin) if x[\"name\"].startswith(\"stays awake\")]; assert r and r[0][\"ok\"], r"'
+if grep -q '^ID=arch' /etc/os-release; then   # Arch has no auto-updates; the weekly report counts pending ones
+    check "checkupdates installed (Arch)" command -v checkupdates
+fi
 
 section "a friend"
 ssh-keygen -q -t ed25519 -N '' -f /tmp/alice_key -C alice@example.com
