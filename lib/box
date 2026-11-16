@@ -1141,8 +1141,9 @@ T3_MANAGED_MARK = os.path.join(HOME, ".sharedbox", "t3-managed")  # t3code.servi
 T3_OLD_DROPIN = os.path.join(UNIT_DIR, T3_OLD + ".d", "sb-managed.conf")
 T3_BACKUP = os.path.join(HOME, ".t3", "sb-backup", "statev2-before-switch.sqlite")
 T3_TERMINAL = ("completed", "failed", "cancelled", "interrupted", "rolled_back")
-T3_SWITCH_QUIET = 600         # nothing running for this long in a row (gaps between a delegated task's turns are shorter)
-T3_SWITCH_SAMPLE = 30
+# SHAREDBOX_T3_SWITCH_QUIET/_SAMPLE shorten these for tests (tests/container/scenario-t3switch.sh)
+T3_SWITCH_QUIET = int(os.environ.get("SHAREDBOX_T3_SWITCH_QUIET") or 600)  # nothing running for this long in a row
+T3_SWITCH_SAMPLE = int(os.environ.get("SHAREDBOX_T3_SWITCH_SAMPLE") or 30)  # (gaps between a delegated task's turns are shorter)
 T3_SWITCH_CPU_USEC = 1_000_000  # agents' CPU per sample that counts as working
 T3_SWITCH_GIVE_UP = 3 * 86400
 VERSION_TEXT_RE = re.compile(r"\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b")
@@ -1452,10 +1453,35 @@ def t3_do_switch(host, port):
     t3_backup(db, T3_BACKUP)  # restore point includes the old server's final shutdown writes
     sctl("disable", T3_OLD, capture=True)
     sctl("reset-failed", T3_UNIT, capture=True)
-    r = sctl("start", T3_UNIT, capture=True)  # returns once it answers on its port (ExecStartPost), or fails
+    why = t3_start_watch()
+    return why or t3_verify(host, port)
+
+
+T3_START_TIMEOUT = 660  # the unit's TimeoutStartSec (a database migration), plus a minute
+
+
+def t3_start_watch():
+    """Start sb-t3 and wait until it answers (ExecStartPost) or fails. Not a blocking `systemctl start`: when T3
+    crashes on start, that waits for the readiness loop to give up (5 minutes) and, with Restart=always and no start
+    limit, can wait through restarts, all with the old T3 already stopped. Any crash or restart is a failed start."""
+    r = sctl("start", "--no-block", T3_UNIT, capture=True)
     if r.returncode != 0:
         return f"{T3_UNIT} didn't start: {(r.stderr or '').strip()[-300:]}"
-    return t3_verify(host, port)
+    deadline = time.time() + T3_START_TIMEOUT
+    while True:
+        out = sctl("show", T3_UNIT, "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts", "-p", "Result",
+                   "-p", "MainPID", capture=True).stdout or ""
+        p = dict(line.partition("=")[::2] for line in out.splitlines())
+        if p.get("ActiveState") == "active" and p.get("SubState") == "running":
+            return ""
+        # the server gone while the readiness check (ExecStartPost) still loops: systemd would wait that out (5 min)
+        if (p.get("ActiveState") == "failed" or p.get("SubState") == "auto-restart"
+                or (p.get("NRestarts") or "0") not in ("", "0")
+                or (p.get("SubState") == "start-post" and p.get("MainPID") == "0")):
+            return f"{T3_UNIT} didn't start: it crashed ({p.get('Result') or 'failed'}; `box t3 logs` says why)"
+        if time.time() > deadline:
+            return f"{T3_UNIT} didn't start within {T3_START_TIMEOUT // 60} minutes"
+        time.sleep(1)
 
 
 def t3_verify(host, port):
@@ -1473,10 +1499,36 @@ def t3_verify(host, port):
     return ""
 
 
+def t3_db_locks(db, locks="/proc/locks"):
+    """PIDs holding a file lock on the database, its WAL or its shared-memory file. In WAL mode (T3's) every open
+    connection keeps a lock on the -shm file, so this sees a live connection even where /proc/PID/fd can't be read.
+    None if the lock table can't be read."""
+    inodes = set()
+    for ext in ("", "-wal", "-shm"):
+        try:
+            inodes.add(os.stat(db + ext).st_ino)
+        except OSError:
+            pass
+    try:
+        with open(locks) as f:
+            rows = [l.split() for l in f]
+    except OSError:
+        return None
+    out = set()
+    for r in rows:
+        i = 4 if r[1:2] != ["->"] else 5   # "1: POSIX ADVISORY READ PID MAJ:MIN:INODE ..." ("->" marks a waiter)
+        if len(r) > i + 1 and r[i].isdigit() and r[i + 1].rsplit(":", 1)[-1].isdigit() \
+                and int(r[i + 1].rsplit(":", 1)[-1]) in inodes:
+            out.add(r[i])
+    return out
+
+
 def t3_db_holders(db):
     """Database files must be closed before restore, including processes without a listener.
-    An inaccessible fd directory is unknown, so refuse restore rather than risk a live WAL."""
-    holders = []
+    Some of the account's own processes can't be inspected (the user manager's (sd-pam), and from inside a user unit
+    systemd --user itself): those count only if they hold a lock on the database (/proc/locks, see t3_db_locks). If
+    that can't be read either, an uninspectable process is unknown, so refuse restore rather than risk a live WAL."""
+    holders, hidden = [], []
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -1487,7 +1539,7 @@ def t3_db_holders(db):
         except FileNotFoundError:
             continue
         except PermissionError:
-            holders.append(pid + " (cannot inspect)")
+            hidden.append(pid)
             continue
         for fd in fds:
             try:
@@ -1498,8 +1550,11 @@ def t3_db_holders(db):
             except FileNotFoundError:
                 pass
             except PermissionError:
-                holders.append(pid + " (cannot inspect)")
+                hidden.append(pid)
                 break
+    if hidden:
+        locked = t3_db_locks(db)
+        holders += [p + " (cannot inspect)" for p in hidden if locked is None or p in locked]
     return holders
 
 
@@ -2928,6 +2983,35 @@ def sync_t3_project_dir():
     open(T3_PROJECT_DIR_MARK, "a").close()
 
 
+def sync_home_defaults():
+    """The rules promise `go install X@latest` and `cargo install X` work with no setup. Out of the box Go puts programs
+    in ~/go/bin and cargo in ~/.cargo/bin (neither on PATH), and Debian's rustup has no default toolchain, so `cargo`
+    refuses to run. Point both at ~/.local/bin (on PATH in login shells, T3 and `box serve`) and make stable the
+    default (the first `cargo` downloads it, about 30 s). Only fills in what's missing; never changes a setting."""
+    root = os.path.join(HOME, ".local")
+    goenv = os.path.join(HOME, ".config", "go", "env")  # what `go env -w` writes
+    try:
+        with open(goenv) as f:
+            cur = f.read()
+    except FileNotFoundError:
+        cur = ""
+    if not re.search(r"^GOBIN=", cur, re.M):
+        os.makedirs(os.path.dirname(goenv), exist_ok=True)
+        with open(goenv, "a") as f:
+            f.write(("" if not cur or cur.endswith("\n") else "\n") + f"GOBIN={root}/bin\n")
+    cargo = os.path.join(HOME, ".cargo")
+    if not any(os.path.exists(os.path.join(cargo, n)) for n in ("config.toml", "config")):
+        os.makedirs(cargo, exist_ok=True)
+        with open(os.path.join(cargo, "config.toml"), "w") as f:
+            f.write(f'# {BRAND}: `cargo install` puts programs in ~/.local/bin, which is on PATH\n'
+                    f'[install]\nroot = "{root}"\n')
+    rustup = os.path.join(HOME, ".rustup")
+    if shutil.which("rustup") and not os.path.exists(rustup):  # never used rustup: stable by default
+        os.makedirs(rustup, exist_ok=True)
+        with open(os.path.join(rustup, "settings.toml"), "w") as f:
+            f.write('version = "12"\ndefault_toolchain = "stable"\n')
+
+
 def sync_hooks():
     try:
         drop_legacy_hook()
@@ -2966,6 +3050,10 @@ def cmd_init_home(a):
                 f.write(txt)
     sync_agent_files()
     sync_hooks()
+    try:
+        sync_home_defaults()
+    except OSError:
+        pass
 
 
 # ---------- federation, as the user (root's `sharedbox-admin fed-sync` runs these; lib/sbfed.py) ----------
@@ -3131,6 +3219,10 @@ def cmd_sync_rules(a):
         pass
     sync_agent_files(rule_notices())
     sync_hooks()
+    try:
+        sync_home_defaults()
+    except OSError:
+        pass
     print(json.dumps({"synced": True}))
 
 
@@ -3160,6 +3252,10 @@ def cmd_pass(a):
             pass
         sync_agent_files(rule_notices(plan.get("box"), status))
         sync_hooks()
+        try:
+            sync_home_defaults()
+        except OSError:
+            pass
     json.dump(rep, sys.stdout)
 
 

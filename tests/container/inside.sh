@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
-# Runs as root INSIDE the throwaway container (tests/container/run.sh copies the repo to /src first).
-# Walks the whole life of a box: dry run, install, a friend, idempotent re-install, update from git,
-# uninstall, reinstall. Prints PASS/FAIL per check and exits non-zero if any check failed.
+# The default scenario (SCENARIO=install). Runs as root INSIDE the throwaway container (tests/container/run.sh
+# copies the repo to /src first). Walks the whole life of a box: dry run, install, a friend, idempotent
+# re-install, update from git, uninstall, reinstall. Prints PASS/FAIL per check and exits non-zero if any check failed.
 # With /old present (run.sh FROM=<ref>) the box starts on that older version and the update moves it to /src:
 # the path a live box takes.
 set -uo pipefail
 FIRST=/src; [[ -d /old ]] && FIRST=/old
 cd "$FIRST"
-FAILS=0
-pass() { printf 'PASS %s\n' "$*"; }
-fail() { printf 'FAIL %s\n' "$*"; FAILS=$((FAILS + 1)); }
-check() { local what=$1; shift; if "$@" >/tmp/check.out 2>&1; then pass "$what"; else fail "$what"; sed 's/^/     /' /tmp/check.out | tail -15; fi; }
-section() { printf '\n== %s\n' "$*"; }
-units() { systemctl list-unit-files 'sharedbox-*' --no-legend 2>/dev/null | awk '{print $1}' | sort; }
-no_failed_units() { ! systemctl --failed --no-legend --plain | grep -E 'sharedbox|sb-'; }
+. /src/tests/container/lib.sh
 snapshot() {  # what an idempotent re-run must leave unchanged
     { find /etc/systemd/system -maxdepth 2 -name 'sharedbox*' -type f -exec sha256sum {} + | sort
       sha256sum /etc/sharedbox/sharedbox.conf
@@ -21,21 +15,7 @@ snapshot() {  # what an idempotent re-run must leave unchanged
       getent group friends ssh-users; getent passwd sharedbox; } 2>/dev/null
 }
 
-section "setup: owner account and a stand-in for Tailscale"
-# The dashboard binds to the box's Tailscale IP. Containers have no tailnet, so give lo a tailnet-range
-# address and put a tiny fake `tailscale` (ip / status / whois) on PATH that reports it.
-ip addr add 100.64.0.10/32 dev lo
-cat > /usr/local/bin/tailscale <<'TS'
-#!/bin/sh
-case "$1" in
-  ip) echo 100.64.0.10 ;;
-  status) echo '{"Self": {"DNSName": "testbox.example.ts.net.", "UserID": 1, "TailscaleIPs": ["100.64.0.10"]}, "User": {}}' ;;
-  *) exit 1 ;;
-esac
-TS
-chmod 755 /usr/local/bin/tailscale
-useradd -m -s /bin/bash owner
-loginctl enable-linger owner
+setup_box
 
 section "dry run changes nothing"
 check "dry run exits 0" ./install.sh
@@ -57,7 +37,7 @@ done
 check "provision path unit active" systemctl is-active -q sharedbox-provision.path
 check "no failed sharedbox units" no_failed_units
 PORT=$(sed -n 's/^WEB_PORT=//p' /etc/sharedbox/sharedbox.conf); PORT=${PORT:-8090}
-wait_web() { for _ in $(seq 30); do curl -s -o /dev/null --max-time 2 "http://100.64.0.10:$PORT/me" && return 0; sleep 1; done; return 1; }
+wait_web() { for _ in $(seq 30); do curl -s -o /dev/null --max-time 2 "http://$TS_IP:$PORT/me" && return 0; sleep 1; done; return 1; }
 check "dashboard answers on the tailnet IP" wait_web
 check "box help works for the owner" runuser -u owner -- box help
 check "box status works for the owner" runuser -u owner -- box status
@@ -133,5 +113,4 @@ check "dashboard answers again" wait_web
 check "box status works for alice again" runuser -u alice -- box status
 check "no failed sharedbox units" no_failed_units
 
-printf '\n%s\n' "$([[ $FAILS == 0 ]] && echo "ALL PASSED" || echo "$FAILS FAILED")"
-exit $((FAILS > 0))
+finish

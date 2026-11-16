@@ -278,12 +278,54 @@ class ReviewFixes(unittest.TestCase):
         with open(db, "w"):
             self.assertIn(str(os.getpid()), box.t3_db_holders(db))
 
+    def test_uninspectable_processes_count_only_with_a_lock_on_the_database(self):
+        # from inside the switch's user unit, the user's own (sd-pam) and systemd --user can't be inspected
+        with tempfile.TemporaryDirectory(dir=TMP) as d:
+            db = os.path.join(d, "statev2.sqlite")
+            for ext in ("", "-wal", "-shm"):
+                open(db + ext, "w").close()
+            shm = os.stat(db + "-shm").st_ino
+            locks = os.path.join(d, "locks")
+            with open(locks, "w") as f:
+                f.write(f"1: POSIX  ADVISORY  READ 4242 00:2a:{shm} 128 128\n"
+                        f"1: -> POSIX  ADVISORY  WRITE 4343 00:2a:{shm} 0 EOF\n"
+                        "2: FLOCK  ADVISORY  WRITE 777 00:2a:1 0 EOF\n")
+            self.assertEqual(box.t3_db_locks(db, locks), {"4242", "4343"})
+            self.assertIsNone(box.t3_db_locks(db, os.path.join(d, "missing")))
+            real_listdir = os.listdir
+
+            def listdir(path):
+                if path.startswith("/proc/") and path.endswith("/fd") and path.split("/")[2] in ("4242", "999"):
+                    raise PermissionError(path)
+                return ["4242", "999"] if path == "/proc" else real_listdir(path)
+            with patch.object(box.os, "listdir", listdir), patch.object(box.os, "stat", lambda p, *a, **k: type("S", (), {"st_uid": os.getuid(), "st_ino": shm})()):
+                with patch.object(box, "t3_db_locks", return_value={"4242"}):
+                    self.assertEqual(box.t3_db_holders(db), ["4242 (cannot inspect)"])
+                with patch.object(box, "t3_db_locks", return_value=None):  # no lock table: unknown is a holder
+                    self.assertEqual(sorted(box.t3_db_holders(db)), ["4242 (cannot inspect)", "999 (cannot inspect)"])
+
     def test_offline_backup_is_between_stop_and_start(self):
         events = []
-        with tempfile.TemporaryDirectory(dir=TMP) as d, patch.object(box, "T3_OLD_DROPIN", os.path.join(d, "dropin")), patch.object(box, "T3_MANAGED_MARK", os.path.join(d, "mark")), patch.object(box, "t3_backup", side_effect=lambda *a: events.append("backup")), patch.object(box, "t3_verify", return_value=""), patch.object(box, "sctl", side_effect=lambda *a, **k: events.append(a) or type("R", (), {"returncode": 0})()):
+        with tempfile.TemporaryDirectory(dir=TMP) as d, patch.object(box, "T3_OLD_DROPIN", os.path.join(d, "dropin")), patch.object(box, "T3_MANAGED_MARK", os.path.join(d, "mark")), patch.object(box, "t3_backup", side_effect=lambda *a: events.append("backup")), patch.object(box, "t3_verify", return_value=""), patch.object(box, "sctl", side_effect=lambda *a, **k: events.append(a) or self.unit(a, "active", "running")):
             self.assertEqual(box.t3_do_switch("100.64.0.10", 3773), "")
         self.assertLess(events.index(("stop", "t3code.service")), events.index("backup"))
-        self.assertLess(events.index("backup"), events.index(("start", "sb-t3.service")))
+        self.assertLess(events.index("backup"), events.index(("start", "--no-block", "sb-t3.service")))
+
+    @staticmethod
+    def unit(args, active, sub, restarts="0", result="success", mainpid="42"):
+        out = (f"ActiveState={active}\nSubState={sub}\nNRestarts={restarts}\nResult={result}\nMainPID={mainpid}\n"
+               if args[0] == "show" else "")
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+    def test_new_t3_crashing_on_start_fails_instead_of_waiting_forever(self):
+        # Restart=always, no start limit: a blocking `systemctl start` would wait through the restarts for good
+        for state in (("activating", "auto-restart", "0", "exit-code"), ("activating", "start-post", "1", "success"),
+                      ("failed", "failed", "0", "exit-code"), ("activating", "start-post", "0", "success", "0")):
+            with patch.object(box, "sctl", side_effect=lambda *a, **k: self.unit(a, *state)), patch.object(box.time, "sleep"):
+                self.assertIn("didn't start", box.t3_start_watch(), state)
+        seen = iter([("activating", "start-pre", "0", "success", "0"), ("activating", "start-post"), ("active", "running")])
+        with patch.object(box, "sctl", side_effect=lambda *a, **k: self.unit(a, *next(seen)) if a[0] == "show" else self.unit(a, "", "")), patch.object(box.time, "sleep"):
+            self.assertEqual(box.t3_start_watch(), "")
 
     def test_friend_upgrade_backup_once_before_changed_launcher(self):
         userdata = Path(TMP, ".t3", "userdata")

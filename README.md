@@ -117,7 +117,7 @@ The gate and web service run unprivileged and sandboxed. Root checks Cloudflare'
 
 ## Tests
 
-These run from a checkout with no root and no network:
+These run from a checkout without root. Only the container tests need the network:
 
 ```bash
 python3 -m unittest discover -s tests       # unit tests
@@ -125,9 +125,13 @@ python3 tests/e2e_gate.py .                  # the gate against fake logins and 
 uv run --no-project --with playwright python tests/e2e_browser.py . --quick   # every page in Chromium
 tests/container/run.sh                       # install, update and uninstall in Ubuntu and Debian containers
 FROM=<older commit> tests/container/run.sh   # update from an older version
+SCENARIO=agents tests/container/run.sh       # full install with the agents, then every tool checked as a friend
+SCENARIO=t3switch tests/container/run.sh     # box t3 switch: waits for agents, rolls back, then switches
 ```
 
-CI runs the unit tests, the gate test and the container test on Ubuntu 24.04 and Debian 13 for every pull request.
+The container tests need rootless Docker or Podman. The agents test downloads a few GB and takes 10 to 15
+minutes; the T3 switch test uses a stand-in `t3` and takes about two. CI runs all of them for every pull request:
+the install test on Ubuntu 24.04, Debian 13 and Arch, the agents and T3 switch tests on Debian 13.
 
 ## Contributing
 
