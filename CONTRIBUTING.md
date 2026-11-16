@@ -25,11 +25,13 @@ python3 tests/e2e_gate.py .              # the real gate against fake logins and
 uv run --no-project --with playwright python tests/e2e_browser.py . --shots /tmp/shots
 sudo ./install.sh            # dry run: read what it would do
 tests/container/run.sh       # install, update and uninstall in throwaway Ubuntu 24.04 + Debian 13 containers
+tests/container/run.sh archlinux:latest   # the same on Arch Linux
 ```
 
 `tests/container/run.sh` installs, updates and uninstalls in throwaway Ubuntu and Debian containers (rootless
-Docker or Podman); `FROM=<older commit>` starts on an older version first. For Arch/Omarchy, or anything about
-Tailscale or Cloudflare logins, test on a throwaway VM and walk through the flow with a second account.
+Docker or Podman); give it `archlinux:latest` for Arch. `FROM=<older commit>` starts on an older version first.
+For Omarchy's desktop, or anything about Tailscale or Cloudflare logins, test on a throwaway VM and walk through
+the flow with a second account.
 
 ## Commits and PRs
 

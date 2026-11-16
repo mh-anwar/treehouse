@@ -4,7 +4,7 @@
 
 treehouse turns a spare Linux machine into a shared server for your friends' AI coding agents. Friends sign in from a browser and run Claude Code, Codex and opencode on your machine. Every account, yours included, gets the same resource limits. It is plain Python (standard library only) and bash on top of systemd and cgroup v2, with no containers and no database.
 
-It runs on Ubuntu 24.04+ and Debian 13+, which CI tests on every change. Omarchy/Arch support is experimental.
+It runs on Ubuntu 24.04+, Debian 13+ and Arch Linux, which CI tests on every change. Omarchy is Arch with a desktop on top, so it should work too, but it isn't tested on its own.
 
 <p align="center">
 <img src="docs/screenshots/friend-dashboard.png" alt="A friend's dashboard: memory, CPU and disk against their limits, their running servers, and their account" width="720">
