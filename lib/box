@@ -2773,34 +2773,27 @@ def drop_legacy_hook():
     os.replace(tmp, path)
 
 
-T3_PROJECT_DIR = "~/projects/"
-T3_PROJECT_DIR_MARK = os.path.join(HOME, ".sharedbox", "t3-project-dir-set")
+T3_PROJECT_DIR = "~/"
+T3_PROJECT_DIR_MARK = os.path.join(HOME, ".sharedbox", "t3-project-dir-home")
 
 
 def sync_t3_project_dir():
-    """Point T3's "Add project" folder picker at ~/projects (the folder the janitor and every rule talk about),
-    once per account. T3 leaves it empty (it then starts in ~) and some accounts had ~/Projects, which people
-    confused with ~/projects. Any other folder someone picked is kept, and so is a later change of theirs.
-    T3 watches its settings file, so a running T3 picks this up."""
+    """T3's "Add project" folder picker starts in the home folder, once per account. Some accounts had
+    ~/Projects (and a short-lived treehouse release set ~/projects), which confused people. Any other folder
+    someone picked is kept, and so is a later change of theirs. A running T3 watches the file and picks this up."""
     if os.path.exists(T3_PROJECT_DIR_MARK):
         return
-    home_t3 = os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3")
-    path = os.path.join(home_t3, "userdata", "settings.json")
+    path = os.path.join(os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3"), "userdata", "settings.json")
     try:
         with open(path) as f:
             cfg = json.load(f)
     except FileNotFoundError:
-        if not os.path.isdir(home_t3):
-            return  # T3 never ran here: try again on a later sync (no mark)
-        cfg = {}
+        cfg = None  # T3's own default is the home folder already
     except (OSError, ValueError):
         return
-    if not isinstance(cfg, dict):
-        return
-    cur = cfg.get("addProjectBaseDirectory")
-    if not cur or (isinstance(cur, str) and cur.rstrip("/") in ("~/Projects", os.path.join(HOME, "Projects"))):
+    cur = cfg.get("addProjectBaseDirectory") if isinstance(cfg, dict) else None
+    if isinstance(cur, str) and cur.rstrip("/") in ("~/Projects", "~/projects", os.path.join(HOME, "Projects")):
         cfg["addProjectBaseDirectory"] = T3_PROJECT_DIR
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.tmp-{os.getpid()}"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
             json.dump(cfg, f, indent=2)
