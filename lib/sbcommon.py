@@ -607,6 +607,7 @@ def read_cgroup(path):
         "cpu_usec": stat.get("usage_usec", 0),
         "throttled_usec": stat.get("throttled_usec", 0),
         "mem": num("memory.current") or 0,
+        "mem_used": _mem_used(path),
         "mem_high": num("memory.high"),
         "mem_max": num("memory.max"),
         "swap": num("memory.swap.current") or 0,
@@ -614,6 +615,15 @@ def read_cgroup(path):
         "pids_max": num("pids.max"),
         "cpu_quota_cores": quota,
     }
+
+
+def _mem_used(path):
+    """Memory programs actually hold (anon + shmem), not file cache the kernel drops on its own; None if unknown."""
+    try:
+        st = dict(line.split() for line in (_read(os.path.join(path, "memory.stat")) or "").splitlines())
+        return int(st["anon"]) + int(st.get("shmem", 0))
+    except (KeyError, ValueError):
+        return None
 
 
 def read_psi(kind):
