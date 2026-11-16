@@ -98,6 +98,8 @@ DEFAULTS = {
     "ARCHIVE_DAYS": "14",
     # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
     "TUNE_SWAP": "auto",
+    # 1: sharedbox-tune turns suspend and lid-close sleep off (a sleeping box drops every friend); 0 leaves them
+    "TUNE_KEEP_AWAKE": "1",
     # SOLO=1: a lean server for one person. No signups/invites (checked where each is used)
     "SOLO": "0",
     "OVER_BUDGET_GRACE_HOURS": "24",

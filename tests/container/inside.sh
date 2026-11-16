@@ -61,6 +61,8 @@ check "dashboard answers on the tailnet IP" wait_web
 check "box help works for the owner" runuser -u owner -- box help
 check "box status works for the owner" runuser -u owner -- box status
 check "box tune runs" runuser -u owner -- box tune
+check "the box never suspends (sleep drop-ins)" grep -q AllowSuspend=no /etc/systemd/sleep.conf.d/60-sharedbox-awake.conf
+check "box tune agrees it stays awake" sh -c 'runuser -u owner -- box tune --json 2>/dev/null | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin) if x[\"name\"].startswith(\"stays awake\")]; assert r and r[0][\"ok\"], r"'
 
 section "a friend"
 ssh-keygen -q -t ed25519 -N '' -f /tmp/alice_key -C alice@example.com
@@ -113,6 +115,7 @@ check "no sharedbox unit files left" test -z "$(units)"
 check "no sharedbox processes left" sh -c '! pgrep -af /usr/lib/sharedbox | grep -v pgrep'
 check "program files removed" test ! -e /usr/lib/sharedbox -a ! -e /usr/share/sharedbox
 check "no dangling links in /usr/local" sh -c '! find /usr/local/bin /usr/local/sbin -xtype l | grep .'
+check "sleep settings handed back" test ! -e /etc/systemd/sleep.conf.d/60-sharedbox-awake.conf -a ! -e /etc/systemd/logind.conf.d/60-sharedbox-awake.conf
 check "no sharedbox sysctl files left" sh -c '! ls /etc/sysctl.d/60-sharedbox-* 2>/dev/null | grep .'
 check "friend account kept" id alice
 check "friend home kept" test -d /home/alice

@@ -45,6 +45,9 @@ if systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
 fi
 # box tuning: back to the kernel's defaults at the next reboot (nothing is changed on the running system)
 rm -f /etc/sysctl.d/60-sharedbox-*.conf /etc/modules-load.d/sharedbox-bbr.conf
+# sleep: back to the system's own settings (suspend and lid close work again)
+rm -f /etc/systemd/sleep.conf.d/60-sharedbox-awake.conf /etc/systemd/logind.conf.d/60-sharedbox-awake.conf
+systemctl kill -s HUP systemd-logind 2>/dev/null || true
 if [[ -e /swap.treehouse ]]; then swapoff /swap.treehouse 2>/dev/null && rm -f /swap.treehouse; fi
 # every command link into the program folder (box, sharedbox-admin, ...), then the folder itself
 for d in /usr/local/bin /usr/local/sbin; do

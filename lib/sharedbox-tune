@@ -2,8 +2,11 @@
 """sharedbox-tune: make the box itself efficient (kernel, memory, disk, network), and say what's left.
 
   sharedbox-tune check [--json]   read-only report; any user (agents run it as `box tune`)
-  sharedbox-tune apply            root: the runtime settings a sysctl file can't hold (zswap). Run by
-                                  install.sh and at every boot (sharedbox-tune.service)
+  sharedbox-tune apply            root: the runtime settings a sysctl file can't hold (swap, zswap, staying
+                                  awake). Run by install.sh and at every boot (sharedbox-tune.service)
+  sharedbox-tune preflight        read-only notes on this machine's hardware for a new install (install.sh)
+  sharedbox-tune fit-limits       root: on a machine with less than 20 GB of RAM, scale the per-account memory
+                                  limits in sharedbox.conf to it (install.sh runs it when it writes a new conf)
 
 Two kinds of findings:
   "treehouse"  every box should have it: the repo ships it (etc/sysctl-*.conf, `apply` below) and an update
@@ -215,7 +218,66 @@ def check_account():
                     "`box tune shell` fixes slow nvm loading; for anything else see `box help lean`", "account")]
 
 
-CHECKS = [check_sysctls, check_memory, check_disk, check_cpu, check_services, check_network, check_account]
+# ---------- staying awake ----------
+# A shared box that suspends drops every friend and stops their agents mid-turn. Old laptops and desktop installs
+# suspend on their own (lid closed, idle on the login screen), so treehouse turns sleep off with two drop-ins it
+# owns. TUNE_KEEP_AWAKE=0 in sharedbox.conf leaves sleep alone; uninstall.sh removes them.
+SLEEP_DROPIN = "/etc/systemd/sleep.conf.d/60-sharedbox-awake.conf"
+LOGIND_DROPIN = "/etc/systemd/logind.conf.d/60-sharedbox-awake.conf"
+SLEEP_CONF = ("# managed by treehouse (sharedbox-tune): a shared box never suspends. TUNE_KEEP_AWAKE=0 turns this off.\n"
+              "[Sleep]\nAllowSuspend=no\nAllowHibernation=no\nAllowHybridSleep=no\nAllowSuspendThenHibernate=no\n")
+LOGIND_CONF = ("# managed by treehouse (sharedbox-tune): closing a laptop's lid or idling doesn't suspend a shared box.\n"
+               "[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\n"
+               "IdleAction=ignore\n")
+
+
+def keep_awake_setting():
+    return conf_setting("TUNE_KEEP_AWAKE", "1") not in ("0", "no", "off", "false")
+
+
+def has_battery():
+    return any(read(f"{d}/type") == "Battery" for d in glob.glob("/sys/class/power_supply/*"))
+
+
+def check_awake():
+    applied = read(SLEEP_DROPIN) == SLEEP_CONF.strip() and read(LOGIND_DROPIN) == LOGIND_CONF.strip()
+    if not keep_awake_setting():
+        return [finding("stays awake (no sleep, lid ignored)", True, "sleep allowed (TUNE_KEEP_AWAKE=0)", "",
+                        "", "owner")]
+    return [finding("stays awake (no sleep, lid ignored)", applied, "yes" if applied else "can suspend", "yes",
+                    "a box that suspends drops every friend and stops their agents mid-turn", "treehouse")]
+
+
+def write_if_changed(path, text):
+    if read(path) == text.strip():
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        f.write(text)
+    os.chmod(path + ".tmp", 0o644)
+    os.replace(path + ".tmp", path)
+    return True
+
+
+def apply_awake():
+    if not keep_awake_setting():
+        removed = False
+        for p in (SLEEP_DROPIN, LOGIND_DROPIN):
+            if os.path.exists(p):
+                os.unlink(p)
+                removed = True
+        if removed:
+            subprocess.run(["systemctl", "kill", "-s", "HUP", "systemd-logind"], capture_output=True, check=False)
+        return "awake: sleep allowed (TUNE_KEEP_AWAKE=0)"
+    changed = write_if_changed(SLEEP_DROPIN, SLEEP_CONF)
+    if write_if_changed(LOGIND_DROPIN, LOGIND_CONF):
+        changed = True
+        # logind re-reads its config on SIGHUP; sessions are untouched. If it can't, the next boot picks it up.
+        subprocess.run(["systemctl", "kill", "-s", "HUP", "systemd-logind"], capture_output=True, check=False)
+    return "awake: sleep and suspend off" + (" (just set)" if changed else "")
+
+
+CHECKS = [check_sysctls, check_awake, check_memory, check_disk, check_cpu, check_services, check_network, check_account]
 
 
 def run_checks():
@@ -273,13 +335,17 @@ def apply_zswap():
 SWAPFILE = "/swap.treehouse"
 
 
-def tune_swap_setting():
+def conf_setting(key, default):
     try:
         sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", HERE))
         import sbcommon as sb
-        return str(sb.load_config().get("TUNE_SWAP", "auto")).strip().lower()
+        return str(sb.load_config().get(key, default)).strip().lower()
     except Exception:
-        return "auto"
+        return default
+
+
+def tune_swap_setting():
+    return conf_setting("TUNE_SWAP", "auto")
 
 
 def apply_swap():
@@ -324,11 +390,113 @@ def apply_swap():
 def cmd_apply(a):
     if os.geteuid() != 0:
         sys.exit("sharedbox-tune apply: needs root (install.sh and sharedbox-tune.service run it)")
-    for step in (apply_swap, apply_zswap):  # swap first: zswap only does anything with swap
+    for step in (apply_swap, apply_zswap, apply_awake):  # swap first: zswap only does anything with swap
         try:
             print(step())
         except OSError as e:
             print(f"{step.__name__}: {e}", file=sys.stderr)
+
+
+# ---------- new installs: hardware notes and limits that fit ----------
+
+def mem_total_bytes():
+    return next((int(ln.split()[1]) * 1024 for ln in read("/proc/meminfo").splitlines()
+                 if ln.startswith("MemTotal:")), 0)
+
+
+SMALL_RAM = 20 << 30
+
+
+def fitted_limits(mem):
+    """Per-account memory limits for a machine with `mem` bytes of RAM, or {} when the shipped ones fit (20 GB or
+    more). Everyone still gets the same limits; they just can't exceed the machine: 70% soft, 80% hard, 90% boost."""
+    if not mem or mem >= SMALL_RAM:
+        return {}
+    gib = mem / (1 << 30)
+    high = max(1, int(gib * 0.7))
+    hard = max(high + 1, int(gib * 0.8))
+    boost = max(hard, int(gib * 0.9))
+    return {"MEMORY_HIGH": f"{high}G", "MEMORY_MAX": f"{hard}G", "BOOST_MEMORY": f"{boost}G"}
+
+
+def cmd_fit_limits(a):
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-tune fit-limits: needs root (install.sh runs it)")
+    lim = fitted_limits(mem_total_bytes())
+    if not lim:
+        print("limits: the shipped ones fit this machine's RAM")
+        return
+    sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", HERE))
+    import sbcommon as sb
+    sb.set_config(lim)
+    print("limits: this machine has %.0f GB of RAM, so each account gets %s soft, %s hard, %s with box boost"
+          % (mem_total_bytes() / (1 << 30), lim["MEMORY_HIGH"], lim["MEMORY_MAX"], lim["BOOST_MEMORY"]))
+
+
+def preflight_notes(machine, mem, free_home, rotational, battery, wifi_only):
+    """Plain notes for the owner of a new box: (level, text), level 'stop' | 'warn' | 'note'."""
+    out = []
+    if machine not in ("x86_64", "aarch64", "arm64"):
+        out.append(("stop", f"this is a {machine} machine. Claude Code, Codex and Node.js need a 64-bit PC "
+                            "(x86_64) or 64-bit ARM, so the coding agents won't run here"))
+    gib = mem / (1 << 30)
+    if mem and gib < 3.5:
+        out.append(("warn", f"{gib:.1f} GB of RAM is very little: one agent running tests can fill it. "
+                            "8 GB or more is comfortable; 4 GB works for one person"))
+    elif mem and gib < 7.5:
+        out.append(("note", f"{gib:.1f} GB of RAM is enough for one or two people at a time"))
+    if mem and mem < SMALL_RAM:
+        lim = fitted_limits(mem)
+        out.append(("note", f"per-account memory limits will be scaled to this machine: {lim['MEMORY_HIGH']} soft, "
+                            f"{lim['MEMORY_MAX']} hard"))
+    if free_home is not None and free_home < (20 << 30):
+        out.append(("warn", f"only {free_home / (1 << 30):.0f} GB free for home folders. Each agent setup takes a few "
+                            "GB (Node, caches, projects); 50 GB or more is comfortable"))
+    if rotational:
+        out.append(("note", "the main disk is a spinning hard drive. Everything works, but installs and git are much "
+                            "slower than on an SSD; a cheap SSD is the best upgrade for an old PC"))
+    if battery:
+        out.append(("note", "this is a laptop: keep it plugged in. treehouse stops it from sleeping, so you can "
+                            "close the lid (TUNE_KEEP_AWAKE=0 in /etc/sharedbox/sharedbox.conf turns that off)"))
+    if wifi_only:
+        out.append(("note", "it's on Wi-Fi only. A network cable makes it faster and more reliable for friends"))
+    return out
+
+
+def root_disk_rotational():
+    try:
+        src = subprocess.run(["findmnt", "-no", "SOURCE", "/"], capture_output=True, text=True, timeout=5).stdout.strip()
+        parent = subprocess.run(["lsblk", "-ndo", "PKNAME", src], capture_output=True, text=True,
+                                timeout=5).stdout.strip() or os.path.basename(src)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return read(f"/sys/block/{parent}/queue/rotational") == "1"
+
+
+def wifi_only():
+    wired = wireless = False
+    for d in glob.glob("/sys/class/net/*"):
+        name = os.path.basename(d)
+        if name == "lo" or not os.path.exists(os.path.join(d, "device")) or read(os.path.join(d, "operstate")) != "up":
+            continue
+        if os.path.isdir(os.path.join(d, "wireless")):
+            wireless = True
+        else:
+            wired = True
+    return wireless and not wired
+
+
+def cmd_preflight(a):
+    try:
+        st = os.statvfs("/home")
+        free_home = st.f_bavail * st.f_frsize
+    except OSError:
+        free_home = None
+    notes = preflight_notes(os.uname().machine, mem_total_bytes(), free_home, root_disk_rotational(),
+                            has_battery(), wifi_only())
+    for level, text in notes:
+        print(f"    {'STOP: ' if level == 'stop' else 'warning: ' if level == 'warn' else ''}{text}")
+    sys.exit(3 if any(level == "stop" for level, _ in notes) else 0)
 
 
 def main():
@@ -339,6 +507,8 @@ def main():
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_check)
     s.add_parser("apply").set_defaults(fn=cmd_apply)
+    s.add_parser("preflight").set_defaults(fn=cmd_preflight)
+    s.add_parser("fit-limits").set_defaults(fn=cmd_fit_limits)
     a = p.parse_args()
     a.fn(a)
 

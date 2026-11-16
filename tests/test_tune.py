@@ -112,5 +112,64 @@ class Swap(unittest.TestCase):
         self.assertEqual(self.cmds, [])
 
 
+class Awake(unittest.TestCase):
+    """Staying awake: two drop-ins treehouse owns, written once, removed with TUNE_KEEP_AWAKE=0."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.saved = (tune.SLEEP_DROPIN, tune.LOGIND_DROPIN, tune.subprocess.run, tune.keep_awake_setting)
+        tune.SLEEP_DROPIN = os.path.join(self.tmp, "sleep.conf.d", "60-sharedbox-awake.conf")
+        tune.LOGIND_DROPIN = os.path.join(self.tmp, "logind.conf.d", "60-sharedbox-awake.conf")
+        self.cmds = []
+        tune.subprocess.run = lambda cmd, **kw: self.cmds.append(cmd) or tune.subprocess.CompletedProcess(cmd, 0, "", "")
+        tune.keep_awake_setting = lambda: True
+
+    def tearDown(self):
+        tune.SLEEP_DROPIN, tune.LOGIND_DROPIN, tune.subprocess.run, tune.keep_awake_setting = self.saved
+
+    def test_apply_writes_once_and_check_agrees(self):
+        self.assertFalse(tune.check_awake()[0]["ok"])
+        self.assertIn("just set", tune.apply_awake())
+        self.assertIn("AllowSuspend=no", open(tune.SLEEP_DROPIN).read())
+        self.assertIn("HandleLidSwitch=ignore", open(tune.LOGIND_DROPIN).read())
+        self.assertEqual(len(self.cmds), 1)  # logind told to re-read its config
+        self.assertTrue(tune.check_awake()[0]["ok"])
+        self.assertNotIn("just set", tune.apply_awake())  # idempotent: nothing rewritten, logind left alone
+        self.assertEqual(len(self.cmds), 1)
+
+    def test_off_switch_removes_them(self):
+        tune.apply_awake()
+        tune.keep_awake_setting = lambda: False
+        self.assertIn("TUNE_KEEP_AWAKE=0", tune.apply_awake())
+        self.assertFalse(os.path.exists(tune.SLEEP_DROPIN) or os.path.exists(tune.LOGIND_DROPIN))
+        r = tune.check_awake()[0]
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["kind"], "owner")
+
+
+class NewInstall(unittest.TestCase):
+    def test_limits_fit_small_machines_only(self):
+        self.assertEqual(tune.fitted_limits(32 << 30), {})
+        self.assertEqual(tune.fitted_limits(0), {})
+        self.assertEqual(tune.fitted_limits(8 << 30), {"MEMORY_HIGH": "5G", "MEMORY_MAX": "6G", "BOOST_MEMORY": "7G"})
+        small = tune.fitted_limits(int(3.8 * (1 << 30)))
+        self.assertEqual(small, {"MEMORY_HIGH": "2G", "MEMORY_MAX": "3G", "BOOST_MEMORY": "3G"})
+        for mem in (2 << 30, 4 << 30, 12 << 30, 16 << 30, 19 << 30):
+            lim = {k: int(v[:-1]) for k, v in tune.fitted_limits(mem).items()}
+            self.assertLess(lim["MEMORY_HIGH"], lim["MEMORY_MAX"])
+            self.assertLessEqual(lim["MEMORY_MAX"], lim["BOOST_MEMORY"])
+            self.assertLessEqual(lim["BOOST_MEMORY"], mem >> 30)
+
+    def test_preflight_notes(self):
+        big = tune.preflight_notes("x86_64", 32 << 30, 200 << 30, False, False, False)
+        self.assertEqual(big, [])
+        levels = [lv for lv, _ in tune.preflight_notes("i686", 2 << 30, 10 << 30, True, True, True)]
+        self.assertEqual(levels[0], "stop")
+        self.assertIn("warn", levels)
+        old_laptop = " ".join(t for _, t in tune.preflight_notes("x86_64", 8 << 30, 100 << 30, True, True, True))
+        for words in ("5G soft", "spinning", "plugged in", "Wi-Fi"):
+            self.assertIn(words, old_laptop)
+        self.assertNotIn("stop", [lv for lv, _ in tune.preflight_notes("aarch64", 4 << 30, 30 << 30, False, False, False)])
+
+
 if __name__ == "__main__":
     unittest.main()
