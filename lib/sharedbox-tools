@@ -283,6 +283,10 @@ def agent_bins(name, d):
 
 
 def set_current(name, ver):
+    old = current_version(name)
+    if name == "t3" and old and vkey(ver) < vkey(old):
+        log(f"refusing to downgrade t3 current from {old} to {ver}; restore a compatible database before changing channels")
+        return
     link = os.path.join(agent_root(name), "current")
     tmp = f"{link}.tmp-{os.getpid()}"
     try:
@@ -294,10 +298,17 @@ def set_current(name, ver):
 
 
 def shim_text(cfg, name, binary):
+    base = f"{sb.AGENTS_DIR}/{sb.agent_slug(name)}/current"
+    pre = ""
+    if name == "t3":
+        # back up a friend's T3 database before a newer T3 first serves it (`box _t3-backup-upgrade`)
+        pre = (f'd=$(readlink -f "{base}") || exit 1\n'
+               '[ "$1" != serve ] || box _t3-backup-upgrade "${d##*/}" || exit $?\n')
+        base = "$d"
     return f'''#!/bin/sh
 {SHIM_MARK} for {name}: written by sharedbox-tools.
-export DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1
-exec "{sb.AGENTS_DIR}/{sb.agent_slug(name)}/current/node_modules/.bin/{binary}" "$@"
+{pre}export DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1
+exec "{base}/node_modules/.bin/{binary}" "$@"
 '''
 
 
@@ -370,9 +381,15 @@ def gc_versions(names):
         root, cur = agent_root(name), current_version(name)
         if not os.path.isdir(root):
             continue
+        if name == "t3":
+            try:
+                if time.time() - os.lstat(os.path.join(root, "current")).st_mtime < 600:
+                    continue
+            except FileNotFoundError:
+                pass
         vers = sorted((v for v in os.listdir(root) if VERSION_RE.fullmatch(v)), key=vkey)
         older = [v for v in vers if cur and vkey(v) < vkey(cur)]
-        keep.update(version_dir(name, v) for v in older[-KEEP_PREVIOUS:])
+        keep.update(version_dir(name, v) for v in older[-(2 if name == "t3" else KEEP_PREVIOUS):])
         if cur:
             keep.add(version_dir(name, cur))
         for v in os.listdir(root):

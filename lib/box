@@ -881,7 +881,7 @@ def t3_service_env():
 
 def t3_env():
     """(tailscale ip, public T3 port, env for `t3 serve`/`t3 pair`). A friend's T3 listens on the block's last port
-    (sb-t3.socket holds the first); the owner's listens on OWNER_T3_PORT itself (it never naps: no socket)."""
+    (sb-t3.socket holds the first); the owner's listens on OWNER_T3_PORT itself (no socket)."""
     own = owner_t3()
     if own:
         host, port = own
@@ -981,14 +981,14 @@ def t3_write_units(host, env):
 
 
 def t3_write_owner_unit(host, env):
-    """The owner's T3: like a friend's sb-t3.service, but on OWNER_T3_PORT directly, started at boot, never napping.
+    """The owner's T3: like a friend's sb-t3.service, but on OWNER_T3_PORT directly, started at boot.
     It binds the Tailscale IP itself (no FreeBind socket in front), so it first waits for that address to exist."""
     port = env["T3CODE_PORT"]
     ready = (f"for i in $(seq 600); do c=$(curl -s -o /dev/null -w %{{http_code}} --max-time 2 "
              f"http://{host}:{port}/api/auth/session); [ \"$c\" = 200 ] && exit 0; sleep 0.5; done; exit 1")
     wait_ip = (f"for i in $(seq 180); do ip -4 -o addr show | grep -qF \" {host}/\" && exit 0; sleep 1; done; "
                "echo no Tailscale address yet >&2; exit 1")
-    t3 = ["[Unit]", "Description=T3 Code (the owner's; box t3, never naps)",
+    t3 = ["[Unit]", "Description=T3 Code (the owner's; box t3)",
           "StartLimitIntervalSec=0", "",  # a slow Tailscale at boot must never leave it dead (start-limit-hit)
           "[Service]", "WorkingDirectory=%h",  # T3 names its environment after this folder: keep the old name
           "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"]
@@ -1016,7 +1016,7 @@ def t3_ensure(host, port, env, quiet=False):
     """Make sure the T3 units are current, the socket is on, and T3 is starting. Doesn't wait for it."""
     os.makedirs(UNIT_DIR, exist_ok=True)
     if not is_friend():  # the owner: a changed unit applies at T3's next start, never by restarting it now
-        if t3_old_active():
+        if not os.path.exists(T3_MANAGED_MARK) or t3_old_active():
             return  # still T3's own t3code.service: `box t3 switch` moves it over when no agent is working
         t3_write_units(host, env)
         sctl("enable", T3_UNIT, capture=True)
@@ -1071,7 +1071,7 @@ def cmd_t3(a):
         state = ("running" if up else "stopped (it starts by itself in a few seconds when opened)"
                  if wakes else "not running (`box t3` starts it)")
         if own:
-            print(f"T3 Code (the owner's, run by {BRAND}; never naps): {state} at http://{host}:{port}/"
+            print(f"T3 Code (the owner's, run by {BRAND}): {state} at http://{host}:{port}/"
                   + t3_switch_line())
             return
         print(f"T3 Code: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in browser")
@@ -1140,7 +1140,7 @@ T3_BACKUP = os.path.join(HOME, ".t3", "sb-backup", "statev2-before-switch.sqlite
 T3_TERMINAL = ("completed", "failed", "cancelled", "interrupted", "rolled_back")
 T3_SWITCH_QUIET = 600         # nothing running for this long in a row (gaps between a delegated task's turns are shorter)
 T3_SWITCH_SAMPLE = 30
-T3_SWITCH_CPU_USEC = 1_000_000  # agents' CPU per sample that counts as working (the friends' naps: 20 s per 10 min)
+T3_SWITCH_CPU_USEC = 1_000_000  # agents' CPU per sample that counts as working
 T3_SWITCH_GIVE_UP = 3 * 86400
 VERSION_TEXT_RE = re.compile(r"\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b")
 
@@ -1158,7 +1158,7 @@ def t3_db_busy(db, now=None):
     iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t))  # noqa: E731
     done = ", ".join(f"'{x}'" for x in T3_TERMINAL)
     checks = [
-        ("agent turns not finished", f"SELECT count(*) FROM orchestration_v2_projection_runs WHERE status NOT IN ({done})", ()),
+        ("agent turns not finished", f"SELECT count(*) FROM orchestration_v2_projection_runs WHERE status NOT IN ({done}) AND requested_at > ?", (iso(now - 86400),)),
         ("questions or approvals waiting for an answer", "SELECT count(*) FROM orchestration_v2_projection_runtime_requests "
          f"WHERE status NOT IN ({done}, 'resolved')", ()),
         ("commands, tools or subagents running", "SELECT count(*) FROM orchestration_v2_projection_turn_items WHERE type IN "
@@ -1180,6 +1180,22 @@ def t3_db_busy(db, now=None):
     try:
         for what, sql, args in checks:
             try:
+                for table in ("turn_items", "subagents", "runtime_requests"):
+                    full = "orchestration_v2_projection_" + table
+                    if full not in sql:
+                        continue
+                    cols = {r[1] for r in con.execute(f"PRAGMA table_info({full})")}
+                    age = next((c for c in ("updated_at", "created_at", "requested_at") if c in cols), None)
+                    if age:
+                        sql += f" AND {age} > ?"
+                        args += (iso(now - 86400),)
+                    if "run_id" in cols:
+                        sql += (f" AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r "
+                                f"WHERE r.run_id = {full}.run_id AND r.status NOT IN ({done}) "
+                                "AND r.requested_at > ?)")
+                        args += (iso(now - 86400),)
+                    elif not age:
+                        raise sqlite3.OperationalError("missing activity age and parent run")
                 n = con.execute(sql, args).fetchone()[0]
             except sqlite3.Error as e:
                 out.append(f"can't tell whether {what} ({e})")
@@ -1332,6 +1348,22 @@ def t3_backup(db, dest):
     os.replace(tmp, dest)
 
 
+def cmd_t3_backup_upgrade(a):
+    if not is_friend():
+        return
+    ver = a.version
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", ver):
+        sys.exit("box: invalid T3 launcher version")
+    old = (sb.read_json(os.path.join(HOME, ".t3", "userdata", "server-runtime.json"), {}) or {}).get("serverVersion")
+    # No database means a fresh account. Unknown runtime with an existing DB also needs a safety copy.
+    db = t3_db_path()
+    if not os.path.exists(db) or old == ver:
+        return
+    dest = os.path.join(HOME, ".t3", "sb-backup", "before-" + ver + ".sqlite")
+    if not os.path.exists(dest):
+        t3_backup(db, dest)
+
+
 def t3_switch_line():
     st = sb.read_json(T3_SWITCH_STATE, {}) or {}
     if not st or st.get("state") == "done" and time.time() - st.get("ts", 0) > 86400:
@@ -1402,7 +1434,11 @@ def t3_do_switch(host, port):
     except OSError:
         pass
     sctl("daemon-reload", capture=True)
-    sctl("stop", T3_OLD, capture=True)
+    r = sctl("stop", T3_OLD, capture=True)
+    if r.returncode:
+        return "couldn't stop the old T3 Code"
+    db = t3_db_path()
+    t3_backup(db, T3_BACKUP)  # restore point includes the old server's final shutdown writes
     sctl("disable", T3_OLD, capture=True)
     sctl("reset-failed", T3_UNIT, capture=True)
     r = sctl("start", T3_UNIT, capture=True)  # returns once it answers on its port (ExecStartPost), or fails
@@ -1426,46 +1462,95 @@ def t3_verify(host, port):
     return ""
 
 
-def t3_rollback(host, port, db, mig_before, cli_before):
-    """Back to T3's own t3code.service, with the database as it was if the new version changed it. True if the old
-    T3 answers again."""
-    sctl("stop", T3_UNIT, capture=True)
-    sctl("disable", T3_UNIT, capture=True)
-    for path in (T3_MANAGED_MARK, T3_OLD_DROPIN):
+def t3_db_holders(db):
+    """Database files must be closed before restore, including processes without a listener.
+    An inaccessible fd directory is unknown, so refuse restore rather than risk a live WAL."""
+    holders = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
         try:
-            os.unlink(path)
-        except OSError:
-            pass
-    sctl("daemon-reload", capture=True)
-    for _ in range(30):  # nothing may have the database open while it's put back
-        if not listening(host, port):
-            break
-        time.sleep(1)
-    if os.path.exists(T3_BACKUP) and t3_migration(db) != mig_before:
-        print(f"the new version changed the database (migration {mig_before} -> {t3_migration(db)}); restoring it",
-              flush=True)
-        for ext in ("-wal", "-shm"):
+            if os.stat(f"/proc/{pid}").st_uid != os.getuid():
+                continue  # other accounts cannot open this account's private T3 database
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            holders.append(pid + " (cannot inspect)")
+            continue
+        for fd in fds:
             try:
-                os.unlink(db + ext)
+                target = os.readlink(f"/proc/{pid}/fd/{fd}").removesuffix(" (deleted)")
+                if target.startswith(db):
+                    holders.append(pid)
+                    break
             except FileNotFoundError:
                 pass
-        shutil.copyfile(T3_BACKUP, db + ".sb-restore")
-        os.chmod(db + ".sb-restore", 0o644)
-        os.replace(db + ".sb-restore", db)
-    if cli_before:
-        link = os.path.join(HOME, ".local", "bin", "t3")
+            except PermissionError:
+                holders.append(pid + " (cannot inspect)")
+                break
+    return holders
+
+
+def t3_rollback(host, port, db, mig_before, cli_before):
+    """Always re-arm the old boot service, even when restoring a file fails."""
+    error = ""
+    try:
+        # A reboot at any later step must still boot T3.
+        r = sctl("enable", T3_OLD, capture=True)
+        if r.returncode:
+            raise RuntimeError("couldn't re-enable the old T3 service")
+        r = sctl("stop", T3_UNIT, capture=True)
+        if r.returncode:
+            raise RuntimeError("couldn't stop the box T3 service")
+        sctl("disable", T3_UNIT, capture=True)
+        for path in (T3_MANAGED_MARK, T3_OLD_DROPIN):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        sctl("daemon-reload", capture=True)
+        if os.path.exists(T3_BACKUP) and t3_migration(db) != mig_before:
+            # Finish the fallible copy before touching the current database or its WAL.
+            shutil.copyfile(T3_BACKUP, db + ".sb-restore")
+            os.chmod(db + ".sb-restore", 0o600)
+            holders = t3_db_holders(db)
+            if holders:
+                raise RuntimeError("database still open by processes: " + ", ".join(holders))
+            for ext in ("-wal", "-shm"):
+                try:
+                    os.unlink(db + ext)
+                except FileNotFoundError:
+                    pass
+            os.replace(db + ".sb-restore", db)
+        if cli_before:
+            link = os.path.join(HOME, ".local", "bin", "t3")
+            tmp = link + ".sb-rollback"
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
+            os.symlink(cli_before, tmp)
+            os.replace(tmp, link)
+    except Exception as e:
+        error = f"Rollback failed: {e}"
+    finally:
         try:
-            os.unlink(link)
-        except OSError:
-            pass
-        os.symlink(cli_before, link)
-    sctl("reset-failed", T3_OLD, capture=True)
-    sctl("enable", "--now", T3_OLD, capture=True)
-    deadline = time.time() + 180
-    while time.time() < deadline:
-        if t3_http_ok(host, port):
-            return True
-        time.sleep(3)
+            sctl("reset-failed", T3_OLD, capture=True)
+            r = sctl("enable", "--now", T3_OLD, capture=True)
+            if r.returncode:
+                error = error or "The old T3 service couldn't start"
+        except Exception as e:
+            error = error or f"The old T3 service couldn't start: {e}"
+    if not error:
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            if t3_http_ok(host, port):
+                return True
+            time.sleep(3)
+        error = "The old T3 Code didn't answer after rollback"
+    st = sb.read_json(T3_SWITCH_STATE, {}) or {}
+    os.makedirs(os.path.dirname(T3_SWITCH_STATE), exist_ok=True)
+    sb.write_json(T3_SWITCH_STATE, dict(st, state="failed-hard", reason=error, ts=int(time.time())), mode=0o600)
+    print(error, flush=True)
     return False
 
 
@@ -1506,7 +1591,7 @@ def cmd_t3_switch(a):
         quiet_since = None if reasons else (quiet_since or now)
         save(waiting_on=reasons, quiet_since=quiet_since)
         if quiet_since and now - quiet_since >= T3_SWITCH_QUIET:
-            t3_backup(db, T3_BACKUP)  # before the last look: a turn starting during the copy is caught below
+            t3_backup(db, T3_BACKUP + ".online")  # extra safety; the restore point is taken after stop
             mig_before = t3_migration(db)
             reasons, cpu = t3_switch_busy(db, cg, cpu)
             if not reasons and mig_before is not None and t3_old_active() and t3_http_ok(host, port):
@@ -1526,6 +1611,9 @@ def cmd_t3_switch(a):
         return save(state="done", reason="", since=int(time.time()))
     print(f"switch failed: {why}; rolling back", flush=True)
     ok = t3_rollback(host, port, db, mig_before, cli_before)
+    if not ok:
+        st.update(sb.read_json(T3_SWITCH_STATE, {}) or {})
+        why += "; " + st.get("reason", "rollback failed")
     save(state="rolled-back" if ok else "failed-hard",
          reason=f"{why}. " + ("The old T3 Code is back." if ok else
                              f"The old T3 Code didn't come back either: `systemctl --user status {T3_OLD}`."))
@@ -3176,6 +3264,8 @@ def main():
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_cache-pass").set_defaults(fn=cmd_cache_pass)
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
+    x = s.add_parser("_t3-backup-upgrade")
+    x.add_argument("version"); x.set_defaults(fn=cmd_t3_backup_upgrade)
     s.add_parser("_t3-switch").set_defaults(fn=cmd_t3_switch)  # `box t3 switch`, in its own user unit
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
