@@ -129,10 +129,9 @@ emails you invited get through. The tunnel is outbound-only: nothing on the box 
  limits, boost   + session snapshot   archives, notices
 ```
 
-Two other ways in, both still supported: **Tailscale only** (each friend joins your tailnet; the
-dashboard and `/join` trust `tailscale whois`, nothing is public) and **Tailscale Funnel** (a public
-`*.ts.net` link with one-time login links instead of Cloudflare; simpler, but the login pages face the
-internet). The installer prints the steps for each; `INSTALL.md` walks an agent through choosing.
+Private **Tailscale only** access remains supported: the dashboard and `/join` verify `tailscale whois`.
+Public access requires Cloudflare Tunnel + Access; legacy Funnel configurations disable the gate.
+Tailnet self-join is immediate with `JOIN_MODE=open`, disabled with `closed`; there is no approval queue.
 
 | | Per account, owner included (default) | Mechanism |
 |---|---|---|
@@ -176,7 +175,7 @@ invites (`/join`, `box invite`), and Cloudflare seat alerts.
 ```
 box invite [--note WHO] [--json]        # owner accounts, no sudo: one-time invite link
 box skills share DIR | unshare NAME     # owner accounts, no sudo: publish a skill to everyone
-sharedbox-admin list | invite | sessions | issues | requests
+sharedbox-admin list | invite | issues | requests
 sharedbox-admin limits NAME MEMORY_HIGH=10G MEMORY_MAX=11G DISK_BUDGET_GB=50
 sharedbox-admin boost NAME [--why TEXT] # same as `box boost` for that account
 sharedbox-admin suspend NAME | resume NAME | remove NAME --archive

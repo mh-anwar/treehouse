@@ -96,7 +96,7 @@ getent passwd sharedbox >/dev/null || do_ useradd --system --no-create-home --ho
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbconnect.py sbteam.py sbmulti.py sbfed.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbaccess.py sbcloudflare.py sbconnect.py sbteam.py sbmulti.py sbfed.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-update \
          sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -161,7 +161,6 @@ do_ ln -sfn "$LIB/sharedbox-health" /usr/local/sbin/sharedbox-health
 say "state directory"
 do_ install -d -m 755 "$STATE"
 do_ install -d -m 700 -o sharedbox -g sharedbox "$STATE/spool"
-do_ install -d -m 750 -g sharedbox "$STATE/pending"   # files inside are 0600; dir listable for the pending count
 do_ install -d -m 1753 -g sharedbox "$STATE/requests"   # anyone may drop a request; only root/dashboard can list
 # removed features (box heavy queue, T3 naps): their leftovers
 [[ -e $STATE/slots ]] && do_ rm -rf "$STATE/slots" "$STATE/t3-seen" "$STATE/t3-naps.json" "$STATE/balance.json"
@@ -170,8 +169,8 @@ do_ install -d -m 1753 -g sharedbox "$STATE/requests"   # anyone may drop a requ
 do_ install -d -m 755 "$STATE/health"
 do_ install -d -m 755 "$STATE/skills"   # skills admins publish with `box skills share`
 do_ install -d -m 700 "$STATE/audit"
-# public front door: invite/session/login records, written only by root, readable by sharedbox-gate/-web
-do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites" "$STATE/gate/sessions" "$STATE/gate/logins"
+# public front door: signup invite records, written only by root, readable by sharedbox-gate/-web
+do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites"
 # `box invite` without sudo: anyone can drop a file, root only acts on files owned by ADMIN_USERS
 do_ install -d -m 1733 "$STATE/admin"
 do_ install -d -m 711 "$STATE/admin-replies"
@@ -206,6 +205,11 @@ if [[ $TOOLS == 1 ]]; then
 fi
 
 # ---------- systemd ----------
+# Remove obsolete code and empty feature directories; preserve any historical records (user data).
+do_ rm -f "$LIB/sbqr.py"
+for old in "$STATE/pending" "$STATE/gate/sessions" "$STATE/gate/logins"; do
+    do_ rmdir "$old" 2>/dev/null || true
+done
 say "systemd units"
 # Retired shared-server feature: keep all code and data in /srv/shared.
 for u in /etc/systemd/system/sb-shared-*.service; do
@@ -273,11 +277,11 @@ if [[ -n $PUBLIC_URL && $PUBLIC_MODE == cloudflare ]]; then
     do_ sh -c "printf '# managed by sharedbox (PUBLIC_MODE=cloudflare): the gate fetches Cloudflare Access signing keys\n[Service]\nIPAddressDeny=\n' > $GATE_DROPIN"
     do_ systemctl daemon-reload
 fi
-if [[ -n $PUBLIC_URL ]]; then
-    [[ $PUBLIC_MODE == cloudflare ]] || say "public front door: $PUBLIC_URL -> sharedbox-gate on 127.0.0.1:$GATE_PORT"
+if [[ -n $PUBLIC_URL && $PUBLIC_MODE == cloudflare ]]; then
     do_ systemctl enable sharedbox-gate.service
     do_ systemctl restart sharedbox-gate.service
-elif systemctl is-enabled -q sharedbox-gate.service 2>/dev/null; then
+else
+    [[ -z $PUBLIC_URL ]] || warn "public access disabled: set up Cloudflare (PUBLIC_MODE=cloudflare)"
     do_ systemctl disable --now sharedbox-gate.service
 fi
 if [[ -n $PUBLIC_URL && $PUBLIC_MODE == cloudflare && -e $CF_ENV ]] && command -v cloudflared >/dev/null; then
@@ -375,22 +379,10 @@ if [[ $APPLY == 1 ]]; then
     say "next: share this machine with friends in the Tailscale admin console, then send them the text from:"
     say "  sudo sharedbox-admin invite"
 fi
-# Funnel touches tailscaled, which this installer never does: print the one-time steps instead
-if [[ -z $PUBLIC_URL ]]; then
-    TS_NAME=$(tailscale status --json --peers=false 2>/dev/null \
-        | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)
-    say "optional: let friends in with just a browser (no Tailscale for them, phones work):"
-    say "  recommended, Cloudflare Tunnel + Access (needs a domain on Cloudflare; only invited emails get in):"
-    say "    sudo bash $SHARE/cloudflare-setup.sh"
-    say "  or Tailscale Funnel (simpler, but the gate's pages face the whole internet):"
-    say "  1. tailnet policy (admin console > Access controls) must allow Funnel for this machine:"
-    say "       \"nodeAttrs\": [{\"target\": [\"<this machine or its tag>\"], \"attr\": [\"funnel\"]}]"
-    say "  2. sudo tailscale funnel --bg --https=443 http://127.0.0.1:$GATE_PORT"
-    say "  3. set PUBLIC_URL=https://${TS_NAME:-<machine>.<tailnet>.ts.net} in $ETC/sharedbox.conf, then re-run: sudo ./install.sh --apply"
-    say "  check with: sudo sharedbox-admin public status"
-elif [[ $APPLY == 1 && $PUBLIC_MODE == cloudflare ]]; then
-    say "public invites: box invite --email friend@example.com   (check the setup: sudo sharedbox-admin cloudflare status)"
+if [[ $PUBLIC_MODE != cloudflare || -z $PUBLIC_URL ]]; then
+    say "optional public access: set up Cloudflare Tunnel + Access:"
+    say "  sudo bash $SHARE/cloudflare-setup.sh"
 elif [[ $APPLY == 1 ]]; then
-    say "public invites: sudo sharedbox-admin invite   (check the setup: sudo sharedbox-admin public status)"
+    say "public invites: box invite --email friend@example.com (check: sudo sharedbox-admin cloudflare status)"
 fi
 [[ $APPLY == 1 ]] || say "dry run only. Re-run with --apply to install."

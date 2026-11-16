@@ -55,6 +55,5 @@ done
 rm -rf /usr/lib/sharedbox /usr/share/sharedbox
 rm -f /etc/profile.d/sharedbox.sh
 systemctl reset-failed 'sharedbox-*' 2>/dev/null || true
-echo "if you turned on the public front door: sudo tailscale funnel --https=443 off   (not done here; tailscaled is never touched)"
 echo "Cloudflare mode: the tunnel, DNS record and Access app stay in your Cloudflare account (delete them in the dashboard); cloudflared stays installed"
 echo "removed. Kept: system packages and agents installed by sharedbox-tools, /etc/sharedbox, /var/lib/sharedbox (archives, registry), friend accounts and their limit drop-ins, shared servers' code in /srv/shared and the sbshared user."

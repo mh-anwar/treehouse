@@ -24,7 +24,6 @@ REGISTRY = os.path.join(STATE_DIR, "users.json")
 USAGE = os.path.join(STATE_DIR, "usage.json")
 EVENTS = os.path.join(STATE_DIR, "events.jsonl")
 SPOOL = os.path.join(STATE_DIR, "spool")
-PENDING = os.path.join(STATE_DIR, "pending")
 REQUESTS = os.path.join(STATE_DIR, "requests")
 TOOLS_JSON = os.path.join(STATE_DIR, "tools.json")
 # versioned coding agents: AGENTS_DIR/<slug>/<version>/ (npm prefix) + <slug>/current -> newest
@@ -33,12 +32,12 @@ MEMBER_DROP = os.path.join(STATE_DIR, "member-drop")
 MEMBER_REPLIES = os.path.join(STATE_DIR, "member-replies")
 USER_STATE = os.path.join(STATE_DIR, "user-state")  # request status and account notices
 AGENT_RENAMED = {"opencode-ai": "@opencode/cli"}   # npm packages that moved (opencode v2 = @opencode/cli)
-# public front door (sharedbox-gate): invite, session and device-login records, keyed by sha256(token).
+# public front door (sharedbox-gate): invite records, keyed by sha256(token).
 # Root writes them (0640 root:sharedbox); the gate and sharedbox-web only read them.
 GATE_DIR = os.path.join(STATE_DIR, "gate")
 ADMIN_DROP = os.path.join(STATE_DIR, "admin")          # 1733: admins drop requests (box invite), root acts
 ADMIN_REPLIES = os.path.join(STATE_DIR, "admin-replies")  # 0711: root's answer, readable only by the asker
-GATE_KINDS = ("invites", "sessions", "logins")
+GATE_KINDS = ("invites",)
 # skills every account's agents see (symlinked into ~/.claude/skills and ~/.agents/skills):
 # the ones shipped with sharedbox, then the ones admins publish with `box skills share` (those win)
 SKILLS_BUILTIN = os.path.join(SHARE_DIR, "skills")
@@ -53,7 +52,7 @@ DEFAULTS = {
     # the name people see on pages, emails and broadcasts ("treehouse · <hostname>"). Commands, paths and
     # unit names stay sharedbox-*.
     "BRAND": "treehouse",
-    # who may join: open | approve | closed. Not set in the conf file + PUBLIC_MODE=cloudflare = closed
+    # who may join: open | closed. Not set in the conf file + PUBLIC_MODE=cloudflare = closed
     # (invites only; see load_config)
     "JOIN_MODE": "open",
     "MAX_USERS": "25",
@@ -147,20 +146,16 @@ DEFAULTS = {
     "SMTP_USER": "",
     "SMTP_PASSWORD_FILE": "/etc/sharedbox/smtp-password",
     "HEALTH_REPORT_TIME": "Mon 09:00",
-    # public front door (sharedbox-gate behind Tailscale Funnel); empty PUBLIC_URL = off
+    # public front door (sharedbox-gate behind Cloudflare Tunnel + Access); empty PUBLIC_URL = off
     "PUBLIC_URL": "",
     "GATE_PORT": "8091",
     # where friends' T3 Code listens, as seen from the gate: "tailscale" = this box's Tailscale IPv4
     # (that's what `box t3` binds T3 to), or an explicit address
     "GATE_BACKEND_HOST": "tailscale",
-    "SESSION_DAYS": "90",
     "INVITE_DAYS": "7",
-    "LOGIN_LINK_MINUTES": "10",
     # how `invite` picks a username when none is given: "email" (from the email or note) or "lotr"
     "AUTO_USERNAMES": "email",
-    # how the public front door is reached: "funnel" (Tailscale Funnel; the default when PUBLIC_URL is set)
-    # or "cloudflare" (Cloudflare Tunnel + Access: every request carries a Cloudflare-signed JWT the gate
-    # verifies). `sharedbox-admin cloudflare setup` fills in the CF_* values.
+    # Public access requires Cloudflare Tunnel + Access; anything else disables the gate.
     "PUBLIC_MODE": "",
     "CF_ACCOUNT_ID": "",
     "CF_TEAM_DOMAIN": "",
@@ -821,21 +816,20 @@ def tailscale_whois(ip):
 # ---------- public front door (sharedbox-gate) ----------
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
-SESSION_COOKIE = "__Host-sbgate"
+LEGACY_SESSION_COOKIE = "__Host-sbgate"  # stripped at the proxy boundary; never authenticates requests
 
 
 def public_url(cfg):
     """PUBLIC_URL without a trailing slash, or "" if the gateway is off (or misconfigured)."""
+    if (cfg.get("PUBLIC_MODE") or "").strip().lower() != "cloudflare":
+        return ""
     u = (cfg.get("PUBLIC_URL") or "").strip().rstrip("/")
     return u if re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?", u) else ""
 
 
 def public_mode(cfg):
-    """"" (front door off), "funnel" or "cloudflare". Anything but PUBLIC_MODE=cloudflare is funnel, so
-    configs from before PUBLIC_MODE existed keep working unchanged."""
-    if not public_url(cfg):
-        return ""
-    return "cloudflare" if (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare" else "funnel"
+    """Cloudflare is the only public mode; otherwise public access is disabled."""
+    return "cloudflare" if public_url(cfg) else ""
 
 
 def ssh_host(cfg):
