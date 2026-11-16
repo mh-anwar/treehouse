@@ -101,7 +101,7 @@ DEFAULTS = {
     "ARCHIVE_DAYS": "14",
     # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
     "TUNE_SWAP": "auto",
-    # SOLO=1: a lean server for one person. No trap, no tripwire, no signups/invites (see apply_solo)
+    # SOLO=1: a lean server for one person. No trap, no tripwire, no signups/invites (checked where each is used)
     "SOLO": "0",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
@@ -1216,8 +1216,13 @@ def boost_start(cfg, name, why="", now=None):
     return {"ok": True, "until": until, "error": ""}
 
 
-def boost_end(cfg, name, uid):
-    """Back to the normal limits: drop the runtime drop-ins (the /etc one applies again)."""
+def boost_end(cfg, name, uid, rec=None):
+    """Back to the normal limits. set-property applies them to the running slice right away (removing the drop-in
+    alone may leave the live cgroup at the boosted value), then the runtime drop-ins go so /etc rules again."""
+    lim = user_limits(cfg, rec)
+    subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice",
+                    f"MemoryHigh={lim['MEMORY_HIGH']}", f"MemoryMax={lim['MEMORY_MAX']}"],
+                   capture_output=True, check=False)
     d = os.path.join(RUNTIME_CONTROL, f"user-{uid}.slice.d")
     for prop in ("MemoryHigh", "MemoryMax"):
         try:
@@ -1243,7 +1248,7 @@ def boost_reconcile(cfg, now=None):
             continue
         uid, rec = acct
         if r["until"] <= now:
-            boost_end(cfg, name, uid)
+            boost_end(cfg, name, uid, rec)
             st.pop(name)
             changed = True
             log_event("boost_ended", name)
