@@ -2,8 +2,11 @@
 # Runs as root INSIDE the throwaway container (tests/container/run.sh copies the repo to /src first).
 # Walks the whole life of a box: dry run, install, a friend, idempotent re-install, update from git,
 # uninstall, reinstall. Prints PASS/FAIL per check and exits non-zero if any check failed.
+# With /old present (run.sh FROM=<ref>) the box starts on that older version and the update moves it to /src:
+# the path a live box takes.
 set -uo pipefail
-cd /src
+FIRST=/src; [[ -d /old ]] && FIRST=/old
+cd "$FIRST"
 FAILS=0
 pass() { printf 'PASS %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*"; FAILS=$((FAILS + 1)); }
@@ -97,6 +100,10 @@ check "update.json says done at the new commit" python3 -c "
 import json; d = json.load(open('/var/lib/sharedbox/update.json')); assert d['state'] == 'done' and d['commit'] == '$want', d"
 check "the update reached the installed files" grep -q 'update marker' /usr/share/sharedbox/HELP.md
 check "dashboard answers after the update" wait_web
+check "box status works for alice after the update" runuser -u alice -- box status
+check "alice's key still installed" grep -q alice@example.com /home/alice/.ssh/authorized_keys
+check "units on disk are exactly the shipped ones" sh -c 'for f in /etc/systemd/system/sharedbox-*.service /etc/systemd/system/sharedbox-*.path; do [ -e "/src/systemd/${f##*/}" ] || { echo "left over: $f"; exit 1; }; done'
+check "re-install after the update changes nothing" sh -c 'a=$(sha256sum /etc/sharedbox/sharedbox.conf); /src/install.sh --apply --no-tools >/tmp/install4.log 2>&1 && [ "$a" = "$(sha256sum /etc/sharedbox/sharedbox.conf)" ]'
 check "no failed sharedbox units" no_failed_units
 
 section "uninstall"
