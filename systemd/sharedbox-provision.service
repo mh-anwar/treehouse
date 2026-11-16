@@ -1,5 +1,7 @@
 [Unit]
 Description=sharedbox: process join, admin and shared-server requests
+# started by a path unit once per request burst: a busy agent retrying must never hit the start limit
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
