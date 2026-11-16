@@ -11,6 +11,8 @@ others', verifies the signature against /etc/sharedbox/fed/allowed_signers, and:
   - on every box: authorizes the user's keys from the other boxes in a managed block of their
     ~/.ssh/authorized_keys, writes `Host <box>` blocks and pinned host keys, so `ssh <box>` and
     `box run --anywhere` work as that user with no prompt, in both directions;
+  - on every box: mirrors the teams each peer publishes (`box team`: name, members, home box; no board
+    contents) into local team metadata marked as copies, so `box team` on any box forwards to the team's home;
   - then, as the user, links their T3 Code on each box to the other one (`t3 environment link`), copies the
     GitHub token (long-lived, safe to share) and git identity from the home box. Claude/Codex logins are NOT
     copied (rotating refresh tokens): `box boxes login KEY --on BOX` runs the normal device login there.
@@ -49,6 +51,9 @@ END = "# <<< treehouse boxes <<<"
 KEY_TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa",
              "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
 NAME_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+TEAM_RE = re.compile(r"[a-z][a-z0-9-]{1,30}")  # sbteam.NAME_RE
+MAX_TEAMS = 200
+MAX_MEMBERS = 30
 STATUSES = ("active", "suspended")
 LIMIT_KEYS = ("CPU_WEIGHT", "IO_WEIGHT", "MEMORY_HIGH", "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX",
               "DISK_BUDGET_GB")
@@ -119,8 +124,10 @@ def own_keys(authorized_text):
 
 # ---------- roster ----------
 
-def build_roster(box, box_role, users, serial, now, host_key=""):
-    """users: {name: {uid, status, home, limits, keys}}. Keys are cleaned here; bad entries dropped."""
+def build_roster(box, box_role, users, serial, now, host_key="", teams=None):
+    """users: {name: {uid, status, home, limits, keys}}. Keys are cleaned here; bad entries dropped.
+    teams: this box's team metadata {name: meta} (sbteam.load_metas()), or None to leave "teams" out (a box that
+    couldn't read its teams must not make the others drop their copies)."""
     out = {}
     for name, u in sorted(users.items()):
         if not NAME_RE.fullmatch(name) or not isinstance(u.get("uid"), int):
@@ -129,8 +136,89 @@ def build_roster(box, box_role, users, serial, now, host_key=""):
         lim = {k: str(v) for k, v in (u.get("limits") or {}).items() if k in LIMIT_KEYS and v not in (None, "")}
         out[name] = {"uid": u["uid"], "status": u.get("status") if u.get("status") in STATUSES else "suspended",
                      "home": u.get("home") or box, "limits": lim, "keys": keys}
-    return {"v": 1, "box": box, "role": box_role, "serial": int(serial), "ts": int(now),
-            "host_key": clean_key(host_key) or "", "users": out}
+    doc = {"v": 1, "box": box, "role": box_role, "serial": int(serial), "ts": int(now),
+           "host_key": clean_key(host_key) or "", "users": out}
+    if teams is not None:
+        doc["teams"] = roster_teams(teams, box)
+    return doc
+
+
+# ---------- teams (box team metadata on every box) ----------
+
+def team_entry(meta, home):
+    """The public part of a team's metadata (no board, notes or repo), or None if it doesn't validate."""
+    if not isinstance(meta, dict):
+        return None
+    members = meta.get("members")
+    if not isinstance(members, list) or len(members) > MAX_MEMBERS or \
+            not all(isinstance(m, str) and NAME_RE.fullmatch(m) for m in members):
+        return None
+    by, created = meta.get("created_by"), meta.get("created")
+    return {"members": list(dict.fromkeys(members)), "home": home,
+            "created_by": by if isinstance(by, str) and NAME_RE.fullmatch(by) else "",
+            "created": created if isinstance(created, int) and not isinstance(created, bool) else 0}
+
+
+def roster_teams(metas, box):
+    """The teams this box publishes: the ones whose home is this box (or that predate homes). Copies of other
+    boxes' teams are never passed on: every box hears about a team from its home box only."""
+    out = {}
+    for name, meta in sorted((metas or {}).items()):
+        if len(out) >= MAX_TEAMS:
+            break
+        if not TEAM_RE.fullmatch(name) or not isinstance(meta, dict) or meta.get("mirror") or \
+                meta.get("home") not in (None, "", box):
+            continue
+        e = team_entry(meta, box)
+        if e:
+            out[name] = e
+    return out
+
+
+def plan_teams(rosters, local, me, now):
+    """What this box does to its team metadata to match the peers' rosters. Returns [(action, name, detail)]:
+      mirror   detail = the metadata to write (a copy: "mirror": true, "home": the team's box)
+      drop     detail = the home box that no longer lists it (only copies are ever dropped)
+      conflict detail = why (a local team with that name, or two boxes claiming one name)
+    local: this box's {name: meta} (sbteam.load_metas()). Only fresh rosters that carry "teams" count: a stale
+    roster, or one from a box too old to send teams, changes nothing."""
+    listed, claims = {}, {}
+    for peer, doc in sorted((rosters or {}).items()):
+        if peer == me or not fresh(doc, now) or not isinstance(doc.get("teams"), dict):
+            continue
+        listed[peer] = set()
+        for name, t in sorted(doc["teams"].items())[:MAX_TEAMS]:
+            e = team_entry(t, peer) if TEAM_RE.fullmatch(str(name)) and isinstance(t, dict) and \
+                t.get("home") == peer else None
+            if e:
+                listed[peer].add(name)
+                claims.setdefault(name, []).append((peer, e))
+    out, drops = [], {}
+    for name, cur in sorted(local.items()):
+        if isinstance(cur, dict) and cur.get("mirror") and cur.get("home") in listed and \
+                name not in listed[cur["home"]]:
+            drops[name] = cur["home"]
+    for name, offers in sorted(claims.items()):
+        cur = local.get(name)
+        peers = [p for p, _ in offers]
+        if cur is not None and not (isinstance(cur, dict) and cur.get("mirror")):
+            out.append(("conflict", name, f"a team here is called {name}; {', '.join(peers)} has one too "
+                                          "(this box keeps its own)"))
+            continue
+        home = cur.get("home") if cur else None
+        if cur and home not in listed:  # its home's roster is stale or old: leave the copy as it is
+            if any(p != home for p in peers):
+                out.append(("conflict", name, f"{', '.join(peers)} and {home} both have a team called {name}"))
+            continue
+        owner = home if cur and name not in drops else peers[0]
+        drops.pop(name, None)
+        if len(peers) > 1:
+            out.append(("conflict", name, f"{', '.join(peers)} all have a team called {name}; using {owner}'s"))
+        want = {"name": name, **dict(offers)[owner], "mirror": True}
+        if cur != want:
+            out.append(("mirror", name, want))
+    out += [("drop", name, home) for name, home in sorted(drops.items())]
+    return out
 
 
 def encode(doc):
