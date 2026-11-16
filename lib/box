@@ -1453,10 +1453,35 @@ def t3_do_switch(host, port):
     t3_backup(db, T3_BACKUP)  # restore point includes the old server's final shutdown writes
     sctl("disable", T3_OLD, capture=True)
     sctl("reset-failed", T3_UNIT, capture=True)
-    r = sctl("start", T3_UNIT, capture=True)  # returns once it answers on its port (ExecStartPost), or fails
+    why = t3_start_watch()
+    return why or t3_verify(host, port)
+
+
+T3_START_TIMEOUT = 660  # the unit's TimeoutStartSec (a database migration), plus a minute
+
+
+def t3_start_watch():
+    """Start sb-t3 and wait until it answers (ExecStartPost) or fails. Not a blocking `systemctl start`: when T3
+    crashes on start, that waits for the readiness loop to give up (5 minutes) and, with Restart=always and no start
+    limit, can wait through restarts, all with the old T3 already stopped. Any crash or restart is a failed start."""
+    r = sctl("start", "--no-block", T3_UNIT, capture=True)
     if r.returncode != 0:
         return f"{T3_UNIT} didn't start: {(r.stderr or '').strip()[-300:]}"
-    return t3_verify(host, port)
+    deadline = time.time() + T3_START_TIMEOUT
+    while True:
+        out = sctl("show", T3_UNIT, "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts", "-p", "Result",
+                   "-p", "MainPID", capture=True).stdout or ""
+        p = dict(line.partition("=")[::2] for line in out.splitlines())
+        if p.get("ActiveState") == "active" and p.get("SubState") == "running":
+            return ""
+        # the server gone while the readiness check (ExecStartPost) still loops: systemd would wait that out (5 min)
+        if (p.get("ActiveState") == "failed" or p.get("SubState") == "auto-restart"
+                or (p.get("NRestarts") or "0") not in ("", "0")
+                or (p.get("SubState") == "start-post" and p.get("MainPID") == "0")):
+            return f"{T3_UNIT} didn't start: it crashed ({p.get('Result') or 'failed'}; `box t3 logs` says why)"
+        if time.time() > deadline:
+            return f"{T3_UNIT} didn't start within {T3_START_TIMEOUT // 60} minutes"
+        time.sleep(1)
 
 
 def t3_verify(host, port):
@@ -1474,10 +1499,36 @@ def t3_verify(host, port):
     return ""
 
 
+def t3_db_locks(db, locks="/proc/locks"):
+    """PIDs holding a file lock on the database, its WAL or its shared-memory file. In WAL mode (T3's) every open
+    connection keeps a lock on the -shm file, so this sees a live connection even where /proc/PID/fd can't be read.
+    None if the lock table can't be read."""
+    inodes = set()
+    for ext in ("", "-wal", "-shm"):
+        try:
+            inodes.add(os.stat(db + ext).st_ino)
+        except OSError:
+            pass
+    try:
+        with open(locks) as f:
+            rows = [l.split() for l in f]
+    except OSError:
+        return None
+    out = set()
+    for r in rows:
+        i = 4 if r[1:2] != ["->"] else 5   # "1: POSIX ADVISORY READ PID MAJ:MIN:INODE ..." ("->" marks a waiter)
+        if len(r) > i + 1 and r[i].isdigit() and r[i + 1].rsplit(":", 1)[-1].isdigit() \
+                and int(r[i + 1].rsplit(":", 1)[-1]) in inodes:
+            out.add(r[i])
+    return out
+
+
 def t3_db_holders(db):
     """Database files must be closed before restore, including processes without a listener.
-    An inaccessible fd directory is unknown, so refuse restore rather than risk a live WAL."""
-    holders = []
+    Some of the account's own processes can't be inspected (the user manager's (sd-pam), and from inside a user unit
+    systemd --user itself): those count only if they hold a lock on the database (/proc/locks, see t3_db_locks). If
+    that can't be read either, an uninspectable process is unknown, so refuse restore rather than risk a live WAL."""
+    holders, hidden = [], []
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -1488,7 +1539,7 @@ def t3_db_holders(db):
         except FileNotFoundError:
             continue
         except PermissionError:
-            holders.append(pid + " (cannot inspect)")
+            hidden.append(pid)
             continue
         for fd in fds:
             try:
@@ -1499,8 +1550,11 @@ def t3_db_holders(db):
             except FileNotFoundError:
                 pass
             except PermissionError:
-                holders.append(pid + " (cannot inspect)")
+                hidden.append(pid)
                 break
+    if hidden:
+        locked = t3_db_locks(db)
+        holders += [p + " (cannot inspect)" for p in hidden if locked is None or p in locked]
     return holders
 
 
