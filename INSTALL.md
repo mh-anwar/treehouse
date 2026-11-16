@@ -22,7 +22,8 @@ or a browser click. Keep your messages short and plain.
 Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python3 --version`.
 - If you are **not** on the server (e.g. you're on the owner's laptop), ask for the server's SSH address,
   check `ssh <server> true` works, and run every command below over `ssh <server> '…'`.
-- Supported: Ubuntu 22.04+/Debian 12+ (tested) and Omarchy/Arch (newer, report what breaks). It needs
+- Supported: Ubuntu 24.04+/Debian 13+ (tested in CI) and Omarchy/Arch (newer, report what breaks). Ubuntu 22.04
+  and Debian 12 ship Python 3.10/3.11, which is too old. It needs
   systemd, cgroup v2 (`stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`) and Python ≥ 3.12. If one is
   missing, stop and tell the owner plainly.
 

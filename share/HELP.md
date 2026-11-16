@@ -220,17 +220,18 @@ the box itself, like sudo, the kernel, SSH or the firewall, are still refused). 
 Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2` (or `--hours N`), `box hackathon off`.
 
 @@ boxes
-The owner may have more than one box. The owner's own agents can reach the second box, minastirith (a Dell,
-Tailscale 100.64.0.20), with `ssh minastirith`. It's SLOWER than sietchtabr (i3, 2 cores/4 threads, about 40-45%
-of the CPU power, 16 GB, Wi-Fi), so it's overflow capacity, not a speed-up. Move a job there only when all hold:
-1. sietchtabr is contended: load is above ~6 of 8, or you're near your own limits.
+The owner may have more than one box (BOXES in the box's config). `box boxes` lists them: name, Tailscale IP,
+cores, load, memory, disk, "room", and whether you can log in there (`ssh NAME` then just works). A second box
+is often an older, slower machine (BOX_SPEED says how much slower per core), so treat it as overflow capacity,
+not a speed-up. Move a job there only when all hold:
+1. This box is contended: load is above ~3/4 of its cores, or you're near your own limits.
 2. The job is long (~10+ min here) and self-contained (full test suite, image build, benchmark, crawl, batch job),
    and doesn't need this box's databases, dev servers or files you're editing.
 3. Little to copy: push to git and pull there, or rsync under ~1 GB; install dependencies there instead of
-   copying node_modules or Docker contexts over Wi-Fi.
-4. The other box is free: `ssh minastirith uptime` load below ~3 of 4.
-Otherwise run it here. Never keep the only copy of anything there; results go back
-to git or this box. There you log in as its admin: no sudo or system changes unless the owner asks.
+   copying node_modules or Docker contexts over a slow link.
+4. The other box has room (`box boxes`).
+Otherwise run it here. Never keep the only copy of anything there; results go back to git or this box. There you
+log in as yourself: no sudo or system changes unless the owner asks.
 Tools for this: `box boxes` shows each box's load and whether you can log in there. `box run -- CMD` runs a
 heavy command wherever there's most room, and runs it here when no other box clearly wins or one is down. It
 copies only changed source files to a kept copy over there, streams the output back and returns the exit code.
@@ -238,8 +239,8 @@ copies only changed source files to a kept copy over there, streams the output b
 `playwright test --shard=$((BOX_SHARD+1))/$BOX_SHARDS`). Add `--prep "npm ci"` to install dependencies there
 (this only re-runs when lockfiles change) and `--back DIR` to copy results back.
 Friends have the same account (same name, files limits and port block) on every box, made automatically:
-`ssh minastirith` just works (its own key, no prompt), and the T3 Code on each box is linked into the other,
-so the human can start a thread "on minastirith" from their usual T3. GitHub and git identity are copied over.
+`ssh NAME` just works (its own key, no prompt), and the T3 Code on each box is linked into the other,
+so the human can start a thread "on NAME" from their usual T3. GitHub and git identity are copied over.
 Claude/Codex logins are not (copying them breaks both): `box boxes setup` lists what's missing, then
-`box boxes login claude --on minastirith` prints a link (and for Claude asks for the code back with `--code X`).
+`box boxes login claude --on NAME` prints a link (and for Claude asks for the code back with `--code X`).
 The human only clicks the link. Files are NOT shared between boxes: push to git, or use `box run`.

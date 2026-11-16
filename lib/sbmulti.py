@@ -54,7 +54,7 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # ---------- load ----------
 
 def speeds(cfg):
-    """BOX_SPEED="minastirith=0.45 ..." (optional): per-core speed relative to 1.0, so an old i3 doesn't look
+    """BOX_SPEED="oldbox=0.45 ..." (optional): per-core speed relative to 1.0, so an old i3 doesn't look
     as roomy as its idle cores suggest. Unknown/bad entries -> 1.0."""
     out = {}
     for item in re.split(r"[\s,]+", str(cfg.get("BOX_SPEED") or "")):

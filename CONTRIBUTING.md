@@ -1,6 +1,6 @@
-# Contributing to sharedbox
+# Contributing to treehouse
 
-Thanks for helping! sharedbox is deliberately boring tech: stdlib Python 3.12+, bash and systemd.
+Thanks for helping! treehouse (its commands and paths still say sharedbox) is deliberately boring tech: stdlib Python 3.12+, bash and systemd.
 No build step, no dependencies to install.
 
 ## Ground rules
@@ -27,8 +27,9 @@ sudo ./install.sh            # dry run: read what it would do
 tests/container/run.sh       # install, update and uninstall in throwaway Ubuntu 24.04 + Debian 13 containers
 ```
 
-Then test on a throwaway VM (Ubuntu 24.04 or Arch/Omarchy) with `--apply`, and walk through the
-join page with a second Tailscale account.
+`tests/container/run.sh` installs, updates and uninstalls in throwaway Ubuntu and Debian containers (rootless
+Docker or Podman); `FROM=<older commit>` starts on an older version first. For Arch/Omarchy, or anything about
+Tailscale or Cloudflare logins, test on a throwaway VM and walk through the flow with a second account.
 
 ## Commits and PRs
 

@@ -9,7 +9,7 @@ others', verifies the signature against /etc/sharedbox/fed/allowed_signers, and:
   - on a secondary: creates missing accounts with the SAME uid/gid (so the same port block, file owners and
     limits), resumes/suspends them to match, never deletes a home (removed upstream = suspended here);
   - on every box: authorizes the user's keys from the other boxes in a managed block of their
-    ~/.ssh/authorized_keys, writes `Host <box>` blocks and pinned host keys, so `ssh minastirith` and
+    ~/.ssh/authorized_keys, writes `Host <box>` blocks and pinned host keys, so `ssh <box>` and
     `box run --anywhere` work as that user with no prompt, in both directions;
   - then, as the user, links their T3 Code on each box to the other one (`t3 environment link`), copies the
     GitHub token (long-lived, safe to share) and git identity from the home box. Claude/Codex logins are NOT
