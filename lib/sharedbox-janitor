@@ -134,8 +134,23 @@ def t3_running(uid):
     return False
 
 
+def heal_provision():
+    """If the request handler's path unit ever ends up failed (it once hit systemd's start limit under a burst of
+    retries), nothing on the box answers joins, logins or `box shared` until root resets it: do that here."""
+    for unit in ("sharedbox-provision.service", "sharedbox-provision.path"):
+        r = subprocess.run(["systemctl", "is-failed", "--quiet", unit], check=False)
+        if r.returncode == 0:
+            subprocess.run(["systemctl", "reset-failed", unit], check=False)
+            sb.log_event("self_heal", None, unit=unit)
+    subprocess.run(["systemctl", "start", "sharedbox-provision.path"], check=False)
+
+
 def cmd_tick(cfg, a):
     if not a.dry_run:
+        try:
+            heal_provision()
+        except Exception as e:  # noqa: BLE001
+            print(f"heal provision: {e!r}", file=sys.stderr)
         for what, fn in (("hackathon reconcile", sb.hackathon_reconcile), ("boosts", sb.boost_reconcile)):
             try:
                 done = fn(cfg)
