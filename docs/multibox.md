@@ -182,6 +182,9 @@ run` mirrors are caches.
 
 ## Next
 
+**Team metadata on every box.** `box team` forwards to a team's home box, but only when this box has the
+team's metadata. Publishing team metadata in the federation roster would make a team usable from any box.
+
 **Placement of new agents.** Keep it in T3:
 - Give every user's T3 a home box chosen at invite time by memory headroom (`box boxes --json`). Set it via the
   gate's existing `backend_for()` hook (`rec["box"]`), so the public URL stays the same.
