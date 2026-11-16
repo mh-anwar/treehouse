@@ -5,6 +5,7 @@
 #
 #   tests/container/run.sh                     Ubuntu 24.04 and Debian 13
 #   tests/container/run.sh ubuntu:24.04        one image
+#   FROM=v1 tests/container/run.sh             start on an older commit, then update to this tree (a live box's path)
 #   KEEP=1 tests/container/run.sh ...          leave the container running to poke at (docker exec -it ...)
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -26,6 +27,10 @@ for base in "${BASES[@]}"; do
     done
     # the committed tree plus uncommitted edits, without .git or ignored files
     (cd "$REPO" && git ls-files -co --exclude-standard -z | tar --null -T - -cf -) | "$ENGINE" exec -i "$name" sh -c 'mkdir -p /src && tar -x -C /src'
+    if [[ -n ${FROM:-} ]]; then
+        (cd "$REPO" && git archive "$FROM") | "$ENGINE" exec -i "$name" sh -c 'mkdir -p /old && tar -x -C /old' \
+            || { echo "can't export $FROM"; rc=1; }
+    fi
     "$ENGINE" exec "$name" bash /src/tests/container/inside.sh || rc=1
     if [[ -n ${KEEP:-} ]]; then echo "kept: $ENGINE exec -it $name bash"; else "$ENGINE" rm -f "$name" >/dev/null; fi
 done
