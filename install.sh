@@ -98,7 +98,7 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap sharedbox-update \
          sharedbox-canary sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -113,6 +113,10 @@ do_ rm -rf "$SHARE/skills"
 do_ cp -r "$SRC/share/skills" "$SHARE/skills"   # the shared skill catalog (`box skills`)
 do_ chmod -R u=rwX,go=rX "$SHARE/skills"
 do_ install -m 644 "$SRC/share/profile.sh" /etc/profile.d/sharedbox.sh
+do_ rm -rf "$SHARE/team"
+do_ cp -r "$SRC/share/team" "$SHARE/team"   # team mode: crew prompts (`box team crew`)
+do_ chmod -R u=rwX,go=rX "$SHARE/team"
+do_ install -d -m 711 /srv/teams              # team mode: root creates /srv/teams/NAME (member ACLs)
 # box tuning (etc/sysctl-*.conf, `sharedbox-tune`): additive, applied live, nothing restarted. `box tune` checks it.
 for f in "$SRC"/etc/sysctl-*.conf; do
     n=$(basename "$f" .conf); do_ install -m 644 "$f" "/etc/sysctl.d/60-sharedbox-${n#sysctl-}.conf"
