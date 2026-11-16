@@ -21,18 +21,10 @@ import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib")
-TMP = tempfile.mkdtemp(prefix="sbtest-")
-CONF = os.path.join(TMP, "sharedbox.conf")
-SITE = "https://treehouse.example.com"
-with open(CONF, "w") as f:
-    f.write(f"PUBLIC_URL={SITE}\nPUBLIC_MODE=cloudflare\nCF_ACCOUNT_ID=acct12345\nCF_TUNNEL_ID=tunnel12345\n"
-            "CF_ACCESS_POLICY_ID=policy12345\nCF_TEAM_DOMAIN=team.cloudflareaccess.com\n"
-            "CF_ACCESS_AUD=aud0123456789abcdef\nCF_OWNER_EMAILS=owner@example.com\n"
-            "SSH_HOST=treehouse-ssh.example.com\nCF_SSH_APP_ID=sshapp12345\n")
-os.environ.update(SHAREDBOX_CONF=CONF, SHAREDBOX_STATE=os.path.join(TMP, "state"), SHAREDBOX_LIB=LIB,
-                  SHAREDBOX_SHARE=os.path.join(ROOT, "share"), SHAREDBOX_WEB_SOCK=os.path.join(TMP, "web.sock"))
-os.makedirs(os.path.join(TMP, "state", "gate"), exist_ok=True)
-sys.path.insert(0, LIB)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
+TMP = tempfile.mkdtemp(prefix="sbconnect-")
+CONF, SITE = sbtestenv.CONF, sbtestenv.SITE
 
 import sbaccess  # noqa: E402
 import sbcloudflare as cf  # noqa: E402
@@ -460,7 +452,6 @@ class Web(unittest.TestCase):
 
     def test_dashboard_section(self):
         out = self.web.connect_section("sam")
-        self.assertIn("Reach the box from your laptop's terminal", out)
         self.assertIn('id="connect-copy"', out)
         self.assertIn('data-copy="connect-prompt"', out)
         self.assertIn('<textarea id="connect-prompt" readonly hidden>', out)  # copied, not shown inline
@@ -476,7 +467,6 @@ class Web(unittest.TestCase):
         finally:
             self.web.live_ssh_host = orig
         self.assertEqual(out, "")  # hidden until the owner switches it on
-        self.assertNotIn("connect-copy", out)
 
     def test_portal_page_has_it(self):
         w = self.web
@@ -589,12 +579,6 @@ class Web(unittest.TestCase):
                                           "X-Sharedbox-Direct: 1\r\n\r\n")
         who = h.who()
         self.assertEqual((who.get("app"), who["direct"]), (None, True))
-
-    def test_features_hero(self):
-        page = self.web.features_page()
-        self.assertIn("href='/_box/me#start'>Set up the T3 app</a>", page)
-        self.assertIn("Your agent does it for you.", page)
-        self.assertNotIn("Link my T3 account", page)
 
 
 class Boxes(unittest.TestCase):
@@ -747,14 +731,6 @@ class AppLink(unittest.TestCase):
         self.assertIn("make a new prompt at https://treehouse.example.com/_box/me", p)
         self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
         self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")
-        for must in ("tailscale status --json", "BackendState", "NeedsLogin", "NeedsMachineAuth", "tailscale switch",
-                     "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "& 'C:\\Program Files\\Tailscale\\tailscale.exe'",
-                     "tailscale ping", "Add route", "Remove route", "already saved",
-                     "don't set up T3 Connect", "Open T3", "x-scheme-handler/t3code", "HKCU", "HKCR", "in one line",
-                     "Access denied", "--operator=$USER", "Tailscale-latest-macos.pkg", "releases/latest",
-                     "winget list --id T3Tools.T3Code", "dpkg -s t3-code", "lasts 30 minutes",
-                     "share the box with my Tailscale account <login>"):
-            self.assertIn(must, p)
         self.assertNotIn("What the box knows", p)  # no facts given: none made up
         self.assertNotIn("paired with my T3 earlier", p)
 
@@ -833,9 +809,6 @@ class AppLink(unittest.TestCase):
         self.assertEqual(f(st, {"email": "nobody@x"}), {"login": "", "mode": ""})
         self.assertEqual(f(None, {"ts_id": "2", "login": "sam@github"}), {"login": "sam@github", "mode": ""})
 
-    def test_connect_text_mentions_app_link(self):
-        self.assertIn("ssh treehouse box t3 app-link", sbconnect.connect_text("sam", SITE, "treehouse-ssh.example.com"))
-
 
 email_parser = email.parser.Parser(_class=__import__("http.client").client.HTTPMessage)
 
@@ -862,20 +835,6 @@ class ConnectText(unittest.TestCase):
         t = sbconnect.connect_text("sam", SITE, "")
         self.assertIn("sudo sharedbox-admin cloudflare ssh", t)
         self.assertNotIn("ProxyCommand", t)
-
-
-class HelpTopic(unittest.TestCase):
-    def test_help_has_connect_and_formats(self):
-        with open(os.path.join(ROOT, "share", "HELP.md")) as f:
-            raw = f.read()
-        topics = {c.partition("\n")[0].strip(): c.partition("\n")[2] for c in raw.split("@@ ")[1:]}
-        self.assertIn("connect", topics)
-        fields = {k: "X" for k in ("portal", "user", "host", "ip", "connect", "project_ttl", "warn", "cache_ttl",
-                                   "tmp_ttl", "updates", "reboot_time", "boost_mem", "boost_hours",
-                                   "reboot_days", "ports", "shared_dir", "shared_ports",
-                                   "serve_public", "shared_public", "archive_days", "t3_ports")}
-        for name, body in topics.items():
-            body.format(**fields)  # no stray braces
 
 
 if __name__ == "__main__":

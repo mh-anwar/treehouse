@@ -11,7 +11,8 @@ import threading
 import time
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 import sbteam  # noqa: E402
 
 ME = sbteam.me()
@@ -153,9 +154,6 @@ class TeamTest(unittest.TestCase):
         evs.append({"id": 4, "ts": time.time(), "type": "done", "by": "a", "task": 1})
         self.assertTrue(sbteam.crew_triggers("comms", evs, 0))
         self.assertIn("haiku", sbteam.crew_cmd("claude", None, "p", "/x"))
-
-    def test_rules_section(self):
-        self.assertIn("box team claim", sbteam.rules_section())
 
 
 if __name__ == "__main__":

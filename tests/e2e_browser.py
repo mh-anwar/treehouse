@@ -167,7 +167,6 @@ for i in range(7 * 288, 0, -1):
                              "disk_free_b": 300 * 2**30, "temp": 55, "users": users}))
 write("health/metrics.jsonl", "\n".join(lines) + "\n")
 write("update.json", {"state": "done", "finished": NOW - 7200, "commit": "abc1234", "subject": "Fix things"})
-write("balance.json", {"cpu_busy": False, "mem_tight": False})
 write("usage.json", {"generated": NOW - 600, "users": {
     "alice": {"disk": 3 * 2**30, "budget": 40 * 2**30, "projects": 4, "services": [{"name": "blog", "state": "running"}],
               "pending_deletions": ["old-site"], "archives": [{"name": "toy", "until": NOW + 5 * 86400}]},
