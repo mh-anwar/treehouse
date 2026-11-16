@@ -224,7 +224,7 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
 
 @@ hackathon
 Hackathon mode = develop freely until a set time. `box status` shows a line while it's on; `box hackathon` shows
-the state. While on: the decoy-port trap and the decoy-secrets tripwire are off (so ports like 5432, 6379, 8080 are free for real servers), and package requests from the owner
+the state. While on: package requests from the owner
 and the listed friends install without the deny list, the size cap or the daily limit (packages that could break
 the box itself, like sudo, the kernel, SSH or the firewall, are still refused). It ends by itself at its end time.
 Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2` (or `--hours N`), `box hackathon off`.

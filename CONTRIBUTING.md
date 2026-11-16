@@ -33,7 +33,7 @@ join page with a second Tailscale account.
 ## Commits and PRs
 
 - One logical change per commit, with the subject prefixed by area: `web:`, `box:`, `admin:`,
-  `janitor:`, `tools:`, `install:`, `tripwire:`, `rules:`, `docs:`.
+  `janitor:`, `tools:`, `install:`, `rules:`, `docs:`.
 - Say in the PR what you tested and on which distro.
 
 ## The design rule: agents do the work

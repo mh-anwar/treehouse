@@ -113,8 +113,7 @@ def valid_reply(rep):
             and _rows(rep.get("projects"), {"name": is_str})
             and _rows(rep.get("services", []), {"name": is_str, "state": is_str})
             and _rows(rep.get("archived", []), {"name": is_str, "path": is_str, "bytes": _is_int})
-            and _rows(rep.get("archives", []), {"name": is_str, "until": _is_int})
-            and isinstance(rep.get("t3_stopped", False), bool))
+            and _rows(rep.get("archives", []), {"name": is_str, "until": _is_int}))
 
 
 # ---------- tick (every 10 minutes) ----------

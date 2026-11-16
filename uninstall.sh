@@ -21,6 +21,10 @@ if [[ ${#UNITS[@]} -gt 0 ]]; then
     for u in "${UNITS[@]}"; do [[ $u == *.timer || $u == *.path ]] || systemctl disable --now "$u" 2>/dev/null; done
 fi
 true
+# files of retired features (decoy-port trap, canary tripwire): only the canary's own unchanged decoys
+python3 -I "$(dirname "$0")/lib/sbretired.py" /etc/sharedbox/sharedbox.conf /var/lib/sharedbox || true
+rm -rf /var/lib/sharedbox/trap /var/lib/sharedbox/alerts
+rm -f /var/lib/sharedbox/canary.jsonl /var/lib/sharedbox/canary-planted.json
 # shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
 for u in /etc/systemd/system/sb-shared-*.service; do
     [[ -e $u ]] && systemctl disable --now "$(basename "$u")" 2>/dev/null || true
