@@ -2837,6 +2837,15 @@ def fed_init(cfg, a=None):
              "-f", FED_KEY])
     if not os.path.exists(FED_SIGNERS):
         sbfed.write_private(FED_SIGNERS, "")
+    pub = os.path.join(sb.STATE_DIR, "fed", "box_key.pub")  # public half, for the peers' first-sync pinning
+    os.makedirs(os.path.dirname(pub), mode=0o755, exist_ok=True)
+    with open(FED_KEY + ".pub") as f:
+        data = f.read()
+    tmp = pub + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(data)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, pub)
     if a is not None:
         fed_key(cfg, a)
 
@@ -2869,6 +2878,24 @@ def fed_trust(cfg, a):
     sbfed.write_private(FED_SIGNERS, "\n".join(keep + [line]) + "\n", mode=0o600)
     sb.log_event("fed_trust", None, box=name)
     print(f"trusting {name}'s roster")
+
+
+def fed_autotrust(cfg, boxes, me, st):
+    """First contact with a box listed in BOXES (root config) pins its signing key, fetched over Tailscale
+    (WireGuard already authenticates which machine owns that IP). Pinned keys are never replaced automatically:
+    a changed key is logged and needs `sharedbox-admin fed-trust` by hand."""
+    have = {ln.split()[0] for ln in open(FED_SIGNERS).read().splitlines() if ln.strip()}
+    for name, ip in boxes.items():
+        if name == me or name in have:
+            continue
+        key = sbfed.fetch_key(ip, cfg["WEB_PORT"])
+        line = sbfed.signer_line(name, key or "")
+        if not line:
+            continue  # not reachable yet or an older version: try again next sync
+        with open(FED_SIGNERS, "a") as f:
+            f.write(line + "\n")
+        sb.log_event("fed_trust", None, box=name, how="first contact")
+        fed_log(st, f"trusting {name}'s roster (first contact, key {sbfed.key_id(key)[:60]}...)")
 
 
 def fed_state():
@@ -2964,6 +2991,7 @@ def fed_sync(cfg, a=None):
         print(f"fed-sync: this box ({me}) isn't in BOXES", file=sys.stderr)
         return
     st = fed_state()
+    fed_autotrust(cfg, boxes, me, st)
     friends = sb.friend_users()
     # 1. this box's roster: each account's box-to-box key (made on first use) and, on its home box, the
     #    keys the user added themselves (their laptop)

@@ -194,3 +194,10 @@ already carries the user's identity, so the board needs no new auth or HTTP API.
 **Later**: `box run --anywhere` for Docker builds (send build context through the mirror and use the far
 side's layer cache). Teach `box heavy` to suggest `box run --anywhere` when it would queue for more than
 a minute and another box has room.
+
+### Key exchange is automatic (2026-11-15)
+Each box serves its public roster-signing key at `/api/peer/key` to the boxes in its BOXES (root config) only.
+On its first `fed-sync`, a box pins the key of every BOXES peer it doesn't trust yet (trust on first contact
+over Tailscale, which authenticates which machine owns an IP). Pinned keys are never replaced automatically; a
+changed key is logged in `fed-status` and needs `sharedbox-admin fed-trust '<line>'` by hand. The manual
+fed-key / fed-trust steps above are only needed for that case. Still set `BOX_ROLE=secondary` on secondaries.

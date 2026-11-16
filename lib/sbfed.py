@@ -330,6 +330,15 @@ def signer_line(name, pubkey):
     return f'{name} namespaces="{NAMESPACE}" {key_id(k)}'
 
 
+def fetch_key(ip, port, timeout=5):
+    """The peer's public roster-signing key (served to boxes in BOXES only), or None."""
+    try:
+        with _OPENER.open(f"http://{ip}:{port}/api/peer/key", timeout=timeout) as r:
+            return clean_key(r.read(4096).decode("ascii", "replace"))
+    except Exception:  # noqa: BLE001 - refused, timeout, old version
+        return None
+
+
 def fetch(ip, port, timeout=5):
     try:
         with _OPENER.open(f"http://{ip}:{port}/api/peer/roster", timeout=timeout) as r:
