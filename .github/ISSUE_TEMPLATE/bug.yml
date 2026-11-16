@@ -9,6 +9,21 @@ body:
       placeholder: Ubuntu 24.04 / Omarchy 3.x / Arch
     validations:
       required: true
+  - type: input
+    id: version
+    attributes:
+      label: treehouse version
+      description: Run `git log -1 --oneline` in the folder you installed from, or give the date you installed or last updated.
+    validations:
+      required: true
+  - type: dropdown
+    id: access
+    attributes:
+      label: How do friends connect?
+      options:
+        - Cloudflare sign-in page
+        - Tailscale only
+        - Not set up yet
   - type: textarea
     id: what
     attributes:

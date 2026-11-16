@@ -40,11 +40,14 @@ do_() {
 
 # ---------- preflight (read-only) ----------
 say "preflight"
-[[ $EUID == 0 ]] || { echo "run with sudo" >&2; exit 1; }
-command -v systemctl >/dev/null || { echo "systemd required" >&2; exit 1; }
+[[ $EUID == 0 ]] || { echo "run it with sudo: sudo ./install.sh" >&2; exit 1; }
+command -v systemctl >/dev/null || { echo "treehouse needs systemd, which this system doesn't use. Ubuntu 24.04 or Debian 13 have it." >&2; exit 1; }
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' \
-    || { echo "python >= 3.12 required" >&2; exit 1; }
-[[ $(stat -fc %T /sys/fs/cgroup) == cgroup2fs ]] || { echo "cgroup v2 required" >&2; exit 1; }
+    || { echo "treehouse needs Python 3.12 or newer and this system has $(python3 -V 2>&1 || echo none). Ubuntu 22.04 and Debian 12 are too old: upgrade to Ubuntu 24.04 or Debian 13 first." >&2; exit 1; }
+[[ $(stat -fc %T /sys/fs/cgroup) == cgroup2fs ]] || { echo "treehouse needs cgroup v2 (how Linux limits each account's memory). Ubuntu 22.04+ and Debian 11+ use it by default; something on this machine turned it off (look for systemd.unified_cgroup_hierarchy=0 on the kernel command line)." >&2; exit 1; }
+# hardware: a 32-bit PC stops here (the agents can't run); small RAM, a full or spinning disk, a laptop: notes
+PF=0; python3 -I "$SRC/lib/sharedbox-tune" preflight || PF=$?
+[[ $PF != 3 ]] || exit 1
 # distro: debian (apt) | arch (pacman) | unknown. Prints what it found + missing tools with the install command.
 DISTRO_FAMILY=unknown
 eval "$(python3 -I "$SRC/lib/sbdistro.py" shell)"
@@ -125,6 +128,9 @@ do_ sh -c "modprobe tcp_bbr 2>/dev/null; for f in /etc/sysctl.d/60-sharedbox-*.c
 if [[ ! -e $ETC/sharedbox.conf ]]; then
     do_ install -m 644 "$SRC/etc/sharedbox.conf" "$ETC/sharedbox.conf"
     if [[ -n $ADMINS ]]; then do_ sed -i "s/^ADMIN_USERS=.*/ADMIN_USERS=$ADMINS/" "$ETC/sharedbox.conf"; fi
+    # less than 20 GB of RAM: per-account limits that fit this machine (still the same for everyone)
+    do_ env SHAREDBOX_CONF="$ETC/sharedbox.conf" SHAREDBOX_LIB="$SRC/lib" PYTHONDONTWRITEBYTECODE=1 python3 -I "$SRC/lib/sharedbox-tune" fit-limits
+    do_ touch "$ETC/.v2-limits"   # a new conf already has the v2 limits; the one-time migration below must not reset them
 else
     say "keeping existing $ETC/sharedbox.conf (new settings use built-in defaults; see $SRC/etc/sharedbox.conf)"
     # v2 (2026-11): equal limits, no naps/throttles, 20-day archive. Old boxes wrote the v1 numbers into the conf

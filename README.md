@@ -55,6 +55,8 @@ sudo bash /usr/share/sharedbox/cloudflare-setup.sh   # optional: the public sign
 box invite --email friend@example.com
 ```
 
+An old PC or laptop works. The dry run says what to expect from its RAM and disk, and the installer turns off sleep and lid-close suspend so the machine stays reachable (`TUNE_KEEP_AWAKE=0` in the config keeps your sleep settings). The coding agents need a 64-bit CPU.
+
 The installer is safe to re-run on a live machine. It does not touch sshd, tailscaled, the firewall or networking, and it never reboots. It does reset every account's limits to the values in the config. `./uninstall.sh` removes treehouse and keeps accounts and files.
 
 Commands, paths and services still use the name sharedbox (`sharedbox-admin`, `/etc/sharedbox`).
@@ -88,7 +90,7 @@ Default limits per account:
 | Disk | 40G budget, soft | janitor |
 | Processes | 2048 | `TasksMax` |
 
-Change them in `/etc/sharedbox/sharedbox.conf` (each setting is documented there), or for one person with `sharedbox-admin limits NAME KEY=VALUE`.
+On a machine with less than 20 GB of RAM, a new install sets the RAM limits to 70% and 80% of what the machine has (5G and 6G on 8 GB). Change them in `/etc/sharedbox/sharedbox.conf` (each setting is documented there), or for one person with `sharedbox-admin limits NAME KEY=VALUE`.
 
 The janitor runs every 6 hours and does its cleanup as the user. It removes cache entries unused for 30 days, and build outputs (`node_modules`, `.venv`, `target`) only when someone is over their disk budget. A project (a git repo directly in a home folder) is archived after 20 days untouched, and only if everything in it is pushed. `box restore NAME` brings it back within 14 days. `~/services`, `~/keep` and dotfiles are never touched. Below 20% free disk the time limits halve, and below 10% caches are wiped.
 

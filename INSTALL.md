@@ -64,8 +64,13 @@ sudo ./install.sh            # dry run
 Summarize what the dry run will do in 5–8 plain bullets (accounts and groups it creates, services,
 limits, cleanup policy). Mention the parts that matter on a machine already in use: the janitor
 archives git projects untouched for 20 days in *friends'* homes, and only once they're fully pushed (restorable
-for 14 days); every account, the owner's included, gets the same limits (16 GB RAM, no CPU cap); and the scheduled reboot is twice a week (Wed and Sun at 04:00; it waits up to 2
-hours for agents that are mid-turn). Then ask for the OK, and run:
+for 14 days); every account, the owner's included, gets the same limits (16 GB RAM, no CPU cap; on a machine
+with less than 20 GB the installer scales that to 70% of its RAM); the machine stops going to sleep, so a
+laptop keeps running with the lid closed (`TUNE_KEEP_AWAKE=0` in the config undoes it); and the scheduled reboot
+is twice a week (Wed and Sun at 04:00; it waits up to 2 hours for agents that are mid-turn). The dry run's
+preflight also prints notes about the hardware (little RAM or disk, a spinning disk, Wi-Fi only). Pass them on
+in plain words. A line starting with STOP means the coding agents can't run on this machine (a 32-bit PC), so
+stop there and tell the owner. Then ask for the OK, and run:
 ```
 sudo ./install.sh --apply --admins <admins> [--mail-to <email>]
 ```
@@ -140,7 +145,10 @@ Then make the machine itself efficient: run `box tune`. Everything under "should
 must be fixed now (re-run the installer; if a setting won't stick, find what overrides it). Read the
 "for the owner" items and `box help tune`, look for more on this particular machine (it may be a laptop or a
 desktop with leftovers a server doesn't need), and tell the owner in plain words what you'd change and what it
-would cost them. Never turn off a service yourself. Anything that would help every treehouse box goes back
+would cost them. Never turn off a service yourself. On an old PC, also tell the owner about one setting only
+they can change: most BIOS/UEFI setups have an option like "Restore on AC power loss" or "After power failure:
+Power on". With it on, the machine starts by itself after a power cut instead of staying off until someone presses
+the button. Anything that would help every treehouse box goes back
 into treehouse (see "Making boxes efficient" in CLAUDE.md).
 
 ## 7. Invite the first friend
