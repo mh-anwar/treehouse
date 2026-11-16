@@ -56,7 +56,8 @@ elif args[:1] == ["__service-preflight"]:
 elif args[:1] in (["serve"], ["__service-launcher"]):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     db = os.path.join(HOME, "userdata", "statev2.sqlite")
-    con = sqlite3.connect(db)   # held open while serving, like the real server
+    con = sqlite3.connect(db)   # held open while serving, in WAL mode, like the real server
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute("CREATE TABLE IF NOT EXISTS effect_sql_migrations (migration_id INTEGER)")
     if (con.execute("SELECT max(migration_id) FROM effect_sql_migrations").fetchone()[0] or 0) < MIGRATION[VERSION]:
         con.execute("INSERT INTO effect_sql_migrations VALUES (?)", (MIGRATION[VERSION],))

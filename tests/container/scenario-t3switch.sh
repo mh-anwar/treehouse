@@ -68,7 +68,7 @@ INSERT INTO orchestration_v2_projection_runs VALUES ('old', 'completed', '2026-0
 con.commit()
 PY
 EOF
-check "the owner's systemd --user is up" wait_for 30 test -S /run/user/$OUID/bus
+check "the owner's systemd --user is up" wait_for 30 test -S /run/user/$OUID/systemd/private
 ou() { as_user owner "$@"; }
 octl() { ou systemctl --user "$@"; }
 octl daemon-reload

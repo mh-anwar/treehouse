@@ -43,8 +43,7 @@ as_login() { local u=$1; shift; runuser -l "$u" -c "$*"; }
 # a command as a user with their systemd --user manager reachable (systemctl --user, systemd-run --user)
 as_user() {
     local u=$1 uid; shift; uid=$(id -u "$u")
-    runuser -u "$u" -- env HOME="$(getent passwd "$u" | cut -d: -f6)" XDG_RUNTIME_DIR=/run/user/$uid \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus "$@"
+    runuser -u "$u" -- env HOME="$(getent passwd "$u" | cut -d: -f6)" XDG_RUNTIME_DIR=/run/user/$uid "$@"
 }
 wait_for() {  # SECONDS CMD...: until CMD succeeds
     local n=$1; shift
