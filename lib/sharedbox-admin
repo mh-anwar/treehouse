@@ -496,7 +496,9 @@ def process_shared_drop(cfg):
     _secure_dir(sb.SHARED_REPLIES, 0o711)
     allowed = shared_uids(cfg)
     owner = sb.owner_account(cfg)
-    boosters = dict(allowed, **({owner.pw_uid: owner.pw_name} if owner else {}))  # `box boost` from any account
+    boosters = dict(allowed)  # `box boost` from any account, the owner included
+    if owner:
+        boosters[owner.pw_uid] = owner.pw_name
     for path in drop_entries(sb.SHARED_DROP):
         rid = os.path.basename(path)[:-5]
         try:

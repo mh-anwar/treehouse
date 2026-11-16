@@ -29,5 +29,26 @@ class DropEntries(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(d)), ["ok.json"])  # nothing left to re-trigger the path unit
 
 
+class SharedDropRuns(unittest.TestCase):
+    def test_process_shared_drop_survives_owner_boosters(self):
+        """It once crashed on every run (dict(**{uid: name})), so `box shared`/`box boost` requests piled up."""
+        d = tempfile.mkdtemp()
+        old = (admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES)
+        admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES = os.path.join(d, "drop"), os.path.join(d, "replies")
+        real = (admin._secure_dir, admin.shared_uids, admin.sb.owner_account)
+        try:
+            admin._secure_dir = lambda path, mode: os.makedirs(path, exist_ok=True)
+            admin.shared_uids = lambda cfg: {os.getuid() + 1: "friend"}
+            admin.sb.owner_account = lambda cfg: type("pw", (), {"pw_uid": os.getuid() + 2, "pw_name": "owner"})()
+            os.makedirs(admin.sb.SHARED_DROP)
+            with open(os.path.join(admin.sb.SHARED_DROP, "abc.json"), "w") as f:
+                f.write("{}")
+            admin.process_shared_drop({})  # must not raise
+            self.assertEqual(os.listdir(admin.sb.SHARED_DROP), [])  # consumed (refused: not a known uid)
+        finally:
+            admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES = old
+            admin._secure_dir, admin.shared_uids, admin.sb.owner_account = real
+
+
 if __name__ == "__main__":
     unittest.main()
