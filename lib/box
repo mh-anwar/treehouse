@@ -23,7 +23,6 @@
 """
 
 import argparse
-import calendar
 import fcntl
 import json
 import os
@@ -171,7 +170,7 @@ def advice(g):
     used = live.get("mem_used") if live.get("mem_used") is not None else live.get("mem", 0)
     if live.get("mem_high") and used > 0.85 * live["mem_high"]:
         out.append("You are close to your RAM limit. If the work really needs more, run `box boost` (more RAM for a "
-                   f"few hours) and tell the user in a line.")
+                   "few hours) and tell the user in a line.")
     boost = sb.boosts().get(ME.pw_name)
     if boost:
         out.append(f"Memory boost on until {fmt_ts(boost)} ({CFG['BOOST_MEMORY']} RAM).")
