@@ -247,7 +247,8 @@ def rsync_argv(root, is_git, dest, rel, with_git=False):
     """rsync the project to dest:~/rel. Git projects: .gitignore files are the filter (dir-merge, so nested ones
     count) and --delete removes what was deleted here; ignored things on the far side (its node_modules, build
     outputs) are excluded and so never deleted. -z: the boxes may talk over Wi-Fi."""
-    argv = ["rsync", "-az", "--delete", "--mkpath", "-e", shlex.join(["ssh", *SSH_OPTS])]
+    remote = f"mkdir -p ~/.sharedbox/mirror; flock -s ~/{shlex.quote(rel)}.lock sh -c {shlex.quote('touch ~/' + shlex.quote(rel) + '.lock; exec rsync "$@"')} sh"
+    argv = ["rsync", "--rsync-path", remote, "-az", "--delete", "--mkpath", "-e", shlex.join(["ssh", *SSH_OPTS])]
     if is_git:
         argv += ["--filter=:- .gitignore"]
         if not with_git:
@@ -276,7 +277,8 @@ def remote_script(rel, sub, cmd, env=None, prep="", key=""):
     q = shlex.quote
     envs = " ".join(f"{k}={q(str(v))}" for k, v in (env or {}).items())
     where = rel if sub in ("", ".") else f"{rel}/{sub}"
-    lines = [f"cd ~/{q(where)} || exit 97"]
+    lines = [f"exec 9>~/{q(rel)}.lock", "flock -s 9 || exit 97",
+             f"touch ~/{q(rel)}.lock", f"cd ~/{q(where)} || exit 97"]
     if prep:
         lines += [f'if [ "$(cat ~/{q(rel)}.prep 2>/dev/null)" != {q(key)} ]; then',
                   f"  echo {q('box run: preparing (' + prep[:60] + ')')} >&2",

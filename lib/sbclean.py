@@ -13,6 +13,7 @@ ARCHIVED.txt), `box restore NAME` puts one back, and archives are deleted ARCHIV
 when the user is over the disk budget).
 """
 
+import fcntl
 import json
 import os
 import re
@@ -445,12 +446,39 @@ def _tool_running(name):
     return False
 
 
+def clean_mirrors(home, now, dry=False):
+    """Run as the user; lock files stay put so all users of a mirror lock the same inode."""
+    base = os.path.join(home, ".sharedbox", "mirror")
+    if not _is_real_dir(base):
+        return []
+    deleted = []
+    for entry in os.scandir(base):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            prior = _lstat(entry.path + ".lock")
+            fd = os.open(entry.path + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "r+") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                if now - max(last_used(entry.path), prior.st_mtime if prior else 0) <= 7 * DAY:
+                    continue
+                n = remove(entry.path, dry)
+                remove(entry.path + ".prep", dry)
+                deleted.append({"path": entry.path, "bytes": n, "reason": "old run mirror"})
+        except OSError:
+            continue
+    return deleted
+
+
 def clean_caches(plan, home, now, cwds, over, dry):
     """Caches: entries unused for CACHE_TTL_DAYS, everything when over budget (then native prunes too: those remove
     entries an agent may want again soon, so only when space is really needed). Returns deleted rows."""
     cache_ttl = plan["cache_ttl_days"] * DAY
     tmp_ttl = plan["tmp_ttl_days"] * DAY
-    deleted = []
+    deleted = clean_mirrors(home, now, dry)
 
     def rm(path, reason):
         try:

@@ -69,6 +69,26 @@ def default_label():
     return f"t3:{tid[:8]}" if tid else ""
 
 
+def box_name(cfg):
+    import socket
+    import sbcommon as sb
+    ip = sb.tailscale_ip4()
+    return next((n for n, addr in sb.boxes(cfg).items() if addr == ip),
+                socket.gethostname().split(".")[0])
+
+
+def forward_home(name, cfg, argv):
+    import sbcommon as sb
+    import sbmulti
+    home = (sb.read_json(meta_path(name), {}) or {}).get("home")
+    if home and home != box_name(cfg):
+        ip = sb.boxes(cfg).get(home)
+        if not ip:
+            sys.exit(f"team home {home!r} is missing from BOXES")
+        dest = sbmulti.ssh_dest(home, ip, me(), os.path.expanduser("~"))
+        os.execvp("ssh", ["ssh", dest, "box", "team", *map(shlex.quote, argv)])
+
+
 def meta_path(name):
     """Team membership lives in root's state dir: members can write the team folder, so root never trusts or
     chmods anything in it."""
@@ -523,7 +543,7 @@ def handle(cfg, user, req):
         if r.returncode == 0:
             _run(["git", "--git-dir", repo, "config", "receive.denyNonFastForwards", "false"])
             _acl(repo, members, recursive=True)
-        meta = {"name": name, "members": members, "created_by": user, "created": int(time.time())}
+        meta = {"name": name, "members": members, "created_by": user, "created": int(time.time()), "home": box_name(cfg)}
     elif not meta:
         return {"ok": False, "error": f"no team called {name}"}
     elif user not in sb.admin_users(cfg) and user not in meta.get("members", []):
@@ -836,14 +856,20 @@ def main(argv, cfg, request=None):
         out(res, res["message"] + "\nnext: box team clone; tell your agents `box team board`")
         return 0
     if a.cmd == "_relay":
+        forward_home(a.name, cfg, argv)
         tdir = resolve(a.name, cfg)[1]
         run_relay(a.name, tdir)
         return 0
     if a.cmd == "_crew":
+        forward_home(a.name, cfg, argv)
         tdir = resolve(a.name, cfg)[1]
         run_crew(a.name, tdir, a.role, a.agent, a.model)
         return 0
+    selected = a.team or os.environ.get("BOX_TEAM", "").strip()
+    if selected and NAME_RE.match(selected):
+        forward_home(selected, cfg, argv)
     name, tdir = resolve(a.team, cfg)
+    forward_home(name, cfg, ["--team", name, *argv])
     if a.cmd in ("add-member", "remove-member", "rm"):
         act = {"add-member": "team-add", "remove-member": "team-remove", "rm": "team-rm"}[a.cmd]
         res = root({"action": act, "name": name,
