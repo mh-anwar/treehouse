@@ -307,6 +307,11 @@ do_ sh -c "printf '[Unit]\\nDescription=sharedbox health: weekly report ($REPORT
 do_ systemctl daemon-reload
 do_ systemctl enable --now sharedbox-health-sample.timer sharedbox-health-check.timer sharedbox-health-report.timer
 do_ systemctl restart sharedbox-health-report.timer
+# Arch: checkupdates (pacman-contrib) is how the weekly report counts pending updates, since Arch has no auto-updates
+if [[ $DISTRO_FAMILY == arch ]] && ! command -v checkupdates >/dev/null; then
+    do_ pacman -S --needed --noconfirm pacman-contrib \
+        || warn "pacman-contrib not installed (stale sync db? run a full pacman -Syu); reports won't count pending updates"
+fi
 if ! command -v smartctl >/dev/null; then
     case $DISTRO_FAMILY in
         arch) do_ pacman -S --needed --noconfirm smartmontools \
@@ -375,7 +380,7 @@ if [[ $APPLY == 1 ]]; then
     sleep 2
     PORT=$(conf_get WEB_PORT); IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
     if systemctl is-active -q sharedbox-web; then
-        say "done. Dashboard: http://${IP:-<tailscale-ip>}:${PORT:-8090}/  Join: http://$(hostname):${PORT:-8090}/join"
+        say "done. Dashboard: http://${IP:-<tailscale-ip>}:${PORT:-8090}/  Join: http://$(uname -n):${PORT:-8090}/join"
     else
         warn "sharedbox-web is not running yet. Check: journalctl -u sharedbox-web"
     fi

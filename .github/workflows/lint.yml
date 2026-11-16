@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        base: ["ubuntu:24.04", "debian:trixie"]
+        base: ["ubuntu:24.04", "debian:trixie", "archlinux:latest"]
     steps:
       - uses: actions/checkout@v4
       - name: install test (${{ matrix.base }})
