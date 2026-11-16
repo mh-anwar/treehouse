@@ -5,14 +5,14 @@ No build step, no dependencies to install.
 
 ## Ground rules
 
-- **Never break a live box.** The installer must stay additive and idempotent. It must never restart or
+- Never break a live box. The installer must stay additive and idempotent. It must never restart or
   edit sshd, tailscaled, networking or the firewall, and never reboot.
-- **Root does as little as possible.** Anything that touches a friend's files runs *as that friend*
+- Root does as little as possible. Anything that touches a friend's files runs *as that friend*
   (`setpriv`), never as root.
-- **Friends are non-technical by default.** If a feature needs a terminal, it also needs a browser path
+- Assume friends aren't technical. If a feature needs a terminal, it also needs a browser path
   or an agent path.
-- **Stdlib only** in `lib/`. If you really need a dependency, open an issue first.
-- **Both distros.** Package work goes through `lib/sbdistro.py`; don't call `apt` or `pacman` directly.
+- `lib/` uses only the Python standard library. If you really need a dependency, open an issue first.
+- Package work goes through `lib/sbdistro.py` so it works on both Debian and Arch; don't call `apt` or `pacman` directly.
 
 ## Checking your change
 

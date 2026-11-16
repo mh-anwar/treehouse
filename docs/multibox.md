@@ -55,7 +55,7 @@ the box is busy, mem >= 90% or disk < 5%), and whether *you* can SSH there. Load
   `playwright test --shard=$((BOX_SHARD+1))/$BOX_SHARDS`). Lines come back prefixed `[box#i]`. The exit code is
   the first failing shard's.
 - `--back coverage/ --back test-results/` copies results back afterwards.
-- **Failure handling**: no BOXES, the other box down, no SSH login, or a failed sync all mean it runs here
+- If BOXES is empty, the other box is down, there's no SSH login or the sync fails, the command runs here
   through `box heavy`, with one stderr line saying why. If a sync fails while sharding, that box's shards
   run here. `SHAREDBOX_REMOTE=1` is set on the far side, so a nested `box run` never bounces back.
   Exit 97 or 98 from the far side means the folder or `--prep` failed there.
@@ -142,8 +142,8 @@ Mirroring (a)'s *result* (same UID, groups, limits, port block) with (d)'s *tran
 
 ### Credentials: why logins are not copied
 
-- **GitHub** (`gh`): an OAuth token that doesn't rotate and is meant to be used from many machines. Copied.
-- **Claude** (`~/.claude/.credentials.json`) and **Codex** (`~/.codex/auth.json`): short-lived access tokens
+- GitHub (`gh`) uses an OAuth token that doesn't rotate and is meant to be used from many machines, so it is copied.
+- Claude (`~/.claude/.credentials.json`) and Codex (`~/.codex/auth.json`) use short-lived access tokens
   plus *rotating* refresh tokens. Two boxes refreshing the same token family race: the first refresh
   invalidates the other's copy (Codex reports "refresh token already used" and logs out; Claude drops to a
   login prompt), so a copy works for hours and then breaks one or both boxes, mid-task, unpredictably. A copy
