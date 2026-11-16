@@ -3,7 +3,6 @@
 
   sharedbox-admin list
   sharedbox-admin add USER --key 'ssh-ed25519 AAAA...' [--login someone@example.com]
-  sharedbox-admin pending | approve ID | deny ID
   sharedbox-admin limits USER [KEY=VALUE ...]     e.g. MEMORY_HIGH=8G MEMORY_MAX=9G DISK_BUDGET_GB=40
   sharedbox-admin boost USER [--why TEXT]         raise USER's RAM to BOOST_MEMORY for BOOST_HOURS
   sharedbox-admin suspend USER | resume USER
@@ -13,12 +12,10 @@
   sharedbox-admin issues [--days N] [--user U] [--raw]   what agents logged with `box issue` (all users)
   sharedbox-admin reapply                         rewrite every account's limit drop-ins, owner's too
   sharedbox-admin invite [--days N] [--note TEXT] [--tailscale] [--email ADDR]   a message to paste to a new
-                                                  friend (with PUBLIC_URL set: includes a one-time signup link;
-                                                  PUBLIC_MODE=cloudflare: --email is required and is allowed in)
+                                                  friend (Cloudflare creates the account and allows --email;
+                                                  --no-create offers an email-bound signup link instead)
   sharedbox-admin invite --list | --revoke ID      outstanding invite links
-  sharedbox-admin login-link USER                 one-time public login link for USER (new device/phone)
-  sharedbox-admin sessions [USER] [--revoke ID|all]   public-gateway logins (browsers/devices)
-  sharedbox-admin public status                   is the public front door (sharedbox-gate + Funnel) set up?
+  sharedbox-admin public status                   is the public front door (sharedbox-gate + Cloudflare) set up?
   sharedbox-admin cloudflare setup --hostname box.example.com --owner-email you@example.com [--no-enable]
                                                   one-time Cloudflare Tunnel + Access setup (idempotent)
   sharedbox-admin cloudflare enable | status      start cloudflared + the gate | check everything
@@ -566,18 +563,12 @@ def process_spool(cfg):
                     continue
                 if req.get("action", "join") == "join":
                     answer(rid, handle_join, req)
-                elif req.get("action") in GATE_ACTIONS:
-                    answer(rid, handle_gate, req)  # quick, and must not race (single-use tokens)
                 elif req.get("action") == "owner-pair":
                     running.add(pool.submit(answer, rid, handle_owner_pair, req))
                 else:
                     running.add(pool.submit(answer, rid, handle_portal, req))
             time.sleep(0.2)
     gate_prune()
-    try:  # after the joins: signups waiting for approval reach the owner by email
-        notify_signups(cfg)
-    except Exception as e:  # noqa: BLE001
-        print(f"notify_signups: {e!r}", file=sys.stderr)
     # results nobody collected
     for path in glob.glob(os.path.join(sb.SPOOL, "res-*.json")):
         try:
@@ -600,7 +591,7 @@ def handle_join(cfg, rid, req):
     if ip == sb.tailscale_ip4():
         return {"ok": False, "error": "requests from the box itself are not allowed"}
     mode = cfg["JOIN_MODE"]
-    if mode == "closed":
+    if mode != "open":
         return {"ok": False, "error": "signups are closed"}
     name = str(req.get("username", ""))
     err = sb.validate_username(name, cfg)
@@ -616,17 +607,6 @@ def handle_join(cfg, rid, req):
         eerr = "that email already has an account here"
     if err or kerr or eerr:
         return {"ok": False, "error": err or kerr or eerr}
-    if mode == "approve":
-        os.makedirs(sb.PENDING, mode=0o700, exist_ok=True)
-        if any((sb.read_json(p, {}) or {}).get("ts_id") == who["id"]
-               for p in glob.glob(os.path.join(sb.PENDING, "*.json"))):
-            return {"ok": True, "pending": True}
-        sb.write_json(os.path.join(sb.PENDING, f"{rid}.json"),
-                      {"username": name, "key": key, "login": who["login"], "email": email,
-                       "ts_id": who["id"], "node": who["node"], "ts": int(time.time())},
-                      mode=0o600)
-        sb.log_event("join_pending", name, login=who["login"])
-        return {"ok": True, "pending": True}
     rec, err = create_joined(cfg, name, key, who["login"], who["id"], who["node"], email)
     if err:
         return {"ok": False, "error": err}
@@ -635,7 +615,7 @@ def handle_join(cfg, rid, req):
 
 
 def create_joined(cfg, name, key, login, ts_id, node, email):
-    """A Tailscale self-signup (or an approved one): the account, with its email allowed through Cloudflare
+    """A verified Tailscale self-signup: the account, with its email allowed through Cloudflare
     Access when the box uses it, so the friend can also come in from the public site."""
     if email and cf_mode(cfg):
         err = cf_access(cfg, add=[email], quiet=True)
@@ -647,12 +627,10 @@ def create_joined(cfg, name, key, login, ts_id, node, email):
     return rec, err
 
 
-# ---------- public front door: invites, sessions, device logins (records read by sharedbox-gate) ----------
+# ---------- public signup invites (Cloudflare email identity is verified again by root) ----------
 # Every token is 32 random bytes, handed out once and stored only as sha256 in GATE_DIR/<kind>/<hash>.json
 # (0640 root:sharedbox). Only root mints or consumes them; the gate and web only read, so neither a friend
-# nor a compromised web/gate process can forge an invite, a session or a login link.
-
-GATE_ACTIONS = ("redeem", "session-refresh", "logout")
+# nor a compromised web/gate process can forge an invite.
 
 
 def gate_dirs():
@@ -709,48 +687,9 @@ def gate_prune():
         gate_delete(kind, lambda h, r: float(r.get("expires", 0) or 0) < now)
 
 
-def revoke_user_gate(name):
-    """Log USER out everywhere: every public session and unused login link."""
-    return (gate_delete("sessions", lambda h, r: r.get("user") == name)
-            + gate_delete("logins", lambda h, r: r.get("user") == name))
-
-
-def session_ttl(cfg):
-    return sb.cfg_int(cfg, "SESSION_DAYS") * 86400
-
-
-def mint_session(cfg, name, via, label=""):
-    tok, h = gate_mint("sessions", session_ttl(cfg), user=name, via=via, label=sb.printable(label)[:80])
-    sb.log_event("gate_login", name, via=via, session=h[:12])
-    return tok
-
-
-def session_identity(cfg, secret):
-    """(username, record, hash) for a live session of an active friend, else (None, None, None)."""
-    rec, h = sb.gate_lookup("sessions", secret if isinstance(secret, str) else "")
-    if not rec or not sb.active_friend(rec.get("user")):
-        return None, None, None
-    return rec["user"], rec, h
-
-
-def mint_login_link(cfg, name):
-    """One-time public login link for an existing friend (10 minutes). At most 5 open per user."""
-    pub = sb.public_url(cfg)
-    if not pub or cf_mode(cfg):  # cloudflare mode: any device is logged in by signing in with the email
-        return None
-    mine = sorted((r.get("created", 0), h) for h, r in sb.gate_records("logins") if r.get("user") == name)
-    for _, h in mine[:max(0, len(mine) - 4)]:
-        try:
-            os.unlink(sb.gate_path("logins", h))
-        except FileNotFoundError:
-            pass
-    tok, _ = gate_mint("logins", sb.cfg_int(cfg, "LOGIN_LINK_MINUTES") * 60, user=name)
-    return f"{pub}/login/{tok}"
-
-
 def handle_invite_join(cfg, rid, req):
     """Signup through a public invite link. The invite is re-verified here, not trusted from the web."""
-    if not sb.public_url(cfg):
+    if not cf_mode(cfg):
         return {"ok": False, "error": "public signups are turned off; ask your friend"}
     tok = str(req.get("invite", ""))
     inv, _ = sb.gate_lookup("invites", tok)
@@ -759,61 +698,24 @@ def handle_invite_join(cfg, rid, req):
                 "error": "this invite link was already used or has expired; ask your friend for a new one"}
     name = str(req.get("username", ""))
     err = sb.validate_username(name, cfg)
-    if cf_mode(cfg):
-        # identity = the Access token's email, verified here; the invite must have been made for it
-        email, eerr = cf_email(cfg, req.get("cf_jwt")), None
-        if not email:
-            return {"ok": False, "error": "your Cloudflare login couldn't be verified; reload the page"}
-        if str(inv.get("email") or "").lower() != email:
-            return {"ok": False, "error": "this invite was made for a different email address"}
-        if sb.email_taken(email):
-            return {"ok": False, "error": "that email already has an account here; open the start page"}
-    else:
-        email, eerr = sb.validate_email(str(req.get("email", ""))[:300])
+    email, eerr = cf_email(cfg, req.get("cf_jwt")), None
+    if not email:
+        return {"ok": False, "error": "your Cloudflare login couldn't be verified; reload the page"}
+    if str(inv.get("email") or "").lower() != email:
+        return {"ok": False, "error": "this invite was made for a different email address"}
+    if sb.email_taken(email):
+        return {"ok": False, "error": "that email already has an account here; open the start page"}
     if err or eerr:
         return {"ok": False, "error": err or eerr}
-    # an invite is the owner's approval, so JOIN_MODE (open/approve/closed) doesn't apply; MAX_USERS does
-    rec, err = create_user(cfg, name, "", login="cloudflare" if cf_mode(cfg) else "invite", email=email or None)
+    # an invite is the owner's approval, so JOIN_MODE (open/closed) doesn't apply; MAX_USERS does
+    rec, err = create_user(cfg, name, "", login="cloudflare", email=email or None)
     if err:
         return {"ok": False, "error": err}
     # consumed only once the account exists, so a taken username can simply be retried
     gate_consume("invites", tok)
     sb.log_event("invite_used", name, invite=inv["hash"][:12], note=inv.get("note", ""))
-    if cf_mode(cfg):  # no session of ours: Cloudflare's login is the session
-        lo, hi = sb.port_range(cfg, rec["uid"])
-        return {"ok": True, "username": name, "ports": [lo, hi]}
-    session = mint_session(cfg, name, "invite", str(req.get("ua", "")))
     lo, hi = sb.port_range(cfg, rec["uid"])
-    return {"ok": True, "username": name, "ports": [lo, hi], "session": session}
-
-
-def handle_gate(cfg, rid, req):
-    action = req.get("action")
-    if not sb.public_url(cfg):
-        return {"ok": False, "error": "the public gateway is turned off"}
-    if cf_mode(cfg):
-        return {"ok": False, "error": "not used here: sign in through Cloudflare with your email"}
-    if action == "redeem":
-        rec = gate_consume("logins", str(req.get("login", "")))
-        if not rec:
-            return {"ok": False, "error": "this login link was already used or has expired; get a new one"}
-        if not sb.active_friend(rec.get("user")):
-            return {"ok": False, "error": "that account is suspended or gone; ask the owner"}
-        return {"ok": True, "username": rec["user"],
-                "session": mint_session(cfg, rec["user"], "login-link", str(req.get("ua", "")))}
-    name, rec, h = session_identity(cfg, req.get("session"))
-    if not name:
-        return {"ok": False, "relogin": True, "error": "you're logged out"}
-    if action == "logout":
-        gate_delete("sessions", lambda hh, r: hh == h)
-        sb.log_event("gate_logout", name, session=h[:12])
-        return {"ok": True}
-    if action == "session-refresh":  # sliding expiry: a session in use keeps living
-        rec["expires"] = int(time.time()) + session_ttl(cfg)
-        rec["seen"] = int(time.time())
-        sb.write_json(sb.gate_path("sessions", h), rec, mode=0o640, owner=(0, gate_dirs()))
-        return {"ok": True, "expires": rec["expires"]}
-    return {"ok": False, "error": "unknown action"}
+    return {"ok": True, "username": name, "ports": [lo, hi]}
 
 
 # ---------- portal (web page actions for an existing account) ----------
@@ -913,10 +815,6 @@ def handle_portal(cfg, rid, req):
             name, owner = pw.pw_name, True
         if not name:
             return {"ok": False, "relogin": True, "error": "your Cloudflare login couldn't be verified; reload"}
-    elif req.get("session") is not None:  # public gateway: identity = a root-minted session token
-        name, _, _ = session_identity(cfg, req.get("session"))
-        if not name or not sb.public_url(cfg) or cf_mode(cfg):
-            return {"ok": False, "relogin": True, "error": "you're logged out; open your login link again"}
     else:
         ip = str(req.get("ip", ""))
         who = sb.tailscale_whois(ip) if ip else None
@@ -966,11 +864,6 @@ def handle_portal(cfg, rid, req):
         return box_portal(pw, ["t3-pair"])
     if action == "t3app":  # the same pairing, labelled for the T3 app on their laptop (the dashboard's setup prompt)
         return box_portal(pw, ["t3-pair", "app"])
-    if action == "device-link":  # works for Tailscale friends too: their way off Tailscale
-        url = mint_login_link(cfg, name)
-        if not url:
-            return {"ok": False, "error": "the public link isn't set up on this box; ask the owner"}
-        return {"ok": True, "login_url": url, "minutes": sb.cfg_int(cfg, "LOGIN_LINK_MINUTES")}
     if action == "add-key":
         key, err = sb.validate_pubkey(str(req.get("sshkey", "")))
         return {"ok": False, "error": err} if err else box_portal(pw, ["add-key"], input_text=key + "\n")
@@ -1093,20 +986,22 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
     message, username, link, id, email, expires, summary.
 
     cloudflare: the account is bound to `email`, which goes on the Access allow list; signing in with it is
-    the whole login. funnel: a one-time login link, valid for the invite's lifetime, logs them in."""
+    the whole login."""
     if sb.solo(cfg):
         raise InviteError("this box is in solo mode (SOLO=1 in sharedbox.conf): no friend accounts")
     if sbfed.role(cfg) == "secondary":
         raise InviteError("this is a secondary box (BOX_ROLE=secondary): invite on the primary box; "
                           "the account is copied here within minutes")
-    pub, cf = sb.public_url(cfg), cf_mode(cfg)
+    pub = sb.public_url(cfg)
+    if not pub or not cf_mode(cfg):
+        raise InviteError("Public access is disabled; set up Cloudflare, or use a Tailscale invite.")
     days = max(1, min(int(days or sb.cfg_int(cfg, "INVITE_DAYS")), 30))
     note = sb.printable(note or "")[:120]
     email, err = sb.validate_email(email or "")
     if err:
         raise InviteError(err)
     email = (email or "").lower()
-    if cf and not email:
+    if not email:
         raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
                           "--email sam@example.com (they log in with it)")
     taken = sb.email_taken(email) if email else None
@@ -1121,15 +1016,13 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
             raise InviteError(err)
     else:
         username = auto_username(cfg, email, note)
-    if cf:
-        err = cf_access(cfg, add=[email], quiet=True)
-        if err:
-            raise InviteError(f"couldn't allow {email} in Cloudflare Access: {err}")
-    # an invite is the owner's approval, so JOIN_MODE doesn't apply; MAX_USERS does (inside create_user)
-    rec, err = create_user(cfg, username, "", login="cloudflare" if cf else "invite", email=email or None)
+    err = cf_access(cfg, add=[email], quiet=True)
     if err:
-        if cf:
-            cf_access(cfg, remove=[email], quiet=True)
+        raise InviteError(f"couldn't allow {email} in Cloudflare Access: {err}")
+    # an invite is the owner's approval, so JOIN_MODE doesn't apply; MAX_USERS does (inside create_user)
+    rec, err = create_user(cfg, username, "", login="cloudflare", email=email or None)
+    if err:
+        cf_access(cfg, remove=[email], quiet=True)
         raise InviteError(f"couldn't create the account {username}: {err}")
     reg = sb.registry()
     if username in reg["users"]:  # first visit to / goes to the portal (log in to an AI) instead of T3
@@ -1138,33 +1031,15 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
     hello = ("Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) "
              "that\nbuilds things for you in your browser and keeps running when you close your laptop. "
              "Works on your phone too.\n" + SUBSCRIPTION_LINE)
-    if cf:
-        sb.log_event("invite_created", by, account=username, email=email, note=note)
-        message = f"""{hello}
+    sb.log_event("invite_created", by, account=username, email=email, note=note)
+    message = f"""{hello}
 
 Open {pub}/ on any device, enter {email}, and type the code Cloudflare emails you. That's it.
 The first time, it walks you through logging in to your AI, then "Open T3 in browser". Your username is {username}.
 Stuck? Ask the agent, or text me."""
-        return {"ok": True, "message": message, "username": username, "link": f"{pub}/", "id": "",
-                "email": email, "expires": None,
-                "summary": f"account {username} created for {email} and allowed in Cloudflare Access; "
-                           f"undo: box friends remove {username}"}
-    tok, h = gate_mint("logins", days * 86400, user=username, invite=True, note=note, by=by or "root")
-    exp = int(time.time()) + days * 86400
-    sb.log_event("invite_created", by, invite=h[:12], account=username, email=email or None, note=note)
-    link = f"{pub}/login/{tok}"
-    message = f"""{hello}
-
-1. Open this link. It logs you straight in (it works once, for the next {days} days):
-   {link}
-2. Tap "Log in", then click through: log in to your AI, then "Open T3 in browser". That's it.
-
-Later, just open {pub}/ in the same browser. On a new device, open {pub}/_box/ on the old one and
-tap "Add a device". Stuck? Ask the agent, or text me."""
-    return {"ok": True, "message": message, "username": username, "link": link, "id": h[:12],
-            "email": email or None, "expires": exp,
-            "summary": f"account {username} created; login link {h[:12]} works once until "
-                       f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(exp))}; "
+    return {"ok": True, "message": message, "username": username, "link": f"{pub}/", "id": "",
+            "email": email, "expires": None,
+            "summary": f"account {username} created for {email} and allowed in Cloudflare Access; "
                        f"undo: box friends remove {username}"}
 
 
@@ -1176,25 +1051,25 @@ def public_invite(cfg, days=None, note=None, by=None, email=None):
     """Mint a one-time invite; returns (message to paste, hash, expiry). In cloudflare mode the invite is
     bound to `email`, which is first added to the Access allow list."""
     pub = sb.public_url(cfg)
+    if not pub:
+        raise InviteError("Public access is disabled; set up Cloudflare.")
     days = max(1, min(int(days or sb.cfg_int(cfg, "INVITE_DAYS")), 30))
     fields = {}
-    if cf_mode(cfg):
-        email, err = sb.validate_email(email or "")
-        if err or not email:
-            raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
-                              "--email sam@example.com (they log in with it)")
-        email = email.lower()
-        taken = sb.email_taken(email)
-        if taken:
-            raise InviteError(f"{email} already belongs to the account {taken}")
-        err = cf_access(cfg, add=[email], quiet=True)
-        if err:
-            raise InviteError(f"couldn't allow {email} in Cloudflare Access: {err}")
-        fields["email"] = email
+    email, err = sb.validate_email(email or "")
+    if err or not email:
+        raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
+                          "--email sam@example.com (they log in with it)")
+    email = email.lower()
+    taken = sb.email_taken(email)
+    if taken:
+        raise InviteError(f"{email} already belongs to the account {taken}")
+    err = cf_access(cfg, add=[email], quiet=True)
+    if err:
+        raise InviteError(f"couldn't allow {email} in Cloudflare Access: {err}")
+    fields["email"] = email
     tok, h = gate_mint("invites", days * 86400, note=sb.printable(note or "")[:120], by=by or "root", **fields)
     sb.log_event("invite_created", by, invite=h[:12], note=note or "", email=fields.get("email"))
-    if fields:
-        return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
+    return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
 builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
 {SUBSCRIPTION_LINE}
 
@@ -1204,17 +1079,7 @@ builds things for you in your browser and keeps running when you close your lapt
 3. Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
 
 Later, on any device, just open {pub}/ and sign in with {email} again. Stuck? Ask the agent, or text me.""",
-                h, int(time.time()) + days * 86400)
-    return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
-builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
-{SUBSCRIPTION_LINE}
-
-1. Open this link (it works once, for the next {days} days):
-   {pub}/i/{tok}
-2. Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
-
-Later, just open {pub}/ in the same browser. On a new device, open {pub}/_box/ on the old one and
-tap "Add a device". Stuck? Ask the agent, or text me.""", h, int(time.time()) + days * 86400)
+            h, int(time.time()) + days * 86400)
 
 
 def tailscale_invite(cfg):
@@ -1242,14 +1107,7 @@ def invite_admin(a):
     if a.revoke:
         gone = [r for h, r in sb.gate_records("invites") if h.startswith(a.revoke.lower()) and len(a.revoke) >= 6]
         n = gate_delete("invites", lambda h, r: h.startswith(a.revoke.lower()) and len(a.revoke) >= 6)
-        links = [r for h, r in sb.gate_records("logins") if r.get("invite") and h.startswith(a.revoke.lower())
-                 and len(a.revoke) >= 6]
-        n += gate_delete("logins", lambda h, r: r.get("invite") and h.startswith(a.revoke.lower())
-                         and len(a.revoke) >= 6)
         print(f"revoked {n} invite(s)")
-        for r in links:
-            print(f"note: the account {sb.printable(r.get('user', '?'))} still exists "
-                  f"(sharedbox-admin remove {sb.printable(r.get('user', '?'))})")
         cfg = sb.load_config()
         # the email leaves the Access list too, unless it has an account or another open invite
         still = {str(r.get("email") or "").lower() for _, r in sb.gate_records("invites")}
@@ -1258,7 +1116,7 @@ def invite_admin(a):
         if drop and not cf_access(cfg, remove=drop):
             print(f"removed from Cloudflare Access: {', '.join(sorted(drop))}")
         return
-    rows = sorted(sb.gate_records("invites") + [(h, r) for h, r in sb.gate_records("logins") if r.get("invite")],
+    rows = sorted(sb.gate_records("invites"),
                   key=lambda x: x[1].get("created", 0))
     if not rows:
         print("no open invites")
@@ -1266,118 +1124,19 @@ def invite_admin(a):
         exp = float(r.get("expires", 0) or 0)
         state = "expired" if exp < time.time() else "expires " + time.strftime("%Y-%m-%d %H:%M", time.localtime(exp))
         mail = f"{sb.printable(r['email'])}  " if r.get("email") else ""
-        acct = f"login link for {sb.printable(r.get('user', '?'))}  " if r.get("invite") else ""
-        print(f"{h[:12]}  {state:<24} {acct}{mail}{sb.printable(r.get('note', ''))}")
+        print(f"{h[:12]}  {state:<24} {mail}{sb.printable(r.get('note', ''))}")
 
 
 def fmt_t(ts):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts or 0))) if ts else "-"
 
 
-def cmd_login_link(cfg, a):
-    require_friend(a.user)
-    if not sb.public_url(cfg):
-        die("PUBLIC_URL is not set; see: sharedbox-admin public status")
-    if not sb.active_friend(a.user):
-        die(f"{a.user} is suspended")
-    if cf_mode(cfg):
-        mail = sb.registry()["users"][a.user].get("email")
-        die(f"not needed with Cloudflare Access: {a.user} opens {sb.public_url(cfg)}/ on any device and signs in "
-            + (f"with {mail}" if mail else f"with their email (link it first: sharedbox-admin access add EMAIL --user {a.user})"))
-    url = mint_login_link(cfg, a.user)
-    print(f"""Login link for {a.user} (works once, for {cfg['LOGIN_LINK_MINUTES']} minutes, on any device):
-
-  {url}
-
-Open it in the browser/phone that should be logged in. Afterwards {sb.public_url(cfg)}/ is their T3 Code.""")
-
-
-def cmd_sessions(cfg, a):
-    if a.revoke:
-        if a.revoke == "all":
-            if not a.user:
-                die("--revoke all needs a USER")
-            n = revoke_user_gate(a.user)
-        elif len(a.revoke) < 6:
-            die("give at least 6 characters of the session ID")
-        else:
-            n = gate_delete("sessions", lambda h, r: h.startswith(a.revoke.lower())
-                            and (not a.user or r.get("user") == a.user))
-        sb.log_event("gate_revoked", a.user, count=n)
-        print(f"revoked {n}")
-        return
-    rows = [(h, r) for h, r in sb.gate_records("sessions") if not a.user or r.get("user") == a.user]
-    rows.sort(key=lambda x: (str(x[1].get("user")), x[1].get("created", 0)))
-    if not rows:
-        print("no public sessions" + (f" for {a.user}" if a.user else ""))
-        return
-    print(f"{'ID':<14}{'USER':<16}{'VIA':<12}{'CREATED':<18}{'LAST REFRESH':<18}{'EXPIRES':<18}DEVICE")
-    for h, r in rows:
-        print(f"{h[:12]:<14}{sb.printable(r.get('user', '?')):<16}{sb.printable(r.get('via', '?')):<12}"
-              f"{fmt_t(r.get('created')):<18}{fmt_t(r.get('seen')):<18}{fmt_t(r.get('expires')):<18}"
-              f"{sb.printable(r.get('label', ''))[:60]}")
-    print("\nrevoke: sharedbox-admin sessions [USER] --revoke ID   (or USER --revoke all)")
-
-
 def cmd_public(cfg, a):
-    if cf_mode(cfg):
-        return cmd_cloudflare_status(cfg, a)
-    pub, port = sb.public_url(cfg), sb.cfg_int(cfg, "GATE_PORT")
-    ok = True
-
-    def line(good, text):
-        nonlocal ok
-        ok &= bool(good)
-        print(f"  [{'ok' if good else '!!'}] {text}")
-
-    print("public front door (friends need only a browser):")
-    raw = (cfg.get("PUBLIC_URL") or "").strip()
-    line(pub, f"PUBLIC_URL={raw or '(empty: gateway off)'}"
-         + ("" if pub or not raw else "  <- must be https://<host>.<tailnet>.ts.net"))
-    gate = run(["systemctl", "is-active", "sharedbox-gate.service"], check=False, capture_output=True, text=True)
-    line(gate.stdout.strip() == "active", f"sharedbox-gate.service: {gate.stdout.strip() or '?'} (127.0.0.1:{port})")
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
-            host = urllib.parse.urlsplit(pub).netloc if pub else "127.0.0.1"
-            c.sendall(f"GET /_box/healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
-            first = c.recv(200).split(b"\r\n")[0].decode(errors="replace")
-        line(" 200 " in first + " ", f"gate answers on 127.0.0.1:{port}: {first}")
-    except OSError as e:
-        line(False, f"gate not reachable on 127.0.0.1:{port}: {e}")
-    fun = run(["tailscale", "funnel", "status", "--json"], check=False, capture_output=True, text=True, timeout=10)
-    target = f"http://127.0.0.1:{port}"
-    try:
-        fj = json.loads(fun.stdout or "{}")
-    except ValueError:
-        fj = {}
-    funnel_on = any(bool(v) for v in (fj.get("AllowFunnel") or {}).values())
-    proxies = json.dumps(fj.get("Web") or {})
-    line(funnel_on and target in proxies, "Tailscale Funnel on :443 -> " + target
-         + ("" if funnel_on else "  (not enabled)") + ("" if target in proxies else "  (not proxying to the gate)"))
-    try:
-        st = os.stat(sb.GATE_DIR)
-        line(stat.S_IMODE(st.st_mode) == 0o750 and st.st_uid == 0, f"{sb.GATE_DIR} root-owned, 0750")
-    except OSError:
-        line(False, f"{sb.GATE_DIR} missing (created by install.sh or the first invite)")
-    now = time.time()
-    for kind in sb.GATE_KINDS:
-        live = sum(1 for _, r in sb.gate_records(kind) if float(r.get("expires", 0) or 0) > now)
-        print(f"  {kind}: {live} live")
-    if not ok:
-        try:
-            dns = (json.loads(run(["tailscale", "status", "--json", "--peers=false"], check=False, capture_output=True,
-                                  text=True, timeout=10).stdout or "{}").get("Self", {}).get("DNSName") or "").rstrip(".")
-        except (ValueError, OSError, subprocess.SubprocessError):
-            dns = ""
-        print(f"""
-To turn it on (once, as root):
-  1. Tailnet policy (admin console > Access controls) must allow Funnel for this machine, e.g.
-       "nodeAttrs": [{{"target": ["<this machine or its tag>"], "attr": ["funnel"]}}]
-  2. sudo tailscale funnel --bg --https=443 {target}
-  3. Set PUBLIC_URL=https://{dns or '<this machine>.<tailnet>.ts.net'} in {sb.CONF_PATH}
-     (the name `tailscale funnel status` prints), then:  sudo ./install.sh --apply
-     (or: sudo systemctl enable --now sharedbox-gate && sudo systemctl restart sharedbox-web)
-  Undo: sudo tailscale funnel --https=443 off; empty PUBLIC_URL; sudo systemctl disable --now sharedbox-gate""")
+    if not cf_mode(cfg):
+        print("Public access is disabled. Set up Cloudflare: sharedbox-admin cloudflare setup "
+              "(PUBLIC_MODE=cloudflare). Private Tailscale access is unchanged.")
+        return
+    return cmd_cloudflare_status(cfg, a)
 
 
 # ---------- Cloudflare Tunnel + Access: setup, status, allow list ----------
@@ -1461,7 +1220,7 @@ def cmd_cloudflare_status(cfg, a):
 
     pub, port = sb.public_url(cfg), sb.cfg_int(cfg, "GATE_PORT")
     print("public front door via Cloudflare Tunnel + Access:")
-    line(cf_mode(cfg), f"PUBLIC_MODE={cfg.get('PUBLIC_MODE') or '(unset: funnel)'}  PUBLIC_URL={pub or '(empty)'}")
+    line(cf_mode(cfg), f"PUBLIC_MODE={cfg.get('PUBLIC_MODE') or '(unset: disabled)'}  PUBLIC_URL={pub or '(empty)'}")
     for k in ("CF_ACCOUNT_ID", "CF_TEAM_DOMAIN", "CF_ACCESS_AUD", "CF_TUNNEL_ID", "CF_ACCESS_APP_ID",
               "CF_ACCESS_POLICY_ID", "CF_OWNER_EMAILS"):
         line(cfg.get(k), f"{k}={cfg.get(k) or '(empty)'}")
@@ -1565,12 +1324,11 @@ class FriendError(Exception):
     pass
 
 
-NOTIFIED = os.path.join(sb.STATE_DIR, "notified.json")       # root-only: signups the owner was told about
 REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedbox: open requests for the dashboard
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-approve", "friends-deny", "friends-update", "tune-service", "hackathon", "friends-boxes")
+                   "friends-update", "tune-service", "hackathon", "friends-boxes")
 
 
 def friend_record(cfg, name):
@@ -1597,7 +1355,6 @@ def friend_suspend(cfg, name, by="root"):
     # an expired account fails PAM's account phase, so cron/at stop starting jobs for it too
     run(["usermod", "--expiredate", "1", name], check=False)
     stop_everything(name)
-    revoke_user_gate(name)  # public-gateway sessions and login links
     rec["status"] = "suspended"
     save_registry(reg)
     warnings = []
@@ -1656,7 +1413,6 @@ def friend_remove(cfg, name, archive=False, by="root"):
                               "registry and limits left as they were")
     remove_dropins(pw.pw_uid)
     daemon_reload()
-    revoke_user_gate(name)
     if rec.get("email"):
         err = cf_access(cfg, remove=[rec["email"]])
         if err:
@@ -1699,45 +1455,6 @@ def last_active_map(days=7, floor=0.05):
     return out
 
 
-def signup_list():
-    out = []
-    for p in sorted(glob.glob(os.path.join(sb.PENDING, "*.json"))):
-        r = sb.read_json(p, {}) or {}
-        out.append({"id": os.path.basename(p)[:-5], "username": r.get("username"), "login": r.get("login"),
-                    "email": r.get("email"), "ts": r.get("ts")})
-    return out
-
-
-def _pending_path(sid):
-    sid = str(sid or "").strip()
-    if not (sid.isascii() and sid.isalnum() and len(sid) <= 64):
-        raise FriendError("no such pending signup (see: box friends)")
-    return os.path.join(sb.PENDING, f"{sid}.json")
-
-
-def signup_approve(cfg, sid, by="root"):
-    p = _pending_path(sid)
-    r = sb.read_json(p)
-    if not r:
-        raise FriendError("no such pending signup (see: box friends)")
-    rec, err = create_joined(cfg, r["username"], r["key"], r["login"], r["ts_id"], r["node"], r.get("email") or "")
-    if err:
-        raise FriendError(err)
-    os.unlink(p)
-    sb.log_event("join_approved", r["username"], by=by)
-    return {"ok": True, "username": r["username"], "message": f"approved {r['username']}"}
-
-
-def signup_deny(cfg, sid, by="root"):
-    p = _pending_path(sid)
-    r = sb.read_json(p)
-    if r is None:
-        raise FriendError("no such pending signup (see: box friends)")
-    os.unlink(p)
-    sb.log_event("join_denied", (r or {}).get("username"), by=by)
-    return {"ok": True, "username": (r or {}).get("username"), "message": "denied"}
-
-
 def friends_list(cfg):
     users = sb.friend_users()
     usage = (sb.read_json(sb.USAGE, {}) or {}).get("users") or {}
@@ -1749,7 +1466,7 @@ def friends_list(cfg):
                      "joined": r.get("created"), "disk": u.get("disk"), "disk_budget": u.get("budget"),
                      "over_budget": bool(u.get("over")), "last_active": seen.get(name),
                      "login": r.get("login"), "invited_by": r.get("invited_by"), "note": r.get("note")})
-    return {"ok": True, "friends": rows, "pending_signups": signup_list(), "open_requests": len(requests_list()),
+    return {"ok": True, "friends": rows, "open_requests": len(requests_list()),
             "max_users": sb.cfg_int(cfg, "MAX_USERS"), "join_mode": cfg.get("JOIN_MODE")}
 
 
@@ -1862,10 +1579,6 @@ def friends_action(cfg, by, req):
             res = issues_summary(req.get("days") if isinstance(req.get("days"), int) else 7)
             res.pop("raw")
             return res
-        if act == "friends-approve":
-            return signup_approve(cfg, str(req.get("id") or "")[:64], by=by)
-        if act == "friends-deny":
-            return signup_deny(cfg, str(req.get("id") or "")[:64], by=by)
         if act == "hackathon":
             return hackathon_set(cfg, req, by)
         if act == "friends-boxes":
@@ -2457,30 +2170,6 @@ def requests_list(include_closed=False):
     return [req_public(r) for r in recs if include_closed or r.get("state") in REQ_OPEN]
 
 
-def notify_signups(cfg):
-    """Email the owner once per signup waiting for approval (JOIN_MODE=approve)."""
-    state = sb.read_json(NOTIFIED, {}) or {}
-    pend = signup_list()
-    told = state.get("pending") or {}
-    new = [p for p in pend if p["id"] not in told]
-    fresh = {"pending": {p["id"]: told.get(p["id"], int(time.time())) for p in pend}}
-    if fresh != state:  # before mailing: at most one email per signup, even on errors
-        sb.write_json(NOTIFIED, fresh, mode=0o600)
-    if not new:
-        return
-    import sbmail
-    if not sbmail.configured(cfg):
-        return
-    lines = [f"{sb.printable(p['username'])} ({sb.printable(p['login'] or '?')}) wants an account.\n"
-             f"  Ask your agent: \"approve {sb.printable(p['username'])}\" (box friends approve {p['id']}) "
-             f"or deny it (box friends deny {p['id']}).\n" for p in new]
-    try:
-        sbmail.send(cfg, f"{sb.printable(new[0]['username'])} wants to join"
-                    + (f" (+{len(new) - 1} more)" if len(new) > 1 else ""), "\n".join(lines))
-    except Exception as e:  # noqa: BLE001
-        print(f"signup mail failed: {e!r}", file=sys.stderr)
-
-
 # ---------- commands ----------
 
 def cmd_list(cfg, a):
@@ -2500,30 +2189,6 @@ def cmd_add(cfg, a):
         die(err)
     lo, hi = sb.port_range(cfg, rec["uid"])
     print(f"created {a.user} (uid {rec['uid']}, ports {lo}-{hi})")
-
-
-def cmd_pending(cfg, a):
-    for p in sorted(glob.glob(os.path.join(sb.PENDING, "*.json"))):
-        r = sb.read_json(p, {})
-        print(f"{os.path.basename(p)[:-5]}  {r['username']:<16} {sb.printable(r['login'])}  "
-              f"{sb.printable(r.get('email') or '-')}  "
-              f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(r['ts']))}")
-
-
-def cmd_approve(cfg, a):
-    try:
-        res = signup_approve(cfg, a.id)
-    except FriendError as e:
-        die(str(e))
-    print(res["message"])
-
-
-def cmd_deny(cfg, a):
-    try:
-        res = signup_deny(cfg, a.id)
-    except FriendError as e:
-        die(str(e))
-    print(res["message"])
 
 
 def cmd_limits(cfg, a):
@@ -2653,7 +2318,6 @@ def cmd_reapply(cfg, a):
         write_dropins(cfg, name, rec, uid)
         print(f"rewrote limits for {name}")
     daemon_reload()
-
 
 # ---------- federation: the same accounts on every box (lib/sbfed.py, docs/multibox.md) ----------
 
@@ -2925,9 +2589,6 @@ def main():
     s.add_parser("list").set_defaults(fn=cmd_list)
     x = s.add_parser("add"); x.add_argument("user"); x.add_argument("--key", required=True)
     x.add_argument("--login"); x.set_defaults(fn=cmd_add)
-    s.add_parser("pending").set_defaults(fn=cmd_pending)
-    x = s.add_parser("approve"); x.add_argument("id"); x.set_defaults(fn=cmd_approve)
-    x = s.add_parser("deny"); x.add_argument("id"); x.set_defaults(fn=cmd_deny)
     x = s.add_parser("limits"); x.add_argument("user"); x.add_argument("settings", nargs="*")
     x.set_defaults(fn=cmd_limits)
     for n, fn in (("suspend", cmd_suspend), ("resume", cmd_resume), ("kill", cmd_kill)):
@@ -2948,9 +2609,6 @@ def main():
                    help="old style: an invite link and the friend picks a username on a signup form")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_invite)
-    x = s.add_parser("login-link"); x.add_argument("user"); x.set_defaults(fn=cmd_login_link)
-    x = s.add_parser("sessions"); x.add_argument("user", nargs="?"); x.add_argument("--revoke", metavar="ID|all")
-    x.set_defaults(fn=cmd_sessions)
     x = s.add_parser("public"); x.add_argument("what", choices=["status"]); x.set_defaults(fn=cmd_public)
     x = s.add_parser("cloudflare"); x.add_argument("what", choices=["setup", "enable", "status", "ssh"])
     x.add_argument("--hostname"); x.add_argument("--owner-email", action="append")

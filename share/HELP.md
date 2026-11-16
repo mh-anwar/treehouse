@@ -126,8 +126,8 @@ account, with no VPN: SSH goes through Cloudflare. {connect}
 
 @@ friends
 Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` to any of these.
-- `box friends`: every friend (username, email, status, joined, disk, last active), signups waiting for
-  approval, open requests. `box friends approve ID` / `box friends deny ID` for signups.
+- `box friends`: every friend (username, email, status, joined, disk, last active), open requests.
+  Tailnet self-join is immediate when JOIN_MODE=open; there is no signup approval queue.
 - `box friends remove NAME [--archive]` deletes the account and its files (--archive keeps a tarball first);
   `box friends suspend NAME` / `resume NAME` locks them out / lets them back (files kept). Confirm with the
   owner before remove. The owner's own accounts can't be changed here.
