@@ -24,6 +24,7 @@ python3 tests/e2e_gate.py .              # the real gate against fake logins and
 # the real gate + web pages in Chromium: every link, button and form, per persona (--quick: one level deep)
 uv run --no-project --with playwright python tests/e2e_browser.py . --shots /tmp/shots
 sudo ./install.sh            # dry run: read what it would do
+tests/container/run.sh       # install, update and uninstall in throwaway Ubuntu 24.04 + Debian 13 containers
 ```
 
 Then test on a throwaway VM (Ubuntu 24.04 or Arch/Omarchy) with `--apply`, and walk through the
