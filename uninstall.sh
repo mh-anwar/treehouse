@@ -12,14 +12,21 @@ if [[ ${1:-} == --remove-users ]]; then
     done
 fi
 
-systemctl disable --now sharedbox-cloudflared.service sharedbox-gate.service sharedbox-web.service sharedbox-provision.path sharedbox-requests.path \
-    sharedbox-janitor.timer sharedbox-tick.timer sharedbox-fed.timer sharedbox-guard.timer sharedbox-t3-naps.timer sharedbox-tools-update.timer sharedbox-reboot.timer 2>/dev/null || true
+# every sharedbox unit, whatever this or an older version installed: timers and path units first, so nothing
+# starts a service again while the services are being stopped
+mapfile -t UNITS < <({ systemctl list-unit-files 'sharedbox-*' --no-legend --plain; systemctl list-units 'sharedbox-*' --all --no-legend --plain; } 2>/dev/null \
+    | awk '{print $1}' | grep -E '^sharedbox-' | sort -u)
+if [[ ${#UNITS[@]} -gt 0 ]]; then
+    for u in "${UNITS[@]}"; do [[ $u == *.timer || $u == *.path ]] && systemctl disable --now "$u" 2>/dev/null; done
+    for u in "${UNITS[@]}"; do [[ $u == *.timer || $u == *.path ]] || systemctl disable --now "$u" 2>/dev/null; done
+fi
+true
 # shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
 for u in /etc/systemd/system/sb-shared-*.service; do
     [[ -e $u ]] && systemctl disable --now "$(basename "$u")" 2>/dev/null || true
 done
 rm -f /etc/systemd/system/sb-shared-*.service /etc/systemd/system/sharedbox-shared.slice
-rm -f /etc/systemd/system/sharedbox-*.{service,timer,path}
+rm -f /etc/systemd/system/sharedbox-*.{service,timer,path,slice}
 rm -rf /etc/systemd/system/sharedbox-gate.service.d
 # apt timer drop-ins exist only on Debian/Ubuntu (install.sh adds nothing like it on Arch); no-ops elsewhere
 rm -f /etc/systemd/system/apt-daily.timer.d/sharedbox.conf /etc/systemd/system/apt-daily-upgrade.timer.d/sharedbox.conf
@@ -31,9 +38,15 @@ fi
 # box tuning: back to the kernel's defaults at the next reboot (nothing is changed on the running system)
 rm -f /etc/sysctl.d/60-sharedbox-*.conf /etc/modules-load.d/sharedbox-bbr.conf
 if [[ -e /swap.treehouse ]]; then swapoff /swap.treehouse 2>/dev/null && rm -f /swap.treehouse; fi
+# every command link into the program folder (box, sharedbox-admin, ...), then the folder itself
+for d in /usr/local/bin /usr/local/sbin; do
+    for l in "$d"/*; do
+        [[ -L $l && $(readlink "$l") == /usr/lib/sharedbox/* ]] && rm -f "$l"
+    done
+done
 rm -rf /usr/lib/sharedbox /usr/share/sharedbox
-rm -f /usr/local/bin/box /usr/local/sbin/sharedbox-admin /usr/local/sbin/sharedbox-janitor /usr/local/sbin/sharedbox-tools \
-    /etc/profile.d/sharedbox.sh
+rm -f /etc/profile.d/sharedbox.sh
+systemctl reset-failed 'sharedbox-*' 2>/dev/null || true
 echo "if you turned on the public front door: sudo tailscale funnel --https=443 off   (not done here; tailscaled is never touched)"
 echo "Cloudflare mode: the tunnel, DNS record and Access app stay in your Cloudflare account (delete them in the dashboard); cloudflared stays installed"
 echo "removed. Kept: system packages and agents installed by sharedbox-tools, /etc/sharedbox, /var/lib/sharedbox (archives, registry), friend accounts and their limit drop-ins, shared servers' code in /srv/shared and the sbshared user."

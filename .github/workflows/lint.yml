@@ -23,3 +23,15 @@ jobs:
       - name: gate end-to-end (real sharedbox-gate on loopback, stdlib, ~1s)
         run: python3 tests/e2e_gate.py .
         timeout-minutes: 2
+  install:
+    # fresh install, friend, re-install, update from git, uninstall, reinstall in a container booting systemd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ["ubuntu:24.04", "debian:trixie"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install test (${{ matrix.base }})
+        run: tests/container/run.sh "${{ matrix.base }}"
