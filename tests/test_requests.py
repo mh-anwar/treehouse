@@ -13,14 +13,9 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sbtestenv  # noqa: E402,F401  (first: shared conf/state for the run)
 TMP = tempfile.mkdtemp(prefix="sbreq-")
-CONF = os.path.join(TMP, "sharedbox.conf")
-with open(CONF, "w") as f:
-    f.write("REQUEST_AUTO_INSTALL=yes\n")
-os.environ.update(SHAREDBOX_CONF=CONF, SHAREDBOX_STATE=os.path.join(TMP, "state"), SHAREDBOX_LIB=LIB,
-                  SHAREDBOX_SHARE=os.path.join(ROOT, "share"))
-os.makedirs(os.path.join(TMP, "state"), exist_ok=True)
-sys.path.insert(0, LIB)
 
 
 def load_script(name, modname):
@@ -176,13 +171,12 @@ class RequestLoop(unittest.TestCase):
         r = self.opened(sim=(True, ["postgresql", "systemd-timesyncd"], ""))
         self.assertEqual((r["state"], self.installs), ("declined", []))
 
-
     def test_open_window_expires(self):
-        r = self.opened(until="2000-01-01 00:00")
+        self.opened(until="2000-01-01 00:00")
         self.assertEqual(self.installs, [])
-        r = self.opened(until="2999-01-01 00:00")
+        self.opened(until="2999-01-01 00:00")
         self.assertEqual(self.installs, [["postgresql"]])
-        r = self.opened(until="tonight")
+        self.opened(until="tonight")
         self.assertEqual(self.installs, [])  # a typo closes it
 
     def test_owner_can_approve_an_auto_declined_request(self):
@@ -284,9 +278,6 @@ class Reviewer(unittest.TestCase):
         self.assertIsNone(adm.ai_review({"OPENROUTER_KEY_FILE": "/nonexistent"}, {"user": "u"}, ["x"], [], "held"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class Hackathon(unittest.TestCase):
     def cfg(self, until, **kw):
@@ -326,3 +317,7 @@ class Hackathon(unittest.TestCase):
         calls.clear()
         self.assertEqual(adm.sb.hackathon_reconcile(self.cfg("2000-01-01 00:00", CANARY_ENABLED="0")), "off")
         self.assertEqual(calls, [["systemctl", "enable", "--now", "sharedbox-trap.service"]])
+
+
+if __name__ == "__main__":
+    unittest.main()
