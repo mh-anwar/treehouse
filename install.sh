@@ -99,6 +99,7 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
 for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+do_ install -m 644 "$SRC/lib/sbmulti.py" "$LIB/sbmulti.py"  # multi-box: box boxes / box run
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap sharedbox-update \
          sharedbox-canary sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"

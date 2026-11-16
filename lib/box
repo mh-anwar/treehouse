@@ -2986,6 +2986,10 @@ def main():
     x.set_defaults(fn=cmd_docker_nap)
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
+    # ---- multi-box (lib/sbmulti.py): `box boxes`, `box run --anywhere` ----
+    import sbmulti  # noqa: E402
+    sbmulti.add_parsers(s, sb, CFG, ME.pw_name, HOME, os.path.abspath(sys.argv[0]))
+    # ---- end multi-box ----
     a = p.parse_args()
     if not a.sub:
         a = p.parse_args(["status"])

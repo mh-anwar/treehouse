@@ -255,3 +255,9 @@ of the CPU power, 16 GB, Wi-Fi), so it's overflow capacity, not a speed-up. Move
 4. The other box is free: `ssh minastirith uptime` load below ~3 of 4.
 Otherwise run it here (`box heavy` for heavy work). Never keep the only copy of anything there; results go back
 to git or this box. There you log in as its admin: no sudo or system changes unless the owner asks.
+Tools for this: `box boxes` shows each box's load and whether you can log in there. `box run -- CMD` runs a
+heavy command wherever there's most room, and runs it here when no other box clearly wins or one is down. It
+copies only changed source files to a kept copy over there, streams the output back and returns the exit code.
+`box run --shards N -- CMD` splits a run over the boxes (each part gets BOX_SHARD and BOX_SHARDS, e.g.
+`playwright test --shard=$((BOX_SHARD+1))/$BOX_SHARDS`). Add `--prep "npm ci"` to install dependencies there
+(this only re-runs when lockfiles change) and `--back DIR` to copy results back.
