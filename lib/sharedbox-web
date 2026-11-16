@@ -1050,7 +1050,6 @@ EVENT_TEXT = {
     "gate_logout": "{user} signed out",
     "gate_revoked": "{user}'s sessions were revoked",
     "owner_paired": "{user} opened T3 Code in a new browser",
-    "canary": "TRIPWIRE: {user} opened a decoy secrets file ({file}) with `{cmd}`",
     "tools_updated": "coding agents were updated",
     "boxes_set": "{user} set the list of boxes: {boxes}",
     "tools_added": "installed {packages}",
@@ -1157,8 +1156,6 @@ def features_page(owner=False):
             else "Security updates at night.", "A busy agent gets up to 2 hours to finish."),
         row("Janitor", "Cleans up caches and leftovers so the disk never fills.",
             f"Projects untouched for {e(ttl)} days get archived (not deleted), and only once they're pushed to git."),
-        row("Tripwire", "You get an email if an agent goes rogue.",
-            "Fake passwords are planted on the box, and anything that reads them sets it off."),
         "</div>",
     ]
     return page("Features", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
@@ -1541,7 +1538,7 @@ def hackathon_section(btn):
               extra="<input type='hidden' name='op' value='off'>") if until else ""
     return ("<h3 id='settings' style='margin:0 0 10px'>Hackathon mode</h3><section class='sec'>"
             f"<p style='margin-top:0'>{state}</p>"
-            "<p class='sub'>For a build day: no decoy ports or tripwire (so ports like 5432 and 8080 are free), and package requests from the "
+            "<p class='sub'>For a build day: package requests from the "
             "people you pick skip the deny list. It ends by itself at the time you set (at most 7 days).</p>"
             f"{form}<div style='margin-top:10px'>{off}</div></section>")
 

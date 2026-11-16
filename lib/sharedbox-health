@@ -32,7 +32,6 @@ HDIR = os.path.join(sb.STATE_DIR, "health")
 METRICS = os.path.join(HDIR, "metrics.jsonl")
 SAMPLE_STATE = os.path.join(HDIR, "sample-state.json")
 ALERT_STATE = os.path.join(HDIR, "alerts.json")
-TRAP_LOG = os.path.join(sb.STATE_DIR, "trap", "hits.jsonl")
 WEEK = 7 * 86400
 KEEP = 9 * 86400
 
@@ -201,22 +200,8 @@ def gather(cfg, since):
 
     g["apt"] = apt_history(since)
     g["events"] = sb_events(since)
-    g["trap"] = jsonl(TRAP_LOG, since)
     g["issues"] = sb.read_issues(since)
     return g
-
-
-def trap_wins(days):
-    """The 'Trap wins' lines from sharedbox-trap's counters (same text as `sharedbox-trap stats`)."""
-    import importlib.machinery
-    import importlib.util
-    try:
-        loader = importlib.machinery.SourceFileLoader("sbtrap", os.path.join(sb.LIB_DIR, "sharedbox-trap"))
-        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("sbtrap", loader))
-        loader.exec_module(mod)
-        return mod.wins_lines(mod.wins(days))
-    except Exception as e:
-        return [f"trap stats unavailable: {e}"]
 
 
 def smart_status():
@@ -287,11 +272,6 @@ def problems(cfg, g, findings):
     nmed = sum(1 for f in findings if f["sev"] == "medium")
     if nmed:
         p.append(("yellow", f"{nmed} medium security finding(s)"))
-    own = sb.own_ips(cfg)   # the box itself (T3 environment discovery) and the owner's boxes aren't a scan
-    local_trap = [h for h in g["trap"] if h.get("internal") and h.get("ip") not in own]
-    if local_trap:
-        srcs = sorted({h["ip"] for h in local_trap})
-        p.append(("red", f"something INSIDE your network probed decoy ports: {', '.join(srcs[:5])}"))
     return p
 
 
@@ -359,8 +339,6 @@ def build_report(cfg, g, findings, new_ids, resolved):
         sec.append(f"Packages updated: {len(g['apt'])} (" + ", ".join(g["apt"][:12])
                    + (", …" if len(g["apt"]) > 12 else "") + ")")
     S.append(("Security activity", sec))
-    if cfg.get("TRAP_ENABLED") != "0":
-        S.append(("Trap wins", trap_wins(7)))
 
     iss = g.get("issues") or []
     if iss:
@@ -414,7 +392,7 @@ def _hl(line):
 def cmd_report(cfg, a):
     since = time.time() - WEEK
     au = sbaudit.Audit(cfg)
-    findings = au.run_all(deep=True, since=since)
+    findings = au.run_all(deep=True)
     new, resolved = au.save(deep=True)
     g = gather(cfg, since)
     subject, text, page = build_report(cfg, g, findings, {f["id"] for f in new}, resolved)
@@ -448,7 +426,7 @@ def cmd_check(cfg, a):
     """Hourly: email only about urgent things that weren't already reported."""
     since = time.time() - 2 * 3600
     au = sbaudit.Audit(cfg)
-    findings = au.run_all(deep=False, since=since)
+    findings = au.run_all(deep=False)
     g = gather(cfg, since)
     urgent = [(l, m) for l, m in problems(cfg, g, findings) if l == "red"]
     stale = (time.time() - os.path.getmtime(METRICS)) / 60 if os.path.exists(METRICS) else None
