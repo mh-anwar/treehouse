@@ -306,10 +306,12 @@ _URL_PART = re.compile(r"[A-Za-z0-9%&=._~:/?#+@!$'()*,;\[\]-]+")
 def screen_urls(screen):
     """https:// links on a terminal screen, put back together when the program hard-wrapped them at the
     terminal's width (Claude's sign-in link is ~330 characters: `tmux capture-pane -J` only joins tmux's own
-    wraps, so the rest of the link sits alone on the next line)."""
+    wraps, so the rest of the link sits alone on the next line). A program that indents the link (Antigravity's
+    full-screen sign-in puts one space before every line) indents the rest of it the same way."""
     lines = (screen or "").splitlines()
     out = []
     for i, line in enumerate(lines):
+        indent = line[:len(line) - len(line.lstrip())]
         for m in re.finditer(r"https://\S+", line):
             url = m.group(0)
             # it ran to the end of a long line: the next line(s) of bare link characters are the rest of it
@@ -317,7 +319,8 @@ def screen_urls(screen):
             j = i + 1
             while wrapped and j < len(lines):
                 nxt = lines[j]
-                if not nxt.strip() or nxt != nxt.lstrip() or not _URL_PART.fullmatch(nxt.strip()):
+                if not nxt.strip() or nxt[:len(nxt) - len(nxt.lstrip())] != indent \
+                        or not _URL_PART.fullmatch(nxt.strip()):
                     break
                 url += nxt.strip()
                 j += 1

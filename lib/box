@@ -582,7 +582,7 @@ def render_rules(notices=()):
     with open(os.path.join(sb.SHARE_DIR, "AGENTS.md")) as f:
         tpl = f.read()
     tv = tools()
-    order = ["claude", "codex", "gemini", "opencode", "node", "python3", "uv", "pipx", "git", "gh",
+    order = ["claude", "codex", "gemini", "antigravity", "opencode", "node", "python3", "uv", "pipx", "git", "gh",
              "tmux", "rg", "fdfind", "jq", "sqlite3", "gcc", "java", "go", "rustup", "xvfb-run"]
     tl = ", ".join(f"{tv[k]['label']} {tv[k]['version']}".strip() for k in order if k in tv) \
         or "run `box agents` to see what's installed"
@@ -1160,6 +1160,9 @@ AGENTS = [
      "run `codex login --device-auth` and enter the code at the URL it prints"),
     ("opencode", "opencode", ["opencode", "auth", "login"], [".local/share/opencode/auth.json"], [],
      "run `opencode auth login` and pick a provider"),
+    # Google's Antigravity CLI keeps its sign-in in this file when there's no desktop keyring (always, here)
+    ("antigravity", "Antigravity", ["antigravity"], [".gemini/antigravity-cli/antigravity-oauth-token"], [],
+     "run `antigravity`, pick Google OAuth, open the link it prints on your laptop, paste the code back"),
 ]
 
 
@@ -1168,7 +1171,14 @@ def tools():
 
 
 def logged_in(files, envs):
-    return any(os.path.exists(os.path.join(HOME, f)) for f in files) or any(os.environ.get(e) for e in envs)
+    return any(nonempty(os.path.join(HOME, f)) for f in files) or any(os.environ.get(e) for e in envs)
+
+
+def nonempty(path):
+    try:
+        return os.path.getsize(path) > 0
+    except OSError:
+        return False
 
 
 def gh_ok():
@@ -1308,7 +1318,7 @@ def cmd_welcome(a):
     r = ports()
     tv = tools()
     have = ", ".join(t["label"] for k, t in sorted(tv.items())
-                     if k in ("claude", "codex", "gemini", "opencode")) or "see `box agents`"
+                     if k in ("claude", "codex", "gemini", "antigravity", "opencode")) or "see `box agents`"
     print(f"""
 Welcome to {BRAND} on {socket.gethostname()}, {ME.pw_name}!
 
@@ -2036,6 +2046,9 @@ PORTAL_LOGINS = {
     # links this account's T3 Code to the friend's own T3 account: the T3 app on their laptop then sees this box
     # from anywhere (T3's own relay), no Tailscale or Cloudflare login needed
     "t3connect": ("T3 Connect", ["t3", "connect", "link", "--headless"], False),
+    # Google's Antigravity CLI: prints a Google sign-in link (indented, ~700 characters), reads the code the page then
+    # shows, saves the token and exits. Never copied to the other boxes (one sign-in per box, like ChatGPT).
+    "antigravity": ("Google (Antigravity)", ["antigravity", "acp", "--login"], True),
 }
 LOGIN_SOCK = "sblogin"
 URL_RE = re.compile(r"https://[^\s\"'<>]+")
@@ -2049,11 +2062,45 @@ def t3_connect_on():
     return os.path.exists(os.path.join(HOME, ".t3", "userdata", "secrets", "cloud-linked-user-id.bin"))
 
 
+AGY_TOKEN = os.path.join(HOME, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+AGY_CHECK = os.path.join(HOME, ".sharedbox", "antigravity-check.json")
+
+
+def antigravity_ok():
+    """Signed in to Antigravity: its token file has something in it, and `antigravity models` doesn't ask to sign in
+    (checked once per version of the token file, ~1 s; when it can't tell, e.g. offline, the file decides)."""
+    try:
+        st = os.stat(AGY_TOKEN)
+    except OSError:
+        return False
+    if not st.st_size:
+        return False
+    seen = sb.read_json(AGY_CHECK, {}) or {}
+    if isinstance(seen, dict) and seen.get("key") == f"{st.st_mtime_ns}:{st.st_size}":
+        return bool(seen.get("ok"))
+    ok = True
+    try:
+        r = subprocess.run(["antigravity", "models"], env=dict(user_env(), AGY_CLI_DISABLE_AUTO_UPDATE="true"),
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+        ok = r.returncode == 0 or "sign in" not in (r.stdout + r.stderr).lower()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:  # the check may have refreshed the token: remember the file as it is now
+        st = os.stat(AGY_TOKEN)
+        os.makedirs(os.path.dirname(AGY_CHECK), exist_ok=True)
+        sb.write_json(AGY_CHECK, {"key": f"{st.st_mtime_ns}:{st.st_size}", "ok": ok}, mode=0o600)
+    except OSError:
+        pass
+    return ok
+
+
 def portal_logged_in(key):
     if key == "gh":
         return gh_ok()
     if key == "t3connect":
         return t3_connect_on()
+    if key == "antigravity":
+        return antigravity_ok()
     for name, _, _, files, envs, _ in AGENTS:
         if name == key:
             return logged_in(files, envs)

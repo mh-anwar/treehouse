@@ -212,16 +212,17 @@ g.VERIFIER = FakeVerifier()
 ACCOUNTS = {  # what `box _portal status` would say for each account
     "alice": {"boxes": {"minastirith": {"ssh": True, "logins": {"claude": True, "gh": True, "t3connect": False}},
                         "krishbox": {"ssh": False, "logins": {}}},
-              "logins": {"claude": True, "codex": False, "gh": False, "t3connect": False},
+              "logins": {"claude": True, "codex": False, "gh": False, "t3connect": False, "antigravity": True},
               "servers": [{"name": "blog", "state": "running", "port": str(PORT_OF["alice"] + 3)},
                           {"name": "bot", "state": "stopped", "port": str(PORT_OF["alice"] + 4)}], "ssh": True},
-    "bob": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
+    "bob": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False, "antigravity": False},
+            "servers": [], "ssh": False},
     "carol": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
     "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False,
              "boxes": {"minastirith": {"ssh": True, "logins": {"codex": False}}}},  # ChatGPT here, not there yet
     "erin": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False,
              "no_t3": True},  # T3 Code isn't installed for her: the start card says so
-    ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
+    ME: {"logins": {"claude": True, "codex": False, "gh": True, "t3connect": False, "antigravity": False},
          "servers": [{"name": "site", "state": "running", "port": "8080"}], "ssh": True},
 }
 PROJECTS = {  # what `box _portal status` says under "projects" (lib/sbprojects.py summary), per account
@@ -268,7 +269,8 @@ RUNNING[ME] = [dict(x, name=x["name"].replace("shop-db", "uoft-index")) for x in
     {"key": f"u:sb-s{i}.service", "kind": "server", "name": f"small-server-{i}", "detail": "python3", "mem": (9 - i) * M,
      "age": 3600 * i, "pids": 1, "stop": "server", "cpu_usec": 0} for i in range(1, 6)]
 TEAM = {"alice": ["bob"]}  # alice already lets bob's agents into her T3
-LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect"}
+LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect",
+          "antigravity": "Google (Antigravity)"}
 SHARED = [{"name": "web", "state": "running", "port": SHARED_BASE, "created_by": "alice", "created": NOW - 86400,
            "updated_by": "bob", "updated": NOW - 600,
            "desc": "Discord bot that posts the week's hackathon schedule <b>every Monday</b>"},
@@ -552,6 +554,9 @@ def _fake_root(req):
             return {"ok": True, "done": True}
         if key == "claude":
             return {"ok": True, "url": "https://claude.ai/oauth/authorize?code=true", "code": None, "paste": True}
+        if key == "antigravity":
+            return {"ok": True, "url": "https://accounts.google.com/o/oauth2/auth?access_type=offline", "code": None,
+                    "paste": True}
         return {"ok": True, "url": "https://github.com/login/device", "code": "ABCD-1234", "paste": False}
     if action == "code":
         acct["logins"][key] = True

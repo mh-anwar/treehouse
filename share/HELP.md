@@ -7,7 +7,9 @@ Browser logins can't open a browser here, so use device codes and relay only the
 3. When they say done: `gh auth status`, then `gh auth setup-git`. Code expired (~15 min)? Start again.
 4. If `git config --global user.name`/`user.email` are empty, fill them from `gh api user`
    (`<id>+<login>@users.noreply.github.com` as the email).
-Claude / Codex logins: send the user to their page {portal}, which does them in the browser.
+Claude / Codex / Google (Antigravity) logins: send the user to their page {portal}, which does them in the browser.
+Antigravity's Google sign-in is per box (never copied). T3 keeps its own: there the user turns on Antigravity
+(Settings > Providers > Antigravity) and signs in once more.
 Never ask for passwords or tokens in chat.
 
 @@ files
@@ -115,8 +117,8 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 (live in the next session). Never install one unasked.
 
 @@ updates
-The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed by the owner and update automatically every
-night, for everyone. `box updates` shows the installed versions.
+The coding agents (`claude`, `codex`, `opencode`, `t3`, Google's `antigravity` / `agy`) are installed by the owner
+and update automatically every night, for everyone. `box updates` shows the installed versions.
 
 @@ connect
 The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this

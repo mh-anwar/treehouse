@@ -56,6 +56,19 @@ class ScreenUrls(unittest.TestCase):
                  "Code: GFXD-KQWN\nWaiting\n"
         self.assertEqual(sbconnect.screen_urls(screen), ["https://accounts.t3.codes/device?user_code=GFXD-KQWN"])
 
+    def test_indented_link_wrapped_with_the_same_indent_is_joined(self):
+        part1 = " https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591-x.apps." \
+                "googleusercontent.com&code_challenge=AbC"
+        screen = f" Your browser should open automatically. If not:\n{part1}\n dEf&prompt=consent&state=xyz\n\n" \
+                 " If you aren't automatically redirected, paste the authorization code below:\n"
+        self.assertEqual(sbconnect.screen_urls(screen), [part1.strip() + "dEf&prompt=consent&state=xyz"])
+        # `antigravity acp --login`: tmux's own wrap, joined by capture-pane -J into one indented line
+        long = "https://accounts.google.com/o/oauth2/auth?" + "&".join(f"k{i}=v{i}" for i in range(120))
+        self.assertEqual(sbconnect.screen_urls(f"Open this link in a browser to log in with Google:\n\n  {long}\n\n"
+                                               "Then paste the authorization code, or the full URL\n"), [long])
+        # a differently indented line after a long link is not part of it
+        self.assertEqual(sbconnect.screen_urls(f"{part1}\n   Waiting\n"), [part1.strip()])
+
     def test_link_mid_sentence(self):
         self.assertEqual(sbconnect.screen_urls("open https://github.com/login/device and type the code."),
                          ["https://github.com/login/device"])
