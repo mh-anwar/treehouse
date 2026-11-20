@@ -472,13 +472,13 @@ class Web(unittest.TestCase):
         w = self.web
         w.portal_call = lambda *a, **k: {"ok": True, "logins": {}, "t3": None}
         who = w.cf_who("friend@example.com", "jwt")
-        html_out = w.portal_page("gate", who, "sam", self.friend)
+        html_out = w.portal_page("gate", who, "sam", self.friend, tab="account")  # More options, on Account
         self.assertIn("connect-prompt", html_out)
 
 
     # ---- the start card on /_box/me ----
 
-    def render(self, logins, t3=True, ts_id="n1", app=False, result=None, welcome=False):
+    def render(self, logins, t3=True, ts_id="n1", app=False, result=None, welcome=False, tab=""):
         w = self.web
         rec = dict(self.friend, **({"ts_id": ts_id} if ts_id else {}))
 
@@ -492,7 +492,7 @@ class Web(unittest.TestCase):
             return {"ok": False, "error": "unexpected"}
         w.portal_call = portal_call
         who = w.cf_who("friend@example.com", "jwt")
-        return w.portal_page("gate", who, "sam", rec, result=result, welcome=welcome)
+        return w.portal_page("gate", who, "sam", rec, result=result, welcome=welcome, tab=tab)
 
     @staticmethod
     def start_mains(page):
@@ -529,14 +529,14 @@ class Web(unittest.TestCase):
                 self.assertNotIn(f"@{w.HOST}<", page)
                 self.assertNotIn(f"//{w.HOST}:", page)
             self.assertIn("Welcome, sam", self.render({"claude": False}, welcome=True))
-            self.assertIn("ssh sam@100.64.0.5", self.render({"claude": True}))
+            self.assertIn("ssh sam@100.64.0.5", self.render({"claude": True}, tab="account"))
         finally:
             w.SELF_IP = old
 
     def test_dashboard_people_first_running_kept(self):
-        """The redesigned friend page: messages and who's here first, then servers, the Running card
-        (lib/sbrunning.py), the account rows with phone alerts, and Usage folded at the end. Brand-new people
-        (no AI login yet) see only the start card."""
+        """The friend page in tabs: Home (start card, what needs you, who's here), Messages, Servers (yours, the
+        group's, the Running card from lib/sbrunning.py), Account (rows with phone alerts, Usage). Brand-new people
+        (no AI login yet) see only the start card, no tabs."""
         w = self.web
         rec = dict(self.friend, ts_id="n1")
         running = [{"key": "c:shopdb", "name": "shop-db", "kind": "database", "mem": 1 << 30, "age": 3600,
@@ -562,26 +562,40 @@ class Web(unittest.TestCase):
             return {"ok": False, "error": "unexpected"}
         w.portal_call = portal_call
         who = w.cf_who("friend@example.com", "jwt")
-        page = w.portal_page("gate", who, "sam", rec)
-        order = [page.index(k) for k in ("id='start'", "id='messages'", "id='people'", "Your servers",
-                                         "id='running'", "id='account'", "id=\"dash\"")]
-        self.assertEqual(order, sorted(order))
-        self.assertIn("Fix &lt;the&gt; login", page)
-        self.assertIn("1 new", page)
-        self.assertIn("In class", page)
-        self.assertIn("shop-db", page)
-        self.assertIn("Connect Telegram", page)
-        self.assertIn('<details class="sec usage" id="dash"', page)
+        pages = {t: w.portal_page("gate", who, "sam", rec, tab=t) for t in ("home", "messages", "servers", "account")}
+        for t in ("", "nope", "people", "requests"):  # no tab, an unknown one, the owner's: Home
+            self.assertIn("data-tab='home' class='on' aria-current='page'", w.portal_page("gate", who, "sam", rec, tab=t))
+        want = {"home": ("id='start'", "id='needs'", "id='people'"), "messages": ("id='messages'",),
+                "servers": ("Your servers", "id='running'"), "account": ("id='account'", "id='dash'")}
+        for t, keys in want.items():
+            order = [pages[t].index(k) for k in keys]
+            self.assertEqual(order, sorted(order), t)
+            for other, okeys in want.items():
+                if other != t:
+                    for k in okeys:
+                        self.assertNotIn(k, pages[t], (t, k))
+            self.assertEqual(pages[t].count("aria-current='page'"), 1, t)
+            self.assertIn(f"href='/_box/me?tab={t}' data-tab='{t}' class='on' aria-current='page'", pages[t])
+        self.assertIn("Fix &lt;the&gt; login", pages["messages"])
+        self.assertIn("1 new", pages["messages"])
+        self.assertIn("1 new message", pages["home"])  # Needs you, linking to Messages
+        self.assertIn("href='/_box/me?tab=messages'>Read", pages["home"])
+        self.assertIn("In class", pages["home"])
+        self.assertIn("shop-db", pages["servers"])
+        self.assertIn("Connect Telegram", pages["account"])
+        self.assertIn("<div class='blk' id='dash' data-card='dash'><h2>Usage</h2>", pages["account"])
+        page = "".join(pages.values())
         self.assertNotIn("boost", page.lower().replace("boosts", ""))
         running[:] = []
         logged_out = portal_call
         w.portal_call = lambda ip, who, action, **kw: (
             dict(logged_out(ip, who, action), logins={"claude": {"label": "claude", "ok": False}})
             if action == "status" else logged_out(ip, who, action, **kw))
-        page = w.portal_page("gate", who, "sam", rec)
-        self.assertIn("Log in with Claude", page)
-        for gone in ("id='messages'", "id='running'", "id='account'", "Your servers"):
-            self.assertNotIn(gone, page)
+        for t in ("", "servers", "account"):
+            page = w.portal_page("gate", who, "sam", rec, tab=t)
+            self.assertIn("Log in with Claude", page)
+            for gone in ("id='messages'", "id='running'", "id='account'", "Your servers", "class='tabs'"):
+                self.assertNotIn(gone, page)
 
     def test_prompt_result(self):
         w = self.web
