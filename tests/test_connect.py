@@ -509,9 +509,12 @@ class Web(unittest.TestCase):
             cases = [  # (logins, t3, ts_id, app, main button, text)
                 ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this box yet"),
                 ({"claude": False, "codex": False}, True, "n1", False, "Log in with Claude", "Log in with ChatGPT"),
-                ({"claude": True}, True, "n1", False, "Open T3 in this browser", "Want the T3 app on your laptop instead?"),
-                ({"claude": True}, True, "", False, "Open T3 in this browser", "Want the T3 app on your laptop instead?"),
-                ({"claude": True}, True, "n1", True, "Open T3 in this browser", "App not connecting"),
+                ({"claude": True}, True, "n1", False, "Open T3 in this browser", "Want the T3 app on your laptop?"),
+                ({"claude": True}, True, "", False, "Open T3 in this browser", "Want the T3 app on your laptop?"),
+                ({"claude": True}, True, "n1", True, "Open T3 in this browser", "Setting up another laptop?"),
+                # T3 Connect offered: a second, secondary "Open T3 app" (signs in first, then shows how)
+                ({"claude": True, "t3connect": False}, True, "n1", False, "Open T3 in this browser", "Already on Tailscale?"),
+                ({"claude": True, "t3connect": True}, True, "n1", False, "Open T3 in this browser", "Download T3"),
             ]
             for logins, t3, ts_id, app, main, text in cases:
                 page = self.render(logins, t3, ts_id, app)

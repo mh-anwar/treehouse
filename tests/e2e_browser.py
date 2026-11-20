@@ -243,6 +243,7 @@ RUNNING = {  # what `box _portal status` says under "running" (lib/sbrunning.py)
 RUNNING[ME] = [dict(x, name=x["name"].replace("shop-db", "uoft-index")) for x in RUNNING["alice"]] + [
     {"key": f"u:sb-s{i}.service", "kind": "server", "name": f"small-server-{i}", "detail": "python3", "mem": (9 - i) * M,
      "age": 3600 * i, "pids": 1, "stop": "server", "cpu_usec": 0} for i in range(1, 6)]
+TEAM = {"alice": ["bob"]}  # alice already lets bob's agents into her T3
 LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect"}
 SHARED = [{"name": "web", "state": "running", "port": SHARED_BASE, "created_by": "alice", "created": NOW - 86400,
            "updated_by": "bob", "updated": NOW - 600,
@@ -406,6 +407,27 @@ def _fake_root(req):
         return {"ok": True, "message": "Telegram is on: @treehouse_test_bot."}
     if action == "restore":
         return {"ok": True, "message": f"Restored {req.get('key')} to your home folder."}
+    if action == "team":  # teammates' agents in your T3 (root: handle_team)
+        mates = [u for u in UIDS if u != name]
+        grants = TEAM.setdefault(name, [])
+        op = req.get("op")
+        if op == "list":
+            return {"ok": True, "people": mates, "access": {"read-only": "Look only", "approval-required":
+                    "Ask before changes", "full-access": "Full access"},
+                    "grants": [{"to": g, "session": "s-" + g, "since": "2026-11-19", "last": ""} for g in grants]}
+        if req.get("to") not in mates:
+            return {"ok": False, "error": "pick a teammate"}
+        if op == "grant":
+            if req.get("access") not in ("read-only", "approval-required", "full-access"):
+                return {"ok": False, "error": "pick what their agents may do"}
+            if req["to"] not in grants:
+                grants.append(req["to"])
+            return {"ok": True, "message": f"{req['to']}'s agents can now work in your T3."}
+        if op == "revoke":
+            if req["to"] in grants:
+                grants.remove(req["to"])
+            return {"ok": True, "message": f"{req['to']}'s agents can't work in your T3 any more."}
+        return {"ok": False, "error": "unknown action"}
     if action == "hackathon":  # root: sharedbox-admin hackathon_set
         if not owner:
             return {"ok": False, "error": "not the owner"}
@@ -1117,9 +1139,9 @@ def start_cards(browser):
     """The start card: exactly one main button per state (S0..S3), and the T3 app setup prompt."""
     cases = [("erin", "tok-erin", [], "T3 isn't set up on this box yet"),
              ("bob", "tok-bob", ["Log in with Claude"], "Log in with ChatGPT"),
-             ("alice", "tok-alice", ["Open T3 in this browser"], "Want the T3 app on your laptop instead?"),
+             ("alice", "tok-alice", ["Open T3 in this browser"], "Already on Tailscale?"),
              ("dave", "tok-dave", ["Open T3 in this browser"], "Make a setup prompt"),  # no Tailscale id on record
-             ("alice", "tok-alice", ["Open T3 in this browser"], "Want the T3 app on your laptop", 390)]
+             ("alice", "tok-alice", ["Open T3 in this browser"], "Open T3 app", 390)]
     for persona, tok, want, text, *width in cases:
         s = Session(browser, persona, tok, **({"width": width[0]} if width else {}))
         s.page.goto(url("/_box/me"))
