@@ -421,6 +421,11 @@ form.status input{flex:2 1 220px;width:auto;margin:0}form.status input+input{fle
 .note.hk-on{border-color:var(--okb)}.note.hk-on .ic{width:8px;height:8px;background:var(--ok)}
 details.usage>summary .sub{font-weight:400}details.usage .you{margin-top:8px}
 .rows .a{display:flex;flex-wrap:wrap;gap:8px}
+.line.btns{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}.line.btns>.btn,.line.btns>form>button,.line.btns summary{margin-top:8px}
+details.appd>summary{list-style:none}details.appd>summary::-webkit-details-marker{display:none}
+details.appd[open]{flex-basis:100%}details.appd[open]>summary{margin-bottom:4px}
+.appbox{border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;margin-top:8px}.appbox p{margin:0}.appbox p+p{margin-top:8px}
+form.status select{flex:1 1 160px;width:auto;margin:0}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
 """
 
@@ -1212,6 +1217,10 @@ EVENT_TEXT = {
     "cloudflare_ssh": "SSH through Cloudflare was turned on",
     "admin_drop_refused": "a non-admin tried to send an admin request",
     "shared_drop_refused": "a non-member tried to control a group server",
+    "team_link": "{user} let {to}'s agents work in their T3",
+    "team_unlink": "{user} stopped {to}'s agents working in their T3",
+    "telegram_linked": "{user} connected Telegram",
+    "telegram_off": "{user} turned Telegram off",
 }
 
 
@@ -1784,6 +1793,9 @@ b.classList.remove("busy");b.disabled=false})});
 document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){
 const n=document.getElementById("start-busy");if(n)n.hidden=false;
 setTimeout(function(){f.querySelectorAll("button").forEach(function(b){b.disabled=true})},0)})});
+// back from connecting the T3 app: show how to open it
+function openApp(){if(location.hash!=="#app")return;const d=document.getElementById("app");if(d){d.open=true;d.scrollIntoView({block:"center"})}}
+openApp();window.addEventListener("hashchange",openApp);
 })();
 """
 
@@ -1848,7 +1860,7 @@ def portal_bundle(ip, who):
     """Root's answers for one page view, fetched at once: status (the slow one), shared servers, inbox,
     who's here and Telegram. A missing answer becomes {"ok": False}; the page still renders."""
     calls = {"shared": ("shared-ls", {}), "msg": ("msg", {"op": "inbox"}), "where": ("where", {"op": "list"}),
-             "tg": ("telegram", {"op": "status"})}
+             "tg": ("telegram", {"op": "status"}), "team": ("team", {"op": "list"})}
     got = {}
 
     def one(k, action, kw):
@@ -2069,6 +2081,54 @@ def telegram_setup_section(tg, tok, base):
             + ("Replace token" if tg.get("ready") else "Turn on") + "</button></form></section>")
 
 
+T3_DOWNLOAD = "https://t3.codes/download"
+T3_IOS = "https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824"
+T3_ANDROID = "https://play.google.com/store/apps/details?id=com.t3tools.t3code"
+
+
+def app_help():
+    """Under "Open T3 app" once T3 Connect is on: the app finds the box through the T3 account, no VPN."""
+    e = html.escape
+    return (f"<div class='appbox'><p><b>Laptop:</b> open the T3 app and sign in with your T3 account. <b>{e(HOST)}</b> "
+            f"shows up by itself. No app yet? <a href='{T3_DOWNLOAD}' target='_blank' rel='noopener'>Download T3</a>.</p>"
+            f"<p><b>Phone:</b> get T3 Code for <a href='{T3_IOS}' target='_blank' rel='noopener'>iPhone</a> or "
+            f"<a href='{T3_ANDROID}' target='_blank' rel='noopener'>Android</a> and sign in the same way.</p>"
+            "<p class='sub'>Use the T3 account you just signed in with. Any number of phones and laptops work. "
+            "T3's free plan links up to 3 boxes per person.</p></div>")
+
+
+def team_section(team, names, tok, base, result=None):
+    """Teammates' agents in your T3: who can, a Stop button each, and a form to let someone in."""
+    e = html.escape
+    if not team.get("ok") or not team.get("people"):
+        return ""
+    nm = (lambda u: names.get(u) or u)
+    access = team.get("access") or {}
+    view = str((result or {}).get("_view") or "")
+    grants = [g for g in team.get("grants") or [] if isinstance(g, dict) and g.get("to")]
+    out = ["<div class='dash-h' id='team'><h2>Teammates' agents</h2></div>"]
+    if result and view == "team":
+        out.append(portal_result(result, None, base))
+    out.append("<section class='sec'><p class='sub' style='margin-top:0'>Let a teammate's agents work in your T3: open "
+               "your projects, read code, run things. Handy at a hackathon when their agent needs to fix something "
+               "in your app. You can stop it any time.</p>")
+    if grants:
+        out.append("<ul class='rows'>" + "".join(
+            f"<li><span class='k'>{e(nm(g['to']))}</span><span class='d'>since {e(g.get('since') or '?')}"
+            + (f" · last used {e(g['last'])}" if g.get("last") else "") + "</span><span class='a'>"
+            f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='team', op='revoke', to=g['to'])}"
+            "<button class='sm danger'>Stop</button></form></span></li>" for g in grants) + "</ul>")
+    opts = "".join(f"<option value='{e(u)}'>{e(nm(u))}</option>" for u in team["people"])
+    lv = "".join(f"<option value='{e(k)}'{' selected' if k == 'approval-required' else ''}>{e(v)}</option>"
+                 for k, v in access.items())
+    out.append(f"<form method='post' action='{base}/me' class='status'>{hidden(tok, action='team', op='grant')}"
+               f"<select name='to' aria-label='Teammate'>{opts}</select>"
+               f"<select name='access' aria-label='What their agents may do'>{lv}</select>"
+               "<button class='sm'>Allow</button></form>"
+               "<p class='sub' style='margin:8px 0 0'>If it stops working after a month, press Allow again.</p></section>")
+    return "".join(out)
+
+
 def hackathon_banner(me):
     """Friends see when hackathon mode is on (and whether their package requests are open)."""
     e = html.escape
@@ -2121,7 +2181,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     gate = bool(who.get("cf_jwt"))
     base = "/_box" if gate else ""
     st, more_data = portal_bundle(ip, who)
-    shared, msg, where, tg = (more_data[k] for k in ("shared", "msg", "where", "tg"))
+    shared, msg, where, tg, team = (more_data[k] for k in ("shared", "msg", "where", "tg", "team"))
     logins, t3 = st.get("logins") or {}, st.get("t3")
     btn = portal_btn(tok, base)
     view = str((result or {}).get("_view") or "")
@@ -2175,18 +2235,23 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                 if first == "claude" and "codex" in logins:
                     card.append("<div class='line sub'>Or use your ChatGPT plan: "
                                 + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
-        elif state == "S2":
+        else:  # S2, S3: T3 in this browser, or the T3 app on their laptop or phone (T3 Connect: no VPN)
+            t3c = logins.get("t3connect")
+            if t3c and t3c.get("ok"):
+                app = f"<details class='appd' id='app'><summary class='btn secondary'>Open T3 app</summary>{app_help()}</details>"
+            elif t3c:  # the first press signs them in to T3 Connect; after that the app finds the box by itself
+                app = btn("login", "Open T3 app", "t3connect", primary=False)
+            else:
+                app = ""
             card.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><p>T3 is where you talk to your "
-                        "agent. It runs on the box, so it keeps working when you close the tab.</p>"
-                        f"<div class='line'>{open_t3('Open T3 in this browser')}</div>"
-                        "<div class='line sub'>Want the T3 app on your laptop instead? "
-                        + btn("t3prompt", "Make a setup prompt", link=True, attrs=" data-busy='1'")
-                        + " and paste it into Claude Code or Codex there.</div>" + busy)
-        else:  # S3
-            card.append("<h2>Open T3</h2><p>Open the T3 app on your laptop. Or open T3 in this browser. Your agents "
-                        f"keep working when you close it.</p><div class='line'>{open_t3('Open T3 in this browser')}</div>"
-                        f"{busy}<div class='line sub'>App not connecting, or setting up another laptop? "
-                        + btn("t3prompt", "Make a new setup prompt", link=True, attrs=" data-busy='1'") + ".</div>")
+                        "agent. It runs on the box, so it keeps working when you close the tab or the app.</p>"
+                        f"<div class='line btns'>{open_t3('Open T3 in this browser')}{app}</div>" + busy
+                        + ("" if t3c and t3c.get("ok") else
+                           "<div class='line sub'>" + ("Setting up another laptop? " if state == "S3" else
+                                                        "Already on Tailscale? " if app else "Want the T3 app on your laptop? ")
+                           + btn("t3prompt", "Make a new setup prompt" if state == "S3" else "Make a setup prompt",
+                                 link=True, attrs=" data-busy='1'")
+                           + " and paste it into Claude Code or Codex there.</div>"))
 
     out = []
     if who["display"] != name:  # the start card is the greeting; only say which account this is when it differs
@@ -2210,6 +2275,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     out.append(servers_section(st, shared, btn, base))
     # what's using memory right now, with Stop buttons (lib/sbrunning.py): right under the servers it includes
     out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
+    out.append(team_section(team, display_names(where), tok, base, result))
 
     # ---- your account: one row per thing, buttons on the right ----
     acct = []
@@ -2225,6 +2291,11 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
             '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
             "" if logins["gh"]["ok"] else btn("login", "Connect GitHub", "gh", primary=False, small=True))
+    if "t3connect" in logins:
+        row("T3 app", '<span class="dot ok"></span>Connected. Open the T3 app on your phone or laptop and sign in.'
+            if logins["t3connect"]["ok"] else '<span class="dot"></span>Not connected. Use T3 from your phone or laptop.',
+            "<a class='btn secondary sm' href='#app'>How</a>" if logins["t3connect"]["ok"] else
+            btn("login", "Connect", "t3connect", primary=False, small=True))
     trow = telegram_row(tg, tok, base)
     if trow:
         row(*trow)
@@ -2320,7 +2391,7 @@ def portal_result(res, btn, base=""):
         return logs_card(res, btn)
     if view == "boost":  # older pages: boosts are gone, root explains why
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
-    if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore"):
+    if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team"):
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
@@ -2347,7 +2418,14 @@ or come back here for a new link on another device.</p></div>"""
 <form method="post" action="{base}/me"><input type="hidden" name="token" value="{e(res['_tok'])}">
 <input type="hidden" name="action" value="code"><input type="hidden" name="key" value="{e(key)}">
 <input name="code" autocomplete="off" required placeholder="paste the code"><button>Finish</button></form></div>"""
-    return f"""<div class="card"><h3>Finish logging in</h3>
+    if key == "t3connect":
+        head = ("<h3>Connect the T3 app</h3><p>Sign in to T3 once. After that, the T3 app on your phone and laptop "
+                f"finds {e(HOST)} by itself, from anywhere. Your T3 restarts once, so an agent that's working right "
+                "now gets interrupted.</p>")
+        open_btn = open_btn.replace("Open the login page", "Open the T3 sign-in page")
+    else:
+        head = "<h3>Finish logging in</h3>"
+    return f"""<div class="card">{head}
 <p>1. {open_btn}</p><p>2. Sign in and type this code:</p>
 <p class="big" style="letter-spacing:.08em">{e(res.get('code') or '')}</p>
 <p id="wait" class="mut">3. That's it. This page moves on by itself once you're in.</p>
@@ -2358,7 +2436,7 @@ key:{json.dumps(key)},format:"json"}});const t0=Date.now();
 async function poll(){{if(Date.now()-t0>15*60*1000){{document.getElementById("wait").textContent=
 "The code expired. Reload this page and start again.";return}}
 try{{const r=await fetch("{base}/me",{{method:"POST",body}});const j=await r.json();
-if(j.done){{location.href="{base}/me";return}}}}catch(e){{}}setTimeout(poll,3000)}}
+if(j.done){{location.href="{base}/me{'#app' if key == 't3connect' else ''}";return}}}}catch(e){{}}setTimeout(poll,3000)}}
 setTimeout(poll,4000)}})();</script>"""
 
 
@@ -2531,7 +2609,7 @@ class Handler(BaseHTTPRequestHandler):
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
         anchor = "#start" if view in START_VIEWS else {"running-ctl": "#running", "telegram": "#account",
-                                                       "msg": "#messages", "where": "#people"}.get(view, "")
+                                                       "msg": "#messages", "where": "#people", "team": "#team"}.get(view, "")
         tab = {"invite": "people", "hackathon": "settings", "request-update": "settings",
                "telegram-setup": "settings"}.get(
             view, "requests" if view.startswith("request-") else "")
@@ -2644,6 +2722,15 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, "telegram-setup", **({"op": "off"} if form.get("op") == "off" else
                                                            {"token": form.get("tgtoken", "").strip()[:200]}))
             return self.after_post(ip, who, name, rec, dict(res, _view="telegram-setup"))
+        if action == "team":  # teammates' agents in your T3: allow (with an access level) or stop
+            op = form.get("op", "")
+            if op not in ("grant", "revoke"):
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "team"})
+            kw = {"to": form.get("to", "")[:40]}
+            if op == "grant":
+                kw["access"] = form.get("access", "")[:40]
+            res = portal_call(ip, who, "team", op=op, **kw)
+            return self.after_post(ip, who, name, rec, dict(res, _view="team"))
         if action == "restore":  # an archived project back in ~ (`box restore NAME`, as this user)
             if not ARCHIVE_RE.fullmatch(key) or ".." in key:
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such project", "_view": "restore"})

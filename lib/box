@@ -2109,7 +2109,7 @@ def portal_status():
     return out
 
 
-def portal_t3(pair, app=False):
+def portal_t3(pair, app=False, label=None, ttl="30m"):
     if not shutil.which("t3"):
         return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
     r, host = ports(), sb.tailscale_ip4()
@@ -2128,8 +2128,8 @@ def portal_t3(pair, app=False):
     time.sleep(2)
     env = t3_live_env(host, env)
     t3_starter(env)
-    label = f"{ME.pw_name} T3 app" if app else f"{ME.pw_name} (join page)"  # the label lets us spot the app later
-    r = subprocess.run(["t3", "pair", "--ttl", "30m", "--label", label],
+    label = label or (f"{ME.pw_name} T3 app" if app else f"{ME.pw_name} (join page)")  # the label spots the app later
+    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", label],
                        env=dict(user_env(), **env), capture_output=True, text=True, timeout=60)
     url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines() if l.startswith("Pairing URL:")), None)
     if not url:
@@ -2148,6 +2148,76 @@ def app_setup_prompt(url):
     ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
     return sbconnect.app_prompt(url, portal_url(), socket.gethostname(), ts_login=ts["login"], ts_mode=ts["mode"],
                                 apps=t3_app_sessions(), expires=sbconnect.pair_expires(time.time()))
+
+
+def t3_json(args, env=None, timeout=60):
+    """Run `t3 ARGS --json` against this account's T3 and parse the output; None on any trouble."""
+    host, port, tenv = t3_env()
+    r = subprocess.run(["t3", *args, "--json"], env=dict(user_env(), **t3_live_env(host, tenv), **(env or {})),
+                       capture_output=True, text=True, errors="replace", timeout=timeout)
+    try:
+        return json.loads(r.stdout) if r.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def portal_team(req):
+    """Teammates' agents in a T3 (the dashboard's "Let a teammate's agents work in your T3"). Root calls this as
+    each side: op "grant" as the T3's owner (a one-time pairing link labelled for the teammate), "accept" as the
+    teammate (link it, at the access level the owner chose), "list" and "revoke" as the owner, "forget" as the
+    teammate. See sbconnect.team_*."""
+    op = req.get("op")
+    if not shutil.which("t3"):
+        return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
+    if op == "list":
+        sessions = t3_json(["auth", "session", "list"])
+        return {"ok": True, "grants": sbconnect.team_grants(sessions or [])}
+    if op == "grant":
+        to = str(req.get("to") or "")
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", to) or to == ME.pw_name:
+            return {"ok": False, "error": "pick a teammate"}
+        res = portal_t3(True, label=sbconnect.team_label(to), ttl="10m")
+        return {"ok": True, "pair_url": res["pair_url"]} if res.get("ok") else res
+    if op == "accept":
+        origin, code = sbconnect.split_pair_url(str(req.get("pair_url") or ""))
+        access = req.get("access")
+        if not origin or access not in sbconnect.TEAM_ACCESS:
+            return {"ok": False, "error": "bad request"}
+        up = portal_t3(False)  # make sure this account's T3 runs: the link is saved by the running T3
+        if not up.get("ok"):
+            return up
+        host, port, env = t3_env()
+        deadline = time.time() + 150
+        while not t3_up(host, env):
+            if time.time() > deadline:
+                return {"ok": False, "error": "their T3 is still starting; try again in a minute"}
+            time.sleep(2)
+        for old in sbconnect.team_links_to(t3_json(["environment", "list"]) or [], origin):  # a renewal replaces
+            subprocess.run(["t3", "environment", "unlink", old], env=dict(user_env(), **t3_live_env(host, env)),
+                           capture_output=True, timeout=60)
+        r = subprocess.run(["t3", "environment", "link", origin, "--pairing-code", code, "--access", access],
+                           env=dict(user_env(), **t3_live_env(host, env)), capture_output=True, text=True,
+                           errors="replace", timeout=90)
+        if r.returncode != 0:
+            return {"ok": False, "error": "linking failed: " + ((r.stderr or r.stdout).strip().splitlines() or ["?"])[-1][:200]}
+        return {"ok": True}
+    if op == "revoke":
+        sessions = t3_json(["auth", "session", "list"]) or []
+        to = str(req.get("to") or "")
+        ids = [g["session"] for g in sbconnect.team_grants(sessions) if g["to"] == to]
+        host, port, env = t3_env()
+        for sid in ids:
+            subprocess.run(["t3", "auth", "session", "revoke", sid], env=dict(user_env(), **t3_live_env(host, env)),
+                           capture_output=True, timeout=60)
+        return {"ok": True, "revoked": len(ids), "origin": f"http://{host}:{port}"}
+    if op == "forget":
+        origin = str(req.get("origin") or "")
+        host, port, env = t3_env()
+        for old in sbconnect.team_links_to(t3_json(["environment", "list"]) or [], origin):
+            subprocess.run(["t3", "environment", "unlink", old], env=dict(user_env(), **t3_live_env(host, env)),
+                           capture_output=True, timeout=60)
+        return {"ok": True}
+    return {"ok": False, "error": "unknown action"}
 
 
 def t3_starter(env):
@@ -2613,6 +2683,12 @@ def cmd_portal(a):
                                capture_output=True, text=True, errors="replace", timeout=120)
             out = ({"ok": True, "message": f"Restored {a.key} to your home folder."} if r.returncode == 0 else
                    {"ok": False, "error": (r.stderr.strip().removeprefix("box restore: ") or "couldn't restore it")[:300]})
+        elif a.action == "team":
+            try:
+                req = json.loads(sys.stdin.read(16 << 10) or "{}")
+            except ValueError:
+                req = None
+            out = portal_team(req) if isinstance(req, dict) else {"ok": False, "error": "bad request"}
         elif a.action in ("msg", "where"):
             try:
                 req = json.loads(sys.stdin.read(16 << 10) or "{}")

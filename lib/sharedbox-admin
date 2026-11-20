@@ -59,6 +59,7 @@ import sbteam  # noqa: E402
 import sbmsg  # noqa: E402
 import sbwhere  # noqa: E402
 import sbtelegram  # noqa: E402
+import sbconnect  # noqa: E402
 import sbfed  # noqa: E402
 import sbrunning  # noqa: E402
 
@@ -1012,6 +1013,43 @@ def start_update(cfg, by):
     return {"ok": True, "message": "Updating treehouse. This page may blink for a few seconds; refresh in a minute."}
 
 
+def handle_team(name, pw, req):
+    """Teammates' agents in this account's T3. Each half runs as its own account (`box _portal team`): the T3's
+    owner mints a one-time pairing link labelled for the teammate, the teammate's T3 links it at the access
+    level the owner picked. Revoking ends the session on the owner's side and forgets the link on the other."""
+    op = req.get("op")
+    mates = sorted(n for n, r in sb.friend_users().items() if n != name and r.get("status", "active") == "active")
+    if op == "list":
+        res = box_portal(pw, ["team"], input_text=json.dumps({"op": "list"}))
+        return dict(res, people=mates, access=dict(sbconnect.TEAM_ACCESS)) if res.get("ok") else res
+    to = req.get("to")
+    if to not in mates:
+        return {"ok": False, "error": "pick a teammate"}
+    to_pw = pwd.getpwnam(to)
+    if op == "grant":
+        access = req.get("access")
+        if access not in sbconnect.TEAM_ACCESS:
+            return {"ok": False, "error": "pick what their agents may do"}
+        res = box_portal(pw, ["team"], input_text=json.dumps({"op": "grant", "to": to}))
+        if not res.get("ok"):
+            return res
+        got = box_portal(to_pw, ["team"], input_text=json.dumps({"op": "accept", "pair_url": res["pair_url"],
+                                                                  "access": access}))
+        if not got.get("ok"):
+            box_portal(pw, ["team"], input_text=json.dumps({"op": "revoke", "to": to}))
+            return {"ok": False, "error": f"couldn't link it in {to}'s T3: {got.get('error') or 'no answer'}"}
+        sb.log_event("team_link", name, to=to, access=access)
+        return {"ok": True, "message": f"{to}'s agents can now work in your T3 "
+                                       f"({sbconnect.TEAM_ACCESS[access].lower()}). Stop it here any time."}
+    if op == "revoke":
+        res = box_portal(pw, ["team"], input_text=json.dumps({"op": "revoke", "to": to}))
+        if res.get("ok") and res.get("origin"):
+            box_portal(to_pw, ["team"], input_text=json.dumps({"op": "forget", "origin": res["origin"]}))
+        sb.log_event("team_unlink", name, to=to)
+        return {"ok": True, "message": f"{to}'s agents can't work in your T3 any more."} if res.get("ok") else res
+    return {"ok": False, "error": "unknown action"}
+
+
 def handle_portal(cfg, rid, req):
     owner = False
     if req.get("cf_jwt") is not None:  # cloudflare mode: identity = the Access token's email, verified here
@@ -1086,6 +1124,8 @@ def handle_portal(cfg, rid, req):
         fields = ("op", "id", "text", "to", "title", "context", "level", "due", "status", "until", "clear", "private")
         payload = {k: req[k] for k in fields if k in req and isinstance(req[k], (str, bool, int))}
         return box_portal(pw, [action], input_text=json.dumps(payload))
+    if action == "team":  # the dashboard's "Let a teammate's agents work in your T3"
+        return handle_team(name, pw, req)
     if action == "status":
         return box_portal(pw, ["status"])
     if action == "t3":

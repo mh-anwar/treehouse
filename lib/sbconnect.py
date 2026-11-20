@@ -251,3 +251,47 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
 To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`
 and follow the steps it prints (it checks Tailscale first, then pairs the app).
 """
+
+
+# ---------- teammates' agents in your T3 (`t3 environment link`, set up from the dashboard) ----------
+# Alice lets Bob's agents work in her T3: her T3 mints a one-time pairing code labelled "<bob>'s agents (treehouse)",
+# and Bob's T3 links her T3 with it (`t3 environment link URL --pairing-code CODE --access LEVEL`). Bob's agents then
+# see her T3 as a linked environment. She stops it by revoking that session; Bob's side forgets the link.
+
+TEAM_ACCESS = {"read-only": "Look only", "approval-required": "Ask before changes", "full-access": "Full access"}
+TEAM_SUFFIX = "'s agents (treehouse)"
+
+
+def team_label(to):
+    return f"{to}{TEAM_SUFFIX}"
+
+
+def split_pair_url(url):
+    """http://ip:port/pair#token=abc -> ("http://ip:port", "abc"); ("", "") when it isn't one."""
+    u = urllib.parse.urlsplit(url or "")
+    tok = urllib.parse.parse_qs(u.fragment).get("token", [""])[0]
+    if u.scheme not in ("http", "https") or not u.netloc or not tok:
+        return "", ""
+    return f"{u.scheme}://{u.netloc}", tok
+
+
+def team_grants(sessions):
+    """`t3 auth session list --json` -> [{"to", "session", "since", "last"}]: the teammates whose agents can work in
+    this T3 now (sessions labelled by team_label, not revoked)."""
+    out = []
+    for s in sessions if isinstance(sessions, list) else []:
+        if not isinstance(s, dict):
+            continue
+        label = str((s.get("client") or {}).get("label") or "")
+        if not label.endswith(TEAM_SUFFIX) or s.get("revokedAt"):
+            continue
+        out.append({"to": label[:-len(TEAM_SUFFIX)], "session": str(s.get("sessionId") or ""),
+                    "since": str(s.get("issuedAt") or "")[:10], "last": str(s.get("lastConnectedAt") or "")[:10]})
+    return [g for g in out if g["session"]]
+
+
+def team_links_to(envs, origin):
+    """`t3 environment list --json` -> ids of the linked environments reached at `origin`."""
+    if not isinstance(envs, list):
+        return []
+    return [str(e.get("environmentId")) for e in envs if isinstance(e, dict) and e.get("environmentId") and any(str(u).rstrip("/") == origin.rstrip("/") for u in e.get("urls") or [])]
