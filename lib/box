@@ -3140,7 +3140,8 @@ def projects_remote(dest, req):
     if "invalid choice" in r.stderr and "_projects-here" in r.stderr:
         return {"ok": False, "error": "That box needs a treehouse update first."}
     if r.returncode == 255:
-        return {"ok": False, "error": "Can't log in to that box over SSH yet."}
+        return {"ok": False, "error": ("Not connected yet. Your boxes connect to each other by themselves within a few minutes; "
+                                      "if this stays for a day, the owner can fix it.")}
     try:
         return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
     except ValueError:

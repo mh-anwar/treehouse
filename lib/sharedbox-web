@@ -2475,8 +2475,8 @@ def projects_section(st, tok, base, slot=None):
         state = str(v.get("state") or "waiting")
         err = str((boxes.get(b) or {}).get("error") or "")
         if state == "waiting":
-            if err:
-                return f"<span class='pb'><span class='dot warn'></span>{e(b)}: {e(err[:160])}</span>"
+            if err:  # why is said once, under the list, with the next step
+                return f"<span class='pb'><span class='dot warn'></span>{e(b)}: waiting for that box</span>"
             return f"<span class='pb'><span class='spin' aria-hidden='true'></span>{e(b)}: copying at the next sync</span>"
         cls, label = PROJECT_STATE.get(state, ("", state))
         note = str(v.get("note") or "")
@@ -2499,9 +2499,9 @@ def projects_section(st, tok, base, slot=None):
                   "<button class='secondary sm'>Keep on all boxes</button></form>"
         items.append(f"<li><span class='k mono'>{e(n)}</span><span class='d'>{d}</span><span class='a'>{act}</span></li>")
     out = [head, slot("projects"),
-           f"<p class='sub' style='margin-top:0'>A project you turn on is cloned into the same folder on {e(where)}, "
-           "added to T3 there and kept up to date from GitHub, so the T3 app's load balancing (Settings, Environments) "
-           "can run it on any box. A copy with changes of its own is never touched. Stopping keeps the copies.</p>"]
+           f"<p class='sub' style='margin-top:0'>Turn a project on and it's copied to {e(where)}, shows up in T3 there "
+           "and stays up to date from GitHub, so you and the T3 app can work on it from any of your boxes. "
+           "If a copy has changes of its own, it's left alone. Turning it off keeps the copies.</p>"]
     if items:
         out.append("<ul class='rows prj'>" + "".join(items) + "</ul>")
     elif not other:
@@ -2511,6 +2511,11 @@ def projects_section(st, tok, base, slot=None):
                    + e(plural(len(other), "project")) + " not on GitHub yet</summary><ul class='rows prj'>" + "".join(
                        f"<li><span class='k mono'>{e(r['name'])}</span><span class='d sub'>{e(str(r.get('why') or ''))}</span></li>"
                        for r in other) + "</ul></details>")
+    bad = [(b, str(v.get("error"))) for b, v in sorted(boxes.items()) if v.get("error")]
+    if bad and any(r.get("everywhere") for r in avail):
+        out.append("<p class='sub'>" + " ".join(f"<span class='dot warn'></span><b>{e(b)}</b>: {e(err[:200])}"
+                                               for b, err in bad)
+                   + f" <a href='{base}/me?tab=messages'>Message the owner</a></p>")
     if any(r.get("everywhere") for r in avail):
         out.append("<p class='sub'>Last sync: " + " · ".join(
             f"{e(b)} {e(ago_text(v['last_sync']) if v.get('last_sync') else 'not yet')}" for b, v in sorted(boxes.items()))
@@ -2540,7 +2545,7 @@ def archive_notice(name, tok, base, slot=None):
     slot = slot or NO_SLOT
     if not out and slot.card != "archive":
         return ""
-    return ("<div class='blk' id='archive' data-card='archive'><h2>Projects</h2><section class='sec warnsec'>"
+    return ("<div class='blk' id='archive' data-card='archive'><h2>Archive</h2><section class='sec warnsec'>"
             + slot("archive") + ("".join(out) or "<p class='mut'>Nothing archived right now.</p>") + "</section></div>")
 
 
