@@ -2839,7 +2839,26 @@ def cmd_boost(cfg, a):
     print(f"{a.user}: RAM raised to {cfg['BOOST_MEMORY']} until {time.strftime('%a %H:%M', time.localtime(res['until']))}")
 
 
+def write_user_slice(cfg):
+    """All accounts together (user.slice). MemoryLow: the kernel only honours an account's MEMORY_LOW if its parent
+    holds that much protection itself, so user.slice gets everything but the reserve to share out (in proportion
+    when more people want their share than there is). MemoryMax: every account together stays below the box minus
+    MEMORY_RESERVE, so sshd, Tailscale and the website keep room however many people are busy. oomd watches the
+    whole of user.slice too, so when the box itself is short it picks among everyone's processes, not just
+    inside the account that happens to be waiting."""
+    total = sb.auto_memory_max(cfg)
+    lines = ["# managed by sharedbox (MEMORY_RESERVE, OOM_PRESSURE_LIMIT): sharedbox-admin reapply", "[Slice]",
+             f"MemoryLow={total}", f"MemoryMax={total}"]
+    if cfg.get("OOM_PRESSURE_LIMIT"):
+        lines += ["ManagedOOMMemoryPressure=kill", f"ManagedOOMMemoryPressureLimit={cfg['OOM_PRESSURE_LIMIT']}"]
+    d = os.path.join(SYSTEMD_DIR, "user.slice.d")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def cmd_reapply(cfg, a):
+    write_user_slice(cfg)
     for name, (uid, rec) in sorted(sb.limited_accounts(cfg).items()):
         write_dropins(cfg, name, rec, uid)
         print(f"rewrote limits for {name}")
@@ -2873,7 +2892,10 @@ def cmd_shared(cfg, a):
         return
     if not a.name:
         die(f"usage: sharedbox-admin shared {a.action} NAME")
-    req = {"action": a.action, "name": a.name, "cmd": a.cmd, "port": a.port, "lines": a.lines}
+    req = {"action": a.action, "name": a.name, "cmd": a.cmd, "port": a.port, "lines": a.lines,
+           "desc": getattr(a, "desc", None)}
+    if a.action == "describe":
+        req.update(desc=" ".join(w for w in a.cmd or [] if w != "--json") or getattr(a, "desc", None), cmd=None)
     res = shared_handle(dict(cfg, ADMIN_USERS=",".join(sb.admin_users(cfg) + ["root"])), "root", req)
     if not res.get("ok"):
         die(res.get("error", "failed"))

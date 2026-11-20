@@ -1227,7 +1227,7 @@ def _boost_props(cfg, rec):
     """Memory limits are dynamic now (MemoryHigh=infinity, MemoryMax=auto), so a boost (root only, rarely needed)
     just raises the hard cap; an account with an old explicit soft limit keeps the same gap above it."""
     lim = user_limits(cfg, rec)
-    high = parse_size(cfg["BOOST_MEMORY"])
+    high = max(parse_size(cfg["BOOST_MEMORY"]), parse_size(lim["MEMORY_MAX"]) or 0)  # never lowers the cap
     soft = parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
     if soft is None:
         return high, ["MemoryHigh=infinity", f"MemoryMax={high}"]

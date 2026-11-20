@@ -434,6 +434,15 @@ def list_services():
         parts = line.split(None, 4)
         if len(parts) >= 4 and parts[0].startswith("sb-") and parts[0] != T3_PROXY:  # part of T3, not theirs
             out.append({"name": parts[0][3:-8], "state": parts[3] if parts[2] == "active" else parts[2]})
+    seen = {s["name"] for s in out}
+    try:  # stopped with `box serve stop` (disabled): systemd unloads it, but its unit file is still ours
+        files = sorted(os.listdir(UNIT_DIR))
+    except OSError:
+        files = []
+    for fn in files:
+        n = fn[3:-8] if fn.startswith("sb-") and fn.endswith(".service") else ""
+        if n and n not in seen and fn != T3_PROXY and n not in ("t3", "t3-proxy"):
+            out.append({"name": n, "state": "stopped"})
     return out
 
 
@@ -1728,7 +1737,9 @@ def cmd_shared(a):
             done({"ok": False, "error": "usage: box shared create NAME --desc \"what it does and who it's for\""})
         req["desc"] = a.desc
     elif a.action == "describe":
-        text = " ".join(a.cmd or []) or getattr(a, "desc", None)
+        if "--json" in (a.cmd or []):  # typed after the text: an option, not part of the description
+            a.json = True
+        text = " ".join(w for w in a.cmd or [] if w != "--json") or getattr(a, "desc", None)
         if not text:
             done({"ok": False, "error": "usage: box shared describe NAME \"what it does and who it's for\""})
         req["desc"] = text
@@ -2458,6 +2469,14 @@ def portal_running_stop(key):
         ids = [i for i in it.get("ids") or [] if re.fullmatch(r"[0-9a-f]{64}", i)]
         if not ids or not shutil.which("docker"):
             return {"ok": False, "error": "Docker isn't reachable for this account right now."}
+        # restart: always would bring it back at the next reboot (docker starts it again): unless-stopped behaves
+        # the same in every other way but respects this stop
+        pol = subprocess.run(["docker", "inspect", "-f", "{{.Id}} {{.HostConfig.RestartPolicy.Name}}", *ids], env=env,
+                             capture_output=True, text=True, timeout=60)
+        always = [ln.split()[0] for ln in pol.stdout.splitlines() if ln.split()[1:] == ["always"]]
+        if always:
+            subprocess.run(["docker", "update", "--restart", "unless-stopped", *always], env=env, capture_output=True,
+                           text=True, timeout=60)
         r = subprocess.run(["docker", "stop", "--time", "20", *ids], env=env, capture_output=True, text=True,
                            timeout=180)
         if r.returncode != 0:

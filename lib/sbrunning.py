@@ -83,14 +83,29 @@ def _proc(pid, boot):
     return comm, start, rss
 
 
+USER_MANAGER_RE = re.compile(r"^user@\d+\.service$")
+
+
+def _unit_of(root, path):
+    """The unit a cgroup belongs to: its first .service/.scope below the account's slice (user@UID.service and
+    slices are walked through). Cgroups a container or a service made inside itself (systemd in a container,
+    kind/k3d, docker-in-docker) belong to that container or service, never items of their own."""
+    acc = root
+    for part in os.path.relpath(path, root).split(os.sep):
+        acc = os.path.join(acc, part)
+        if part.endswith((".service", ".scope")) and not USER_MANAGER_RE.match(part):
+            return acc
+    return path
+
+
 def _leaves(root):
-    """Every cgroup under root that has processes in it (nested slices are walked through)."""
-    out = []
+    """[(unit cgroup path, pids)] for every unit under root with processes anywhere inside it."""
+    units = {}
     for dirpath, dirnames, _ in os.walk(root):
         procs = (_read(os.path.join(dirpath, "cgroup.procs")) or "").split()
         if procs:
-            out.append((dirpath, procs))
-    return out
+            units.setdefault(_unit_of(root, dirpath), []).extend(procs)
+    return list(units.items())
 
 
 def _cg_stats(path, procs, boot):
@@ -168,11 +183,23 @@ def _short_image(image):
     return tail[:60]
 
 
+T3_SCOPE_RE = re.compile(r"^t3code-([a-z0-9]+(?:-[a-z]+)*)-[0-9a-f]{6,}\.scope$")
+
+
 def _unit_kind(unit, procs):
     """(kind, display name, how to stop it or None)."""
     joined = " ".join(procs)
-    if unit in ("t3code.service",) or unit.startswith("sb-t3"):
+    if unit in ("t3code.service", "sb-t3.service", "sb-t3.socket"):
         return "t3", "T3 Code", None
+    t3 = T3_SCOPE_RE.match(unit)  # what T3 Code starts: agents (claude, codex, opencode, acp, muse, pi, ...),
+    if t3:                        # its built-in terminals and preview browsers
+        what = t3.group(1)
+        if what == "terminal":
+            return "terminal", "T3 terminal", "unit"
+        if what.startswith("preview"):
+            return "app", "T3 preview browser", "unit"
+        return "agent", {"claude": "Claude", "codex": "Codex", "opencode": "OpenCode", "acp": "Agent",
+                         "gemini": "Gemini"}.get(what, "Agent") + " session", None
     m = re.match(r"^sb-([A-Za-z0-9_-]+)\.service$", unit)
     if m:
         return ("database" if DB_RE.search(joined) else "server"), m.group(1), "server"

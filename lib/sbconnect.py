@@ -245,7 +245,8 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
   `scp`/`git`. Keep each project as a git repo in `~/<name>/` and push it: idle projects are archived only once fully pushed.
 - Anything long-running goes in `box serve add <name> -- <command>` (or `box shared` for something the whole
   group runs). Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
-- Out of memory for a big build: `box boost` (28G for a few hours). `box help` lists more topics.
+- Memory: each account has a guaranteed share and may use most of the box while it's quiet; `ssh {alias} box running`
+  shows what's using it, `box help memory` explains. `box help` lists more topics.
 
 To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`
 and follow the steps it prints (it checks Tailscale first, then pairs the app).

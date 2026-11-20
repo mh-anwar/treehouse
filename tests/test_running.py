@@ -56,6 +56,15 @@ class Running(unittest.TestCase):
                 with open(os.path.join(d, "config.v2.json"), "w") as f:
                     json.dump({"Name": "/" + name, "Config": {"Image": image, "Labels": (
                         {"com.docker.compose.project": proj} if proj else {})}}, f)
+        self.cg(f"{um}/app.slice/app-t3code.slice/t3code-acp-1a2b3c4d.scope", 600, ["node"])  # Gemini over ACP
+        self.cg(f"{um}/app.slice/app-t3code.slice/t3code-terminal-99aa00bb.scope", 70, ["bash", "vite"])
+        self.cg(f"{um}/app.slice/sb-t3notes.service", 30, ["python3"])   # a user's server, not T3 Code
+        nested = f"{um}/user.slice/docker-{CID['e']}.scope"               # kind node: systemd inside
+        self.cg(f"{nested}/init.scope", 20, ["systemd"])
+        self.cg(f"{nested}/system.slice/containerd.service", 300, ["containerd"])
+        self.cg(f"{nested}/system.slice/kubelet.service", 200, ["kubelet"])
+        with open(f"{nested}/memory.current", "w") as f:
+            f.write(str(520 * M))
         self.cg(f"{self.base}/session-7.scope", 10, ["sshd", "bash"])
         os.makedirs(f"{um}/app.slice/empty.slice")  # no processes: not an item
 
@@ -96,6 +105,16 @@ class Running(unittest.TestCase):
         names = [i["name"] for i in r.running(self.UID, self.home)]
         self.assertEqual(names[0], "Claude session")                 # biggest first, background last
         self.assertEqual(names[-1], "Background")
+
+    def test_t3_scopes_servers_and_nested_cgroups(self):
+        it = self.items()
+        self.assertEqual((it["Agent session"]["kind"], it["Agent session"]["stop"]), ("agent", None))
+        self.assertEqual((it["T3 terminal"]["kind"], it["T3 terminal"]["stop"]), ("terminal", "unit"))
+        self.assertEqual((it["t3notes"]["kind"], it["t3notes"]["stop"]), ("server", "server"))
+        node = it[CID["e"][:12]]  # one item for the whole container, its own memory.current
+        self.assertEqual((node["kind"], node["mem"], node["stop"]), ("container", 520 * M, "containers"))
+        self.assertFalse({"kubelet", "containerd", "init"} & set(it))
+        self.assertEqual(it["Background"]["mem"], 201 * M)
 
     def test_without_the_home_containers_still_show_by_process(self):
         it = self.items(home=False)
