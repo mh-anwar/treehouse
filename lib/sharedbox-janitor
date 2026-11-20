@@ -12,6 +12,7 @@ setpriv. Scope: friends' homes and their own files in /tmp, /var/tmp. Never SHAR
 """
 
 import argparse
+import grp
 import json
 import os
 import pwd
@@ -149,6 +150,7 @@ def heal_provision():
 
 OOM_LOG = os.path.join(sb.STATE_DIR, "oom.jsonl")
 OOM_CURSOR = os.path.join(sb.STATE_DIR, "oom.cursor")
+OOM_DIR = os.path.join(sb.STATE_DIR, "oom")
 OOM_RE = re.compile(r"Killed (/\S+) due to (memory pressure|memory used|swap)")
 
 
@@ -165,7 +167,7 @@ def oom_label(cg):
     unit = cg.rstrip("/").rsplit("/", 1)[-1]
     d = sbrunning.DOCKER_SCOPE_RE.match(unit)
     if d:
-        meta = sbrunning._docker_meta(pw.pw_dir, d.group(1))
+        meta = sbrunning._docker_meta(pw.pw_dir, d.group(1), uid)
         what = f"the container {meta.get('name') or d.group(1)[:12]}"
     else:
         kind, name, _ = sbrunning._unit_kind(unit, [])
@@ -186,21 +188,38 @@ def record_oom_kills():
         m = OOM_RE.search(line)
         if not m:
             continue
-        user, what = oom_label(m.group(1))
-        rec = {"ts": int(time.time()), "user": user, "what": what, "cgroup": m.group(1)[:300], "why": m.group(2)}
-        with open(OOM_LOG, "a") as f:
-            f.write(json.dumps(rec) + "\n")
-        os.chmod(OOM_LOG, 0o644)
-        sb.log_event("oom_kill", user, what=what)
-        print(f"systemd-oomd stopped {what} ({user})")
-    try:  # keep it short
-        with open(OOM_LOG) as f:
-            lines = f.readlines()
-        if len(lines) > 500:
-            with open(OOM_LOG, "w") as f:
-                f.writelines(lines[-300:])
+        try:
+            user, what = oom_label(m.group(1))
+        except Exception as e:  # noqa: BLE001 - one odd record never loses the rest
+            print(f"oom record: {e!r}", file=sys.stderr)
+            user, what = None, "a process group"
+        rec = {"ts": int(time.time()), "user": user, "what": sbrunning.clean(what, 120), "why": m.group(2)}
+        # the website (group sharedbox) reads all; each account reads only its own file (container names are private)
+        oom_append(OOM_LOG, rec, "sharedbox")
+        if user:
+            oom_append(os.path.join(OOM_DIR, f"{user}.jsonl"), rec, user)
+        sb.log_event("oom_kill", user, what=rec["what"])
+        print(f"systemd-oomd stopped {rec['what']} ({user})")
+
+
+def oom_append(path, rec, group):
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    try:
+        with open(path) as f:
+            lines = f.readlines()[-299:]
     except OSError:
-        pass
+        lines = []
+    lines.append(json.dumps(rec) + "\n")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.writelines(lines)
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        gid = 0
+    os.chown(tmp, 0, gid)
+    os.chmod(tmp, 0o640)
+    os.replace(tmp, path)
 
 
 def cmd_tick(cfg, a):

@@ -912,7 +912,11 @@ def running_all(cfg):
             home = pwd.getpwnam(name).pw_dir
         except KeyError:
             continue
-        items = sbrunning.running(uid, home)
+        try:
+            items = sbrunning.running(uid, home)
+        except Exception as e:  # noqa: BLE001 - one account's odd files never hide everyone else
+            print(f"running {name}: {e!r}", file=sys.stderr)
+            items = []
         keep = ("kind", "name", "detail", "mem", "age", "cpu_usec", "pids")
         accts.append({"user": name, "mem": sum(i["mem"] for i in items),
                       "items": [{k: i.get(k) for k in keep} for i in items]})

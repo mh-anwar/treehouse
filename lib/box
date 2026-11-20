@@ -113,7 +113,7 @@ def gather(sample=0.5):
         cg = cg2
     try:
         run = sbrunning.worth_mentioning(sbrunning.running(ME.pw_uid, HOME))
-    except (OSError, ValueError):
+    except Exception:  # noqa: BLE001 - session start must never fail over this
         run = []
     return {"user": ME.pw_name, "friend": is_friend(), "ports": ports(),
             "limits": my_limits(), "live": cg,
@@ -130,16 +130,19 @@ def size_text(v):
 
 
 def running_line(it):
-    return (f"{it['name']} ({sbrunning.KIND_LABEL.get(it['kind'], it['kind']).lower()}"
-            + (f", {it['detail']}" if it.get("detail") and it["kind"] in ("database", "container") else "")
+    """One item for agents' session-start text: names are the account's own text, so cleaned and quoted."""
+    return (f"`{sbrunning.clean(it['name'], 60)}` ({sbrunning.KIND_LABEL.get(it['kind'], it['kind']).lower()}"
+            + (f", {sbrunning.clean(it['detail'], 60)}" if it.get("detail") and it["kind"] in ("database", "container")
+               else "")
             + f", {sb.human(it['mem'])}, up {sbrunning.ago(it.get('age'))})")
 
 
 def recent_oom_kills(days=2):
-    """What the box stopped for this account when memory ran out (root's oom.jsonl, written by the janitor tick)."""
+    """What the box stopped for this account when memory ran out (root writes oom/USER.jsonl, 0640 root:USER,
+    from the janitor tick)."""
     out = []
     try:
-        with open(os.path.join(sb.STATE_DIR, "oom.jsonl")) as f:
+        with open(os.path.join(sb.STATE_DIR, "oom", f"{ME.pw_name}.jsonl")) as f:
             for line in f.readlines()[-200:]:
                 try:
                     r = json.loads(line)
@@ -2528,7 +2531,7 @@ def cmd_portal(a):
                 out["servers"] = None
             try:
                 out["running"] = portal_running()
-            except (OSError, ValueError):
+            except Exception:  # noqa: BLE001 - the rest of the dashboard must still load
                 out["running"] = None
         elif a.action == "running-stop":
             out = portal_running_stop(a.key)

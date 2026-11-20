@@ -13,6 +13,7 @@ Stdlib only, no subprocesses: it runs at every agent session start.
 import json
 import os
 import re
+import stat
 import time
 
 CGROUP_ROOT = "/sys/fs/cgroup"
@@ -28,6 +29,15 @@ SYSTEM_UNITS = re.compile(r"^(init\.scope|docker\.service|dbus\.service|dbus-bro
                           r"sb-t3-proxy\.service)$")
 MAX_PIDS = 200          # per cgroup, for names and start times
 KEY_RE = re.compile(r"^[cu]:[A-Za-z0-9][A-Za-z0-9_.@:-]{0,160}$")
+COMPOSE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,79}$")      # what compose itself allows as a project name
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")   # docker container names
+META_MAX = 256 << 10
+
+
+def clean(s, n=80):
+    """Friend-controlled text (names, process names) for pages, terminals and agents' instructions: one line of
+    printable characters, no backticks."""
+    return "".join(c if c.isprintable() and c != "`" else " " for c in str(s or ""))[:n].strip()
 
 
 def _read(path):
@@ -59,10 +69,11 @@ _PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 def _proc(pid, boot):
     """(comm, start epoch, rss bytes) or None if it's gone."""
-    stat = _read(f"/proc/{pid}/stat")
-    if not stat or ")" not in stat:
+    st = _read(f"/proc/{pid}/stat")
+    if not st or ")" not in st:
         return None
-    comm = stat[stat.index("(") + 1:stat.rindex(")")]
+    stat = st
+    comm = clean(stat[stat.index("(") + 1:stat.rindex(")")], 16)
     rest = stat[stat.rindex(")") + 2:].split()
     try:
         start = boot + int(rest[19]) / _HZ
@@ -100,22 +111,56 @@ def _cg_stats(path, procs, boot):
             "procs": [n for n, _ in sorted(names.items(), key=lambda kv: -kv[1])][:4]}
 
 
-def _docker_meta(home, cid):
-    """{name, image, project} from rootless Docker's files, or {} when they can't be read (not our home)."""
-    if not home:
+def _read_owned(home, parts, uid):
+    """Text of home/parts... only if every step is a real directory/file owned by uid (or root's home dirs above
+    it), never a link, FIFO or device, and the file is at most META_MAX. Root reads friends' files with this:
+    a friend controls everything under their home."""
+    try:
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | (0 if last else os.O_DIRECTORY)
+            nfd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+            st = os.fstat(fd)
+            if uid is not None and st.st_uid != uid:
+                return None
+            if last:
+                if not stat.S_ISREG(st.st_mode) or st.st_size > META_MAX or st.st_nlink != 1:
+                    return None
+                return os.read(fd, META_MAX + 1)[:META_MAX].decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return None
+
+
+def _docker_meta(home, cid, uid=None):
+    """{name, image, project} from rootless Docker's files, or {} when they can't be read (not our home) or
+    look wrong. Everything in them is the account's own (untrusted) text."""
+    if not home or not re.fullmatch(r"[0-9a-f]{64}", cid or ""):
         return {}
-    for root in (os.path.join(home, ".local", "share", "docker"),):
-        raw = _read(os.path.join(root, "containers", cid, "config.v2.json"))
-        if raw:
-            try:
-                c = json.loads(raw)
-            except ValueError:
-                return {}
-            labels = (c.get("Config") or {}).get("Labels") or {}
-            return {"name": str(c.get("Name") or "").lstrip("/")[:80],
-                    "image": str((c.get("Config") or {}).get("Image") or "")[:120],
-                    "project": str(labels.get("com.docker.compose.project") or "")[:80]}
-    return {}
+    raw = _read_owned(home, [".local", "share", "docker", "containers", cid, "config.v2.json"], uid)
+    if not raw:
+        return {}
+    try:
+        c = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(c, dict):
+        return {}
+    conf = c.get("Config") if isinstance(c.get("Config"), dict) else {}
+    labels = conf.get("Labels") if isinstance(conf.get("Labels"), dict) else {}
+    name = str(c.get("Name") or "").lstrip("/")
+    project = str(labels.get("com.docker.compose.project") or "")
+    return {"name": name if NAME_RE.match(name) else "",
+            "image": clean(conf.get("Image"), 120),
+            "project": project if COMPOSE_RE.match(project) else ""}
 
 
 def _short_image(image):
@@ -166,9 +211,9 @@ def running(uid, home=None, now=None):
         m = DOCKER_SCOPE_RE.match(unit)
         if m:
             cid = m.group(1)
-            meta = _docker_meta(home, cid)
+            meta = _docker_meta(home, cid, uid)
             proj = meta.get("project")
-            gkey = "c:" + (proj if proj and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", proj) else cid[:12])
+            gkey = "c:" + (proj or cid[:12])
             g = groups.get(gkey)
             if not g:
                 g = groups[gkey] = {"key": gkey, "kind": "container", "name": proj or meta.get("name") or cid[:12],
