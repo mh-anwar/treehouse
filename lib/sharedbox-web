@@ -199,7 +199,7 @@ def submit_join(ip, who, username, key, email=""):
 
 def portal_call(ip, who, action, **kw):
     # logins wait ~25 s for a code; T3's very first start downloads it
-    wait = {"status": 30, "t3": 240, "t3app": 240}.get(action, 90)
+    wait = {"status": 30, "t3": 240, "t3app": 240, "peer-login": 200, "peer-check": 120}.get(action, 90)
     if who.get("cf_jwt"):  # cloudflare mode: root re-verifies the Access token itself
         return spool_call(dict({"action": action, "cf_jwt": who["cf_jwt"]}, **kw), wait=wait)
     return spool_call(dict({"action": action, "ip": ip, "ts_id": who["id"]}, **kw), wait=wait)
@@ -2086,15 +2086,17 @@ T3_IOS = "https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824"
 T3_ANDROID = "https://play.google.com/store/apps/details?id=com.t3tools.t3code"
 
 
-def app_help():
-    """Under "Open T3 app" once T3 Connect is on: the app finds the box through the T3 account, no VPN."""
+def app_help(more=""):
+    """Under "Open T3 app" once T3 Connect is on: the app finds the box through the T3 account, no VPN.
+    more: a "set it up on your other boxes too" button when some aren't yet."""
     e = html.escape
     return (f"<div class='appbox'><p><b>Laptop:</b> open the T3 app and sign in with your T3 account. <b>{e(HOST)}</b> "
             f"shows up by itself. No app yet? <a href='{T3_DOWNLOAD}' target='_blank' rel='noopener'>Download T3</a>.</p>"
             f"<p><b>Phone:</b> get T3 Code for <a href='{T3_IOS}' target='_blank' rel='noopener'>iPhone</a> or "
             f"<a href='{T3_ANDROID}' target='_blank' rel='noopener'>Android</a> and sign in the same way.</p>"
             "<p class='sub'>Use the T3 account you just signed in with. Any number of phones and laptops work. "
-            "T3's free plan links up to 3 boxes per person.</p></div>")
+            "T3's free plan links up to 3 boxes per person.</p>"
+            + (f"<p>Your other boxes don't have it yet. {more}</p>" if more else "") + "</div>")
 
 
 def team_section(team, names, tok, base, result=None):
@@ -2127,6 +2129,64 @@ def team_section(team, names, tok, base, result=None):
                "<button class='sm'>Allow</button></form>"
                "<p class='sub' style='margin:8px 0 0'>If it stops working after a month, press Allow again.</p></section>")
     return "".join(out)
+
+
+PEER_LABEL = {"t3connect": "the T3 app", "codex": "ChatGPT"}
+
+
+def boxes_row(st, logins, btn):
+    """(label, description, actions) for "Your boxes": where you're set up. Claude and GitHub follow you to every
+    box by themselves; the T3 app and ChatGPT need one approval per box (one button starts them all)."""
+    e = html.escape
+    boxes = {b: v for b, v in (st.get("boxes") or {}).items() if isinstance(v, dict)}
+    if not boxes:
+        return None
+    here = str(st.get("box") or HOST)
+    parts, acts = [f"<b>{e(here)}</b> (here)"], []
+    for b, v in sorted(boxes.items()):
+        got = v.get("logins") or {}
+        if not v.get("ssh"):
+            parts.append(f"{e(b)} <span class='sub'>(not reachable yet)</span>")
+            continue
+        miss = [PEER_LABEL[k] for k in PEER_LABEL if (logins.get(k) or {}).get("ok") and got.get(k) is not True]
+        parts.append(e(b) + (f" <span class='sub'>(needs {e(' and '.join(miss))})</span>" if miss else
+                             " <span class='sub'>(same as here)</span>"))
+    for k in PEER_LABEL:
+        if (logins.get(k) or {}).get("ok") and any(v.get("ssh") and (v.get("logins") or {}).get(k) is not True
+                                                    for v in boxes.values()):
+            acts.append(btn("peer-login", f"Set up {PEER_LABEL[k]} there", k, primary=False, small=True))
+    return ("Your boxes", " · ".join(parts) + "<div class='sub' style='margin-top:4px'>Claude and GitHub follow you "
+            "to every box by themselves.</div>", " ".join(acts))
+
+
+def peer_card(res, tok, base):
+    """After "Set up the T3 app / ChatGPT there": one approve link per box, and a poll that notices when done."""
+    e = html.escape
+    key = str(res.get("key") or "")
+    rows = []
+    for r in res.get("boxes") or []:
+        if not isinstance(r, dict):
+            continue
+        b = e(str(r.get("box") or "?"))
+        if r.get("done"):
+            rows.append(f"<li><span class='k'>{b}</span><span class='d'><span class='dot ok'></span>Done</span></li>")
+        elif r.get("url"):
+            url = safe_url(r.get("url"), ("https://",))
+            code = (f" and check the code <b class='mono' style='white-space:nowrap'>{e(str(r['code']))}</b>" if r.get("code") else "")
+            rows.append(f"<li data-box='{b}'><span class='k'>{b}</span><span class='d'>Open the link, sign in{code}, "
+                        f"then approve.</span><span class='a'><a class='btn sm' href='{e(url)}' target='_blank' "
+                        f"rel='noopener'>Approve {b}</a></span></li>")
+        else:
+            rows.append(f"<li><span class='k'>{b}</span><span class='d'><span class='dot warn'></span>"
+                        f"{e(str(r.get('error') or 'no answer'))}</span></li>")
+    poll = (f"<script>(function(){{const body=new URLSearchParams({{token:{json.dumps(tok)},action:'peer-check',"
+            f"key:{json.dumps(key)},format:'json'}});const t0=Date.now();async function poll(){{"
+            "if(Date.now()-t0>15*60*1000)return;try{const r=await fetch('" + base + "/me',{method:'POST',body});"
+            "const j=await r.json();if(j.all_done){location.href='" + base + "/me#account';return}}catch(e){}"
+            "setTimeout(poll,4000)}setTimeout(poll,4000)})();</script>")
+    return (f"<div class='card' id='peers'><h3>Set up {e(PEER_LABEL.get(key, key))} on your other boxes</h3>"
+            "<ul class='rows'>" + "".join(rows) + "</ul><p class='sub'>This page notices by itself once each box is "
+            "done. The links work for 10 minutes.</p></div>" + poll)
 
 
 def hackathon_banner(me):
@@ -2238,7 +2298,11 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         else:  # S2, S3: T3 in this browser, or the T3 app on their laptop or phone (T3 Connect: no VPN)
             t3c = logins.get("t3connect")
             if t3c and t3c.get("ok"):
-                app = f"<details class='appd' id='app'><summary class='btn secondary'>Open T3 app</summary>{app_help()}</details>"
+                need = any(v.get("ssh") and (v.get("logins") or {}).get("t3connect") is not True
+                           for v in (st.get("boxes") or {}).values() if isinstance(v, dict))
+                more = btn("peer-login", "Set it up there too", "t3connect", primary=False, small=True) if need else ""
+                app = (f"<details class='appd' id='app'><summary class='btn secondary'>Open T3 app</summary>"
+                       f"{app_help(more)}</details>")
             elif t3c:  # the first press signs them in to T3 Connect; after that the app finds the box by itself
                 app = btn("login", "Open T3 app", "t3connect", primary=False)
             else:
@@ -2296,14 +2360,19 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             if logins["t3connect"]["ok"] else '<span class="dot"></span>Not connected. Use T3 from your phone or laptop.',
             "<a class='btn secondary sm' href='#app'>How</a>" if logins["t3connect"]["ok"] else
             btn("login", "Connect", "t3connect", primary=False, small=True))
+    brow = boxes_row(st, logins, btn)
+    if brow:
+        row(*brow)
     trow = telegram_row(tg, tok, base)
     if trow:
         row(*trow)
+    peer = peer_card(result, tok, base) if result and view == "peer-login" and result.get("ok") else ""
     tg_card = telegram_link_card(result, tok, base) if result and view == "telegram" and result.get("ok") \
         and result.get("url") else ""
     out.append("<h2 id='account'>Your account</h2>"
-               + (portal_result(result, btn, base) if result and view in ("telegram", "boost") and not tg_card else "")
-               + tg_card + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
+               + (portal_result(result, btn, base) if result and view in ("telegram", "boost", "peer-login")
+                  and not tg_card and not peer else "")
+               + tg_card + peer + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
     try:
         out.append(you_strip(name, rec, st, btn, rng, base, fold=True))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
@@ -2609,7 +2678,7 @@ class Handler(BaseHTTPRequestHandler):
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
         anchor = "#start" if view in START_VIEWS else {"running-ctl": "#running", "telegram": "#account",
-                                                       "msg": "#messages", "where": "#people", "team": "#team"}.get(view, "")
+                                                       "peer-login": "#account", "msg": "#messages", "where": "#people", "team": "#team"}.get(view, "")
         tab = {"invite": "people", "hackathon": "settings", "request-update": "settings",
                "telegram-setup": "settings"}.get(
             view, "requests" if view.startswith("request-") else "")
@@ -2624,7 +2693,7 @@ class Handler(BaseHTTPRequestHandler):
         action, key = form.get("action", ""), form.get("key", "")
         as_json = form.get("format") == "json"
         now = time.time()
-        if as_json and action in ("check", "telegram"):  # the page polls these (a login code, Telegram linking)
+        if as_json and action in ("check", "telegram", "peer-check"):  # the page polls these (a login code, Telegram linking)
             last = portal_poll.get(who["id"], 0)
             if now - last < 2:
                 return self.send(429, json.dumps({"ok": False}), "application/json")
@@ -2722,6 +2791,16 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, "telegram-setup", **({"op": "off"} if form.get("op") == "off" else
                                                            {"token": form.get("tgtoken", "").strip()[:200]}))
             return self.after_post(ip, who, name, rec, dict(res, _view="telegram-setup"))
+        if action in ("peer-login", "peer-check"):  # the T3 app / ChatGPT on this person's other boxes
+            if key not in PEER_LABEL:
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown login", "_view": action})
+            res = portal_call(ip, who, action, key=key)
+            if as_json:
+                rows = [r for r in res.get("boxes") or [] if isinstance(r, dict)]
+                return self.send(200, json.dumps({"ok": bool(res.get("ok")),
+                                                  "all_done": bool(rows) and all(r.get("done") for r in rows)}),
+                                 "application/json")
+            return self.after_post(ip, who, name, rec, dict(res, _view="peer-login", key=key))
         if action == "team":  # teammates' agents in your T3: allow (with an access level) or stop
             op = form.get("op", "")
             if op not in ("grant", "revoke"):

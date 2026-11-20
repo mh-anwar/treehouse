@@ -1124,6 +1124,10 @@ def handle_portal(cfg, rid, req):
         fields = ("op", "id", "text", "to", "title", "context", "level", "due", "status", "until", "clear", "private")
         payload = {k: req[k] for k in fields if k in req and isinstance(req[k], (str, bool, int))}
         return box_portal(pw, [action], input_text=json.dumps(payload))
+    if action in ("peer-login", "peer-check"):  # T3 app / ChatGPT on this person's other boxes: one link per box
+        if key not in ("t3connect", "codex"):
+            return {"ok": False, "error": "unknown login"}
+        return box_portal(pw, [action, key])
     if action == "team":  # the dashboard's "Let a teammate's agents work in your T3"
         return handle_team(name, pw, req)
     if action == "status":
@@ -2884,7 +2888,11 @@ def fed_sync(cfg, a=None):
             if r.get("ok"):
                 st["applied"]["keys:" + name] = h
         peers = {p: boxes[p] for p in sbfed.present_on(docs, name, uid, now) if p in boxes}
-        if peers and (changed or force or now - st["linked"].get(name, 0) > sbfed.LINK_EVERY):
+        try:  # a login just finished on this box (box fed_nudge): copy it to the other boxes now, not in 12 h
+            nudged = os.path.getmtime(os.path.join(pw.pw_dir, ".sharedbox", "fed-nudge")) > st["linked"].get(name, 0)
+        except OSError:
+            nudged = False
+        if peers and (changed or force or nudged or now - st["linked"].get(name, 0) > sbfed.LINK_EVERY):
             home = (friends.get(name) or {}).get("home_box") or me
             r = user_json(pw, ["link"], {"peers": peers, "self": me, "home": home == me}, timeout=600)
             st["linked"][name] = now

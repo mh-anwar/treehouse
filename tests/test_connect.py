@@ -892,3 +892,49 @@ class ConnectText(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class YourBoxes(unittest.TestCase):
+    """"Your boxes": where you're set up, and the approve links for the T3 app / ChatGPT on the other boxes."""
+    @classmethod
+    def setUpClass(cls):
+        cls.web = load_script("sharedbox-web", "sbweb_yourboxes_test")
+
+    def btn(self, action, label, key="", **kw):
+        return f"<button data-a='{action}' data-k='{key}'>{label}</button>"
+
+    def test_row_lists_boxes_and_offers_what_is_missing(self):
+        st = {"box": "sietchtabr", "boxes": {
+            "minastirith": {"ssh": True, "logins": {"claude": True, "t3connect": False, "codex": True}},
+            "krishbox": {"ssh": False, "logins": {}}}}
+        logins = {"t3connect": {"ok": True}, "codex": {"ok": True}, "claude": {"ok": True}}
+        label, desc, acts = self.web.boxes_row(st, logins, self.btn)
+        self.assertEqual(label, "Your boxes")
+        self.assertIn("<b>sietchtabr</b> (here)", desc)
+        self.assertIn("minastirith <span class='sub'>(needs the T3 app)</span>", desc)
+        self.assertIn("krishbox <span class='sub'>(not reachable yet)</span>", desc)
+        self.assertIn("data-a='peer-login' data-k='t3connect'", acts)
+        self.assertNotIn("data-k='codex'", acts)  # ChatGPT is already on minastirith
+
+    def test_no_row_without_other_boxes_and_nothing_to_offer_when_not_set_up_here(self):
+        self.assertIsNone(self.web.boxes_row({"boxes": {}}, {}, self.btn))
+        _, desc, acts = self.web.boxes_row({"boxes": {"b2": {"ssh": True, "logins": {}}}},
+                                           {"t3connect": {"ok": False}}, self.btn)
+        self.assertEqual(acts, "")
+        self.assertIn("(same as here)", desc)
+
+    def test_peer_card(self):
+        res = {"ok": True, "key": "t3connect", "boxes": [
+            {"box": "minastirith", "done": False, "url": "https://accounts.t3.codes/device?user_code=WXYZ-1234",
+             "code": "WXYZ-1234"},
+            {"box": "krishbox", "done": True},
+            {"box": "old", "done": False, "error": "no answer"},
+            {"box": "evil", "url": "javascript:alert(1)"}]}
+        page = self.web.peer_card(res, "tok", "/_box")
+        self.assertIn("Set up the T3 app on your other boxes", page)
+        self.assertIn("href='https://accounts.t3.codes/device?user_code=WXYZ-1234'", page)
+        self.assertIn("Approve minastirith", page)
+        self.assertIn("WXYZ-1234", page)
+        self.assertIn("no answer", page)
+        self.assertNotIn("javascript:", page)
+        self.assertIn("action:'peer-check'", page)

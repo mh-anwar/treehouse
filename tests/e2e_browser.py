@@ -210,12 +210,15 @@ class FakeVerifier:
 g.VERIFIER = FakeVerifier()
 
 ACCOUNTS = {  # what `box _portal status` would say for each account
-    "alice": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False},
+    "alice": {"boxes": {"minastirith": {"ssh": True, "logins": {"claude": True, "gh": True, "t3connect": False}},
+                        "krishbox": {"ssh": False, "logins": {}}},
+              "logins": {"claude": True, "codex": False, "gh": False, "t3connect": False},
               "servers": [{"name": "blog", "state": "running", "port": str(PORT_OF["alice"] + 3)},
                           {"name": "bot", "state": "stopped", "port": str(PORT_OF["alice"] + 4)}], "ssh": True},
     "bob": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
     "carol": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
-    "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False},
+    "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False,
+             "boxes": {"minastirith": {"ssh": True, "logins": {"codex": False}}}},  # ChatGPT here, not there yet
     "erin": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False,
              "no_t3": True},  # T3 Code isn't installed for her: the start card says so
     ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
@@ -407,6 +410,14 @@ def _fake_root(req):
         return {"ok": True, "message": "Telegram is on: @treehouse_test_bot."}
     if action == "restore":
         return {"ok": True, "message": f"Restored {req.get('key')} to your home folder."}
+    if action in ("peer-login", "peer-check"):  # the T3 app / ChatGPT on this person's other boxes
+        if key_ := req.get("key"):
+            if key_ not in ("t3connect", "codex"):
+                return {"ok": False, "error": "unknown login"}
+        boxes = ACCOUNTS[name].get("boxes") or {}
+        return {"ok": True, "boxes": [{"box": b, "done": False, "url": "https://accounts.t3.codes/device?user_code=WXYZ-1234",
+                                       "code": "WXYZ-1234"} if action == "peer-login" else {"box": b, "done": False}
+                                      for b in sorted(boxes)]}
     if action == "team":  # teammates' agents in your T3 (root: handle_team)
         mates = [u for u in UIDS if u != name]
         grants = TEAM.setdefault(name, [])
@@ -455,7 +466,8 @@ def _fake_root(req):
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
                 "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
-                "git": {"name": name, "email": ""}, "ssh": acct["ssh"],
+                "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "box": "mybox",
+                "boxes": acct.get("boxes") or {},
                 "servers": [dict(s) for s in acct["servers"]],
                 "running": [dict(i) for i in RUNNING.get(name, [])]}
     if action == "shared-ls":

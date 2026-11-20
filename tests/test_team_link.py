@@ -41,3 +41,21 @@ class TeamLink(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScreenUrls(unittest.TestCase):
+    def test_hard_wrapped_link_is_joined(self):
+        first = "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c&response_type=code&redirect_uri=" \
+                "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=AK"
+        screen = f" Browser didn't open? Use the URL below\n{first}\n70gb6&code_challenge_method=S256&state=xyz\n\n" \
+                 " Paste code here if prompted\n"
+        self.assertEqual(sbconnect.screen_urls(screen), [first + "70gb6&code_challenge_method=S256&state=xyz"])
+
+    def test_short_link_and_device_code_untouched(self):
+        screen = "Sign in to T3 Connect. Open on any device:\n  https://accounts.t3.codes/device?user_code=GFXD-KQWN\n" \
+                 "Code: GFXD-KQWN\nWaiting\n"
+        self.assertEqual(sbconnect.screen_urls(screen), ["https://accounts.t3.codes/device?user_code=GFXD-KQWN"])
+
+    def test_link_mid_sentence(self):
+        self.assertEqual(sbconnect.screen_urls("open https://github.com/login/device and type the code."),
+                         ["https://github.com/login/device"])
