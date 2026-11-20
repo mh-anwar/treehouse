@@ -13,6 +13,8 @@
   sharedbox-admin reapply                         rewrite every account's limit drop-ins, owner's too (+ shared-sync)
   sharedbox-admin shared-sync                     shared servers: dirs, slice, SHARED_GROUP membership
   sharedbox-admin shared ls | ACTION NAME ...     act on a shared server as root (same as `box shared`)
+  sharedbox-admin telegram setup | status | off   the box's Telegram bot (setup reads the @BotFather token on stdin)
+  sharedbox-admin telegram-bot                    run the bot (sharedbox-telegram.service)
   sharedbox-admin invite [--days N] [--note TEXT] [--tailscale] [--email ADDR]   a message to paste to a new
                                                   friend (Cloudflare creates the account and allows --email;
                                                   --no-create offers an email-bound signup link instead)
@@ -56,6 +58,7 @@ import sbshared  # noqa: E402
 import sbteam  # noqa: E402
 import sbmsg  # noqa: E402
 import sbwhere  # noqa: E402
+import sbtelegram  # noqa: E402
 import sbfed  # noqa: E402
 import sbrunning  # noqa: E402
 
@@ -473,6 +476,110 @@ def add_to_shared(cfg, name):
     run(["gpasswd", "-a", name, cfg["SHARED_GROUP"]], check=False, stdout=subprocess.DEVNULL)
 
 
+# ---------- Telegram (sbtelegram.py): linking from the dashboard, the bot itself ----------
+
+TELEGRAM_UNIT = "sharedbox-telegram.service"
+
+
+def tg_store():
+    return sbtelegram.Store(sbtelegram.state_dir(sb))
+
+
+def tg_ready(cfg):
+    info = sb.read_json(sbtelegram.bot_info_path(sb), {}) or {}
+    if sbtelegram.read_token(cfg["TELEGRAM_TOKEN_FILE"]) and info.get("ok") and info.get("username"):
+        return info["username"]
+    return None
+
+
+def handle_telegram(cfg, name, req):
+    """The dashboard's Telegram card: status, a one-time link, notification level, disconnect."""
+    op = req.get("op")
+    bot = tg_ready(cfg)
+    store = tg_store()
+    if op == "status":
+        return {"ok": True, "ready": bool(bot), "bot": bot or "", **sbtelegram.status(store, name)}
+    if not bot:
+        return {"ok": False, "error": "Telegram isn't set up on this box yet. The owner adds it on their dashboard."}
+    try:
+        if op == "link":
+            code = sbtelegram.new_code(store, name)
+            return {"ok": True, "ready": True, "bot": bot, "url": f"https://t.me/{bot}?start={code}"}
+        if op == "unlink":
+            if sbtelegram.unlink(store, name):
+                sb.log_event("telegram_unlinked", name)
+            return {"ok": True, "message": "Telegram disconnected"}
+        if op == "notify":
+            sbtelegram.set_notify(store, name, req.get("level"))
+            return {"ok": True, "message": "saved"}
+    except sbmsg.MsgError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "unknown action"}
+
+
+def telegram_setup(cfg, token, by="root"):
+    """Check a bot token with Telegram, store it (root only) and start the bot. Returns a reply dict."""
+    token = str(token or "").strip()
+    if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{30,64}", token):
+        return {"ok": False, "error": "that doesn't look like a bot token (it looks like 123456789:ABC...)"}
+    try:
+        me = sbtelegram.http_api(token, timeout=20)("getMe", {})
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"Telegram didn't accept that token ({str(e)[:120]})"}
+    path = cfg["TELEGRAM_TOKEN_FILE"]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(token + "\n")
+    os.replace(tmp, path)
+    sbtelegram._save(sbtelegram.bot_info_path(sb), {"username": me.get("username"), "ok": True,
+                                                    "checked": int(time.time())}, 0o644)
+    run(["systemctl", "enable", TELEGRAM_UNIT], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run(["systemctl", "restart", TELEGRAM_UNIT], check=False)
+    sb.log_event("telegram_setup", by, bot=me.get("username"))
+    return {"ok": True, "bot": me.get("username"),
+            "message": f"Telegram is on: @{me.get('username')}. Everyone can connect it from their page now."}
+
+
+def cmd_telegram(cfg, a):
+    if a.op == "setup":
+        if sys.stdin.isatty():
+            print("Paste the bot token from @BotFather, then Enter:", file=sys.stderr)
+        res = telegram_setup(cfg, sys.stdin.readline())
+        if not res.get("ok"):
+            die(res["error"])
+        print(res["message"])
+    elif a.op == "off":
+        run(["systemctl", "disable", "--now", TELEGRAM_UNIT], check=False)
+        for p in (cfg["TELEGRAM_TOKEN_FILE"], sbtelegram.bot_info_path(sb)):
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+        print("Telegram bot stopped and its token removed (links are kept for when it's back).")
+    else:
+        bot = tg_ready(cfg)
+        links = tg_store().get("links")
+        print(f"bot: @{bot}" if bot else "bot: not set up (sharedbox-admin telegram setup)")
+        for u, r in sorted(links.items()):
+            print(f"  {u:<16} {r.get('handle') or '?':<20} notify {r.get('notify', 'all')}")
+
+
+def cmd_telegram_bot(cfg, a):
+    token = sbtelegram.read_token(cfg["TELEGRAM_TOKEN_FILE"])
+    if not token:
+        die(f"no bot token in {cfg['TELEGRAM_TOKEN_FILE']} (sharedbox-admin telegram setup)")
+    api = sbtelegram.http_api(token)
+
+    def members():
+        return sbmsg.recipients(sb, cfg)
+
+    def deliver(user, req):
+        return handle_msg(user, req, set(members()))
+    bot = sbtelegram.Bot(sb, cfg, tg_store(), api, members, deliver)
+    sbtelegram.run(bot, api, sbtelegram.bot_info_path(sb), log=lambda m: print(m, flush=True))
+
+
 def shared_uids(cfg):
     """uid -> name of everyone who may manage shared servers: active friends and ADMIN_USERS."""
     out = {r["uid"]: n for n, r in sb.friend_users().items() if r.get("status", "active") == "active"}
@@ -836,7 +943,8 @@ def handle_owner_pair(cfg, rid, req):
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
                         "shared-logs", "self-update", "invite", "boost", "running-stop",
-                        "running-all") + REQUEST_PORTAL_ACTIONS
+                        "running-all", "telegram", "telegram-setup",
+                        "msg", "where") + REQUEST_PORTAL_ACTIONS
 OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as `box hackathon on|off`
 
 
@@ -911,6 +1019,10 @@ def handle_portal(cfg, rid, req):
             return {"ok": False, "error": "not available for the owner's account"}
         if req.get("action") == "boost":
             return handle_boost(cfg, name, req)
+        if req.get("action") == "telegram":
+            return handle_telegram(cfg, name, req)
+        if req.get("action") == "telegram-setup":  # the owner's Settings tab: paste the @BotFather token
+            return telegram_setup(cfg, req.get("token"), by=name)
         if req.get("action") == "self-update":
             return start_update(cfg, name)
         if req.get("action") == "running-all":
@@ -942,6 +1054,12 @@ def handle_portal(cfg, rid, req):
     action, key = req.get("action"), req.get("key")
     if action == "boost":
         return handle_boost(cfg, name, req)
+    if action == "telegram":
+        return handle_telegram(cfg, name, req)
+    if action in ("msg", "where"):  # the dashboard's inbox and "where is everyone", run as this account
+        fields = ("op", "id", "text", "to", "title", "context", "level", "due", "status", "until", "clear")
+        payload = {k: req[k] for k in fields if k in req and isinstance(req[k], (str, bool, int))}
+        return box_portal(pw, [action], input_text=json.dumps(payload))
     if action == "status":
         return box_portal(pw, ["status"])
     if action == "t3":
@@ -2743,6 +2861,9 @@ def main():
     s.add_parser("reapply").set_defaults(fn=cmd_reapply)
     x = s.add_parser("boost"); x.add_argument("user"); x.add_argument("--why"); x.set_defaults(fn=cmd_boost)
     s.add_parser("shared-sync").set_defaults(fn=cmd_shared_sync)
+    x = s.add_parser("telegram"); x.add_argument("op", nargs="?", default="status", choices=("setup", "status", "off"))
+    x.set_defaults(fn=cmd_telegram)
+    s.add_parser("telegram-bot").set_defaults(fn=cmd_telegram_bot)
     x = s.add_parser("shared"); x.add_argument("action", choices=("ls",) + sbshared.ACTIONS)
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
     x.add_argument("-n", "--lines", type=int, default=100)

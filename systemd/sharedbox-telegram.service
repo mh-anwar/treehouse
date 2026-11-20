@@ -1,0 +1,20 @@
+[Unit]
+Description=sharedbox: Telegram bot (message cards, /where, /away)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/sharedbox/telegram-token
+
+[Service]
+ExecStart=/usr/lib/sharedbox/sharedbox-admin telegram-bot
+Restart=always
+RestartSec=30
+Nice=5
+MemoryMax=200M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/sharedbox
+
+[Install]
+WantedBy=multi-user.target
