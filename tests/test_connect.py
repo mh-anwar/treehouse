@@ -509,8 +509,8 @@ class Web(unittest.TestCase):
             cases = [  # (logins, t3, ts_id, app, main button, text)
                 ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this box yet"),
                 ({"claude": False, "codex": False}, True, "n1", False, "Log in with Claude", "Log in with ChatGPT"),
-                ({"claude": True}, True, "n1", False, "Make my setup prompt", "No agent on your laptop?"),
-                ({"claude": True}, True, "", False, "Make my setup prompt", "No agent on your laptop?"),
+                ({"claude": True}, True, "n1", False, "Open T3 in this browser", "Want the T3 app on your laptop instead?"),
+                ({"claude": True}, True, "", False, "Open T3 in this browser", "Want the T3 app on your laptop instead?"),
                 ({"claude": True}, True, "n1", True, "Open T3 in this browser", "App not connecting"),
             ]
             for logins, t3, ts_id, app, main, text in cases:
@@ -519,8 +519,8 @@ class Web(unittest.TestCase):
                 self.assertEqual(mains, [main] if main else [], (logins, t3, ts_id, app))
                 self.assertIn(text, page)
                 self.assertNotIn("Ask the owner to add you to Tailscale", page)
-                if main == "Make my setup prompt":  # phones lead with Open T3 instead
-                    self.assertRegex(page, r"<div class='narrow'><h2>Open T3</h2>.*<a class='btn' [^>]*>Open T3</a>")
+                if text.startswith("Want the T3 app"):  # the laptop app is a secondary link, not a second button
+                    self.assertIn("Make a setup prompt", page)
                 self.assertNotIn("Link my T3 account", page)  # T3 Connect stays hidden until it's tested
                 self.assertNotIn("→", page)
                 self.assertNotIn(f"@{w.HOST}<", page)
@@ -529,6 +529,56 @@ class Web(unittest.TestCase):
             self.assertIn("ssh sam@100.64.0.5", self.render({"claude": True}))
         finally:
             w.SELF_IP = old
+
+    def test_dashboard_people_first_running_kept(self):
+        """The redesigned friend page: messages and who's here first, then servers, the Running card
+        (lib/sbrunning.py), the account rows with phone alerts, and Usage folded at the end. Brand-new people
+        (no AI login yet) see only the start card."""
+        w = self.web
+        rec = dict(self.friend, ts_id="n1")
+        running = [{"key": "c:shopdb", "name": "shop-db", "kind": "database", "mem": 1 << 30, "age": 3600,
+                    "detail": "postgres", "stop": "container"}]
+
+        def portal_call(ip, who, action, **kw):
+            if action == "status":
+                return {"ok": True, "ssh": True, "servers": [], "running": running,
+                        "logins": {"claude": {"label": "claude", "ok": True}},
+                        "t3": {"url": "http://100.64.0.5:31000/", "running": True, "app": False}}
+            if action == "shared-ls":
+                return {"ok": True, "servers": []}
+            if action == "msg":
+                return {"ok": True, "you": "sam", "people": ["sam", "kim"], "sent": [], "messages": [
+                    {"id": "18f0aa000001", "from": "kim", "title": "Fix <the> login", "level": "high", "ts": 0,
+                     "context": "Before the demo", "read": False}]}
+            if action == "where":
+                return {"ok": True, "you": "sam", "people": [
+                    {"user": "sam", "name": "sam", "activity": "active now", "active_now": True},
+                    {"user": "kim", "name": "Kim", "activity": "active 3h ago", "status": "In class"}]}
+            if action == "telegram":
+                return {"ok": True, "ready": True, "bot": "x_bot", "linked": False}
+            return {"ok": False, "error": "unexpected"}
+        w.portal_call = portal_call
+        who = w.cf_who("friend@example.com", "jwt")
+        page = w.portal_page("gate", who, "sam", rec)
+        order = [page.index(k) for k in ("id='start'", "id='messages'", "id='people'", "Your servers",
+                                         "id='running'", "id='account'", "id=\"dash\"")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("Fix &lt;the&gt; login", page)
+        self.assertIn("1 new", page)
+        self.assertIn("In class", page)
+        self.assertIn("shop-db", page)
+        self.assertIn("Connect Telegram", page)
+        self.assertIn('<details class="sec usage" id="dash"', page)
+        self.assertNotIn("boost", page.lower().replace("boosts", ""))
+        running[:] = []
+        logged_out = portal_call
+        w.portal_call = lambda ip, who, action, **kw: (
+            dict(logged_out(ip, who, action), logins={"claude": {"label": "claude", "ok": False}})
+            if action == "status" else logged_out(ip, who, action, **kw))
+        page = w.portal_page("gate", who, "sam", rec)
+        self.assertIn("Log in with Claude", page)
+        for gone in ("id='messages'", "id='running'", "id='account'", "Your servers"):
+            self.assertNotIn(gone, page)
 
     def test_prompt_result(self):
         w = self.web

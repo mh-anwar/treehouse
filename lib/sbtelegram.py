@@ -44,7 +44,8 @@ HELP = ("Here's what I can do:\n"
         "/where NAME  where someone is (just /where for everyone)\n"
         "/away TEXT  set your status, e.g. /away in class till 3pm\n"
         "/back  clear your status\n"
-        "/quiet  only urgent and high messages (/loud for all)\n"
+        "/quiet  only urgent ones and ones due within a day (the default)\n"
+        "/loud  every message\n"
         "/stop  disconnect this chat from your account\n\n"
         "New messages show up here by themselves. Tap Reply under one to answer it.")
 
@@ -105,7 +106,7 @@ def status(store, user):
     if not rec:
         return {"linked": False}
     return {"linked": True, "handle": rec.get("handle") or "", "since": rec.get("since"),
-            "notify": rec.get("notify") if rec.get("notify") in NOTIFY else "all"}
+            "notify": rec.get("notify") if rec.get("notify") in NOTIFY else "important"}
 
 
 def unlink(store, user):
@@ -133,7 +134,7 @@ def _redeem(store, code, chat, handle, now):
         return None
     user = rec["user"]
     links = {u: r for u, r in store.get("links").items() if r.get("chat") != chat}  # one account per chat
-    links[user] = {"chat": chat, "handle": handle, "since": int(now), "notify": "all"}
+    links[user] = {"chat": chat, "handle": handle, "since": int(now), "notify": "important"}
     store.put("links", links)
     seen = store.get("seen")
     seen[user] = {"last": int(now), "ids": []}  # start from now: no flood of old messages
@@ -178,7 +179,7 @@ def card_text(m, now, people=None):
 def card_buttons(m):
     if m.get("reply_to") and m.get("status") in ("done", "declined"):
         return None  # an answer that closes something: nothing to do
-    return {"inline_keyboard": [[{"text": "Seen", "callback_data": f"seen:{m['id']}"},
+    return {"inline_keyboard": [[{"text": "Got it", "callback_data": f"seen:{m['id']}"},
                                  {"text": "Done", "callback_data": f"done:{m['id']}"},
                                  {"text": "Reply", "callback_data": f"reply:{m['id']}"}]]}
 
@@ -193,6 +194,12 @@ def split_away(text):
         except ValueError:
             pass
     return text.strip(), None
+
+
+def important(m, now):
+    """Worth a phone buzz by default: urgent or high, due within a day, or an answer to something you sent."""
+    return (m.get("level") in ("critical", "high") or bool(m.get("reply_to"))
+            or bool(m.get("due") and m["due"] - now < 86400))
 
 
 # ---------- the bot ----------
@@ -277,8 +284,8 @@ class Bot:
             return self.inbox(chat, user)
         if cmd in ("/quiet", "/loud"):
             set_notify(self.store, user, "important" if cmd == "/quiet" else "all")
-            return self.send(chat, "Only urgent and high messages from now on." if cmd == "/quiet"
-                             else "All messages from now on.")
+            return self.send(chat, "Only urgent messages and ones due within a day from now on." if cmd == "/quiet"
+                             else "Every message from now on.")
         if cmd == "/stop":
             unlink(self.store, user)
             self.sb.log_event("telegram_unlinked", user)
@@ -298,7 +305,7 @@ class Bot:
         if act == "seen":
             sbmsg.mark_seen(user, [mid], now=self.now(), root=self.mail_root, as_root=self.as_root)
             return self.api("answerCallbackQuery", {"callback_query_id": q.get("id"),
-                                                    "text": f"{m.get('from')} will see you've seen it"})
+                                                    "text": f"{display(m.get('from'))} will see you've read it"})
         if act == "done":
             res = self.deliver(user, {"action": "msg", "reply_to": mid, "status": "done"})
             return self.api("answerCallbackQuery", {"callback_query_id": q.get("id"),
@@ -353,7 +360,7 @@ class Bot:
                 mark["ids"] = (mark["ids"] + [m["id"]])[-200:]
                 mark["last"] = max(mark["last"], int(m.get("ts", 0)))
                 changed = True
-                if link.get("notify") == "important" and m.get("level") not in ("critical", "high"):
+                if link.get("notify", "important") == "important" and not important(m, now):
                     continue
                 try:
                     self.send(link["chat"], card_text(m, now), card_buttons(m))

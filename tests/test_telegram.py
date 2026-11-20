@@ -109,6 +109,8 @@ class BotTest(unittest.TestCase):
         self.api.calls.clear()
         self.t += 10
         self.send("bob", "alice", "Low one", level="low")
+        self.text(11, "/loud")
+        self.api.calls.clear()
         self.bot.push_new()
         self.assertEqual(len(self.api.texts(11)), 1)
         self.assertIn("Low one", self.api.texts(11)[0])
@@ -118,9 +120,12 @@ class BotTest(unittest.TestCase):
         self.t += 10
         self.send("bob", "alice", "Another low", level="low")
         self.send("bob", "alice", "Urgent one", level="critical")
+        sbmsg.deliver("bob", {"to": "alice", "title": "Due soon", "due": self.t + 3600, "brief": {"context": "c"}},
+                      {"alice", "bob"}, now=self.t, root=self.mail, as_root=False)
         self.api.calls.clear()
         self.bot.push_new()
-        self.assertEqual([("Urgent one" in t) for t in self.api.texts(11)], [True])
+        self.assertEqual(sorted(t.split("<b>")[-1].split("<")[0] for t in self.api.texts(11)),
+                         ["Due soon", "Urgent one"])
 
     def test_buttons_done_and_reply(self):
         self.link()

@@ -208,15 +208,15 @@ def portal_call(ip, who, action, **kw):
 # ---------- html ----------
 
 def page(title, body, gate=False, member=True):
-    # "treehouse · sietchtabr": the product first, this machine second
-    here = "/_box/features" if title == "Features" else "/_box/me" if title.endswith("dashboard") else ""
+    # "treehouse · mybox": the product first, this machine second
+    here = "/_box/features" if title == "How it works" else "/_box/me" if title.endswith("dashboard") else ""
 
     def cur(h):
         return ' aria-current="page"' if h == here else ""
     mark = f'<img src="{FAVICON}" width="18" height="18" alt="" class="logo">{html.escape(BRAND)} <span class="host">· {html.escape(HOST)}</span>'
     nav = (f'<a href="/_box/me" class="brand">{mark}</a>' + (
            '<nav>' + "".join(f'<a href="{h}"{cur(h)}>{t}</a>' for h, t in (
-               ("/_box/me", "Dashboard"), ("/_box/features", "Features"), ("/_box/app", "T3 in browser"))) + '</nav>'
+               ("/_box/me", "Dashboard"), ("/_box/features", "How it works"), ("/_box/app", "Open T3"))) + '</nav>'
            if member else "")
            if gate else
            f'<a href="/" class="brand">{mark}</a>\n<nav><a href="/">dashboard</a><a href="/join">join</a></nav>')
@@ -292,16 +292,16 @@ input[readonly],textarea[readonly]{background:var(--inset)}input:disabled,textar
 input[type=checkbox],input[type=radio]{width:16px;height:16px;min-height:0;margin:0;padding:0;accent-color:var(--pri);box-shadow:none}
 textarea{font-size:12.5px;height:90px;resize:vertical}
 /* buttons: primary (filled accent), secondary (outlined), danger (outlined red), link */
-button,a.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--h);margin-top:16px;background:var(--pri);color:var(--on-pri);
+button,a.btn,summary.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--h);margin-top:16px;background:var(--pri);color:var(--on-pri);
 border:1px solid transparent;border-radius:var(--r);padding:0 16px;font:inherit;font-weight:500;font-size:14px;line-height:1.2;cursor:pointer;
 text-decoration:none;white-space:nowrap;transition:background-color .12s,border-color .12s;-webkit-tap-highlight-color:transparent}
-button:hover,a.btn:hover{background:var(--pri-h)}button:active,a.btn:active{transform:translateY(.5px)}
-button:focus-visible,a.btn:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:var(--r)}
+button:hover,a.btn:hover,summary.btn:hover{background:var(--pri-h)}button:active,a.btn:active{transform:translateY(.5px)}
+button:focus-visible,a.btn:focus-visible,summary.btn:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:var(--r)}
 .box{max-width:var(--w)}.box.me{max-width:none}
 .box:not(.me){max-width:560px;margin:24px auto 0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px}
 .box:not(.me)>h2:first-child{margin-top:0;font-size:20px}.box:not(.me) h2{font-size:16px}.box:not(.me) ul{padding-left:20px}.box:not(.me) li{margin:4px 0}
 .box:not(.me) form button[type=submit]{margin-top:20px}
-button.sm,a.btn.sm{margin:0;min-height:32px;padding:0 12px;font-size:13px}
+button.sm,a.btn.sm,summary.btn.sm{margin:0;min-height:32px;padding:0 12px;font-size:13px}
 .secondary{background:var(--btn2)!important;color:var(--fg)!important;border-color:var(--line2)!important}
 .secondary:hover{background:var(--btn2-h)!important}
 .danger{background:var(--btn2)!important;color:var(--bad)!important;border-color:var(--line2)!important}
@@ -393,9 +393,34 @@ pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:12
 @media (max-width:560px){main{padding:16px 16px 40px}.brand .host{display:none}.start{padding:20px}.sec,.card{padding:16px}
 .box:not(.me){padding:20px;margin-top:8px}
 details.sec{padding:0}details.sec>summary{padding:0 16px}details.sec>:not(summary){margin-left:16px;margin-right:16px}details.sec h3{margin-left:16px}details.sec[open]{padding-bottom:16px}
-:root{--h:40px}button.sm,a.btn.sm{min-height:40px;padding:0 14px;font-size:14px}input,textarea,select{font-size:16px}
+:root{--h:40px}button.sm,a.btn.sm,summary.btn.sm{min-height:40px;padding:0 14px;font-size:14px}input,textarea,select{font-size:16px}
 header nav{margin:0 -10px}.inv input,.inv input.short{max-width:none;flex-basis:100%}.inv button{width:100%}.tabs a{padding:0 9px}.tabs{margin-left:-9px;margin-right:-16px;padding-right:16px}.people .c{min-width:56px;font-size:12px}.people svg{width:56px}
 .run li{grid-template-columns:minmax(0,1fr) auto}.run .act{grid-column:1/-1;justify-self:start;text-align:left}}
+/* messages, who's here, phone alerts */
+.msgs>.item{gap:2px}.msgs .mh{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
+.msgs .item.unread .mh b::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--acc);margin-right:8px;vertical-align:2px}
+.msgs .ctx{margin:6px 0 0;font-size:14px;white-space:pre-line}
+.msgs .acts{align-items:center}.msgs .acts form{margin:0}
+details.rp{display:inline-block}details.rp>summary,details.compose>summary{list-style:none;margin:0}
+details.rp>summary::-webkit-details-marker,details.compose>summary::-webkit-details-marker{display:none}
+details.rp[open]{display:block;flex-basis:100%;order:9}details.rp textarea,details.compose textarea{font-family:inherit;font-size:14px;height:80px}
+details.rp form button{margin-top:8px}
+details.compose{margin-top:16px}details.compose[open]>summary{margin-bottom:4px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}@media(max-width:560px){.two{grid-template-columns:1fr}}
+ul.pres{list-style:none;margin:0;padding:0}
+ul.pres li{display:grid;grid-template-columns:minmax(120px,1fr) 2fr minmax(max-content,1fr);gap:4px 16px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
+ul.pres li:first-child{padding-top:0}ul.pres .ac{color:var(--mut);font-size:13px;white-space:nowrap;display:flex;align-items:center;justify-self:end}
+@media(max-width:560px){ul.pres li{grid-template-columns:1fr auto}ul.pres .st{grid-column:1/-1;order:3}}
+.mystatus{margin-top:16px}form.status{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+form.status input{flex:2 1 220px;width:auto;margin:0}form.status input+input{flex:1 1 160px}form.status button{margin:0}
+.tgrow{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}.tgrow>div:first-child{flex:1 1 260px}
+.qr{flex:none;text-align:center}.qrbox{display:inline-block;padding:8px;background:#fff;border-radius:8px;line-height:0}
+.qrbox svg{width:180px;height:180px}.qr .sub{max-width:200px;margin:6px auto 0}
+@media(max-width:560px){.qr{display:none}}
+.warnsec{border-color:var(--warnb)}.warnsec p{margin:0}.warnsec>*+*{margin-top:8px}
+.note.hk-on{border-color:var(--okb)}.note.hk-on .ic{width:8px;height:8px;background:var(--ok)}
+details.usage>summary .sub{font-weight:400}details.usage .you{margin-top:8px}
+.rows .a{display:flex;flex-wrap:wrap;gap:8px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
 """
 
@@ -756,8 +781,9 @@ def mem_limit(lim):
     return lim.get("mem_max") or sb.parse_size(sb.user_limits(CFG)["MEMORY_MAX"]) or lim.get("mem_high")
 
 
-def you_strip(name, rec, st, btn, rng="24h", base=""):
-    """One card: your memory/CPU/disk/ports now, one small memory chart, one line about the box."""
+def you_strip(name, rec, st, btn, rng="24h", base="", fold=False):
+    """One card: your memory/CPU/disk now, one small memory chart, one line about the box.
+    fold=True (friends): a collapsed "Usage" section, opened by itself when memory or disk is over 70%."""
     e = html.escape
     rng = rng if rng in RANGES else "24h"
     now = time.time()
@@ -789,17 +815,22 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
                      if guar and ml and guar < ml else "")),
              stat("CPU", e(fmt_cores(cpu_now or 0)), f'<div class="sub">equal share of {ncpu} cores</div>')]
     if disk is not None or budget:
-        stats.append(stat("Disk", (e(sb.human(disk)) if disk is not None else "–")
-                          + (f"<small> of {e(sb.human(budget))}</small>" if budget else ""),
-                          bar(disk, budget) if budget else ""))
-    lo_hi = sb.port_range(CFG, rec["uid"]) if rec and rec.get("uid") is not None and not owner else None
-    if lo_hi:
-        stats.append(stat("Your ports", f"<span class='mono' style='font-size:16px'>{lo_hi[0]}–{lo_hi[1]}</span>",
-                          '<div class="sub">for your servers</div>'))
+        stats.append(stat("Disk", (e(sb.human(disk)) if disk is not None else "<small>not measured yet</small>")
+                          + (f"<small> of {e(sb.human(budget))}</small>" if budget and disk is not None else ""),
+                          bar(disk, budget) if budget and disk is not None else
+                          (f'<div class="sub">{e(sb.human(budget))} to use</div>' if budget else "")))
+    stats.append(stat("Projects", str(int(u.get("projects") or 0)), '<div class="sub">in your home folder</div>'))
+    mem_pct = 100 * (mem_now or 0) / ml if ml else 0
+    disk_pct = 100 * (disk or 0) / budget if budget else 0
+    if fold:
+        summ = [f"{e(sb.human(mem_now or 0))} memory"] + ([f"{e(sb.human(disk))} disk"] if disk is not None else [])
+        hot = mem_pct > 70 or disk_pct > 70
+        out = [f'<details class="sec usage" id="dash"{" open" if hot else ""}><summary>Usage'
+               f'<span class="sub">{" · ".join(summ)}</span></summary>'
+               f'<div class="you">{"".join(stats)}</div>']
     else:
-        stats.append(stat("Projects", str(int(u.get("projects") or 0)), '<div class="sub">in your home folder</div>'))
-    out = ['<section class="sec" id="dash">'
-           f'<div class="you">{"".join(stats)}</div>']
+        out = ['<section class="sec" id="dash">'
+               f'<div class="you">{"".join(stats)}</div>']
     # one small chart: memory against the limit
     if any(v is not None for _, v in mem):
         mem_b = bucket(mem, t0, t1)
@@ -811,17 +842,6 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
         marks = ([(ml, f"most {sb.human(ml)}")] if ml else []) + (
             [(guar, f"guaranteed {sb.human(guar)}")] if guar and ml and guar < ml else [])
         out.append(svg_chart([(mem_b, "b")], t0, t1, top, gap, sb.human, marks, rng, head))
-    # archive warnings
-    pend = [str(p) for p in (u.get("pending_deletions") or [])]
-    arch = [str(a.get("name")) for a in (u.get("archives") or []) if isinstance(a, dict)
-            and float(a.get("until") or 0) > now][:10]
-    if pend:
-        out.append(f'<p class="warnline">Will be archived soon: {e(", ".join(pend))}. Projects are archived after '
-                   f'{e(CFG["PROJECT_TTL_DAYS"])} days untouched, and only once everything is pushed to git. '
-                   "Open one in T3 to keep it where it is.</p>")
-    if arch:
-        out.append(f'<p class="sub" style="margin:8px 0 0">Archived, restorable for {e(CFG["ARCHIVE_DAYS"])} days: '
-                   f'{e(", ".join(arch))}. Ask your agent to restore one.</p>')
     # the box in one line
     last = rows[-1] if rows else {}
     level = {"calm": ("ok", "quiet"), "moderate": ("warn", "moderate"), "busy": ("bad", "busy")}.get(
@@ -834,7 +854,8 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
     rb = reboot_text()
     if rb:
         bits.append(e(rb))
-    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span></div></section>')
+    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span></div>'
+               + ("</details>" if fold else "</section>"))
     return "".join(out)
 
 
@@ -1038,38 +1059,36 @@ def servers_section(st, shared, btn, base="", own_public=True):
             return tail + (" <span class='mut'>(Tailscale)</span>" if PUBLIC else "")
         pu = f"{PUBLIC}{public_path or '/p/' + port}/"
         return (f'<a href="{e(pu)}" target="_blank" rel="noopener">{e(pu)}</a>'
-                f'<br><span class="mut">on Tailscale: {tail}</span>')
+                f' <span class="mut">· <a href="{e(u)}" target="_blank" rel="noopener" class="mut">Tailscale link</a></span>')
 
     out = ["<h2>Your servers</h2><section class='sec'>"]
     mine = st.get("servers")
     if mine is None:
         out.append("<p class='mut'>Couldn't load your servers just now.</p>")
     elif not mine:
-        out.append("<p class='mut' style='margin:0'>None yet. Ask your agent to \"run this as a server\" (it uses "
-                   "<code>box serve</code>).</p>")
+        out.append("<p class='mut' style='margin:0'>Nothing running yet. Ask your agent to keep an app running, like "
+                   "\"put my site online\". It shows up here with a link.</p>")
     else:
         out.append('<div class="srv">' + "".join(
             f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
             f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
             f'<div class="sub">{link(s.get("port"), public=own_public)}</div>{acts("serve", s)}</div>'
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
-        out.append("<p class='sub' style='margin:12px 0 0'>" + ("Public links open only for you, behind your usual login. Apps that "
-                   "expect to live at <code>/</code> may need a base-path setting (Vite <code>base</code>, Next "
-                   "<code>basePath</code>, Streamlit <code>--server.baseUrlPath</code>)." if PUBLIC and own_public else
-                   "Links work from devices on Tailscale.") + "</p>")
+        out.append("<p class='sub' style='margin:12px 0 0'>" + ("Links open only for you, behind your usual login."
+                   if PUBLIC and own_public else "Links work from devices on Tailscale.") + "</p>")
     end = "</section>"
     if shared.get("unavailable"):
         return "".join(out) + end
-    out.append("</section><h2>Group servers</h2><section class='sec'>")
+    out.append("</section><h2>Shared with everyone</h2><section class='sec'>")
     if not shared.get("ok"):
         out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
         return "".join(out) + end
     group = [s for s in shared.get("servers") or []
              if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))]
     if not group:
-        out.append("<p class='mut' style='margin:0'>Nothing yet. Servers the whole group owns show up here, each with a short "
-                   "description of what it does; anyone can restart them. Ask your agent to make one with "
-                   "<code>box shared</code>.</p>")
+        out.append("<p class='mut' style='margin:0'>Nothing yet. Apps and bots the whole group owns show up here, each with "
+                   "a short description of what it does, and anyone can restart them. Ask your agent: \"make this a "
+                   "shared server for the team\".</p>")
         return "".join(out) + end
 
     def who_when(by, ts):
@@ -1133,7 +1152,8 @@ def portal_btn(tok, base):
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
 OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs", "running-stop",  # root allows only these
-                 "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon")
+                 "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon",
+                 "msg", "where", "telegram", "telegram-setup", "restore")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -1273,7 +1293,7 @@ def features_page(owner=False):
             f"Projects untouched for {e(ttl)} days get archived (not deleted), and only once they're pushed to git."),
         "</div>",
     ]
-    return page("Features", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
+    return page("How it works", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
 def own_events(name, n=8):
@@ -1666,8 +1686,10 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
     """The owner's /_box/me: same top as a friend's (open T3, you, your servers), then an Admin area in tabs."""
     e = html.escape
     base = "/_box"
-    btn = portal_btn(token_for(ip, who["id"]), base)
-    st, shared = status_and_shared(ip, who)
+    tok = token_for(ip, who["id"])
+    btn = portal_btn(tok, base)
+    st, more_data = portal_bundle(ip, who)
+    shared, msg, where, tg = (more_data[k] for k in ("shared", "msg", "where", "tg"))
     view = str((result or {}).get("_view") or "")
     out = []
     start = [f"<h2>Hi {e(name)}</h2><p class='mut'>You're the owner of {e(HOST)}, signed in as "
@@ -1675,6 +1697,17 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
         start.append('<div class="line"><a class="btn" href="/_box/app">Open T3</a></div>')
     out.append("<section class='start' id='start'>" + "".join(start) + "</section>")
+    out.append(hackathon_banner(name))
+    out.append(inbox_section(msg, where, tok, base, bool(tg.get("linked")), result))
+    out.append(people_section(where, name, tok, base, result))
+    trow = telegram_row(tg, tok, base, owner=True)
+    if result and view == "telegram" and result.get("ok") and result.get("url"):
+        out.append(telegram_link_card(result, tok, base))
+    elif result and view == "telegram":
+        out.append(portal_result(result, btn, base))
+    if trow:
+        out.append("<section class='sec'><ul class='rows'><li><span class='k'>" + trow[0] + "</span><span class='d'>"
+                   + trow[1] + "</span>" + (f"<span class='a'>{trow[2]}</span>" if trow[2] else "") + "</li></ul></section>")
     if result and view != "running-ctl" and (view == "boost" or view.endswith(("-ctl", "-logs"))):
         out.append(portal_result(result, btn, base))
     try:
@@ -1698,7 +1731,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
                    f"<a href='{base}/me?tab={k}#admin' class='{'on' if k == tab else ''}'>{e(label)}"
                    + (f"<span class='pill warn'>{nreq}</span>" if k == "requests" and nreq else "") + "</a>"
                    for k, label in tabs) + "</nav>")
-    if result and not (view == "boost" or view.endswith(("-ctl", "-logs"))):
+    if result and not (view in ("boost", "msg", "where", "telegram") or view.endswith(("-ctl", "-logs"))):
         out.append(portal_result(result, btn, base))
     try:
         if tab == "people":
@@ -1711,6 +1744,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
             out.append(boxes)
         elif tab == "settings":
             out.append(hackathon_section(btn))
+            out.append(telegram_setup_section(tg, tok, base))
             out.append(update_section(btn))
         else:
             out.append(events_section())
@@ -1808,6 +1842,275 @@ aria-label="Pairing link"><button type="button" class="sm secondary" data-copy="
 </details>"""
 
 
+# ---------- people: messages, who's here, phone alerts (the dashboard's human side of box msg / box where) ----------
+
+def portal_bundle(ip, who):
+    """Root's answers for one page view, fetched at once: status (the slow one), shared servers, inbox,
+    who's here and Telegram. A missing answer becomes {"ok": False}; the page still renders."""
+    calls = {"shared": ("shared-ls", {}), "msg": ("msg", {"op": "inbox"}), "where": ("where", {"op": "list"}),
+             "tg": ("telegram", {"op": "status"})}
+    got = {}
+
+    def one(k, action, kw):
+        got[k] = portal_call(ip, who, action, **kw)
+    ths = [threading.Thread(target=one, args=(k, a, kw), daemon=True) for k, (a, kw) in calls.items()]
+    for t in ths:
+        t.start()
+    st = portal_call(ip, who, "status")
+    deadline = time.time() + 35
+    for t in ths:
+        t.join(max(0, deadline - time.time()))
+    return st, {k: dict(got.get(k) or {"ok": False, "error": "no answer in time"}) for k in calls}
+
+
+def display_names(where):
+    """account -> the name people use ("Mohammad"), from `box where` data."""
+    return {p.get("user"): p.get("name") or p.get("user") for p in (where or {}).get("people") or []
+            if isinstance(p, dict) and p.get("user")}
+
+
+LEVEL_PILL = {"critical": ("bad", "Urgent"), "high": ("warn", "High"), "low": ("", "Low")}
+
+
+def hidden(tok, **kw):
+    return f'<input type="hidden" name="token" value="{html.escape(tok)}">' + "".join(
+        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">' for k, v in kw.items())
+
+
+def inbox_section(msg, where, tok, base, tg_linked=False, result=None):
+    """Messages for this person, most urgent first, with Done / Reply / Clear, and a "Message someone" form."""
+    e = html.escape
+    if not msg.get("ok"):
+        return ""
+    names = display_names(where)
+    nm = (lambda u: names.get(u) or u)
+    msgs = [m for m in msg.get("messages") or [] if isinstance(m, dict) and m.get("id")]
+    unread = sum(1 for m in msgs if not m.get("read"))
+    view = str((result or {}).get("_view") or "")
+    out = ["<div class='dash-h' id='messages'><h2>Messages"
+           + (f" <span class='pill warn'>{unread} new</span>" if unread else "") + "</h2></div>"]
+    if result and view == "msg":
+        out.append(portal_result(result, None, base))
+    out.append("<section class='sec'>")
+    if not msgs:
+        out.append("<p class='mut' style='margin:0'>Nothing waiting for you. When a teammate (or their agent) sends you "
+                   "something, it shows up here" + (" and on your phone." if tg_linked else ".") + "</p>")
+    else:
+        items = []
+        for m in msgs[:10]:
+            lv = LEVEL_PILL.get(m.get("level"))
+            pills = (f" <span class='pill {lv[0]}'>{lv[1]}</span>" if lv else "") + (
+                f" <span class='pill'>{e(str(m['status']))}</span>" if m.get("status") else "")
+            meta = [f"from {e(nm(m.get('from')))}", e(ago_text(m.get("ts")))]
+            if m.get("due_text"):
+                meta.append("due " + e(m["due_text"]))
+            if (m.get("count") or 1) > 1:
+                meta.append(f"sent {int(m['count'])} times")
+            ctx = f"<p class='ctx'>{e(m['context'])}</p>" if m.get("context") else ""
+            mid = e(m["id"])
+            items.append(
+                f"<div class='item{'' if m.get('read') else ' unread'}'><div class='mh'><b>{e(m.get('title') or '')}</b>"
+                f"{pills}</div><div class='sub'>{' · '.join(meta)}</div>{ctx}<div class='acts'>"
+                f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='msg', op='done', id=m['id'])}"
+                "<button class='sm'>Done</button></form>"
+                f"<details class='rp'><summary class='btn secondary sm'>Reply</summary>"
+                f"<form method='post' action='{base}/me'>{hidden(tok, action='msg', op='reply', id=m['id'])}"
+                f"<textarea name='text' required maxlength='4000' aria-label='Your reply' placeholder='Your reply to "
+                f"{e(nm(m.get('from')))}'></textarea><button class='sm'>Send</button></form></details>"
+                f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='msg', op='archive', id=m['id'])}"
+                f"<button class='linkbtn' aria-label='Clear {mid}'>Clear</button></form></div></div>")
+        out.append("<div class='srv msgs'>" + "".join(items) + "</div>")
+        if len(msgs) > 10:
+            out.append(f"<p class='sub'>And {len(msgs) - 10} more. Ask your agent: \"go through my messages\".</p>")
+    people = [u for u in msg.get("people") or [] if u != msg.get("you")]
+    sent = [m for m in msg.get("sent") or [] if isinstance(m, dict)]
+    if people:
+        opts = "".join(f"<option value='{e(u)}'>{e(nm(u))}</option>" for u in people)
+        out.append(
+            f"<details class='compose'{' open' if view == 'msg' and not (result or {}).get('ok') else ''}>"
+            "<summary class='btn secondary sm'>Message someone</summary>"
+            f"<form method='post' action='{base}/me'>{hidden(tok, action='msg', op='send')}"
+            f"<label>To</label><select name='to' required>{opts}</select>"
+            "<label>What's it about</label><input name='title' required maxlength='60' "
+            "placeholder='Fix the login page'>"
+            "<label>Details <span class='sub'>(what's going on, what you need)</span></label>"
+            "<textarea name='context' required maxlength='4000' placeholder='Their agent reads this, so say what "
+            "done looks like.'></textarea>"
+            "<div class='two'><div><label>How urgent</label><select name='level'><option value='normal'>Normal</option>"
+            "<option value='high'>High</option><option value='critical'>Urgent</option><option value='low'>Low"
+            "</option></select></div><div><label>Due <span class='sub'>(optional)</span></label><input name='due' "
+            "maxlength='40' placeholder='tomorrow 6pm'></div></div>"
+            "<button>Send</button></form></details>")
+    if sent:
+        def answer(m):
+            if m.get("answer"):
+                return e(str(m["answer"]))
+            return f"seen {e(ago_text(m['seen']))}" if m.get("seen") else "not opened yet"
+        out.append("<h3 style='margin:20px 0 6px'>You sent</h3><ul class='ev'>" + "".join(
+            f"<li><b>{e(m.get('title') or '')}</b> <span class='sub'>to {e(nm(m.get('to')))} · {answer(m)}</span></li>"
+            for m in sent) + "</ul>")
+    out.append("</section>")
+    return "".join(out)
+
+
+def people_section(where, me, tok, base, result=None):
+    """Who's here: everyone's status in their own words and a rough "active" hint, and a form for your own."""
+    e = html.escape
+    if not where.get("ok"):
+        return ""
+    ppl = [p for p in where.get("people") or [] if isinstance(p, dict) and p.get("user")]
+    mine = next((p for p in ppl if p["user"] == me), {"user": me, "name": me})
+    view = str((result or {}).get("_view") or "")
+    rows = []
+    for p in sorted(ppl, key=lambda p: (p["user"] != me, not p.get("active_now"), str(p.get("name")).lower())):
+        act = str(p.get("activity") or "")
+        dot = "ok" if p.get("active_now") else ""
+        status = (e(p["status"]) + (f" <span class='sub'>until {e(p['until_text'])}</span>" if p.get("until_text") else "")
+                  if p.get("status") else "<span class='mut'>No status</span>")
+        rows.append(f"<li><span class='who'><b>{e(p.get('name') or p['user'])}</b>"
+                    + (" <span class='sub'>(you)</span>" if p["user"] == me else "")
+                    + f"</span><span class='st'>{status}</span><span class='ac'><span class='dot {dot}'></span>"
+                    f"{e(act if act != 'private' else 'hidden')}</span></li>")
+    form = (f"<form method='post' action='{base}/me' class='status'>{hidden(tok, action='where', op='set')}"
+            "<input name='status' required maxlength='80' aria-label='Your status' "
+            f"placeholder='{e(mine.get('status') or 'In class, asleep, at the hackathon…')}'>"
+            "<input name='until' maxlength='40' aria-label='Until (optional)' placeholder='until (3pm, tomorrow 9am)'>"
+            "<button class='sm'>Set status</button></form>")
+    clear = (f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='where', op='set', clear='1')}"
+             "<button class='linkbtn'>Clear my status</button></form>") if mine.get("status") else ""
+    private = mine.get("activity") == "private"
+    priv = (f"<form method='post' action='{base}/me' style='display:inline'>"
+            f"{hidden(tok, action='where', op='private', private='' if private else '1')}"
+            f"<button class='linkbtn'>{'Show it again' if private else 'Hide it'}</button></form>")
+    privacy = ("Others don't see when you were last active. " if private else
+               f"Others see how recently you used the box (<b>{e(mine.get('activity') or 'new here')}</b>), never what "
+               "you're doing. ") + priv
+    return ("<div class='dash-h' id='people'><h2>Who's here</h2></div>"
+            + (portal_result(result, None, base) if result and view == "where" else "")
+            + "<section class='sec'><ul class='pres'>" + "".join(rows) + "</ul>"
+            + f"<div class='mystatus'>{form}<div class='sub' style='margin:8px 0 0'>Your agent can set this for you too "
+              f"(\"tell people I'm in class till 3\"). {clear}</div><div class='sub' style='margin:4px 0 0'>{privacy}</div></div>"
+            + "</section>")
+
+
+def telegram_row(tg, tok, base, owner=False):
+    """(label, description, actions) for the "Phone alerts" account row."""
+    e = html.escape
+
+    def form(op, label, primary=False, danger=False, extra=None, conf=""):
+        cls = "sm" + ("" if primary else " danger" if danger else " secondary")
+        return (f"<form method='post' action='{base}/me' style='display:inline'{conf}>"
+                f"{hidden(tok, action='telegram', op=op, **(extra or {}))}<button class='{cls}'>{e(label)}</button></form>")
+    if not tg.get("ok"):
+        return None
+    if not tg.get("ready"):
+        if owner:
+            return ("Phone alerts", "<span class='dot'></span>Telegram isn't on for this box yet.",
+                    f"<a class='btn secondary sm' href='{base}/me?tab=settings#admin'>Set it up</a>")
+        return ("Phone alerts", "<span class='dot'></span>Not on for this box yet. The owner can turn on Telegram.", "")
+    if tg.get("linked"):
+        quiet = tg.get("notify", "important") == "important"
+        return ("Phone alerts",
+                f"<span class='dot ok'></span>Telegram, as {e(tg.get('handle') or 'you')}. "
+                + ("Urgent messages and ones due within a day." if quiet else "Every message."),
+                form("test", "Send a test") + " "
+                + form("notify", "Every message" if quiet else "Only important", extra={"level": "all" if quiet else "important"})
+                + " " + form("unlink", "Disconnect", danger=True,
+                             conf=" onsubmit=\"return confirm('Stop phone alerts on Telegram?')\""))
+    return ("Phone alerts", "<span class='dot'></span>Get your messages on your phone, with Telegram.",
+            form("link", "Connect Telegram", primary=True))
+
+
+def telegram_link_card(res, tok, base):
+    """After "Connect Telegram": one big button (a one-time t.me link), a QR code for a laptop, and a poll."""
+    e = html.escape
+    url = safe_url(res.get("url"), ("https://t.me/",))
+    try:
+        import sbqr
+        qr = sbqr.svg(url, scale=5)
+    except Exception:  # noqa: BLE001 - the button alone still works
+        qr = ""
+    return f"""<div class="card tg" id="telegram"><h3>Connect Telegram</h3>
+<div class="tgrow"><div><p>1. <a class="btn" style="margin-top:0" href="{e(url)}" target="_blank" rel="noopener">Open Telegram</a></p>
+<p>2. Tap <b>Start</b> at the bottom of the chat. That's it.</p>
+<p id="tgwait" class="sub">This page notices by itself once you're connected. The link works once, for 15 minutes.</p></div>
+{f'<div class="qr"><div class="qrbox">{qr}</div><p class="sub">On your laptop? Scan this with your phone.</p></div>' if qr else ''}</div>
+<p class="sub">No Telegram? <a href="https://telegram.org/apps" target="_blank" rel="noopener">Get it here</a>, then come back.
+Your messages always show on this page too.</p></div>
+<script>(function(){{const body=new URLSearchParams({{token:{json.dumps(tok)},action:"telegram",op:"status",format:"json"}});
+const t0=Date.now();async function poll(){{if(Date.now()-t0>15*60*1000){{document.getElementById("tgwait").textContent=
+"The link expired. Press Connect Telegram again.";return}}try{{const r=await fetch("{base}/me",{{method:"POST",body}});
+const j=await r.json();if(j.linked){{location.href="{base}/me#account";return}}}}catch(e){{}}setTimeout(poll,3000)}}
+setTimeout(poll,3000)}})();</script>"""
+
+
+def telegram_setup_section(tg, tok, base):
+    """Owner settings: give the box a Telegram bot (one token from @BotFather), or see that it's on."""
+    e = html.escape
+    if tg.get("ready"):
+        body = (f"<p style='margin-top:0'><span class='dot ok'></span><b>On</b> as "
+                f"<a href='https://t.me/{e(tg.get('bot') or '')}' target='_blank' rel='noopener'>@{e(tg.get('bot') or '')}</a>. "
+                "Everyone connects their own phone from their page (Phone alerts).</p>"
+                f"<p class='sub'>To change the bot, paste a new token below.</p>"
+                f"<form method='post' action='{base}/me' style='display:inline' onsubmit=\"return confirm("
+                f"'Turn off Telegram for everyone?')\">{hidden(tok, action='telegram-setup', op='off')}"
+                "<button class='sm danger'>Turn off</button></form>")
+    else:
+        body = ("<p style='margin-top:0'><span class='dot'></span><b>Off</b>. With it on, people get their messages on "
+                "their phone and can set their status (<code>/away in class till 3</code>) and ask "
+                "<code>/where krish</code> from Telegram.</p><ol class='steps'>"
+                "<li>In Telegram, open <a href='https://t.me/BotFather' target='_blank' rel='noopener'>@BotFather</a> "
+                "and send <code>/newbot</code>. Give it a name, like “Our treehouse”.</li>"
+                "<li>It answers with a token (it looks like <code>123456789:AAH…</code>). Paste it here.</li></ol>")
+    return ("<h3 style='margin:24px 0 10px'>Telegram</h3><section class='sec'>" + body
+            + f"<form method='post' action='{base}/me' class='inv'>{hidden(tok, action='telegram-setup')}"
+            "<input type='password' name='tgtoken' required autocomplete='off' placeholder='bot token' "
+            "aria-label='Bot token from BotFather'><button class='sm'>"
+            + ("Replace token" if tg.get("ready") else "Turn on") + "</button></form></section>")
+
+
+def hackathon_banner(me):
+    """Friends see when hackathon mode is on (and whether their package requests are open)."""
+    e = html.escape
+    try:
+        cfg = sb.load_config()
+        until = sb.hackathon_until(cfg)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not until:
+        return ""
+    chosen = set(u for u in re.split(r"[\s,]+", cfg.get("HACKATHON_USERS") or "") if u)
+    when = time.strftime("%a %H:%M", time.localtime(until))
+    extra = (" Your agent's package requests are approved straight away." if me in chosen else "")
+    return (f"<div class='note hk-on' role='status'><span class='ic' aria-hidden='true'></span><p><b>Hackathon mode</b> "
+            f"until {e(when)}.{extra} Shared servers, messages and statuses below are how the team stays in sync.</p></div>")
+
+
+def archive_notice(name, tok, base):
+    """Projects about to be archived, and archived ones with a Restore button (`box restore`, as this user)."""
+    e = html.escape
+    u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
+    now = time.time()
+    pend = [str(p) for p in (u.get("pending_deletions") or [])][:10]
+    arch = [str(a.get("name")) for a in (u.get("archives") or []) if isinstance(a, dict)
+            and float(a.get("until") or 0) > now and ARCHIVE_RE.fullmatch(str(a.get("name") or ""))][:10]
+    out = []
+    if pend:
+        out.append(f"<p>Soon to be archived: <b>{e(', '.join(pend))}</b>. Projects untouched for "
+                   f"{e(CFG['PROJECT_TTL_DAYS'])} days move to an archive, and only once everything in them is pushed "
+                   "to git. You can restore them for "
+                   f"{e(CFG['ARCHIVE_DAYS'])} days.</p>")
+    if arch:
+        out.append("<div class='p'>Archived, restorable for " + e(CFG["ARCHIVE_DAYS"]) + " days: " + ", ".join(
+            f"<b>{e(a)}</b> <form method='post' action='{base}/me' style='display:inline'>"
+            f"{hidden(tok, action='restore', key=a)}<button class='linkbtn'>Restore</button></form>" for a in arch)
+            + "</div>")
+    return "<section class='sec warnsec'>" + "".join(out) + "</section>" if out else ""
+
+
+ARCHIVE_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/ -]{0,120}")
+
+
 def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab=""):
     """The friend's home page: one start card (log in to an AI, then get the T3 app), their dashboard and
     servers, a few account lines, and the rest under "More options". No terminal anywhere."""
@@ -1817,7 +2120,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     tok = token_for(ip, who["id"])
     gate = bool(who.get("cf_jwt"))
     base = "/_box" if gate else ""
-    st, shared = status_and_shared(ip, who)
+    st, more_data = portal_bundle(ip, who)
+    shared, msg, where, tg = (more_data[k] for k in ("shared", "msg", "where", "tg"))
     logins, t3 = st.get("logins") or {}, st.get("t3")
     btn = portal_btn(tok, base)
     view = str((result or {}).get("_view") or "")
@@ -1847,7 +2151,6 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         def open_t3(label, small=False):
             return btn("t3", label, link=small)
     busy = ("<div id='start-busy' hidden>" + notice("Waking up T3. This can take a minute.", "busy") + "</div>")
-    make_prompt = btn("t3prompt", "Make my setup prompt", attrs=" data-busy='1'")
     card = []
     if in_start and result.get("ok") and result.get("app_prompt"):
         card.append(prompt_body(result))
@@ -1870,18 +2173,15 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                 card.append("<div class='line'>" + btn("login", "Log in with Claude" if first == "claude" else
                                                        "Log in with ChatGPT", first) + "</div>")
                 if first == "claude" and "codex" in logins:
-                    card.append("<div class='line sub'>Pay for ChatGPT instead? "
+                    card.append("<div class='line sub'>Or use your ChatGPT plan: "
                                 + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
         elif state == "S2":
-            card.append("<div class='wide'><h2>Get the T3 app on your laptop</h2><p>Paste a prompt into Claude Code, "
-                        "Codex or any agent on your laptop. It installs the app and connects it to the box.</p>"
-                        f"<div class='line'>{make_prompt}</div>"
-                        f"<div class='line sub'>No agent on your laptop? {open_t3('Open T3 in this browser', True)}.</div>"
-                        "</div><div class='narrow'><h2>Open T3</h2><p>This is where you talk to your agent. It runs on "
-                        f"the box, so it keeps going when you close the tab.</p><div class='line'>{open_t3('Open T3')}</div>"
-                        "<div class='line sub'>T3 app for your laptop? "
-                        + btn("t3prompt", "Make my setup prompt", link=True, attrs=" data-busy='1'")
-                        + ".</div></div><!--/narrow-->" + busy)
+            card.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><p>T3 is where you talk to your "
+                        "agent. It runs on the box, so it keeps working when you close the tab.</p>"
+                        f"<div class='line'>{open_t3('Open T3 in this browser')}</div>"
+                        "<div class='line sub'>Want the T3 app on your laptop instead? "
+                        + btn("t3prompt", "Make a setup prompt", link=True, attrs=" data-busy='1'")
+                        + " and paste it into Claude Code or Codex there.</div>" + busy)
         else:  # S3
             card.append("<h2>Open T3</h2><p>Open the T3 app on your laptop. Or open T3 in this browser. Your agents "
                         f"keep working when you close it.</p><div class='line'>{open_t3('Open T3 in this browser')}</div>"
@@ -1893,15 +2193,23 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         out.append(f"<p class='greet'>Hi {e(who['display'])}. Your account on {e(HOST)} is <b>{e(name)}</b>.</p>")
     out.append("<section class='start' id='start'>" + "".join(card) + "</section>")
 
-    # ---- you, now ----
-    if result and view != "running-ctl" and (view.endswith(("-ctl", "-logs")) or view == "boost"):
+    if state == "S1":  # brand new: one thing to do. The rest of the page appears once their AI is logged in.
+        if gate and CF:
+            out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
+        out.append(f"<script>{START_JS}</script>")
+        return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
+    out.append(hackathon_banner(name))
+    out.append(archive_notice(name, tok, base))
+    if result and view == "restore":
         out.append(portal_result(result, btn, base))
-    try:
-        out.append(you_strip(name, rec, st, btn, rng, base))
-    except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
-        print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
-    out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
+    tg_link = bool(tg.get("linked"))
+    out.append(inbox_section(msg, where, tok, base, tg_link, result))
+    out.append(people_section(where, name, tok, base, result))
+    if result and view != "running-ctl" and view.endswith(("-ctl", "-logs")):
+        out.append(portal_result(result, btn, base))
     out.append(servers_section(st, shared, btn, base))
+    # what's using memory right now, with Stop buttons (lib/sbrunning.py): right under the servers it includes
+    out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
 
     # ---- your account: one row per thing, buttons on the right ----
     acct = []
@@ -1912,16 +2220,23 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     if ai:
         names = " and ".join(AI_NAMES.get(k, logins[k]["label"]) for k in ai if logins[k]["ok"])
         row("AI", f'<span class="dot ok"></span>{e(names)}, logged in' if ai_ok else
-            '<span class="dot warn"></span>Not logged in yet', "" if ai_ok else
-            "<a class='btn sm' href='#start'>Log in</a>")
+            '<span class="dot warn"></span>Not logged in yet (see the top of the page)')
     if "gh" in logins:
         row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
             '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
             "" if logins["gh"]["ok"] else btn("login", "Connect GitHub", "gh", primary=False, small=True))
-    row("Projects", f"Live in your home folder. Archived after {e(CFG['PROJECT_TTL_DAYS'])} days untouched, "
-        "and only once they're pushed to git. Ask your agent to put them on GitHub.")
+    trow = telegram_row(tg, tok, base)
+    if trow:
+        row(*trow)
+    tg_card = telegram_link_card(result, tok, base) if result and view == "telegram" and result.get("ok") \
+        and result.get("url") else ""
     out.append("<h2 id='account'>Your account</h2>"
-               + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
+               + (portal_result(result, btn, base) if result and view in ("telegram", "boost") and not tg_card else "")
+               + tg_card + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
+    try:
+        out.append(you_strip(name, rec, st, btn, rng, base, fold=True))
+    except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
+        print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
 
     # ---- more options ----
     more = []
@@ -2005,8 +2320,8 @@ def portal_result(res, btn, base=""):
         return logs_card(res, btn)
     if view == "boost":  # older pages: boosts are gone, root explains why
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
-    if view == "hackathon":
-        return notice(e(str(res.get("message") or "Saved.")))
+    if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore"):
+        return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
         busy = view == "request-update"  # the update has only started; a check mark would claim it's done
@@ -2215,9 +2530,10 @@ class Handler(BaseHTTPRequestHandler):
         fid = secrets.token_urlsafe(9)
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
-        anchor = ("#start" if view in START_VIEWS else
-                  "#running" if view == "running-ctl" else "")
-        tab = {"invite": "people", "hackathon": "settings", "request-update": "settings"}.get(
+        anchor = "#start" if view in START_VIEWS else {"running-ctl": "#running", "telegram": "#account",
+                                                       "msg": "#messages", "where": "#people"}.get(view, "")
+        tab = {"invite": "people", "hackathon": "settings", "request-update": "settings",
+               "telegram-setup": "settings"}.get(
             view, "requests" if view.startswith("request-") else "")
         if tab and who.get("owner"):
             return self.redirect(f"/_box/me?r={fid}&tab={tab}#admin")
@@ -2230,7 +2546,7 @@ class Handler(BaseHTTPRequestHandler):
         action, key = form.get("action", ""), form.get("key", "")
         as_json = form.get("format") == "json"
         now = time.time()
-        if as_json and action == "check":  # the page polls this while someone types a code
+        if as_json and action in ("check", "telegram"):  # the page polls these (a login code, Telegram linking)
             last = portal_poll.get(who["id"], 0)
             if now - last < 2:
                 return self.send(429, json.dumps({"ok": False}), "application/json")
@@ -2295,6 +2611,44 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server"})
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
+        if action == "msg":  # the inbox: done, reply, clear, send
+            op = form.get("op", "")
+            if op not in ("done", "reply", "archive", "send"):
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "msg"})
+            kw = {k: form[k][:4000] for k in ("id", "text", "to", "title", "context", "level", "due") if form.get(k)}
+            res = portal_call(ip, who, "msg", op=op, **kw)
+            if res.get("ok") and op == "send":
+                res["message"] = "Sent." + (" " + res["message"].split(". ", 1)[1] if ". " in res.get("message", "") else "")
+            return self.after_post(ip, who, name, rec, dict(res, _view="msg"))
+        if action == "where":  # your own status, and whether others see your activity
+            op = form.get("op", "")
+            if op == "set":
+                kw = {"clear": True} if form.get("clear") else {"status": form.get("status", "")[:200],
+                                                                  "until": form.get("until", "")[:60]}
+            elif op == "private":
+                kw = {"private": bool(form.get("private"))}
+            else:
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "where"})
+            res = portal_call(ip, who, "where", op=op, **kw)
+            return self.after_post(ip, who, name, rec, dict(res, _view="where"))
+        if action == "telegram":  # phone alerts: link (a one-time t.me link), test, notify level, unlink; status (poll)
+            op = form.get("op", "")
+            if op not in ("link", "unlink", "notify", "test", "status"):
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "telegram"})
+            res = portal_call(ip, who, "telegram", op=op, **({"level": form.get("level", "")} if op == "notify" else {}))
+            if op == "status":
+                return self.send(200, json.dumps({"ok": bool(res.get("ok")), "linked": bool(res.get("linked"))}),
+                                 "application/json")
+            return self.after_post(ip, who, name, rec, dict(res, _view="telegram"))
+        if who.get("owner") and action == "telegram-setup":
+            res = portal_call(ip, who, "telegram-setup", **({"op": "off"} if form.get("op") == "off" else
+                                                           {"token": form.get("tgtoken", "").strip()[:200]}))
+            return self.after_post(ip, who, name, rec, dict(res, _view="telegram-setup"))
+        if action == "restore":  # an archived project back in ~ (`box restore NAME`, as this user)
+            if not ARCHIVE_RE.fullmatch(key) or ".." in key:
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such project", "_view": "restore"})
+            res = portal_call(ip, who, "restore", key=key)
+            return self.after_post(ip, who, name, rec, dict(res, _view="restore"))
         actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key")
         keys = ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:

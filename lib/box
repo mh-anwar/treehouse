@@ -2143,7 +2143,7 @@ def portal_t3(pair, app=False):
 
 def app_setup_prompt(url):
     """The setup prompt for the agent on the friend's laptop, with what the box knows (their Tailscale account,
-    T3 apps already connected): the same text as the dashboard's "Make my setup prompt"."""
+    T3 apps already connected): the same text as the dashboard's "Make a setup prompt"."""
     rec = (sb.registry().get("users") or {}).get(ME.pw_name) or {}
     ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
     return sbconnect.app_prompt(url, portal_url(), socket.gethostname(), ts_login=ts["login"], ts_mode=ts["mode"],
@@ -2546,6 +2546,12 @@ def portal_where(req):
     import sbmsg
     import sbwhere
     now = time.time()
+    if req.get("op") == "private":  # the "others see: active 2h ago · Hide" toggle
+        res = shared_request({"action": "presence", "private": bool(req.get("private"))})
+        if res.get("ok"):
+            res["message"] = ("Hidden. Others no longer see when you were last active." if req.get("private") else
+                              "Others can see when you were last active again.")
+        return res
     if req.get("op") == "set":
         r = {"action": "presence"}
         if req.get("clear"):
@@ -2602,6 +2608,11 @@ def cmd_portal(a):
             out = portal_add_key(sys.stdin.read(8192))
         elif a.action == "login-check" and a.key in PORTAL_LOGINS:
             out = portal_login_wait(a.key, 5)
+        elif a.action == "restore" and a.key:
+            r = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "restore", a.key, "--json"],
+                               capture_output=True, text=True, errors="replace", timeout=120)
+            out = ({"ok": True, "message": f"Restored {a.key} to your home folder."} if r.returncode == 0 else
+                   {"ok": False, "error": (r.stderr.strip().removeprefix("box restore: ") or "couldn't restore it")[:300]})
         elif a.action in ("msg", "where"):
             try:
                 req = json.loads(sys.stdin.read(16 << 10) or "{}")

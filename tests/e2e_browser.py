@@ -267,6 +267,39 @@ def identity(req):
     return None, False
 
 
+WHERE = {"alice": {"name": "Alice", "status": "At the hackathon", "until_text": "today 18:00", "act": "active now"},
+         "bob": {"act": "active 3h ago"}}
+TG = {"ready": True, "linked": {"bob"}, "notify": {}}
+MSGS = {"alice": [
+    {"id": "18f0aa000001", "from": "bob", "to": "alice", "title": "Fix the login page before the demo", "level": "high",
+     "due_text": "today 18:00", "ts": NOW - 3600, "context": "The demo starts at 6. Login 500s on Safari; done when it works there.",
+     "read": False},
+    {"id": "18f0aa000002", "from": "bob", "to": "alice", "title": "Can you review my PR?", "level": "normal",
+     "ts": NOW - 86400, "context": "", "read": True}]}
+
+
+def fake_msg(name, req):
+    op = req.get("op")
+    box = MSGS.setdefault(name, [])
+    if op == "inbox":
+        return {"ok": True, "messages": list(box), "open": len(box), "people": ["alice", "bob", ME], "you": name,
+                "sent": ([{"id": "18f0aa000009", "to": "bob", "title": "Deploy is green", "ts": NOW - 600,
+                           "seen": NOW - 300, "answer": ""}] if name == "alice" else [])}
+    if op == "send":
+        if not req.get("title") or not req.get("context"):
+            return {"ok": False, "error": "title: required"}
+        return {"ok": True, "message": f"sent 18f0aa00000f to {req.get('to')}"}
+    m = next((x for x in box if x["id"] == req.get("id")), None)
+    if not m:
+        return {"ok": False, "error": "that message isn't in your inbox any more"}
+    if op == "reply" and not req.get("text"):
+        return {"ok": False, "error": "write a reply first"}
+    if op in ("done", "archive"):
+        box.remove(m)
+    return {"ok": True, "message": {"done": "Marked done; they'll see it.", "reply": "Reply sent.",
+                                    "archive": "Cleared from your inbox."}[op]}
+
+
 def fake_root(req, wait=30):
     """What sharedbox-admin's provisioner answers (re-verifying the Access token, like the real one)."""
     with lock:
@@ -298,7 +331,8 @@ def _fake_root(req):
         return {"ok": True, "pair_url": f"http://{TS_IP}:{OWNER_T3_PORT}/pair#token={tok}"}
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
                                 "request-approve", "request-done", "request-decline", "self-update", "invite",
-                                "boost", "hackathon", "running-stop", "running-all"):
+                                "boost", "hackathon", "running-stop", "running-all", "msg", "where", "telegram",
+                                "telegram-setup", "restore"):
         return {"ok": False, "error": "not available for the owner's account"}
     if action == "boost":  # root: boosts are gone (dynamic memory), it only explains
         return {"ok": True, "until": 0, "message": "Boosts aren't needed any more."}
@@ -316,6 +350,62 @@ def _fake_root(req):
             return {"ok": False, "error": "That isn't running any more (or it can't be stopped from here). Refresh the page."}
         items.remove(it)
         return {"ok": True, "message": f"Stopped {it['name']}. It stays off, reboots included, until someone starts it again."}
+    if action == "msg":
+        return fake_msg(name, req)
+    if action == "where":
+        if req.get("op") == "set":
+            if req.get("clear"):
+                WHERE.get(name, {}).pop("status", None)
+                return {"ok": True, "message": "Status cleared."}
+            if not str(req.get("status") or "").strip():
+                return {"ok": False, "error": "status: a few words, like \"In class\""}
+            WHERE.setdefault(name, {})["status"] = req["status"]
+            return {"ok": True, "message": f"Status saved. {name}: {req['status']}."}
+        if req.get("op") == "private":
+            WHERE.setdefault(name, {})["private"] = bool(req.get("private"))
+            return {"ok": True, "message": "Hidden." if req.get("private") else "Shown again."}
+        people = []
+        for u in ("alice", "bob", ME):
+            r = WHERE.get(u, {})
+            v = {"user": u, "name": r.get("name", u), "activity": "private" if r.get("private") else r.get("act", "new here, no activity yet"),
+                 "active_now": r.get("act") == "active now"}
+            if r.get("status"):
+                v["status"] = r["status"]
+                if r.get("until_text"):
+                    v["until_text"] = r["until_text"]
+            people.append(v)
+        return {"ok": True, "you": name, "people": people}
+    if action == "telegram":
+        op = req.get("op")
+        if op == "status":
+            return {"ok": True, "ready": TG["ready"], "bot": "treehouse_test_bot" if TG["ready"] else "",
+                    **({"linked": True, "handle": "@" + name, "notify": TG["notify"].get(name, "important")}
+                       if name in TG["linked"] else {"linked": False})}
+        if not TG["ready"]:
+            return {"ok": False, "error": "Telegram isn't set up on this box yet. The owner adds it on their dashboard."}
+        if op == "link":
+            return {"ok": True, "ready": True, "bot": "treehouse_test_bot",
+                    "url": "https://t.me/treehouse_test_bot?start=" + hashlib.sha256(name.encode()).hexdigest()[:24]}
+        if op == "unlink":
+            TG["linked"].discard(name)
+            return {"ok": True, "message": "Telegram disconnected"}
+        if op == "notify":
+            TG["notify"][name] = req.get("level")
+            return {"ok": True, "message": "Saved."}
+        if op == "test":
+            return {"ok": True, "message": "Sent. Check Telegram on your phone."}
+        return {"ok": False, "error": "unknown action"}
+    if action == "telegram-setup":
+        if not owner:
+            return {"ok": False, "error": "not the owner"}
+        if req.get("op") == "off":
+            return {"ok": True, "message": "Telegram is off."}
+        if ":" not in str(req.get("token") or ""):
+            return {"ok": False, "error": "that doesn't look like a bot token (it looks like 123456789:ABC...)"}
+        TG["ready"] = True
+        return {"ok": True, "message": "Telegram is on: @treehouse_test_bot."}
+    if action == "restore":
+        return {"ok": True, "message": f"Restored {req.get('key')} to your home folder."}
     if action == "hackathon":  # root: sharedbox-admin hackathon_set
         if not owner:
             return {"ok": False, "error": "not the owner"}
@@ -984,9 +1074,9 @@ def screenshots(browser):
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-logs-{width}-{scheme}.png"), full_page=True)
                 if persona == "alice":
                     s.page.goto(url("/_box/me"))
-                    b = s.page.locator("#start button:visible", has_text="Make my setup prompt")
+                    b = s.page.locator("#start button:visible", has_text="Make a setup prompt")
                     if not b.count():
-                        fail("alice", f"screenshots {width} {scheme}", "no 'Make my setup prompt' button")
+                        fail("alice", f"screenshots {width} {scheme}", "no 'Make a setup prompt' button")
                     else:
                         b.first.click()
                         s.page.wait_for_load_state("load")
@@ -1027,9 +1117,9 @@ def start_cards(browser):
     """The start card: exactly one main button per state (S0..S3), and the T3 app setup prompt."""
     cases = [("erin", "tok-erin", [], "T3 isn't set up on this box yet"),
              ("bob", "tok-bob", ["Log in with Claude"], "Log in with ChatGPT"),
-             ("alice", "tok-alice", ["Make my setup prompt"], "Open T3 in this browser"),
-             ("dave", "tok-dave", ["Make my setup prompt"], "No agent on your laptop?"),  # no Tailscale id on record
-             ("alice", "tok-alice", ["Open T3"], "T3 app for your laptop?", 390)]  # phones lead with Open T3
+             ("alice", "tok-alice", ["Open T3 in this browser"], "Want the T3 app on your laptop instead?"),
+             ("dave", "tok-dave", ["Open T3 in this browser"], "Make a setup prompt"),  # no Tailscale id on record
+             ("alice", "tok-alice", ["Open T3 in this browser"], "Want the T3 app on your laptop", 390)]
     for persona, tok, want, text, *width in cases:
         s = Session(browser, persona, tok, **({"width": width[0]} if width else {}))
         s.page.goto(url("/_box/me"))
@@ -1052,7 +1142,7 @@ def start_cards(browser):
     s = Session(browser, "alice (prompt)", "tok-alice")
     page = s.page
     page.goto(url("/_box/me"))
-    page.locator("#start button:visible", has_text="Make my setup prompt").click()
+    page.locator("#start button:visible", has_text="Make a setup prompt").click()
     page.wait_for_load_state("load")
     inspect(s, "setup prompt")
     prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
@@ -1099,7 +1189,7 @@ def start_cards(browser):
     if any(c["name"] == "tb_app" for c in s.ctx.cookies()):
         fail("alice", "setup prompt", "sets the old tb_app cookie")
     page.goto(url("/_box/me"))  # only made a prompt, the app never connected: still the setup prompt
-    if page.evaluate(MAIN_JS) != ["Make my setup prompt"]:
+    if page.evaluate(MAIN_JS) != ["Open T3 in this browser"]:
         fail("alice", "after the prompt, app not connected", f"main buttons {page.evaluate(MAIN_JS)}")
     ACCOUNTS["alice"]["app"] = True
     try:
@@ -1225,7 +1315,7 @@ def tailnet_view():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     w.ALLOWED_HOSTS.add("127.0.0.1")
     import urllib.request
-    for app, want in ((False, ["Make my setup prompt"]), (True, ["Open T3 in this browser"])):
+    for app, want in ((False, ["Open T3 in this browser"]), (True, ["Open T3 in this browser"])):
         ACCOUNTS["alice"]["app"] = app
         rq = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/me")
         try:

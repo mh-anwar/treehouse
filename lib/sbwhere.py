@@ -162,7 +162,7 @@ def refresh_activity(homes, now=None, p=None, as_root=True):
 
 def ago(ts, now):
     if not ts:
-        return "no agent activity seen"
+        return "new here, no activity yet"
     s = now - ts
     if s < ACTIVE_NOW:
         return "active now"
