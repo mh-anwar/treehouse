@@ -210,12 +210,15 @@ class FakeVerifier:
 g.VERIFIER = FakeVerifier()
 
 ACCOUNTS = {  # what `box _portal status` would say for each account
-    "alice": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False},
+    "alice": {"boxes": {"minastirith": {"ssh": True, "logins": {"claude": True, "gh": True, "t3connect": False}},
+                        "krishbox": {"ssh": False, "logins": {}}},
+              "logins": {"claude": True, "codex": False, "gh": False, "t3connect": False},
               "servers": [{"name": "blog", "state": "running", "port": str(PORT_OF["alice"] + 3)},
                           {"name": "bot", "state": "stopped", "port": str(PORT_OF["alice"] + 4)}], "ssh": True},
     "bob": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
     "carol": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
-    "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False},
+    "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False,
+             "boxes": {"minastirith": {"ssh": True, "logins": {"codex": False}}}},  # ChatGPT here, not there yet
     "erin": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False,
              "no_t3": True},  # T3 Code isn't installed for her: the start card says so
     ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
@@ -407,6 +410,14 @@ def _fake_root(req):
         return {"ok": True, "message": "Telegram is on: @treehouse_test_bot."}
     if action == "restore":
         return {"ok": True, "message": f"Restored {req.get('key')} to your home folder."}
+    if action in ("peer-login", "peer-check"):  # the T3 app / ChatGPT on this person's other boxes
+        if key_ := req.get("key"):
+            if key_ not in ("t3connect", "codex"):
+                return {"ok": False, "error": "unknown login"}
+        boxes = ACCOUNTS[name].get("boxes") or {}
+        return {"ok": True, "boxes": [{"box": b, "done": False, "url": "https://accounts.t3.codes/device?user_code=WXYZ-1234",
+                                       "code": "WXYZ-1234"} if action == "peer-login" else {"box": b, "done": False}
+                                      for b in sorted(boxes)]}
     if action == "team":  # teammates' agents in your T3 (root: handle_team)
         mates = [u for u in UIDS if u != name]
         grants = TEAM.setdefault(name, [])
@@ -455,7 +466,8 @@ def _fake_root(req):
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
                 "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
-                "git": {"name": name, "email": ""}, "ssh": acct["ssh"],
+                "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "box": "mybox",
+                "boxes": acct.get("boxes") or {},
                 "servers": [dict(s) for s in acct["servers"]],
                 "running": [dict(i) for i in RUNNING.get(name, [])]}
     if action == "shared-ls":
@@ -702,10 +714,10 @@ def email_outside_email_off(body):
 class Session:
     """One persona in one browser context."""
 
-    def __init__(self, browser, persona, token, cookie=False, width=1280, scheme="dark"):
+    def __init__(self, browser, persona, token, cookie=False, width=1280, scheme="dark", js=True):
         self.persona, self.token = persona, token
         extra = {"Cf-Access-Jwt-Assertion": token} if token and not cookie else {}
-        self.ctx = browser.new_context(ignore_https_errors=True, extra_http_headers=extra,
+        self.ctx = browser.new_context(ignore_https_errors=True, extra_http_headers=extra, java_script_enabled=js,
                                        viewport={"width": width, "height": 900}, color_scheme=scheme)
         if token and cookie:
             self.ctx.add_cookies([{"name": "CF_Authorization", "value": token, "domain": "treehouse.test",
@@ -788,6 +800,14 @@ def inspect(s, where, page=None, dashboard_link=True):
         fail(s.persona, where, "no way back to the dashboard")
     if page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"):
         fail(s.persona, where, f"horizontal overflow at {page.viewport_size['width']}px")
+    tabs = page.locator("nav.tabs")
+    if tabs.count():  # the dashboard's tab bar: links, exactly one marked as the current page
+        cur = tabs.first.locator("a[aria-current='page']")
+        if cur.count() != 1:
+            fail(s.persona, where, f"tab bar has {cur.count()} current tabs")
+        elif "tab=" in page.url and f"tab={cur.get_attribute('data-tab')}" not in page.url \
+                and "tab=admin" not in page.url:
+            fail(s.persona, where, f"tab bar marks '{cur.get_attribute('data-tab')}' on {page.url}")
     VISITED.add((s.persona, urllib.parse.urlsplit(page.url).path))
 
 
@@ -814,6 +834,30 @@ def form_sigs(page):
     return out
 
 
+def press(page, target, timeout=30):
+    """Click a form's button and wait for its result: in place (the page's script swaps the card and counts
+    window.sbDone up) or, without the script, a page load."""
+    before = page.evaluate("window.sbDone || 0")
+    page.evaluate("window.__stay = 1")
+    target.click()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if page.evaluate(f"!window.__stay || (window.sbDone || 0) > {before}"):
+                break
+        except Exception:  # noqa: BLE001 - mid-navigation
+            pass
+        page.wait_for_timeout(40)
+    else:
+        raise TimeoutError("no result after pressing the button")
+    page.wait_for_load_state("load")
+
+
+def stayed(page):
+    """True when the last press() didn't load a new page (the result came in place)."""
+    return page.evaluate("window.__stay === 1")
+
+
 SSH_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBfW8kyhn1bfC1CK0D4Z0N8F0rG5uRoHxdQhqC1Vd8Df qa@laptop"
 
 
@@ -830,8 +874,7 @@ def submit(page, sig):
                 inp.fill({"sshkey": SSH_KEY, "code": "sk-paste-code-123", "username": "carol",
                           "email": "sam@example.com", "note": "Sam", "hours": "2",
                           "until": time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() + 7200))}.get(n, "x"))
-            with page.expect_navigation(timeout=30000):
-                f.locator("button").first.click()
+            press(page, f.locator("button").first)
             return True
     return False
 
@@ -848,6 +891,11 @@ def crawl(browser, persona, token, start="/_box/me", depth=3, cookie=False, expe
     s.expect_codes = set(expect)
     page = s.page
     queue, seen_pages, seen_forms, seen_links = [(start, ())], set(), set(), set()
+    tabs = []
+    if start.startswith("/_box/me"):  # every tab of the dashboard is its own page: crawl each one
+        page.goto(url(start))
+        tabs = [urllib.parse.urlsplit(a.get_attribute("href")) for a in page.locator("nav.tabs a").all()]
+        queue += [(t.path + "?" + t.query, ()) for t in tabs]
     while queue:
         path, steps = queue.pop(0)
         key = (path, steps)
@@ -911,6 +959,9 @@ def crawl(browser, persona, token, start="/_box/me", depth=3, cookie=False, expe
             queue.append((path, steps + (sig,)))
         w.portal_rate.clear()  # the per-person form rate limit (30 / 10 min): the crawl is far busier than a person
         w.rate.clear()
+    for t in tabs:
+        if (t.path + "?" + t.query, ()) not in seen_pages:
+            fail(persona, "crawl", f"tab {t.query} never visited")
     s.close()
     return seen_pages
 
@@ -963,27 +1014,31 @@ def flow_login(browser):
     if "welcome=1" not in page.url or "Welcome" not in page.inner_text("body"):
         fail("bob", "first visit", f"expected the welcome page, got {page.url}")
     inspect(s, "welcome")
-    page.get_by_role("button", name="Log in with Claude").click()
-    page.wait_for_load_state("load")
+    press(page, page.get_by_role("button", name="Log in with Claude"))
     inspect(s, "claude login card")
-    if not page.locator("a.btn[href^='https://claude.ai']").count():
-        fail("bob", "claude login", "no 'Open the login page' link")
+    if not page.locator("#start a.btn[href^='https://claude.ai']").count():
+        fail("bob", "claude login", "no 'Open the login page' link in the start card")
     page.fill("input[name=code]", "sk-paste-code-123")
-    page.get_by_role("button", name="Finish").click()
-    page.wait_for_load_state("load")
+    press(page, page.get_by_role("button", name="Finish"))
     inspect(s, "claude code pasted")
-    if "Logged in" not in page.inner_text("body"):
-        fail("bob", "claude login", "no 'Logged in' confirmation")
-    page.goto(url("/_box/me"))
+    if "Logged in" not in page.locator("#start").inner_text():
+        fail("bob", "claude login", "no 'Logged in' confirmation in the start card")
+    if not stayed(page):
+        fail("bob", "claude login", "the page reloaded instead of showing the result in place")
+    page.goto(url("/_box/me?tab=account"))
     gh = page.get_by_role("button", name="Connect GitHub")
-    if gh.count():
-        gh.click()
-        page.wait_for_load_state("load")
+    if not gh.count():
+        fail("bob", "account tab", "no Connect GitHub")
+    else:
+        press(page, gh)
         inspect(s, "github device code")
-        page.wait_for_timeout(4500)  # the page polls once by itself
-        page.get_by_role("button", name="Check now").click()
-        page.wait_for_load_state("load")
+        if "ABCD-1234" not in page.locator("#account").inner_text():
+            fail("bob", "github device code", "the code isn't shown in the account card")
+        page.wait_for_timeout(4500)  # the page polls once by itself (its script ran after the swap)
+        press(page, page.get_by_role("button", name="Check now"))
         inspect(s, "github check now")
+        if "hasn't finished" not in page.locator("#account").inner_text():
+            fail("bob", "github check now", "Check now's answer isn't in the account card")
     s.drain("login flow")
     s.close()
 
@@ -1051,24 +1106,25 @@ def owner_requests(browser):
     page.goto(url("/_box/me"))
     for label in ("Approve", "Done", "Decline"):
         page.goto(url("/_box/me?tab=requests"))
-        b = page.locator("#requests ~ div button", has_text=label)
+        b = page.locator("#requests button", has_text=label)
         if not b.count():
             continue
-        b.first.click()
-        page.wait_for_load_state("load")
+        press(page, b.first)
         inspect(s, f"request {label}")
-        if not page.locator(".note.ok").count():
+        if not page.locator("#requests .note.ok").count():
             fail("owner", f"request {label}", page.inner_text("body")[:200])
     s.drain("owner requests")
     s.close()
 
 
+FRIEND_TAB_PAGES = ["/_box/me", "/_box/me?tab=messages", "/_box/me?tab=servers", "/_box/me?tab=account"]
 SHOT_PAGES = {
-    "alice": ["/_box/me", "/_box/me?range=7d", "/_box/features"],
+    "alice": FRIEND_TAB_PAGES + ["/_box/me?tab=account&range=7d", "/_box/features"],
     "bob": ["/_box/me?welcome=1", "/_box/me"],
-    "dave": ["/_box/me"],
+    "dave": ["/_box/me", "/_box/me?tab=account"],
     "erin": ["/_box/me"],
-    "owner": ["/_box/me", "/_box/me?tab=people", "/_box/me?tab=running", "/_box/me?tab=settings"],
+    "owner": FRIEND_TAB_PAGES + [f"/_box/me?tab={t}" for t in ("people", "running", "requests", "boxes", "settings",
+                                                                "events")],
     "stranger": ["/", f"/i/{INVITE_TOK}", "/_box/nope"],
 }
 SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stranger": "tok-stranger", "dave": "tok-dave",
@@ -1090,9 +1146,8 @@ def screenshots(browser):
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-{name}-{width}-{scheme}.png"), full_page=True)
                 # result cards
                 if persona in ("alice", "owner"):
-                    s.page.goto(url("/_box/me"))
-                    s.page.locator("button", has_text="Logs").first.click()
-                    s.page.wait_for_load_state("load")
+                    s.page.goto(url("/_box/me?tab=servers"))
+                    press(s.page, s.page.locator("button", has_text="Logs").first)
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-logs-{width}-{scheme}.png"), full_page=True)
                 if persona == "alice":
                     s.page.goto(url("/_box/me"))
@@ -1100,8 +1155,7 @@ def screenshots(browser):
                     if not b.count():
                         fail("alice", f"screenshots {width} {scheme}", "no 'Make a setup prompt' button")
                     else:
-                        b.first.click()
-                        s.page.wait_for_load_state("load")
+                        press(s.page, b.first)
                         inspect(s, f"setup prompt @{width} {scheme}")
                         s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-prompt-{width}-{scheme}.png"), full_page=True)
                         s.page.locator("#start summary", has_text="Do it by hand").click()
@@ -1164,8 +1218,7 @@ def start_cards(browser):
     s = Session(browser, "alice (prompt)", "tok-alice")
     page = s.page
     page.goto(url("/_box/me"))
-    page.locator("#start button:visible", has_text="Make a setup prompt").click()
-    page.wait_for_load_state("load")
+    press(page, page.locator("#start button:visible", has_text="Make a setup prompt"))
     inspect(s, "setup prompt")
     prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
     pair = page.locator("#start input.mono").input_value() if page.locator("#start input.mono").count() else ""
@@ -1220,8 +1273,7 @@ def start_cards(browser):
             fail("alice", "app connected (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
         if not page.locator("#start button.linkbtn", has_text="Make a new setup prompt").count():
             fail("alice", "app connected (S3)", "no 'Make a new setup prompt'")
-        page.locator("#start button", has_text="Make a new setup prompt").click()
-        page.wait_for_load_state("load")
+        press(page, page.locator("#start button", has_text="Make a new setup prompt"))
         if not page.locator("#app-prompt").count():
             fail("alice", "S3 new prompt", "no prompt")
     finally:
@@ -1238,13 +1290,12 @@ def boxes_card(browser):
         where = f"boxes card @{width}"
         if SHOTS and s.page.locator("#boxes").count():
             os.makedirs(SHOTS, exist_ok=True)
-            top, bottom = s.page.evaluate("""() => { const a = document.getElementById('boxes').getBoundingClientRect(),
-                b = document.querySelector('#boxes + div').getBoundingClientRect();
-                return [a.top + scrollY, b.bottom + scrollY] }""")
+            top, bottom = s.page.evaluate("""() => { const a = document.getElementById('boxes').getBoundingClientRect();
+                return [a.top + scrollY, a.bottom + scrollY] }""")
             s.page.screenshot(path=os.path.join(SHOTS, f"owner-boxes-card-{width}-{scheme}.png"), full_page=True,
                               clip={"x": 0, "y": top - 10, "width": width, "height": bottom - top + 20})
         inspect(s, where)
-        rows = s.page.locator("#boxes + div tbody tr")
+        rows = s.page.locator("#boxes tbody tr")
         texts = [rows.nth(i).inner_text() for i in range(rows.count())]
         if len(texts) != 3:
             fail("owner", where, f"expected 3 box rows, got {texts}")
@@ -1257,16 +1308,17 @@ def boxes_card(browser):
                 for m in musts:
                     if m not in row:
                         fail("owner", where, f"row lacks {m!r}: {row!r}")
-        if not s.page.locator("#boxes + div a[href='http://100.64.0.6:8090/']").count():
+        if not s.page.locator("#boxes a[href='http://100.64.0.6:8090/']").count():
             fail("owner", where, "no link to the peer's dashboard")
-        if not s.page.locator("#boxes + div tbody .dot.ok").count() == 2:
+        if not s.page.locator("#boxes tbody .dot.ok").count() == 2:
             fail("owner", where, "expected two green dots (this box and the peer)")
         s.drain(where)
         s.close()
     s = Session(browser, "alice", "tok-alice")
-    s.page.goto(url("/_box/me"))
-    if s.page.locator("#boxes").count():
-        fail("alice", "boxes card", "a friend sees the owner's Boxes card")
+    for p in FRIEND_TAB_PAGES + ["/_box/me?tab=boxes"]:
+        s.page.goto(url(p))
+        if s.page.locator("#boxes").count() or s.page.locator("nav.tabs a[data-tab='boxes']").count():
+            fail("alice", "boxes card", f"a friend sees the owner's Boxes card on {p}")
     s.drain("boxes card (alice)")
     s.close()
 
@@ -1277,10 +1329,10 @@ def running_card(browser):
     import copy
     saved = copy.deepcopy(RUNNING)
     s = Session(browser, "alice", "tok-alice")
-    s.page.goto(url("/_box/me"))
+    s.page.goto(url("/_box/me?tab=servers"))
     where = "running card"
     inspect(s, where)
-    card = s.page.locator("#running + section")
+    card = s.page.locator("#running section")
     text = card.inner_text() if card.count() else ""
     for must in ("shop-db", "Supabase · 5 containers", "1.4G", "up 3d 2h", "Claude session", "blog",
                  "1 more", "guaranteed", "box running"):
@@ -1291,15 +1343,13 @@ def running_card(browser):
     stops = card.locator("button", has_text="Stop")
     if stops.count() != 4:  # shop-db, blog, mongo, tmux (+0 for the agent and the background line)
         fail("alice", where, f"expected 4 Stop buttons, got {stops.count()}")
-    stops.first.click()
-    s.page.wait_for_load_state("load")
-    body = s.page.locator("#running").evaluate("h => h.parentElement.innerText")
-    if "Stopped shop-db" not in body:
-        fail("alice", where, "no 'Stopped shop-db' notice next to the card")
-    if "shop-db" in s.page.locator("#running ~ section.sec").first.inner_text():
+    press(s.page, stops.first)
+    if "Stopped shop-db" not in s.page.locator("#running [data-out]").inner_text():
+        fail("alice", where, "no 'Stopped shop-db' notice in the card")
+    if "shop-db" in s.page.locator("#running ul.run").first.inner_text():
         fail("alice", where, "shop-db still listed after Stop")
-    if not s.page.url.endswith("#running"):
-        fail("alice", where, f"Stop didn't come back to the card: {s.page.url}")
+    if not stayed(s.page):
+        fail("alice", where, f"Stop reloaded the page instead of answering in the card: {s.page.url}")
     grp = s.page.locator(".srv .desc")
     if not grp.count() or "every Monday" not in grp.first.inner_text() or grp.first.locator("b").count():
         fail("alice", where, "group server description missing or not escaped")
@@ -1325,6 +1375,148 @@ def running_card(browser):
     RUNNING.update(saved)
 
 
+def in_view(page, sel):
+    return page.evaluate("""s => { const el = document.querySelector(s); if (!el) return false;
+        const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight }""", sel)
+
+
+def in_place(browser):
+    """Every button's result shows inside the card holding it, without a reload and without jumping to the top
+    (logs in a scrollable box in the server's card, Stop, status, a failed send); without JavaScript the redirect
+    comes back to the same tab and card. Tabs: each its own URL, old #card links land on the right tab."""
+    import copy
+    saved = copy.deepcopy(RUNNING)
+    s = Session(browser, "alice (in place)", "tok-alice", width=390)
+    page = s.page
+    page.goto(url("/_box/me?tab=servers"))
+    where = "in place: shared server logs"
+    b = page.locator("#shared button", has_text="Logs").first
+    b.scroll_into_view_if_needed()
+    page.evaluate("window.scrollBy(0, 120 - Math.max(0, innerHeight / 2 - document.querySelector('#shared').getBoundingClientRect().top))")
+    y0 = page.evaluate("scrollY")
+    if y0 <= 0:
+        fail("alice", where, "the test needs the page scrolled down first")
+    press(page, b)
+    if not stayed(page):
+        fail("alice", where, "the page reloaded")
+    if page.locator("#shared [data-out] pre.logs").count() != 1:
+        fail("alice", where, "the logs aren't in a scrollable box inside the group server's card")
+    if page.evaluate("getComputedStyle(document.querySelector('#shared pre.logs')).overflowY") not in ("auto", "scroll"):
+        fail("alice", where, "the logs box doesn't scroll")
+    if page.evaluate("scrollY") < 1:
+        fail("alice", where, "the page jumped to the top")
+    if not in_view(page, "#shared [data-out] > *"):
+        fail("alice", where, "the logs aren't on screen after pressing the button")
+    if page.locator("#servers pre.logs").count():
+        fail("alice", where, "logs showed in another card")
+    page.locator("#shared [data-close]").click()
+    if page.locator("#shared pre.logs").count():
+        fail("alice", where, "Close didn't close the logs")
+    inspect(s, where)
+    s.drain(where)
+    where = "in place: own server restart"
+    y0 = page.evaluate("scrollY")
+    press(page, page.locator("#servers button", has_text="Restart").first)
+    if not stayed(page) or "Blog: restarted" not in page.locator("#servers [data-out]").inner_text():
+        fail("alice", where, f"no result in the servers card: {page.locator('#servers').inner_text()[:200]!r}")
+    if page.locator("#servers [data-out] .note.ok").count() != 1:
+        fail("alice", where, "the result isn't one ok notice")
+    s.drain(where)
+    where = "in place: Stop in Running"
+    stop = page.locator("#running button", has_text="Stop").last
+    stop.scroll_into_view_if_needed()
+    press(page, stop)
+    if not stayed(page) or "Stopped" not in page.locator("#running [data-out]").inner_text():
+        fail("alice", where, "Stop's result isn't in the Running card")
+    if not in_view(page, "#running [data-out] > *") or page.evaluate("scrollY") < 1:
+        fail("alice", where, "Stop's result is off screen or the page jumped to the top")
+    s.drain(where)
+    where = "in place: status on Home"
+    page.goto(url("/_box/me"))
+    page.fill("#people input[name=status]", "In class")
+    press(page, page.locator("#people button", has_text="Set status"))
+    if not stayed(page) or "Status saved" not in page.locator("#people [data-out]").inner_text():
+        fail("alice", where, "no 'Status saved' in the Who's here card")
+    s.drain(where)
+    where = "in place: failed send keeps the form open"
+    page.goto(url("/_box/me?tab=messages"))
+    page.locator("#messages summary", has_text="Message someone").click()
+    page.fill("#messages input[name=title]", "Hi")
+    page.evaluate("document.querySelector('#messages textarea[name=context]').required = false")  # root says no
+    press(page, page.locator("#messages details.compose button", has_text="Send"))
+    if not stayed(page) or not page.locator("#messages [data-out] .note.bad").count():
+        fail("alice", where, "the error isn't in the Messages card")
+    if not page.locator("#messages details.compose[open]").count():
+        fail("alice", where, "the form closed after a failed send")
+    s.drain(where)
+    where = "in place: the box unreachable"
+    page.goto(url("/_box/me?tab=servers"))
+    page.route("**/_box/me", lambda r: r.abort() if r.request.method == "POST" else r.continue_())
+    press(page, page.locator("#servers button", has_text="Logs").first)
+    if "Couldn't reach the box" not in page.locator("#servers [data-out]").inner_text():
+        fail("alice", where, "no error in the card when the request fails")
+    if page.locator("#servers button.busy, #servers button:disabled").count():
+        fail("alice", where, "the button stays busy after a failed request")
+    page.unroute("**/_box/me")
+    s.bad_responses.clear()
+    s.console.clear()
+    where = "tabs: old #card links"
+    for old, tab in (("#running", "servers"), ("#messages", "messages"), ("#account", "account"), ("#dash", "account"),
+                     ("#people", "home")):
+        page.goto(url("/_box/me" + old))
+        try:
+            page.wait_for_function(f"document.querySelector('nav.tabs a[aria-current]').dataset.tab === '{tab}'",
+                                   timeout=10000)
+        except Exception:  # noqa: BLE001
+            fail("alice", where, f"/_box/me{old} didn't land on the {tab} tab: {page.url}")
+    page.goto(url("/_box/me?tab=servers"))
+    page.goto(url("/_box/me?tab=account"))
+    page.go_back()
+    if "tab=servers" not in page.url or page.locator("nav.tabs a[aria-current]").get_attribute("data-tab") != "servers":
+        fail("alice", where, f"Back didn't return to the servers tab: {page.url}")
+    focused = []
+    for _ in range(12):
+        page.keyboard.press("Tab")
+        focused.append(page.evaluate("document.activeElement.textContent.trim()"))
+    if not any(f.startswith("Messages") for f in focused):
+        fail("alice", where, f"the tabs can't be reached with the keyboard: {focused}")
+    s.drain(where)
+    s.close()
+    # without JavaScript: post/redirect/get back to the same tab, scrolled to the card, the result inside it
+    s = Session(browser, "alice (no js)", "tok-alice", js=False)
+    page = s.page
+    page.goto(url("/_box/me?tab=servers"))
+    where = "no JavaScript: logs"
+    with page.expect_navigation():
+        page.locator("#servers button", has_text="Logs").first.click()
+    if "tab=servers" not in page.url or not page.url.endswith("#servers"):
+        fail("alice", where, f"didn't come back to the servers card: {page.url}")
+    if page.locator("#servers [data-out] pre.logs").count() != 1:
+        fail("alice", where, "the logs aren't inside the servers card")
+    inspect(s, where)
+    s.drain(where)
+    s.close()
+    s = Session(browser, "owner (in place)", "tok-owner")
+    page = s.page
+    page.goto(url("/_box/me?tab=admin"))
+    if page.locator("nav.tabs a[aria-current]").get_attribute("data-tab") != "requests":
+        fail("owner", "tabs", "?tab=admin (old links) doesn't open Requests while some are open")
+    if page.locator("nav.tabs .tsep").count() != 1:
+        fail("owner", "tabs", "the admin tabs aren't in the same bar after one divider")
+    page.goto(url("/_box/me?tab=people"))
+    page.fill("#invite input[name=email]", "sam@example.com")
+    press(page, page.locator("#invite button", has_text="Invite"))
+    if not stayed(page) or "Invite ready" not in page.locator("#invite [data-out]").inner_text():
+        fail("owner", "invite in place", "the invite message isn't in the Invite card")
+    page.goto(url("/_box/settings"))
+    if "tab=settings" not in page.url:
+        fail("owner", "tabs", f"/_box/settings didn't open the Settings tab: {page.url}")
+    s.drain("owner in place")
+    s.close()
+    RUNNING.clear()
+    RUNNING.update(saved)
+
+
 def tailnet_view():
     """The tailnet page (port 8090, gate=False): same start card, no device-link, no /_box/ links (404 there)."""
     alice = {"id": "nAlice1", "display": "Alice A", "login": "alice@github", "node": "laptop"}
@@ -1336,21 +1528,24 @@ def tailnet_view():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Tailnet)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     w.ALLOWED_HOSTS.add("127.0.0.1")
+    import urllib.error
     import urllib.request
     for app, want in ((False, ["Open T3 in this browser"]), (True, ["Open T3 in this browser"])):
         ACCOUNTS["alice"]["app"] = app
-        rq = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/me")
         try:
-            body = urllib.request.urlopen(rq, timeout=60).read().decode()
+            body = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}/me", timeout=60).read().decode()
+            acct = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}/me?tab=account", timeout=60).read().decode()
         finally:
             ACCOUNTS["alice"]["app"] = False
         where = "tailnet /me" + (" (app connected)" if app else "")
         if "device-link" in body:
             fail("alice (tailnet)", where, "device-link button (refused in Cloudflare mode)")
-        rel = re.findall(r"""href=['"](/_box/[^'"]*)""", body)
+        rel = re.findall(r"""href=['"](/_box/[^'"]*)""", body + acct)
         if rel:
             fail("alice (tailnet)", where, f"relative /_box/ links (404 on the tailnet page): {rel}")
-        if f"href='{PUBLIC}/'" not in body or "Without Tailscale" not in body:
+        if "href='/me?tab=account' data-tab='account'" not in body:
+            fail("alice (tailnet)", where, "the tab bar doesn't link to /me?tab=...")
+        if f"href='{PUBLIC}/'" not in acct or "Without Tailscale" not in acct:
             fail("alice (tailnet)", where, "no absolute 'Without Tailscale' link to the public site")
         if re.search(rf"(//|@){re.escape(HOSTNAME)}\b", re.sub(r"<header>.*?</header>", "", body, flags=re.S)):
             fail("alice (tailnet)", where, "an address uses the box's name")
@@ -1360,6 +1555,26 @@ def tailnet_view():
         got = [a or b for a, b in mains]
         if got != want:
             fail("alice (tailnet)", where, f"start card main buttons {got}, expected {want}")
+    # no JavaScript on the tailnet page: post/redirect/get to the same tab, the result inside the card
+    tok = w.token_for("100.64.0.9", alice["id"])
+
+    class NoFollow(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    op = urllib.request.build_opener(NoFollow)
+    body = urllib.parse.urlencode({"token": tok, "action": "where", "op": "set", "status": "Lunch"}).encode()
+    try:
+        op.open(urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/me", data=body), timeout=60)
+        loc = ""
+    except urllib.error.HTTPError as ex:
+        loc = ex.headers.get("Location") or ""
+    if not re.fullmatch(r"/me\?r=[\w-]+&tab=home#people", loc):
+        fail("alice (tailnet)", "status without JS", f"redirect {loc!r}")
+    else:
+        page = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}{loc.split('#')[0]}", timeout=60).read().decode()
+        card = page[page.find("id='people'"):]
+        if "Status saved" not in card[:card.find("</section>")]:
+            fail("alice (tailnet)", "status without JS", "the result isn't inside the Who's here card")
     srv.shutdown()
 
 
@@ -1379,6 +1594,7 @@ def main():
         tailnet_view()
         boxes_card(browser)
         running_card(browser)
+        in_place(browser)
         w.portal_rate.clear()
         reg = sb.registry()  # bob's first visit (flow_login) must still see the welcome page
         reg["users"]["bob"]["welcome"] = True

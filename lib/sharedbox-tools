@@ -289,9 +289,17 @@ def set_current(name, ver):
 
 
 def shim_text(cfg, name, binary):
+    pre = ""
+    if binary == "claude":
+        # the one-year token from the dashboard's Claude login (`claude setup-token`; the same file on every box,
+        # copied by federation). An API key or a token already in the environment wins.
+        pre = ('t=$HOME/.config/treehouse/claude-token\n'
+               'if [ -z "$CLAUDE_CODE_OAUTH_TOKEN$ANTHROPIC_API_KEY" ] && [ -r "$t" ]; then\n'
+               '    read -r CLAUDE_CODE_OAUTH_TOKEN < "$t" && export CLAUDE_CODE_OAUTH_TOKEN\n'
+               'fi\n')
     return f'''#!/bin/sh
 {SHIM_MARK} for {name}: written by sharedbox-tools, don't edit (rewritten on every update).
-export DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1
+{pre}export DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1
 exec "{sb.AGENTS_DIR}/{sb.agent_slug(name)}/current/node_modules/.bin/{binary}" "$@"
 '''
 

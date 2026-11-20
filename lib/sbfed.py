@@ -12,8 +12,11 @@ others', verifies the signature against /etc/sharedbox/fed/allowed_signers, and:
     ~/.ssh/authorized_keys, writes `Host <box>` blocks and pinned host keys, so `ssh minastirith` and
     `box run --anywhere` work as that user with no prompt, in both directions;
   - then, as the user, links their T3 Code on each box to the other one (`t3 environment link`), copies the
-    GitHub token (long-lived, safe to share) and git identity from the home box. Claude/Codex logins are NOT
-    copied (rotating refresh tokens): `box boxes login KEY --on BOX` runs the normal device login there.
+    GitHub token (long-lived, safe to share) and git identity from the home box, and the Claude one-year token
+    (`claude setup-token`, ~/.config/treehouse/claude-token, read by the claude shim; the newest copy wins).
+    Codex logins and T3 Connect are NOT copied (Codex refresh tokens rotate and OpenAI says not to share
+    auth.json; a T3 Connect authorization belongs to one machine): the dashboard's "Your boxes" row starts
+    them on every other box at once (`box _portal peer-login KEY`) and shows one approve link per box.
 
 Trust: an attacker who can bind the web port on a peer (a friend, if sharedbox-web is down) can serve any JSON,
 but can't sign it; a replayed old roster is refused by its serial. Root on any listed box is the owner.

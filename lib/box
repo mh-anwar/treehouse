@@ -1152,7 +1152,8 @@ T3_PAIR_URL={url}""")
 
 # name, label, login command, credential files (any), api-key env vars, how-to
 AGENTS = [
-    ("claude", "Claude Code", ["claude"], [".claude/.credentials.json"], ["ANTHROPIC_API_KEY"],
+    ("claude", "Claude Code", ["claude"], [".claude/.credentials.json", ".config/treehouse/claude-token"],
+     ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
      "run `claude`, pick a login method, open the URL it prints on your laptop, paste the code back, then /exit"),
     ("codex", "OpenAI Codex", ["codex", "login", "--device-auth"], [".codex/auth.json"], ["OPENAI_API_KEY"],
      "run `codex login --device-auth` and enter the code at the URL it prints"),
@@ -2025,7 +2026,9 @@ def cmd_issues(a):
 
 PORTAL_LOGINS = {
     # key: (label, command, the user pastes a code back?)
-    "claude": ("Claude", ["claude", "auth", "login"], True),
+    # a one-year token (`claude setup-token`): it doesn't rotate, so the same one works on every box (copied by
+    # federation, read by the claude shim). `claude auth login` tokens rotate and break when copied.
+    "claude": ("Claude", ["claude", "setup-token"], True),
     "codex": ("Codex (ChatGPT)", ["codex", "login", "--device-auth"], False),
     "gh": ("GitHub", ["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
            False),
@@ -2106,6 +2109,11 @@ def portal_status():
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
     out["ssh"] = bool(ssh_keys())
+    # this person's other boxes and which logins are done there (from the last federation pass / approvals)
+    st = sb.read_json(FED_STATE, {}) or {}
+    out["boxes"] = {p: {"ssh": bool(v.get("ssh")), "logins": dict(v.get("logins") or {})}
+                    for p, v in (st.get("peers") or {}).items() if isinstance(v, dict)}
+    out["box"] = st.get("self") or socket.gethostname().split(".")[0]
     return out
 
 
@@ -2280,8 +2288,8 @@ def portal_login_start(key, console=False):
             gh_finish()
         mark_setup_done(key)
         return {"ok": True, "done": True}
-    if key == "claude" and console:
-        cmd = cmd + ["--console"]
+    if key == "claude" and console:  # an Anthropic Console (API billing) account: the normal login
+        cmd = ["claude", "auth", "login", "--console"]
     tmux("kill-session", "-t", key)
     # keep the pane around after the login exits so its last words can be read
     # gh asks extra y/n questions when it has a terminal; with no terminal it just prints the code
@@ -2297,7 +2305,7 @@ def portal_login_start(key, console=False):
     while time.time() < deadline:
         time.sleep(1)
         screen = login_screen(key)
-        urls = URL_RE.findall(screen)
+        urls = sbconnect.screen_urls(screen)  # Claude hard-wraps its long sign-in link
         codes = [] if paste else DEVICE_CODE_RE.findall(screen)
         if urls and (paste or codes):
             return {"ok": True, "url": urls[0], "code": codes[0] if codes else None, "paste": paste}
@@ -2322,16 +2330,59 @@ def portal_login_code(key, code):
     return portal_login_wait(key, 30)
 
 
+CLAUDE_TOKEN = os.path.join(HOME, ".config", "treehouse", "claude-token")
+CLAUDE_TOKEN_RE = re.compile(r"sk-ant-oat01-[A-Za-z0-9_-]{20,300}")
+FED_NUDGE = os.path.join(HOME, ".sharedbox", "fed-nudge")  # root's fed-sync copies logins to the other boxes soon
+
+
+def fed_nudge():
+    try:
+        os.makedirs(os.path.dirname(FED_NUDGE), exist_ok=True)
+        with open(FED_NUDGE, "w") as f:
+            f.write(str(int(time.time())))
+    except OSError:
+        pass
+
+
+def save_claude_token(token, mtime=None):
+    """Keep a `claude setup-token` token where the claude shim reads it (0600). True if it changed."""
+    if not CLAUDE_TOKEN_RE.fullmatch(token or ""):
+        return False
+    if fed_read(CLAUDE_TOKEN).strip() == token:
+        return False
+    os.makedirs(os.path.dirname(CLAUDE_TOKEN), mode=0o700, exist_ok=True)
+    tmp = CLAUDE_TOKEN + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token + "\n")
+    if mtime:
+        os.utime(tmp, (mtime, mtime))
+    os.replace(tmp, CLAUDE_TOKEN)
+    return True
+
+
+def claude_token_from_screen(key="claude"):
+    """setup-token prints the token once, after the pasted code: take it off the login screen (it fits on one
+    250-column line; joining lines could glue the next word onto it)."""
+    m = CLAUDE_TOKEN_RE.search(login_screen(key))
+    if m and save_claude_token(m.group(0)):
+        fed_nudge()
+
+
 def portal_login_wait(key, seconds):
     label = PORTAL_LOGINS[key][0]
     deadline = time.time() + seconds
     while time.time() < deadline:
+        if key == "claude":
+            claude_token_from_screen()
         if portal_logged_in(key):
             if key == "gh":
                 gh_finish()
             if key == "t3connect":
                 # T3 links "on next start": restart this account's T3 Code so its relay comes up
                 sctl("restart", "--no-block", T3_UNIT, capture=True)
+            if key in ("gh", "t3connect"):
+                fed_nudge()  # the other boxes: copy GitHub, offer the T3 app there too
             tmux("kill-session", "-t", key)
             mark_setup_done(key)
             return {"ok": True, "done": True}
@@ -2348,6 +2399,7 @@ def portal_login_wait(key, seconds):
 
 
 def tail(screen, n=4):
+    screen = CLAUDE_TOKEN_RE.sub("sk-ant-…", screen)  # an error line never shows a token
     lines = [l.strip() for l in screen.splitlines()
              if l.strip() and "[login exited" not in l and "https://" not in l]
     return " / ".join(lines[-n:])[-400:] or "no output"
@@ -2683,6 +2735,24 @@ def cmd_portal(a):
                                capture_output=True, text=True, errors="replace", timeout=120)
             out = ({"ok": True, "message": f"Restored {a.key} to your home folder."} if r.returncode == 0 else
                    {"ok": False, "error": (r.stderr.strip().removeprefix("box restore: ") or "couldn't restore it")[:300]})
+        elif a.action in ("peer-login", "peer-check") and a.key in PEER_LOGINS:
+            out = portal_peer_login(a.key, check=a.action == "peer-check")
+        elif a.action == "claude-token-info":  # federation: how new is this box's copy (never the token itself)
+            out = {"ok": True, "mtime": int(os.path.getmtime(CLAUDE_TOKEN)) if os.path.exists(CLAUDE_TOKEN) else 0}
+        elif a.action == "claude-token-put":  # federation: a newer token from another of this person's boxes
+            try:
+                req = json.loads(sys.stdin.read(4096) or "{}")
+            except ValueError:
+                req = {}
+            mt = int(req.get("mtime") or 0) if isinstance(req, dict) else 0
+            have = int(os.path.getmtime(CLAUDE_TOKEN)) if os.path.exists(CLAUDE_TOKEN) else 0
+            if not isinstance(req, dict) or not CLAUDE_TOKEN_RE.fullmatch(str(req.get("token") or "")):
+                out = {"ok": False, "error": "bad token"}
+            elif mt <= have or mt > time.time() + 600:
+                out = {"ok": True, "kept": True}
+            else:
+                save_claude_token(req["token"], mtime=mt)
+                out = {"ok": True}
         elif a.action == "team":
             try:
                 req = json.loads(sys.stdin.read(16 << 10) or "{}")
@@ -2904,6 +2974,16 @@ def fed_link_peer(peer, ip, home, notes):
                 out["gh"] = r.returncode == 0
                 if r.returncode == 0:
                     notes.append(f"GitHub login copied to {peer}")
+    # Claude: the one-year token (doesn't rotate). The newest copy wins: whichever box has a newer one pushes it.
+    mine = fed_read(CLAUDE_TOKEN).strip()
+    if mine:
+        info = fed_remote_json(peer, "box _portal claude-token-info", timeout=60)
+        mt = int(os.path.getmtime(CLAUDE_TOKEN))
+        if info.get("ok") and int(info.get("mtime") or 0) < mt:
+            r = fed_remote_json(peer, "box _portal claude-token-put", json.dumps({"token": mine, "mtime": mt}),
+                                timeout=60)
+            if r.get("ok"):
+                notes.append(f"Claude login copied to {peer}")
     if home:
         name, email = git_ident()
         if name and email:
@@ -2937,7 +3017,47 @@ def fed_link_peer(peer, ip, home, notes):
     st = fed_remote_json(peer, "box _portal status", timeout=60)
     there = {k: v.get("ok") for k, v in (st.get("logins") or {}).items()}
     out["missing_logins"] = [k for k in ("claude", "codex") if portal_logged_in(k) and there.get(k) is False]
+    out["logins"] = {k: bool(v) for k, v in there.items() if k in PEER_LOGINS + ("claude", "gh")}
     return out
+
+
+# Logins that can't be copied between boxes (a T3 Connect authorization belongs to one machine; OpenAI says a
+# Codex auth.json must not be shared): the dashboard starts them on the person's other boxes at once and shows
+# one approve link per box.
+PEER_LOGINS = ("t3connect", "codex")
+
+
+def fed_peers():
+    """{box: ip} of this person's other boxes that answer over SSH (from the last federation link pass)."""
+    st = sb.read_json(FED_STATE, {}) or {}
+    boxes = sb.boxes(CFG)
+    return {p: boxes.get(p, "") for p, v in (st.get("peers") or {}).items() if isinstance(v, dict) and v.get("ssh")}
+
+
+def fed_peer_note(peer, key, ok):
+    """Remember a login's state on a peer between link passes (the dashboard's "Your boxes" line)."""
+    st = sb.read_json(FED_STATE, {}) or {}
+    p = (st.setdefault("peers", {}).setdefault(peer, {}))
+    p.setdefault("logins", {})[key] = bool(ok)
+    sb.write_json(FED_STATE, st, mode=0o600)
+
+
+def portal_peer_login(key, check=False):
+    """Start (or check) a login on each of this person's other boxes. Each box answers with its own sign-in link
+    and code, or done. [{"box", "done", "url", "code", "error"}]"""
+    out = []
+    for peer in sorted(fed_peers()):
+        cmd = f"box _portal {'login-check' if check else 'login-start'} {shlex.quote(key)}"
+        r = fed_remote_json(peer, cmd, timeout=90)
+        row = {"box": peer, "done": bool(r.get("done"))}
+        if r.get("done"):
+            fed_peer_note(peer, key, True)
+        elif r.get("ok") and r.get("url"):
+            row.update(url=str(r["url"]), code=r.get("code") or "", paste=bool(r.get("paste")))
+        elif not check:
+            row["error"] = str(r.get("error") or "no answer")[:200]
+        out.append(row)
+    return {"ok": True, "boxes": out}
 
 
 def cmd_fed_user(a):

@@ -12,6 +12,7 @@ It also renders the T3 Code app's one-click pairing link (t3code://pair?pairingU
 friend pastes into the agent on their laptop to install the app and connect it to their T3 on the box.
 """
 
+import re
 import time
 import urllib.parse
 
@@ -295,3 +296,30 @@ def team_links_to(envs, origin):
     if not isinstance(envs, list):
         return []
     return [str(e.get("environmentId")) for e in envs if isinstance(e, dict) and e.get("environmentId") and any(str(u).rstrip("/") == origin.rstrip("/") for u in e.get("urls") or [])]
+
+
+# ---------- reading a login screen ----------
+
+_URL_PART = re.compile(r"[A-Za-z0-9%&=._~:/?#+@!$'()*,;\[\]-]+")
+
+
+def screen_urls(screen):
+    """https:// links on a terminal screen, put back together when the program hard-wrapped them at the
+    terminal's width (Claude's sign-in link is ~330 characters: `tmux capture-pane -J` only joins tmux's own
+    wraps, so the rest of the link sits alone on the next line)."""
+    lines = (screen or "").splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        for m in re.finditer(r"https://\S+", line):
+            url = m.group(0)
+            # it ran to the end of a long line: the next line(s) of bare link characters are the rest of it
+            wrapped = m.end() == len(line.rstrip()) and len(line.rstrip()) >= 80
+            j = i + 1
+            while wrapped and j < len(lines):
+                nxt = lines[j]
+                if not nxt.strip() or nxt != nxt.lstrip() or not _URL_PART.fullmatch(nxt.strip()):
+                    break
+                url += nxt.strip()
+                j += 1
+            out.append(url.rstrip(".,)"))
+    return out
