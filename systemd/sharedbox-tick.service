@@ -1,5 +1,5 @@
 [Unit]
-Description=sharedbox tick: note what systemd-oomd stopped, end old boosts, wake T3 for scheduled tasks, refresh agent rules
+Description=sharedbox tick: note what systemd-oomd stopped, end old boosts, wake T3 for scheduled tasks, refresh agent rules, projects on all boxes
 
 [Service]
 Type=oneshot

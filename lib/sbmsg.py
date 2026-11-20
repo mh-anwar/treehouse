@@ -13,7 +13,10 @@ and nobody can write into anyone else's inbox:
   STATE_DIR/mail/<user>/sent/<id>.json   a copy of what <user> sent
   STATE_DIR/mail/.rate.json      root's send counters (0600)
 
-Read/done marks are the reader's own business: ~/.sharedbox/msg-state.json, written by them.
+Read/done marks are the reader's own business: ~/.sharedbox/msg-state.json, written by them. Done/archived
+marks are also mirrored by root into STATE_DIR/mail/<user>/.done.json (0640, root-owned, readable by <user>),
+so the Telegram bot (root, no access to /home) sees the same open inbox and its Done button clears a message
+from `box msg` and the dashboard too. A message is done when either place says so.
 Nothing here ever runs a command from a message or injects it into a running agent: agents read mail when
 their human asks them to.
 
@@ -428,15 +431,74 @@ def mark_seen(user, ids, now=None, root=None, as_root=True):
     return {"ok": True}
 
 
+DONE_FILE = ".done.json"
+
+
+def mark_done(user, ids, done=True, now=None, root=None, as_root=True):
+    """Root: mirror `user`'s done/archived marks (done=False: unarchive) into their mail folder, for everything
+    that can't read their home (the Telegram bot). Only ids of messages in their inbox; marks for messages that
+    are gone are dropped."""
+    now = time.time() if now is None else now
+    root = root or mail_root()
+    d = os.path.join(root, user)
+    if not USER_RE.match(str(user)) or not os.path.isdir(d) or os.path.islink(d):
+        return {"ok": False, "error": "no inbox"}
+    gid = private_gid(user) if as_root else os.getgid()
+    if gid is None:
+        return {"ok": False, "error": "no inbox"}
+    ids = [i for i in list(ids or [])[:200] if isinstance(i, str) and ID_RE.match(i)]
+    fd = os.open(os.path.join(d, DONE_FILE), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o640)
+    with os.fdopen(fd, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        if as_root:
+            os.fchown(f.fileno(), 0, gid)
+        os.fchmod(f.fileno(), 0o640)
+        try:
+            cur = json.load(f).get("done") or {}
+        except (ValueError, AttributeError):
+            cur = {}
+        have = {n[:-5] for n in os.listdir(d) if n.endswith(".json") and ID_RE.match(n[:-5])}
+        cur = {i: t for i, t in cur.items() if i in have and isinstance(t, (int, float))}
+        for i in ids:
+            if done and i in have:
+                cur.setdefault(i, int(now))
+            elif not done:
+                cur.pop(i, None)
+        f.seek(0)
+        f.truncate()
+        json.dump({"done": cur}, f)
+    return {"ok": True}
+
+
+def root_done(user, root=None):
+    """{id: ts} of `user`'s messages marked done in their mail folder (by root, for any of their apps)."""
+    s = _load(os.path.join(root or mail_root(), user, DONE_FILE)) or {}
+    return {i: t for i, t in (s.get("done") or {}).items() if isinstance(i, str) and ID_RE.match(i)}
+
+
 # ---------- reading (the recipient, unprivileged) ----------
 
 def state_path(home):
     return os.path.join(home, ".sharedbox", "msg-state.json")
 
 
-def load_state(home):
+def load_state(home, user=None, root=None):
+    """The reader's marks; with `user`, done also includes what root mirrored (e.g. Done pressed in Telegram)."""
     s = _load(state_path(home)) or {}
-    return {"read": dict(s.get("read") or {}), "done": dict(s.get("done") or {})}
+    st = {"read": dict(s.get("read") or {}), "done": dict(s.get("done") or {})}
+    if user:
+        mirrored = root_done(user, root)
+        st["_mirror"] = set(mirrored)
+        for i, t in mirrored.items():
+            st["done"].setdefault(i, t)
+            st["read"].setdefault(i, t)
+    return st
+
+
+def unmirrored(st, inbox_ids):
+    """Done ids in the home state that root's mirror doesn't have yet (marks made before it existed, or a
+    request that was lost): the caller sends them with msg-done so the Telegram bot agrees."""
+    return sorted(i for i in st["done"] if i in inbox_ids and i not in st.get("_mirror", set()))[:200]
 
 
 def save_state(home, s):
@@ -626,6 +688,7 @@ def cli(a, sb, cfg, user, home, request):
             st["read"].setdefault(m["id"], int(now))
             if status in ("done", "declined"):
                 st["done"][m["id"]] = int(now)
+                request({"action": "msg-done", "ids": [m["id"]], "done": True}, 0)  # Telegram sees it too
             save_state(home, st)
             return res
         if a.op in ("archive", "unarchive"):
@@ -641,6 +704,7 @@ def cli(a, sb, cfg, user, home, request):
                 else:
                     st["done"].pop(mid, None)
             save_state(home, st)
+            request({"action": "msg-done", "ids": ids, "done": a.op == "archive"}, 0)
             print(f"{a.op}d {', '.join(ids)}")
             return
         if a.op == "read":
@@ -693,8 +757,12 @@ def cli(a, sb, cfg, user, home, request):
                 print(_card(m, {"read": {}}, now, mine=True) + ans)
             return
         # inbox (default)
-        st = load_state(home)
-        msgs = [m for m in list_dir(inbox_dir) if a.all or m["id"] not in st["done"]]
+        st = load_state(home, user)
+        every = list_dir(inbox_dir)
+        missing = unmirrored(st, {m["id"] for m in every})
+        if missing:
+            request({"action": "msg-done", "ids": missing, "done": True}, 0)
+        msgs = [m for m in every if a.all or m["id"] not in st["done"]]
         msgs.sort(key=lambda m: sort_key(m, now))
         unread = sum(1 for m in msgs if m["id"] not in st["read"])
         if a.json:
@@ -719,7 +787,7 @@ def cli(a, sb, cfg, user, home, request):
 def unread_count(user, home):
     """(open, unread) for `box status`; never raises."""
     try:
-        st = load_state(home)
+        st = load_state(home, user)
         msgs = [m for m in list_dir(os.path.join(mail_root(), user)) if m["id"] not in st["done"]]
         return len(msgs), sum(1 for m in msgs if m["id"] not in st["read"])
     except Exception:

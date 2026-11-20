@@ -926,7 +926,7 @@ class YourBoxes(unittest.TestCase):
         self.assertEqual(label, "Your boxes")
         self.assertIn("<b>sietchtabr</b> (here)", desc)
         self.assertIn("minastirith <span class='sub'>(needs the T3 app)</span>", desc)
-        self.assertIn("krishbox <span class='sub'>(not reachable yet)</span>", desc)
+        self.assertIn("krishbox <span class='sub'>(not connected yet)</span>", desc)
         self.assertIn("data-a='peer-login' data-k='t3connect'", acts)
         self.assertNotIn("data-k='codex'", acts)  # ChatGPT is already on minastirith
 
@@ -935,7 +935,7 @@ class YourBoxes(unittest.TestCase):
         _, desc, acts = self.web.boxes_row({"boxes": {"b2": {"ssh": True, "logins": {}}}},
                                            {"t3connect": {"ok": False}}, self.btn)
         self.assertEqual(acts, "")
-        self.assertIn("(same as here)", desc)
+        self.assertIn("(all set)", desc)
 
     def test_peer_card(self):
         res = {"ok": True, "key": "t3connect", "boxes": [

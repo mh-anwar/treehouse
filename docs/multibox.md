@@ -173,6 +173,19 @@ run` mirrors are caches.
   minastirith` alias.
 - A friend's files on B are separate: an agent that edits on B must push to git (said in `box help boxes`).
 
+## Projects on all my boxes (lib/sbprojects.py)
+
+T3's automatic load balancing (T3 app: Settings > Environments > Load balancing) only balances a project that
+exists on several connected environments. Federation links each person's T3s; this puts the same projects in the
+same folder on every box. Per person and per project, opt-in: the Account tab's "Projects on all your boxes" card
+or `box projects everywhere NAME on|off` (`box projects --json` lists repos in ~, which can be copied, and the last
+result per box). The choice lives on the box where it was made, and that box pushes it: `sharedbox-janitor tick`
+runs `box _projects-sync` as the person under nice/ionice; every 30 min (or right after the choice changed) it
+SSHes to each other box in BOXES as the same user and runs `box _projects-here`, which blobless-clones a missing
+project from its remote, or fetches and fast-forwards a copy that is clean and has no commits of its own. Anything
+else at that path is skipped and reported, never overwritten or deleted; off only stops the syncing. Each copy is
+registered in that person's T3 there with `t3 project add PATH --title NAME` (once; "already exists" counts).
+
 ## Next
 
 **Janitor**: prune `~/.sharedbox/mirror/*` untouched for 7 days (core agent's area). Mirrors are caches:

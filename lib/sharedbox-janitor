@@ -3,7 +3,8 @@
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
   sharedbox-janitor tick [--dry-run]                 every 10 min: note what systemd-oomd stopped, end old boosts, start T3 Code for
-                                                     scheduled tasks after a reboot, hackathon on/off, rule refresh
+                                                     scheduled tasks after a reboot, hackathon on/off, rule refresh,
+                                                     projects kept on all of a person's boxes (as that person)
   sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
 
@@ -44,13 +45,13 @@ def du(path):
         return None
 
 
-def user_pass(pw, plan, cmd="_pass", check=None):
+def user_pass(pw, plan, cmd="_pass", check=None, prefix=()):
     env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name,
            "PATH": "/usr/local/bin:/usr/bin:/bin", "XDG_RUNTIME_DIR": f"/run/user/{pw.pw_uid}",
            "SHAREDBOX_LIB": sb.LIB_DIR, "SHAREDBOX_SHARE": sb.SHARE_DIR,
            "SHAREDBOX_CONF": sb.CONF_PATH, "SHAREDBOX_STATE": sb.STATE_DIR}
     p = subprocess.Popen(
-        ["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
+        [*prefix, "setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups",
          "--reset-env", "--", sys.executable, "-I", os.path.join(sb.LIB_DIR, "box"), cmd],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=env, cwd=pw.pw_dir)
@@ -287,6 +288,33 @@ def cmd_tick(cfg, a):
         refresh_presence(cfg, users)
         refresh_rules(cfg, users, state)
         sb.write_json(TICK_STATE, state, mode=0o600)
+        projects_everywhere(cfg, users)
+
+
+def projects_everywhere(cfg, users):
+    """"Projects on all my boxes" (lib/sbprojects.py): for each account that chose some, `box _projects-sync` AS
+    THAT ACCOUNT, at low priority (nice 10, best-effort IO class 7). It decides itself whether a sync is due (every
+    30 min, or right after the choice changed) and clones/fast-forwards on the other boxes over its own SSH login.
+    Root only checks that the choice file exists. Last in the tick: a first clone can take minutes."""
+    import sbprojects
+    if len(sb.boxes(cfg)) < 2:
+        return
+    names = set(users) | set(sb.admin_users(cfg))
+    owner = sb.owner_account(cfg)
+    if owner:
+        names.add(owner.pw_name)
+    for name in sorted(names):
+        try:
+            pw = pwd.getpwnam(name)
+            if (users.get(name) or {}).get("status", "active") != "active" or \
+                    not os.path.exists(os.path.join(pw.pw_dir, sbprojects.CHOICE_REL)):
+                continue
+            rep = user_pass(pw, {}, "_projects-sync", prefix=sbprojects.NICE,
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("ran"), bool))
+            if rep["ran"]:
+                print(f"{name}: projects synced to the other boxes")
+        except Exception as e:  # one account's trouble must not stop the others
+            print(f"{name}: projects sync error: {str(e)[-300:]!r}", file=sys.stderr)
 
 
 def refresh_presence(cfg, users):

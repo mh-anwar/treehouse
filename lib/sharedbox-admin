@@ -691,6 +691,9 @@ def process_shared_drop(cfg):
             res = handle_msg(boosters[owner], req, set(boosters.values()))
         elif isinstance(req, dict) and req.get("action") == "msg-seen":
             res = sbmsg.mark_seen(boosters[owner], req.get("ids"))
+        elif isinstance(req, dict) and req.get("action") == "msg-done":  # done/archive marks, for Telegram
+            res = sbmsg.mark_done(boosters[owner], req.get("ids") if isinstance(req.get("ids"), list) else [],
+                                  done=req.get("done") is not False)
         elif isinstance(req, dict) and req.get("action") == "presence":
             res = handle_presence(boosters[owner], req)
         elif isinstance(req, dict) and owner in allowed:
@@ -964,7 +967,7 @@ REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
                         "shared-logs", "self-update", "invite", "boost", "running-stop",
                         "running-all", "telegram", "telegram-setup",
-                        "msg", "where", "restore") + REQUEST_PORTAL_ACTIONS
+                        "msg", "where", "restore", "projects") + REQUEST_PORTAL_ACTIONS
 OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as `box hackathon on|off`
 
 
@@ -1120,6 +1123,11 @@ def handle_portal(cfg, rid, req):
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._/ -]{0,120}", key) or ".." in key:
             return {"ok": False, "error": "no such project"}
         return box_portal(pw, ["restore", key])
+    if action == "projects":  # "Projects on all your boxes": on/off for one repo in ~ (box projects, as this account)
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}", key) \
+                or req.get("op") not in ("on", "off"):
+            return {"ok": False, "error": "no such project"}
+        return box_portal(pw, ["projects", key, req["op"]])
     if action in ("msg", "where"):  # the dashboard's inbox and "where is everyone", run as this account
         fields = ("op", "id", "text", "to", "title", "context", "level", "due", "status", "until", "clear", "private")
         payload = {k: req[k] for k in fields if k in req and isinstance(req[k], (str, bool, int))}

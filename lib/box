@@ -19,6 +19,7 @@
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
   box msg [inbox|read ID|send USER|reply ID|done ID|sent|who]   messages between accounts (box help msg)
+  box projects [--json] | everywhere NAME on|off | sync   projects kept on all your boxes (box help projects)
   box where [NAME] | --set TEXT [--until WHEN] | --clear | --name NAME   where someone is (box help where)
   box team create NAME --members a,b | board | task | claim | done | wait | inbox set | crew start ROLE
                                    hackathon team: one board, agents hand off directly (box team -h)
@@ -2114,6 +2115,12 @@ def portal_status():
     out["boxes"] = {p: {"ssh": bool(v.get("ssh")), "logins": dict(v.get("logins") or {})}
                     for p, v in (st.get("peers") or {}).items() if isinstance(v, dict)}
     out["box"] = st.get("self") or socket.gethostname().split(".")[0]
+    if len(sb.boxes(CFG)) > 1:  # the Account tab's "Projects on all your boxes" (lib/sbprojects.py)
+        try:
+            import sbprojects
+            out["projects"] = sbprojects.summary(HOME, projects_peers())
+        except Exception as ex:  # noqa: BLE001 - the rest of the dashboard must still load
+            out["projects"] = {"ok": False, "error": str(ex)[:200]}
     return out
 
 
@@ -2600,7 +2607,7 @@ def portal_msg(req):
     root = sbmsg.mail_root()
     inbox, sent = os.path.join(root, user), os.path.join(root, user, "sent")
     op = req.get("op")
-    st = sbmsg.load_state(ME.pw_dir)
+    st = sbmsg.load_state(ME.pw_dir, user)
 
     def card(m):
         c = {k: m.get(k) for k in ("id", "from", "to", "title", "level", "due", "status", "ts", "count", "reply_to",
@@ -2610,8 +2617,11 @@ def portal_msg(req):
         c["read"] = m["id"] in st["read"]
         return c
     if op == "inbox":
-        msgs = sorted((m for m in sbmsg.list_dir(inbox) if m["id"] not in st["done"]),
-                      key=lambda m: sbmsg.sort_key(m, now))
+        every = sbmsg.list_dir(inbox)
+        missing = sbmsg.unmirrored(st, {m["id"] for m in every})
+        if missing:  # older marks root hasn't mirrored yet: tell it, so Telegram's /inbox agrees
+            shared_request({"action": "msg-done", "ids": missing, "done": True}, 0)
+        msgs = sorted((m for m in every if m["id"] not in st["done"]), key=lambda m: sbmsg.sort_key(m, now))
         mine = sorted(sbmsg.list_dir(sent), key=lambda m: -(m.get("ts") or 0))[:5]
         answered = {m.get("reply_to"): m.get("status") or "replied" for m in sbmsg.list_dir(inbox) if m.get("reply_to")}
         out = [dict(card(m), answer=answered.get(m["id"], "")) for m in mine]
@@ -2652,6 +2662,7 @@ def portal_msg(req):
             st["read"].setdefault(mid, int(now))
             if op == "done":
                 st["done"][mid] = int(now)
+                shared_request({"action": "msg-done", "ids": [mid], "done": True}, 0)
             sbmsg.save_state(ME.pw_dir, st)
             res["message"] = "Marked done; they'll see it." if op == "done" else "Reply sent."
         return res
@@ -2659,6 +2670,7 @@ def portal_msg(req):
         st["done"][mid] = int(now)
         st["read"].setdefault(mid, int(now))
         sbmsg.save_state(ME.pw_dir, st)
+        shared_request({"action": "msg-done", "ids": [mid], "done": True}, 0)
         return {"ok": True, "message": "Cleared from your inbox."}
     return {"ok": False, "error": "unknown action"}
 
@@ -2735,6 +2747,10 @@ def cmd_portal(a):
                                capture_output=True, text=True, errors="replace", timeout=120)
             out = ({"ok": True, "message": f"Restored {a.key} to your home folder."} if r.returncode == 0 else
                    {"ok": False, "error": (r.stderr.strip().removeprefix("box restore: ") or "couldn't restore it")[:300]})
+        elif a.action == "projects" and a.key and a.arg in ("on", "off"):  # the dashboard's Projects card
+            import sbprojects
+            ok, msg = sbprojects.set_choice(HOME, a.key, a.arg == "on")
+            out = {"ok": ok, "message" if ok else "error": msg}
         elif a.action in ("peer-login", "peer-check") and a.key in PEER_LOGINS:
             out = portal_peer_login(a.key, check=a.action == "peer-check")
         elif a.action == "claude-token-info":  # federation: how new is this box's copy (never the token itself)
@@ -3099,6 +3115,129 @@ def cmd_fed_user(a):
         print(json.dumps({"ok": False, "error": "unknown action"}))
 
 
+# ---------- projects on all my boxes (lib/sbprojects.py) ----------
+
+def projects_peers():
+    """{box: ssh destination} for every other box in BOXES (federation's `Host <box>` block, the owner's alias, or
+    user@ip: sbmulti.ssh_dest). {} when this is the only box."""
+    import sbfed
+    import sbmulti
+    boxes = sb.boxes(CFG)
+    me = sbfed.self_name(boxes, sb.tailscale_ip4(), socket.gethostname())
+    return {n: sbmulti.ssh_dest(n, ip, ME.pw_name, HOME) for n, ip in boxes.items() if n != me}
+
+
+def projects_remote(dest, req):
+    """Run `box _projects-here` on another box as this person, at low priority. Its answer, or an error."""
+    import sbprojects
+    try:
+        r = fed_ssh(dest, shlex.join([*sbprojects.NICE, "box", "_projects-here"]), json.dumps(req),
+                    timeout=sbprojects.PEER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "That box took too long to answer; trying again at the next sync."}
+    except OSError as ex:
+        return {"ok": False, "error": str(ex)[:200]}
+    if "invalid choice" in r.stderr and "_projects-here" in r.stderr:
+        return {"ok": False, "error": "That box needs a treehouse update first."}
+    if r.returncode == 255:
+        return {"ok": False, "error": ("Not connected yet. Your boxes connect to each other by themselves within a few minutes; "
+                                      "if this stays for a day, the owner can fix it.")}
+    try:
+        return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except ValueError:
+        return {"ok": False, "error": "No answer: " + (r.stderr.strip().splitlines() or ["?"])[-1][:150]}
+
+
+def projects_t3_add(path, name):
+    """Add a copy to this person's T3 here (`t3 project add`): (ok, why not). An existing project counts as done."""
+    if not shutil.which("t3", path=user_env()["PATH"]):
+        return False, "T3 isn't installed on this box."
+    try:
+        r = subprocess.run(["t3", "project", "add", "--title", name, path], env=user_env(), capture_output=True,
+                           text=True, errors="replace", timeout=120, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as ex:
+        return False, type(ex).__name__
+    if r.returncode == 0 or "already exists" in (r.stdout + r.stderr):
+        return True, ""
+    import sbprojects
+    return False, sbprojects.last_line(r.stderr or r.stdout, 120)
+
+
+def projects_ago(ts):
+    if not ts:
+        return "never"
+    m = int((time.time() - ts) // 60)
+    return "just now" if m < 1 else f"{m} min ago" if m < 60 else f"{m // 60} h ago" if m < 2880 else f"{m // 1440} days ago"
+
+
+def cmd_projects(a):
+    import sbprojects
+    peers = projects_peers()
+    if a.op == "everywhere":
+        if not a.name or a.state not in ("on", "off"):
+            sys.exit("usage: box projects everywhere NAME on|off")
+        ok, msg = sbprojects.set_choice(HOME, a.name, a.state == "on")
+        if a.json:
+            print(json.dumps({"ok": ok, "message" if ok else "error": msg}))
+        else:
+            print(msg if ok else f"box projects: {msg}", file=sys.stdout if ok else sys.stderr)
+        if ok and not peers:
+            print("(this is the only box right now, so there's nowhere to copy it yet)", file=sys.stderr)
+        elif ok and a.state == "on" and not a.json:
+            print("to copy it now instead: box projects sync")
+        sys.exit(0 if ok else 1)
+    if a.op == "sync":
+        if not peers:
+            sys.exit("box projects sync: this is the only box; nothing to sync")
+        out = sbprojects.sync(HOME, peers, projects_remote, force=True)
+        if a.json:
+            print(json.dumps(sbprojects.summary(HOME, peers) | {"ran": out["ran"]}))
+            return
+        if not out["ran"]:
+            print("nothing chosen yet: box projects everywhere NAME on")
+        for b, line in out["boxes"].items():
+            print(f"{b}: {line}")
+        return
+    s = sbprojects.summary(HOME, peers)
+    if a.json:
+        print(json.dumps(s))
+        return
+    if not peers:
+        print("this is your only box, so there's nowhere to copy projects to yet.")
+    for r in s["projects"]:
+        if not r["available"]:
+            print(f"  {r['name']:<24} not available: {r['why']}")
+            continue
+        print(f"  {r['name']:<24} {'on all boxes' if r['everywhere'] else 'only here'}")
+        for b, v in r["boxes"].items():
+            print(f"      {b}: {v['state']}" + (f" ({v['note']})" if v.get("note") else "")
+                  + ("" if v["state"] in ("waiting", "error") or v.get("t3") else "; not in T3 there"))
+    for b, v in s["boxes"].items():
+        print(f"last sync to {b}: {projects_ago(v['last_sync'])}" + (f" ({v['error']})" if v["error"] else "")
+              + ("  (box boxes setup)" if "SSH" in v["error"] else ""))
+    if peers:
+        print("choose: box projects everywhere NAME on|off   sync now: box projects sync")
+
+
+def cmd_projects_sync(a):
+    """The janitor's tick, as this person (already under nice/ionice): push the chosen projects when due."""
+    import sbprojects
+    sys.stdin.read(1 << 16)
+    peers = projects_peers()
+    out = sbprojects.sync(HOME, peers, projects_remote) if peers else {"ok": True, "ran": False}
+    print(json.dumps({"ok": True, "ran": bool(out.get("ran"))}))
+
+
+def cmd_projects_here(a):
+    """Another of this person's boxes asks for its chosen projects here (clone / fast-forward, never more)."""
+    import sbprojects
+    try:
+        req = json.loads(sys.stdin.read(1 << 20) or "{}")
+    except ValueError:
+        req = {}
+    print(json.dumps(sbprojects.apply_all(HOME, req, t3_add=projects_t3_add)))
+
+
 NOTICE_KEYS = ("SECURITY", "DELETED", "ARCHIVED", "OVER", "REBOOT")
 
 
@@ -3257,6 +3396,12 @@ def main():
     x.add_argument("rest", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_team)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     x = s.add_parser("_fed-user"); x.add_argument("action"); x.set_defaults(fn=cmd_fed_user)
+    x = s.add_parser("projects", help="projects kept on all your boxes: ls, everywhere NAME on|off, sync (--json)")
+    x.add_argument("op", nargs="?", default="ls", choices=["ls", "everywhere", "sync"])
+    x.add_argument("name", nargs="?"); x.add_argument("state", nargs="?")
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_projects)
+    s.add_parser("_projects-sync").set_defaults(fn=cmd_projects_sync)  # the janitor tick, as this person
+    s.add_parser("_projects-here").set_defaults(fn=cmd_projects_here)  # another of your boxes, over SSH
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
     x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them, no sudo")
