@@ -484,7 +484,7 @@ class Web(unittest.TestCase):
 
         def portal_call(ip, who, action, **kw):
             if action == "status":
-                return {"ok": True, "updates": "auto", "ssh": True, "servers": [],
+                return {"ok": True, "ssh": True, "servers": [],
                         "logins": {k: {"label": k, "ok": v} for k, v in logins.items()},
                         "t3": {"url": "http://100.64.0.5:31000/", "running": True, "app": app} if t3 else None}
             if action == "shared-ls":

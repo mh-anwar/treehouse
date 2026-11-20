@@ -1181,9 +1181,6 @@ EVENT_TEXT = {
     "boxes_set": "{user} set the list of boxes: {boxes}",
     "tools_added": "installed {packages}",
     "tools_removed": "removed {packages}",
-    "agent_forced_update": "a security update was forced for {agent}",
-    "agent_updates_auto": "{user} turned on automatic agent updates",
-    "agent_updates_manual": "{user} turned off automatic agent updates",
     "skill_shared": "{user} shared the skill {skill}",
     "skill_unshared": "{user} removed the skill {skill}",
     "shared_created": "{user} created the group server {server}",
@@ -1934,15 +1931,9 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
             '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
             "" if logins["gh"]["ok"] else btn("login", "Connect GitHub", "gh", primary=False, small=True))
-    if st.get("updates") in ("auto", "manual"):
-        auto = st["updates"] == "auto"
-        row("Agent updates", "Every night, automatically" if auto else "Staying on your current versions",
-            btn("updates", "Keep current versions" if auto else "Update automatically",
-                "manual" if auto else "auto", primary=False, small=True))
     row("Projects", f"Live in your home folder. Archived after {e(CFG['PROJECT_TTL_DAYS'])} days untouched, "
         "and only once they're pushed to git. Ask your agent to put them on GitHub.")
     out.append("<h2 id='account'>Your account</h2>"
-               + (portal_result(result, btn, base) if result and view == "updates" else "")
                + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
 
     # ---- more options ----
@@ -2060,9 +2051,6 @@ def portal_result(res, btn, base=""):
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
         return notice("SSH key added.")
-    if res.get("updates") in ("auto", "manual"):
-        return notice("Agents will update automatically." if res["updates"] == "auto"
-                      else "Agents will stay on the versions you have now.")
     if res.get("done"):
         return notice("Logged in.")
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
@@ -2259,7 +2247,7 @@ class Handler(BaseHTTPRequestHandler):
         fid = secrets.token_urlsafe(9)
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
-        anchor = ("#start" if view in START_VIEWS else "#account" if view == "updates" else
+        anchor = ("#start" if view in START_VIEWS else
                   "#running" if view == "running-ctl" else "")
         tab = {"invite": "people", "hackathon": "settings", "request-update": "settings"}.get(
             view, "requests" if view.startswith("request-") else "")
@@ -2339,9 +2327,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server"})
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
-        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key", "updates") + (
+        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key") + (
             ("device-link",) if PUBLIC and not CF else ())
-        keys = ("auto", "manual") if action == "updates" else ("", "claude", "codex", "gh", "t3connect")
+        keys = ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if action == "add-key":

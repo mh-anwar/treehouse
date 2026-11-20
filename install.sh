@@ -235,6 +235,22 @@ if [[ $TOOLS == 1 ]]; then
     else PYTHONDONTWRITEBYTECODE=1 SHAREDBOX_LIB="$SRC/lib" SHAREDBOX_CONF="$SRC/etc/sharedbox.conf" python3 -I "$SRC/lib/sharedbox-tools" install --dry-run \
         || echo "    would run: sharedbox-tools install"; fi
 fi
+# Retired per-user agent pins (`box updates manual`): request records and notices move from $STATE/agent-pins to
+# $STATE/user-state, and every agent launcher is rewritten to follow <pkg>/current. Idempotent; also runs with
+# --no-tools (the nightly sharedbox-tools update does the same).
+do_ env SHAREDBOX_LIB="$LIB" python3 -I -c '
+import importlib.machinery, importlib.util, os, sys
+sys.path.insert(0, os.environ["SHAREDBOX_LIB"])
+loader = importlib.machinery.SourceFileLoader("sbtools", os.path.join(os.environ["SHAREDBOX_LIB"], "sharedbox-tools"))
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(m)
+m.sb.migrate_user_state()
+cfg = m.sb.load_config()
+for name, _ in m.agent_specs(cfg):
+    cur = m.current_version(name)
+    for binary in (m.agent_bins(name, m.version_dir(name, cur)) if cur else []):
+        m.write_shim(cfg, name, binary)
+' || warn "could not rewrite the agent launchers; the next sharedbox-tools update does it"
 
 # ---------- systemd ----------
 say "systemd units"

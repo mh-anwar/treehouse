@@ -14,7 +14,7 @@
   box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
   box setup [--check]              guided setup: git identity, GitHub, agent logins
   box agents                       installed coding agents + whether you're logged in
-  box updates [auto|manual|now]    whether your coding agents update daily (status without an argument)
+  box updates                      installed coding agent versions (they update every night)
   box request "TEXT"               ask the owner for something (e.g. a system package)
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
@@ -179,9 +179,6 @@ REBOOT_BACK = ("Comes back by itself: `box serve` services, group servers (`box 
 
 def advice(g):
     out = []
-    for n in agent_notices()[-3:]:
-        out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
-                   f"({n['why']}). Mention it to the user if they ask why a tool changed.")
     for n in other_notices(3)[-5:]:
         out.append(f"{fmt_ts(n['ts'])}: {sb.printable(n['text'])} Tell the user if it's what they were waiting for.")
     rb = sb.reboot_info(CFG)
@@ -1174,34 +1171,15 @@ def git_ident():
 
 # ---------- agent updates ----------
 
-SECURITY_NOTE = ("Serious security fixes are applied to everyone, even on manual: if your version has a "
-                 "serious security advisory that the newest version fixes, you're moved to the newest.")
-
-
 def agent_info():
-    """(mode, pending, {npm name: {current, mine, bins}}): which agent versions this user runs."""
+    """{npm name: {current, mine, bins}}: every account runs the newest installed version of each agent."""
     st = sb.read_json(sb.TOOLS_JSON, {}) or {}
-    mode, chose = sb.agent_pref(CFG, HOME)
-    pdir = os.path.join(sb.AGENT_PINS, ME.pw_name)
-    try:
-        applied = os.stat(os.path.join(pdir, ".applied")).st_mtime
-    except OSError:
-        applied = 0
-    pending = mode == "manual" and (chose > applied or not applied)  # pinned at the next nightly run
-    out = {}
-    for name, ag in (st.get("agents") or {}).items():
-        mine = ag.get("current")
-        if mode == "manual" and not pending:
-            try:
-                mine = os.path.basename(os.readlink(os.path.join(pdir, sb.agent_slug(name))))
-            except OSError:
-                pass
-        out[name] = dict(ag, mine=mine)
-    return mode, pending, out
+    return {name: dict(ag, mine=ag.get("current")) for name, ag in (st.get("agents") or {}).items()
+            if isinstance(ag, dict)}
 
 
 def all_notices(days=7):
-    path = os.path.join(sb.AGENT_PINS, ME.pw_name, "notices.json")
+    path = os.path.join(sb.USER_STATE, ME.pw_name, "notices.json")
     try:
         items = sb.read_json(path, []) or []
     except OSError:
@@ -1209,62 +1187,24 @@ def all_notices(days=7):
     return [n for n in items if isinstance(n, dict) and time.time() - n.get("ts", 0) < days * 86400]
 
 
-def agent_notices(days=7):
-    """Forced agent updates (written by sharedbox-tools; they have no "kind")."""
-    return [n for n in all_notices(days) if "kind" not in n]
-
-
 def other_notices(days=7):
     """Notices root writes for this user with a "kind", e.g. "request-done" (the owner closed a `box request`)."""
     return [n for n in all_notices(days) if isinstance(n.get("kind"), str) and isinstance(n.get("text"), str)]
 
 
-def set_agent_pref(mode):
-    path = os.path.join(HOME, sb.AGENT_PREF_REL)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(mode + "\n")
-    os.replace(tmp, path)   # a fresh mtime: the shims switch right away, the nightly job pins it
-
-
 def cmd_updates(a):
-    act = a.action or "status"
-    mode, pending, info = agent_info()
-    if act == "auto":
-        set_agent_pref("auto")
-        print("Agent updates: auto. Your coding agents now run the newest version, updated every night "
-              "(about 5 AM).")
-        return
-    if act == "manual":
-        set_agent_pref("manual")
-        print("Agent updates: manual. You stay on the versions you have now. Run `box updates now` whenever "
-              "you want the newest ones (you'll stay on those).\n" + SECURITY_NOTE)
-        return
-    if act == "now":
-        if mode != "manual":
-            print("You're on auto updates, so you already run the newest versions.")
-            return
-        set_agent_pref("manual")
-        print("Done: you now run the newest versions and stay on them until you run this again.")
-        return
-    print(f"Agent updates: {mode}" + (" (your current versions get pinned at the next nightly run)"
-                                      if pending else ""))
-    print(f"  auto   = newest version every night (about 5 AM)\n"
-          f"  manual = stay on your versions; `box updates now` to move to the newest\n  {SECURITY_NOTE}\n")
+    print("Coding agents update automatically every night (about 5 AM).")
+    info = agent_info()
     if info:
-        print(f"{'agent':<28}{'yours':<14}newest")
+        print(f"\n{'agent':<28}version")
         for name, ag in sorted(info.items()):
             label = f"{', '.join(ag.get('bins') or []) or name}"
-            print(f"{label:<28}{ag.get('mine') or '-':<14}{ag.get('current') or '-'}")
-    for n in agent_notices(30):
-        print(f"! {fmt_ts(n['ts'])}: {n['name']} moved {n['from']} -> {n['to']} ({n['why']})")
-    print("\nChange it: box updates auto | box updates manual")
+            print(f"{label:<28}{ag.get('current') or '-'}")
 
 
 def cmd_agents(a):
     tv = tools()
-    _, _, info = agent_info()
+    info = agent_info()
     mine = {b: ag.get("mine") for ag in info.values() for b in ag.get("bins") or [] if ag.get("mine")}
     web = {k for k in PORTAL_LOGINS}
     print(f"{'agent':<14}{'version':<12}{'logged in':<11}how to log in")
@@ -1334,13 +1274,6 @@ def cmd_setup(a):
             n, label, cmd, _, _, how = avail[int(tok) - 1]
             print(f"\n--- {label}: {how}")
             subprocess.run(cmd)
-    # 4. updates
-    mode, _ = sb.agent_pref(CFG, HOME)
-    print("\n4) Agent updates")
-    auto = ask("   Update your coding agents to the newest version every night? (No = stay on today's "
-               "versions; serious security fixes are applied either way)", default=mode == "auto")
-    set_agent_pref("auto" if auto else "manual")
-    print(f"   {'auto' if auto else 'manual'} ✓  (change any time: box updates auto|manual)")
     print(f"""
 All set. Tips:
   • Start agents inside tmux so they keep running when you disconnect:  tmux new -A -s main
@@ -1348,7 +1281,7 @@ All set. Tips:
   • Keep each project as a git repo in your home folder (~/myapp) and push it to GitHub. Projects idle for
     {CFG['PROJECT_TTL_DAYS']} days are archived ({archive_until_text()}), but only once everything is pushed.
   • `box` shows your usage · `box agents` shows agent logins · `box rules` shows what your agents are told
-  • `box updates` shows whether your agents update nightly
+  • `box updates` shows your installed agent versions
 """)
     os.makedirs(os.path.join(HOME, ".sharedbox"), exist_ok=True)
     open(os.path.join(HOME, ".sharedbox", "setup-done"), "w").close()
@@ -1381,7 +1314,7 @@ REQ_FINAL = ("installed", "done", "declined")
 def my_requests():
     """My requests as root last recorded them, plus ones root hasn't picked up yet (state "sent")."""
     try:
-        theirs = (sb.read_json(os.path.join(sb.AGENT_PINS, ME.pw_name, "requests.json"), {}) or {}).get("requests") or []
+        theirs = (sb.read_json(os.path.join(sb.USER_STATE, ME.pw_name, "requests.json"), {}) or {}).get("requests") or []
     except OSError:
         theirs = []
     known = {r.get("id") for r in theirs}
@@ -1443,7 +1376,7 @@ def cmd_request(a):
     sb.write_json(REQ_SENT, sent, mode=0o600)
     rec = None
     if pkgs:  # most package requests are installed within a minute: wait for the outcome
-        deadline = time.time() + (a.wait if a.wait is not None else 240)  # the AI reviewer can take a minute
+        deadline = time.time() + (a.wait if a.wait is not None else 240)
         while time.time() < deadline:
             rec = next((r for r in my_requests() if r.get("id") == rid), None)
             if rec and rec.get("state") in REQ_FINAL + ("waiting",):
@@ -2162,7 +2095,6 @@ def portal_status():
     name, email = git_ident()
     out["git"] = {"name": name, "email": email}
     out["ssh"] = bool(ssh_keys())
-    out["updates"] = sb.agent_pref(CFG, HOME)[0]
     return out
 
 
@@ -2564,9 +2496,6 @@ def cmd_portal(a):
             out = portal_add_key(sys.stdin.read(8192))
         elif a.action == "login-check" and a.key in PORTAL_LOGINS:
             out = portal_login_wait(a.key, 5)
-        elif a.action == "updates-set" and a.key in ("auto", "manual"):
-            set_agent_pref(a.key)
-            out = {"ok": True, "updates": a.key}
         else:
             out = {"ok": False, "error": "unknown action"}
     except (OSError, subprocess.SubprocessError) as e:
@@ -2988,7 +2917,7 @@ def main():
     x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
     x.set_defaults(fn=cmd_setup)
     s.add_parser("agents").set_defaults(fn=cmd_agents)
-    x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status", "auto", "manual", "now"])
+    x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status"])
     x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
                                            choices=["start", "pair", "app-link", "status", "stop", "logs"])

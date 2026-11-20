@@ -60,9 +60,10 @@ class RequestLoop(unittest.TestCase):
         adm.sbdistro = lambda: self.distro
         adm.req_ingest = lambda cfg: []
         adm.write_request_views = lambda cfg, db=None: None
-        adm.req_mail_owner = lambda cfg: None
+        self.owner_mail = []
+        adm.req_mail_owner = lambda cfg: self.owner_mail.append(adm.req_db())
         adm.req_mail_failed = lambda cfg, r, why: self.mails.append(why)
-        for name in ("ai_review", "req_install", "run"):
+        for name in ("req_install", "run"):
             self.addCleanup(setattr, adm, name, getattr(adm, name))
         adm.auto_installed_today = lambda db, user: 0
         adm.add_notice = lambda *a, **k: None
@@ -107,53 +108,42 @@ class RequestLoop(unittest.TestCase):
         self.assertNotIn(r["state"], adm.REQ_OPEN)
         self.assertEqual(len(self.mails), 1)
 
-    def test_unapproved_uninstallable_asks_owner_when_reviewer_is_owner(self):
+    def test_unapproved_uninstallable_asks_owner(self):
         self.distro = FakeDistro((False, [], "E: Unable to satisfy dependencies"))
         rid = self.put("new")
-        self.run_worker(REQUEST_REVIEWER="owner")
+        self.run_worker()
         self.assertEqual(adm.req_db()["requests"][rid]["state"], "waiting")
 
-    # ---- REQUEST_REVIEWER=ai: whatever the rules hold back is settled without the owner
 
-    def held(self, verdict, pkg="postgresql", sim=(True, ["postgresql"], "")):
-        """A request the auto rules hold back (REQUEST_DENY), reviewed by a fake AI answering `verdict`."""
+    def held(self, pkg="postgresql", sim=(True, ["postgresql"], "")):
+        """A request the auto rules hold back (REQUEST_DENY), sent to the owner."""
         self.distro = FakeDistro(sim)
-        self.reviews = []
-        adm.ai_review = lambda cfg, r, names, deps, why: self.reviews.append(names) or verdict
         self.installs = []
         adm.req_install = lambda names: self.installs.append(names) or (True, "")
         rid = self.put("new", pkg)
         self.run_worker(REQUEST_DENY="postgresql sudo")
         return adm.req_db()["requests"][rid]
 
-    def test_ai_install(self):
-        r = self.held(("install", "fine"))
-        self.assertEqual((r["state"], self.installs), ("installed", [["postgresql"]]))
 
-    def test_ai_decline_reaches_agent_and_fyi(self):
-        r = self.held(("decline", "run it rootless with Docker"))
-        self.assertEqual((r["state"], r["by"], self.installs), ("declined", "auto", []))
-        self.assertIn("rootless", r["reason"])
-        self.assertEqual(adm.req_db()["fyi"][-1]["outcome"], "declined")
-
-    def test_ai_unavailable_falls_back_to_owner(self):
-        r = self.held(None)
+    def test_rules_hold_request_for_owner(self):
+        r = self.held()
         self.assertEqual(r["state"], "waiting")
+        self.assertEqual(len(self.owner_mail), 1)
+        self.assertEqual(self.owner_mail[0]["requests"][r["id"]]["state"], "waiting")
 
-    def test_never_list_skips_the_ai(self):
-        r = self.held(("install", "sure"), pkg="sudo", sim=(True, ["sudo"], ""))
-        self.assertEqual((r["state"], self.reviews, self.installs), ("declined", [], []))
+    def test_never_list_declines(self):
+        r = self.held(pkg="sudo", sim=(True, ["sudo"], ""))
+        self.assertEqual((r["state"], self.installs), ("declined", []))
 
     def test_never_list_checks_dependencies(self):
-        r = self.held(("install", "sure"), sim=(True, ["postgresql", "systemd"], ""))
-        self.assertEqual((r["state"], self.reviews), ("declined", []))
+        r = self.held(sim=(True, ["postgresql", "systemd"], ""))
+        self.assertEqual(r["state"], "declined")
 
     # ---- REQUEST_OPEN_USERS: a hackathon opens requests for some users, never past REQUEST_NEVER
 
     def opened(self, pkg="postgresql", sim=(True, ["postgresql"], ""), user="pippin", until=""):
         self.distro = FakeDistro(sim)
-        self.reviews, self.installs = [], []
-        adm.ai_review = lambda cfg, r, names, deps, why: self.reviews.append(names) or ("decline", "no")
+        self.installs = []
         adm.req_install = lambda names: self.installs.append(names) or (True, "")
         rid = self.put("new", pkg)
         self.run_worker(REQUEST_DENY="postgresql sudo", REQUEST_MAX_DEPS="1", REQUEST_OPEN_USERS="krish " + user,
@@ -162,7 +152,7 @@ class RequestLoop(unittest.TestCase):
 
     def test_open_user_skips_deny_and_dep_cap(self):
         r = self.opened(sim=(True, ["postgresql", "libpq5"], ""))
-        self.assertEqual((r["state"], self.reviews, self.installs), ("installed", [], [["postgresql"]]))
+        self.assertEqual((r["state"], self.installs), ("installed", [["postgresql"]]))
         self.assertTrue(r.get("auto"))
 
     def test_open_user_still_blocked_by_never(self):
@@ -179,8 +169,8 @@ class RequestLoop(unittest.TestCase):
         self.opened(until="tonight")
         self.assertEqual(self.installs, [])  # a typo closes it
 
-    def test_owner_can_approve_an_auto_declined_request(self):
-        r = self.held(("decline", "no"))
+    def test_owner_can_approve_a_held_request(self):
+        r = self.held()
         adm.run = lambda *a, **k: None
         self.assertEqual(adm.request_act({}, r["id"], "approve")["state"], "approved")
 
@@ -238,45 +228,6 @@ class QuietInstall(unittest.TestCase):
         with open(adm.POLICY_RC_D) as f:
             self.assertEqual(f.read(), "#!/bin/sh\nexit 0\n")
         os.unlink(adm.POLICY_RC_D)
-
-
-class Reviewer(unittest.TestCase):
-    def setUp(self):
-        self.home = tempfile.mkdtemp(dir=TMP)
-        self.pw = type("pw", (), {"pw_dir": self.home})()
-        for name in ("review_openrouter", "review_claude", "sbdistro"):
-            self.addCleanup(setattr, adm, name, getattr(adm, name))
-        self.addCleanup(setattr, adm.sb, "owner_account", adm.sb.owner_account)
-        adm.sb.owner_account = lambda cfg: self.pw
-        adm.sbdistro = lambda: FakeDistro(None)
-        FakeDistro.describe = lambda self, names: {}
-
-    def opencode_login(self, key):
-        os.makedirs(os.path.join(self.home, ".local/share/opencode"))
-        with open(os.path.join(self.home, ".local/share/opencode/auth.json"), "w") as f:
-            f.write(f'{{"openrouter": {{"type": "api", "key": "{key}"}}}}')
-
-    def test_key_from_opencode_login(self):
-        self.opencode_login("sk-or-v1-" + "a" * 40)
-        self.assertEqual(adm.openrouter_key({"OPENROUTER_KEY_FILE": "/nonexistent"}, self.pw), "sk-or-v1-" + "a" * 40)
-
-    def test_junk_key_ignored(self):
-        self.opencode_login("not a key")
-        self.assertIsNone(adm.openrouter_key({"OPENROUTER_KEY_FILE": "/nonexistent"}, self.pw))
-
-    def test_openrouter_first_then_claude(self):
-        self.opencode_login("sk-or-v1-" + "b" * 40)
-        calls = []
-        adm.review_openrouter = lambda cfg, key, prompt: calls.append("or") or {}
-        adm.review_claude = lambda cfg, pw, prompt: calls.append("claude") or {"decision": "install", "reason": "ok"}
-        cfg = {"OPENROUTER_KEY_FILE": "/nonexistent"}
-        self.assertEqual(adm.ai_review(cfg, {"user": "u"}, ["x"], [], "held"), ("install", "ok"))
-        self.assertEqual(calls, ["or", "claude"])
-
-    def test_no_answer_returns_none(self):
-        adm.review_claude = lambda cfg, pw, prompt: {"decision": "maybe"}
-        self.assertIsNone(adm.ai_review({"OPENROUTER_KEY_FILE": "/nonexistent"}, {"user": "u"}, ["x"], [], "held"))
-
 
 
 class Hackathon(unittest.TestCase):

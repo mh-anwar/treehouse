@@ -70,8 +70,7 @@ No terminal, no VPN invites, no "can you run this command for me".
 - 🧩 **Shared skills.** A catalog of agent skills everyone's agents can see (`box skills`): a multi-model
   `council` review and Theo Browne's [tstack](https://github.com/t3dotgg/tstack) PR skills. Agents suggest
   one and install it only after their owner says yes. Admins publish their own with `box skills share DIR`.
-- 🔁 **Self-updating.** Agents update nightly (each person can opt out with `box updates manual`; serious
-  security fixes still reach everyone). Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
+- 🔁 **Self-updating.** Agents update nightly for everyone. Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
   clear leaks; they wait up to 2 hours for agents that are mid-turn, and the dashboards show the next one.
 
 ## Quick start
