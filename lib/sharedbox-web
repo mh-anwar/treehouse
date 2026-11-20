@@ -34,7 +34,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbconnect  # noqa: E402
-import sbqr  # noqa: E402
 import sbrunning  # noqa: E402
 
 CFG = sb.load_config()
@@ -147,11 +146,7 @@ def api_state():
                 r["status"] = reg[key].get("status", "active")
             r["history"] = list(history.get(key, []))[-180:]
             out_rows.append(r)
-    pending = requests = 0
-    try:
-        pending = len(os.listdir(sb.PENDING))
-    except OSError:
-        pass
+    requests = 0
     try:  # root keeps the open ones here (friends' request files are picked up within seconds)
         requests = len((sb.read_json(os.path.join(sb.STATE_DIR, "requests.json"), {}) or {}).get("requests") or [])
     except (OSError, AttributeError):
@@ -160,7 +155,7 @@ def api_state():
     events = [e for e in sb.recent_events(40) if e.get("kind") != "janitor_error"]
     return {"host": HOST, "time": int(time.time()), "box": sb.box_load(), "rows": out_rows,
             "janitor_ran": usage.get("generated"), "join_mode": CFG["JOIN_MODE"],
-            "pending_signups": pending, "open_requests": requests,
+            "open_requests": requests,
             "agents": [f"{tv[k]['label']} {tv[k]['version']}" for k in ("claude", "codex", "gemini", "opencode") if k in tv],
             "events": events[::-1]}
 
@@ -207,8 +202,6 @@ def portal_call(ip, who, action, **kw):
     wait = {"status": 30, "t3": 240, "t3app": 240}.get(action, 90)
     if who.get("cf_jwt"):  # cloudflare mode: root re-verifies the Access token itself
         return spool_call(dict({"action": action, "cf_jwt": who["cf_jwt"]}, **kw), wait=wait)
-    if who.get("session"):  # public gateway: root checks the session token itself
-        return spool_call(dict({"action": action, "session": who["session"]}, **kw), wait=wait)
     return spool_call(dict({"action": action, "ip": ip, "ts_id": who["id"]}, **kw), wait=wait)
 
 
@@ -426,7 +419,7 @@ async function tick(){
  <div class="card"><h3>Memory</h3><div class="big">${H(memUsed)} <span class="sub">/ ${H(b.mem_total)}</span></div>${bar(pct(memUsed,b.mem_total))}</div>
  <div class="card"><h3>Disk</h3><div class="big">${H(diskUsed)} <span class="sub">/ ${H(b.disk_total)}</span></div>${bar(pct(diskUsed,b.disk_total))}</div>
  <div class="card"><h3>People</h3><div class="big">${s.rows.filter(r=>r.kind=='friend').length}</div>
-  <div class="sub">join mode: ${esc(s.join_mode)}${s.pending_signups?` · <b style="color:var(--warn)">${s.pending_signups} pending</b>`:''}${s.open_requests?` · <b style="color:var(--warn)">${s.open_requests} request${s.open_requests>1?'s':''}</b>`:''}</div></div>
+  <div class="sub">join mode: ${esc(s.join_mode)}${s.open_requests?` · <b style="color:var(--warn)">${s.open_requests} request${s.open_requests>1?'s':''}</b>`:''}</div></div>
  <div class="card"><h3>Agents installed</h3><div class="sub" style="font-size:13px;color:var(--fg)">${s.agents.map(esc).join('<br>')||'–'}</div></div>`;
  const order={admin:0,friend:1,system:2};
  const rows=s.rows.sort((a,b)=>order[a.kind]-order[b.kind]||(b.cpu_pct||0)-(a.cpu_pct||0));
@@ -478,17 +471,15 @@ invite, then open <b>http://{html.escape(box_ip())}:{html.escape(str(CFG['WEB_PO
     name, rec = existing_account(who["id"])
     if name:
         return portal_page(ip, who, name, rec, rng=rng)
-    if CFG["JOIN_MODE"] == "closed":
+    if CFG["JOIN_MODE"] != "open":
         return page("join", "<div class='box'><h2>Signups are closed</h2><p>Ask the owner.</p></div>")
     if msg:
         return page("join", f"<div class='box'>{msg}</div>")
     form = form or {}
     tok = token_for(ip, who["id"])
-    note = ("Your request goes to the owner for approval." if CFG["JOIN_MODE"] == "approve"
-            else "Your account is created right away.")
     return page("join", f"""<div class="box"><h2>Join {e(BRAND)} on {e(HOST)}</h2>
 <p>Hi <b>{e(who['display'])}</b> <span class="mut">({e(who['login'])}, device {e(who['node'])})</span>.
-{note}</p>
+Your account is created right away.</p>
 {f'<p class="err">{e(err)}</p>' if err else ''}
 <form method="post" action="/join">
 <input type="hidden" name="token" value="{tok}">
@@ -1171,11 +1162,7 @@ EVENT_TEXT = {
     "user_killed": "{user}'s processes were stopped",
     "invite_created": "{user} invited {email}",
     "invite_used": "{user} used an invite",
-    "join_pending": "{user} asked to join (waiting for approval)",
     "cf_access": "{email} can now sign in as {user}",
-    "gate_login": "{user} signed in on a new device",
-    "gate_logout": "{user} signed out",
-    "gate_revoked": "{user}'s sessions were revoked",
     "owner_paired": "{user} opened T3 Code in a new browser",
     "tools_updated": "coding agents were updated",
     "boxes_set": "{user} set the list of boxes: {boxes}",
@@ -1828,7 +1815,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         return owner_page(ip, who, name, rec, result, rng, tab)
     e = html.escape
     tok = token_for(ip, who["id"])
-    gate = bool(who.get("session") or who.get("cf_jwt"))
+    gate = bool(who.get("cf_jwt"))
     base = "/_box" if gate else ""
     st, shared = status_and_shared(ip, who)
     logins, t3 = st.get("logins") or {}, st.get("t3")
@@ -1947,11 +1934,6 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             f"Open <a href='{e(PUBLIC)}/'>{e(PUBLIC)}</a> and sign in with <b>{e(mail)}</b>." if mail else
             f"Ask the owner to link your email to this account. Then open <a href='{e(PUBLIC)}/'>{e(PUBLIC)}</a> "
             "and sign in with it.") + "</p>")
-    elif PUBLIC:  # the older public front door: one-time login links
-        more.append("<h3>" + ("Your phone" if gate else "Without Tailscale") + "</h3><div>Get a one-time link that "
-                    f"logs another browser in at <b>{e(PUBLIC)}</b>. " + btn("device-link", "Get a login link",
-                                                                           primary=False, small=True) + "</div>"
-                    + (portal_result(result, btn, base) if result and view == "device-link" else ""))
     term = ["<h3>Terminal access</h3>"]
     if CF and gate:
         term.append(connect_section(name))
@@ -1975,7 +1957,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         more.append("<h3>This page</h3><p>" + ("<a href='/_box/direct-off'>Show this page first again</a>"
                                               if who.get("direct") else
                                               "<a href='/_box/direct-on'>Go straight to T3 next time</a>") + ".</p>")
-    out.append(f"<details class='sec more'{' open' if key_open or view == 'device-link' else ''}>"
+    out.append(f"<details class='sec more'{' open' if key_open else ''}>"
                "<summary>More options<span class='sub'>phone, terminal, SSH</span></summary>" + "".join(more) + "</details>")
     try:
         out.append(activity_section(name))
@@ -1986,9 +1968,6 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
         out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
-    elif gate:
-        out.append(f"""<form method="post" action="/_box/logout"><input type="hidden" name="token" value="{tok}">
-<button class="secondary">Log out of this browser</button></form>""")
     out.append(f"<script>{START_JS}</script>")
     return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
 
@@ -2036,14 +2015,6 @@ def portal_result(res, btn, base=""):
         return (f"<div class='card'><h3>Invite ready{(' for ' + e(res['invite_user'])) if res.get('invite_user') else ''}"
                 f"</h3><p>Send them this:</p><pre style='white-space:pre-wrap;user-select:all'>"
                 f"{e(str(res['invite_message']))}</pre></div>")
-    if res.get("login_url"):
-        url = safe_url(res["login_url"], ("https://",))
-        return f"""<div class="card"><h3>Your login link</h3>
-<p>Open this on the device you want to use. It works once, for {e(str(res.get('minutes', 10)))} minutes.</p>
-<input readonly value="{e(url)}" onclick="this.select()" style="font-family:ui-monospace,monospace;font-size:12px">
-<p>Or scan it with the phone's camera:</p><div style="background:#fff;display:inline-block;padding:6px;border-radius:8px">
-{sbqr.svg(url, scale=5) if url else ''}</div>
-<p class="sub">Anyone who has this link can log in as you until it's used, so don't share it.</p></div>"""
     if res.get("pair_url"):
         return f"""<div class="card"><h3>Your T3 Code is ready</h3>
 <p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in browser</a></p>
@@ -2228,9 +2199,6 @@ class Handler(BaseHTTPRequestHandler):
         res = submit_join(ip, who, username, key, email)
         if not res.get("ok"):
             return self.send(400, join_page(ip, who, err=res.get("error"), form=form))
-        if res.get("pending"):
-            return self.send(200, join_page(ip, who, msg="<h2>Request sent</h2><p>The owner will "
-                                                         "approve it soon. Check back on this page.</p>"))
         name, rec = existing_account(who["id"])
         if not name:
             return self.send(200, join_page(ip, who, msg="<h2>Account created</h2><p>Reload this page.</p>"))
@@ -2256,7 +2224,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.redirect(f"/_box/me?r={fid}{anchor}")
 
     def portal_post(self, ip, who, form):
-        name, rec = (who["name"], who["rec"]) if who.get("session") or who.get("cf_jwt") else existing_account(who["id"])
+        name, rec = (who["name"], who["rec"]) if who.get("cf_jwt") else existing_account(who["id"])
         if not name:
             return self.send(200, join_page(ip, who))
         action, key = form.get("action", ""), form.get("key", "")
@@ -2327,8 +2295,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server"})
             res = portal_call(ip, who, action, key=key, **({"op": op} if action.endswith("-ctl") else {}))
             return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
-        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key") + (
-            ("device-link",) if PUBLIC and not CF else ())
+        actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key")
         keys = ("", "claude", "codex", "gh", "t3connect")
         if action not in actions or key not in keys:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
@@ -2347,7 +2314,7 @@ class Handler(BaseHTTPRequestHandler):
             res = app_prompt_result(portal_call(ip, who, "t3app"), rec)
             return self.after_post(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"])))
         res = portal_call(ip, who, action, **kw)
-        if (who.get("session") or who.get("cf_jwt")) and res.get("pair_url"):
+        if (who.get("cf_jwt")) and res.get("pair_url"):
             res = public_pair(res)
         if as_json:
             return self.send(200, json.dumps({"ok": bool(res.get("ok")), "done": bool(res.get("done"))}),
@@ -2357,16 +2324,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ---------- public front door pages (only reachable through sharedbox-gate's unix socket) ----------
-
-def session_who(secret):
-    """Portal identity for a gateway session token, or None. Root re-checks it on every action."""
-    rec, h = sb.gate_lookup("sessions", secret or "")
-    users = sb.friend_users() if rec else {}
-    frec = sb.active_friend(rec.get("user"), users) if rec else None
-    if not frec:
-        return None
-    return {"id": "gate:" + h, "display": rec["user"], "login": "invite", "node": "",
-            "session": secret, "name": rec["user"], "rec": frec}
 
 
 def cf_who(email, jwt):
@@ -2393,10 +2350,9 @@ def cf_owner_who(email, jwt):
 
 
 def landing(email=None):
-    if CF:
-        e = html.escape
-        owner = email and email in sb.owner_emails(CFG)
-        return page(HOST, f"""<div class="box"><h2>{e(HOST)}</h2>
+    e = html.escape
+    owner = email and email in sb.owner_emails(CFG)
+    return page(HOST, f"""<div class="box"><h2>{e(HOST)}</h2>
 <p>This is a private coding machine shared between friends.</p>
 <p>You're signed in as <b>{e(email or '?')}</b>{"" if owner else ", but there's no account for that email here"}.</p>
 {"<p>You're the owner, but this box couldn't find your own account on the computer. Ask your agent on the box "
@@ -2404,11 +2360,6 @@ def landing(email=None):
  "<p>To get in, <b>ask your friend for an invite link</b> for this email address.</p>"}
 <p class="mut">Wrong email? <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the one your friend
 invited.</p></div>""", gate=True, member=False)
-    return page(HOST, f"""<div class="box"><h2>{html.escape(HOST)}</h2>
-<p>This is a private coding machine shared between friends.</p>
-<p>To get in, <b>ask your friend for an invite link</b>.</p>
-<p class="mut">Already have an account? Open the login link from your other device
-(on the page you use there: "Add a device"), or ask your friend for one.</p></div>""", gate=True, member=False)
 
 
 def invite_page(tok, err=None, form=None, email=None):
@@ -2418,15 +2369,13 @@ def invite_page(tok, err=None, form=None, email=None):
     if not inv:
         return page("invite", """<div class="box"><h2>This invite link doesn't work</h2>
 <p>It was already used or it has expired. Ask your friend for a new one.</p></div>""", gate=True, member=False)
-    if CF and str(inv.get("email") or "").lower() != (email or ""):
+    if str(inv.get("email") or "").lower() != (email or ""):
         return page("invite", f"""<div class="box"><h2>This invite is for a different email</h2>
 <p>You're signed in as <b>{e(email or '?')}</b>, but this invite was made for another address.
 <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the email your friend invited, or ask them for an
 invite for this one.</p></div>""", gate=True, member=False)
     ftok = token_for("gate", "invite:" + sb.token_hash(tok))
-    email_field = (f"<p class='mut'>Signed in as <b>{e(email)}</b>. That's your login from now on.</p>" if CF else
-                   f"""<label>Email (optional; only used to warn you if something on your account looks unsafe)</label>
-<input name="email" type="email" value="{e(form.get('email', ''))}" autocomplete="email">""")
+    email_field = f"<p class='mut'>Signed in as <b>{e(email)}</b>. That's your login from now on.</p>"
     return page("join", f"""<div class="box"><h2>Join {e(BRAND)} on {e(HOST)}</h2>
 <p>Your friend invited you. Pick a username and you're in. No app to install, this works on a phone too.</p>
 {f'<p class="err">{e(err)}</p>' if err else ''}
@@ -2441,23 +2390,6 @@ invite for this one.</p></div>""", gate=True, member=False)
 <li>{e(limits_text())}</li>
 <li>{e(archive_text())}</li>
 </ul></div>""", gate=True, member=False)
-
-
-def login_page(tok, err=None):
-    e = html.escape
-    rec = sb.gate_lookup("logins", tok)[0]
-    if not rec:
-        return page("log in", f"""<div class="box"><h2>This login link doesn't work</h2>
-<p>{e(err or "It was already used or it has expired.")}
-Get a new one on your other device ("Add a device"), or ask your friend.</p></div>""", gate=True, member=False)
-    ftok = token_for("gate", "login:" + sb.token_hash(tok))
-    # a button, not an automatic login: link previews in chat apps must not use up the link
-    return page("log in", f"""<div class="box"><h2>Log in to {e(BRAND)} on {e(HOST)}</h2>
-<p>This logs this browser in as <b>{e(rec.get('user', '?'))}</b>.</p>
-{f'<p class="err">{e(err)}</p>' if err else ''}
-<form method="post" action="/login/{e(tok)}"><input type="hidden" name="token" value="{ftok}">
-<button type="submit">Log in</button></form>
-<p class="sub">Didn't ask for this? Close the page; the link expires on its own.</p></div>""", gate=True, member=False)
 
 
 # ---------- the friend's own laptop agent: SSH through Cloudflare (sbconnect), key registration API ----------
@@ -2545,7 +2477,7 @@ def agent_add_key(who, body):
 
 class GateHandler(Handler):
     """Requests relayed by sharedbox-gate over the unix socket. The gate has already stripped every
-    client-supplied X-Sharedbox-* header and only passes a session token it found in the cookie."""
+    client-supplied X-Sharedbox-* header and passes the verified Cloudflare identity."""
 
     def send(self, code, body, ctype="text/html; charset=utf-8", headers=()):
         data = body.encode() if isinstance(body, str) else body
@@ -2576,11 +2508,8 @@ class GateHandler(Handler):
         return (self.headers.get("X-Sharedbox-Cf-Email") or "").lower() if CF else None
 
     def who(self, owner=True):
-        if CF:  # the gate verified the token and strips any client-sent X-Sharedbox-* header
-            jwt = self.headers.get("X-Sharedbox-Cf-Jwt")
-            who = cf_who(self.cf_email(), jwt) or (cf_owner_who(self.cf_email(), jwt) if owner else None)
-        else:
-            who = session_who(self.headers.get("X-Sharedbox-Session"))
+        jwt = self.headers.get("X-Sharedbox-Cf-Jwt")
+        who = cf_who(self.cf_email(), jwt) or (cf_owner_who(self.cf_email(), jwt) if owner else None)
         if who:  # the gate's report of a cookie we never see ourselves (tb_direct)
             who.update(direct=self.headers.get("X-Sharedbox-Direct") == "1")
         return who
@@ -2614,7 +2543,7 @@ class GateHandler(Handler):
         if kind == "invite":
             return self.send(200, invite_page(arg, email=self.cf_email()))
         if kind == "login":
-            return self.redirect("/") if CF else self.send(200, login_page(arg))
+            return self.redirect("/")
         if kind == "settings":  # the owner's settings live in the dashboard's Admin area
             return self.redirect("/_box/me?tab=settings#admin")
         if kind in ("direct-on", "direct-off"):  # remember: visiting the site opens T3 directly (or the dashboard)
@@ -2729,39 +2658,24 @@ class GateHandler(Handler):
             if self.limited("gate-join:" + self.client_ip(), 5):
                 return self.send(429, invite_page(arg, "too many attempts, wait 10 minutes", form, cfm))
             username = form.get("username", "").strip().lower()
-            email, eerr = (cfm, None) if CF else sb.validate_email(form.get("email", ""))
+            email, eerr = (cfm, None)
             err = sb.validate_username(username, CFG) or eerr
             if err:
                 return self.send(400, invite_page(arg, err, form, cfm))
             req = {"action": "join", "invite": arg, "username": username, "email": email, "ua": ua}
-            if CF:  # root verifies the token itself and takes the email from it, not from us
-                req["cf_jwt"] = self.headers.get("X-Sharedbox-Cf-Jwt") or ""
+            req["cf_jwt"] = self.headers.get("X-Sharedbox-Cf-Jwt") or ""
             res = spool_call(req, wait=60)
-            if CF and res.get("ok"):
+            if res.get("ok"):
                 return self.redirect("/_box/me?welcome=1")
-            if not res.get("ok") or not res.get("session"):
-                return self.send(400, invite_page(arg, res.get("error") or "something went wrong", form, cfm))
-            return self.redirect("/_box/me?welcome=1", [("X-Sharedbox-Set-Session", res["session"])])
+            return self.send(400, invite_page(arg, res.get("error") or "something went wrong", form, cfm))
         if CF and kind in ("login", "logout"):
             return self.redirect("/")
-        if kind == "login":
-            if not hmac.compare_digest(form.get("token", ""), token_for("gate", "login:" + sb.token_hash(arg))):
-                return self.send(400, login_page(arg, "form expired, please try again"))
-            if self.limited("gate-login:" + self.client_ip(), 10):
-                return self.send(429, login_page(arg, "too many attempts, wait 10 minutes"))
-            res = spool_call({"action": "redeem", "login": arg, "ua": ua})
-            if not res.get("ok") or not res.get("session"):
-                return self.send(400, login_page(arg, res.get("error")))
-            return self.redirect("/_box/me", [("X-Sharedbox-Set-Session", res["session"])])
         who = self.who()
         if not who:
             return self.redirect("/")
         if not hmac.compare_digest(form.get("token", ""), token_for("gate", who["id"])):
             return self.send(400, portal_page("gate", who, who["name"], who["rec"],
                                               {"ok": False, "error": "form expired, please try again"}))
-        if kind == "logout":
-            spool_call({"action": "logout", "session": who["session"]})
-            return self.redirect("/", [("X-Sharedbox-Clear-Session", "1")])
         if kind == "me":
             return self.portal_post("gate", who, form)
         return self.send(404, "not found", "text/plain")

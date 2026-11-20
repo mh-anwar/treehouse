@@ -37,18 +37,14 @@ Run `hostnamectl; cat /etc/os-release; id; systemctl --version | head -1; python
      `https://box.<their-domain>` on any device and log in with an email code. Only emails the owner
      invited ever reach the machine. The owner clicks one pre-filled link and copies one token; you do
      everything else, including turning on Cloudflare Zero Trust.
-   - **Public link (easiest, no domain needed):** Tailscale Funnel gives the box a public HTTPS address.
-     Friends need nothing installed. They join from a one-time invite link and stay logged in with a
-     cookie. The owner clicks one "allow Funnel" link. Trade-off: the box's login pages face the whole
-     internet (the friends' tools are still behind the login).
    - **Private (Tailscale only):** nothing is exposed at all. Each friend installs Tailscale and the owner
      shares the machine with them in the Tailscale admin console. Good for a few technical friends; free
      Tailscale limits how many people you can add.
-4. **Who can join:** "only people you invite" (recommended; you or your agent run `box invite`), "anyone
-   you've shared the machine with on Tailscale, after you approve them", or "anyone you've shared it with".
-   This is `JOIN_MODE` = `closed` / `approve` / `open`; it only affects Tailscale self-signup at `/join`
-   (invites always work, and self-signups must give an email). With the Cloudflare login it defaults to
-   `closed` when unset.
+4. **Who can join:** "only people you invite" (recommended; you or your agent run `box invite`) or "anyone
+   you've shared the machine with on Tailscale". This is `JOIN_MODE` = `closed` / `open`; it only affects
+   Tailscale self-signup at `/join`, where the account is created right away (there is no approval step).
+   Invites always work. With the Cloudflare login it defaults to `closed` when unset. Without Cloudflare,
+   `box invite` sends friends to `/join`, so that setup needs `open`.
 
 ## 2. Prerequisites
 - `git`: install it with the system package manager if missing (`apt-get install -y git` or
@@ -75,7 +71,7 @@ hours for agents that are mid-turn). Then ask for the OK, and run:
 sudo ./install.sh --apply --admins <admins> [--mail-to <email>]
 ```
 Then write the owner's answer to "who can join" (question 4) into the config, so it doesn't depend on a default:
-`sudo sed -i 's/^#\?JOIN_MODE=.*/JOIN_MODE=<closed|approve|open>/' /etc/sharedbox/sharedbox.conf && sudo systemctl restart sharedbox-web`
+`sudo sed -i 's/^#\?JOIN_MODE=.*/JOIN_MODE=<closed|open>/' /etc/sharedbox/sharedbox.conf && sudo systemctl restart sharedbox-web`
 Installing the coding agents and toolchains takes a few minutes. Run it in the background and poll.
 If it fails, read the error, fix the cause if you can (missing package, old Python), and re-run. It is
 idempotent.
@@ -127,12 +123,8 @@ connections, so nothing on the box listens on the internet.
    the prompt from their page (`/_box/me`, "Use the box from your own computer's agent") into their own
    Claude Code / Codex, which sets up `ssh treehouse` by itself. `SSH_HOST=off` in the config skips it.
 
-### Public link (Tailscale Funnel)
-1. Set `PUBLIC_URL=https://<machine>.<tailnet>.ts.net` in `/etc/sharedbox/sharedbox.conf` (the name is
-   `tailscale status --json`, `.Self.DNSName`), then run `sudo ./install.sh --apply --no-tools`.
-2. Run `sudo tailscale funnel --bg --https=443 http://127.0.0.1:8091`. If Funnel isn't allowed on the
-   tailnet yet, it prints a link: send the owner only that link to click, then run the command again.
-3. Check: `sudo sharedbox-admin public status`.
+Tailscale Funnel is no longer a public mode: with `PUBLIC_URL` set but `PUBLIC_MODE` not `cloudflare`, the
+public front door stays off. Use the Cloudflare login above instead (the installer never changes tailscaled).
 
 ### Private (Tailscale only)
 There's nothing to set up. For each friend, the owner opens the Tailscale admin console → **Machines** →
@@ -160,8 +152,7 @@ Run `box invite --note "<who>"` as the owner's account (no sudo; it works for ev
 public link, add the friend's email: `box invite --email sam@example.com --note "Sam"`. That email is
 allowed in through Cloudflare Access, and the friend logs in with it from then on. With a public link,
 `box invite` creates the friend's account right away (name from `--username`, else picked per
-`AUTO_USERNAMES`), so the friend never sees a signup form: in Funnel mode the message's link logs them
-straight in, once. `--no-create` gives the old signup link; `box invite --json` returns `username`, `link`,
+`AUTO_USERNAMES`), so the friend signs in with their email without a signup form. `--no-create` gives the old signup link; `box invite --json` returns `username`, `link`,
 `email` and `expires` if you're sending invites yourself.
 Finish with a short summary:
 - what's running

@@ -179,7 +179,7 @@ write("events.jsonl", "\n".join(json.dumps(e) for e in [
     {"ts": NOW - 5000, "kind": "tools_updated"},
     {"ts": NOW - 4000, "kind": "skill_shared", "user": "alice", "skill": "deploy"},
     {"ts": NOW - 3000, "kind": "balance", "cpu_busy": True},
-    {"ts": NOW - 2000, "kind": "gate_login", "user": "bob"},
+    {"ts": NOW - 2000, "kind": "owner_paired", "user": "bob"},
     {"ts": NOW - 1000, "kind": "something_new", "user": "alice", "detail": "x"},
 ]) + "\n")
 write("requests.json", {"requests": [
