@@ -31,7 +31,7 @@ Keep it to one short message and one question.
 
    | | Standard (ours, cheaper) | Full (Theo's original) |
    | --- | --- | --- |
-   | Members | Claude Opus, GPT Terra, Gemini Neon, DeepSeek Flash | Claude Opus, GPT Sol, Gemini Neon |
+   | Members | latest Claude Opus, GPT Terra, Gemini, DeepSeek Flash | latest Claude Opus, GPT Sol, Gemini |
    | Effort | high | high |
    | Strength | four opinions, one nearly free | strongest GPT |
 
@@ -59,11 +59,11 @@ unavailable, report it instead of substituting a pricier model.
 
 | Member | With a subscription | Otherwise (OpenCode → OpenRouter) |
 | --- | --- | --- |
-| Claude Opus | native (`Agent` with `model: "opus"`, or `claudeAgent`) | `openrouter/~anthropic/claude-opus-latest` |
-| GPT Terra (Standard) | Codex, newest Terra (`gpt-6.1-terra` today) | `openrouter/openai/gpt-6.1-terra`, or newer |
-| GPT Sol (Full) | Codex, newest Sol (`gpt-6.2-sol` today) | `openrouter/openai/gpt-6.2-sol`, or newer |
-| Gemini Neon | Antigravity / Gemini CLI | `openrouter/google/gemini-4-neon`, or newer flagship |
-| DeepSeek Flash (Standard) | DeepSeek platform key in OpenCode | `openrouter/~deepseek/deepseek-flash-latest` |
+| Claude Opus (latest) | native (`Agent` with `model: "opus"`, or `claudeAgent`) | `openrouter/~anthropic/claude-opus-latest` |
+| GPT Terra (latest, Standard) | Codex, newest Terra (`gpt-6.1-terra` today) | `openrouter/openai/gpt-6.1-terra`, or newer |
+| GPT Sol (latest, Full) | Codex, newest Sol (`gpt-6.2-sol` today) | `openrouter/openai/gpt-6.2-sol`, or newer |
+| Gemini (latest flagship, Neon today) | Antigravity / Gemini CLI | `openrouter/google/gemini-4-neon`, or the newer flagship |
+| DeepSeek Flash (latest, Standard) | DeepSeek platform key in OpenCode | `openrouter/~deepseek/deepseek-flash-latest` |
 
 If the user's instructions name council members, use those.
 
