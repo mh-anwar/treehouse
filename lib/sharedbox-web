@@ -279,6 +279,8 @@ td.num{white-space:nowrap}.tw{overflow-x:auto;margin:-8px -12px;-webkit-overflow
 .note.bad{border-color:var(--badb)}.note.bad .ic{background:var(--bad);color:#fff}
 .note.busy .ic{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;width:8px;height:8px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;flex:none;vertical-align:-1px}
+.prj .k{overflow-wrap:anywhere}.prj .pb{display:block;margin-top:2px}.prj .pb:first-child{margin-top:0}
 .mini{width:100%;min-width:90px}.mini .bar{margin-top:4px}
 ul.ev{list-style:none;padding:0;margin:0}ul.ev li{padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}ul.ev li:last-child{border:0}
 /* form controls: one height, one border, calm focus */
@@ -1159,7 +1161,7 @@ def portal_btn(tok, base):
 
 OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs", "running-stop",  # root allows only these
                  "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon",
-                 "msg", "where", "telegram", "telegram-setup", "restore")
+                 "msg", "where", "telegram", "telegram-setup", "restore", "projects")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -1704,7 +1706,7 @@ ADMIN_TABS = (("people", "Friends"), ("running", "All running"), ("requests", "R
 HASH_TAB = {"start": "home", "app": "home", "people": "home", "activity": "home", "needs": "home",
             "messages": "messages", "servers": "servers", "shared": "servers", "running": "servers", "logs": "servers",
             "account": "account", "dash": "account", "team": "account", "telegram": "account", "peers": "account",
-            "archive": "account", "more": "account",
+            "archive": "account", "more": "account", "projects": "account",
             "admin": "admin", "friends": "people", "invite": "people", "requests": "requests", "boxes": "boxes",
             "settings": "settings", "hackathon": "settings", "telegram-setup": "settings", "update": "settings",
             "events": "events"}
@@ -1713,7 +1715,7 @@ VIEW_PLACE = {"running-ctl": ("servers", "running"), "serve-ctl": ("servers", "s
               "serve-logs": ("servers", "servers"), "shared-ctl": ("servers", "shared"),
               "shared-logs": ("servers", "shared"), "msg": ("messages", "messages"), "where": ("home", "people"),
               "telegram": ("account", "account"), "peer-login": ("account", "account"), "team": ("account", "team"),
-              "restore": ("account", "archive"), "boost": ("account", "dash"), "add-key": ("account", "more"),
+              "restore": ("account", "archive"), "projects": ("account", "projects"), "boost": ("account", "dash"), "add-key": ("account", "more"),
               "invite": ("people", "invite"), "hackathon": ("settings", "hackathon"),
               "telegram-setup": ("settings", "telegram-setup"), "request-update": ("settings", "update")}
 CARD_RE = re.compile(r"[a-z][a-z-]{0,30}")
@@ -1930,6 +1932,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
                              + slot("account") + "<ul class='rows'><li><span class='k'>" + trow[0] + "</span>"
                              "<span class='d'>" + trow[1] + "</span>" + (f"<span class='a'>{trow[2]}</span>" if trow[2] else "")
                              + "</li></ul></section></div>")
+            parts.append(projects_section(st, tok, base, slot))
             try:
                 parts.append("<div class='blk' id='dash' data-card='dash'><h2>Usage</h2><section class='sec'>"
                              + slot("dash") + you_strip(name, rec, st, btn, rng, base) + "</section></div>")
@@ -2445,6 +2448,76 @@ def hackathon_banner(me):
             f"until {e(when)}.{extra} Shared servers, messages and statuses here are how the team stays in sync.</p></div>")
 
 
+PROJECT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")  # same rule as lib/sbprojects.py and sharedbox-admin
+PROJECT_STATE = {"cloned": ("ok", "copied"), "updated": ("ok", "updated"), "current": ("ok", "up to date"),
+                 "skipped": ("warn", "left alone"), "error": ("bad", "failed")}
+
+
+def projects_section(st, tok, base, slot=None):
+    """"Projects on all your boxes" (lib/sbprojects.py): git repos in ~ with a remote, each with an on/off button;
+    per other box what the last sync did. Only shown when the person has more than one box."""
+    e = html.escape
+    pj = st.get("projects")
+    if not isinstance(pj, dict):
+        return ""
+    slot = slot or NO_SLOT
+    head = "<div class='blk' id='projects' data-card='projects'><h2>Projects on all your boxes</h2><section class='sec'>"
+    if not pj.get("ok"):
+        return head + slot("projects") + "<p class='mut' style='margin:0'>Couldn't list your projects just now.</p></section></div>"
+    boxes = {str(b): v for b, v in (pj.get("boxes") or {}).items() if isinstance(v, dict)}
+    rows = [r for r in pj.get("projects") or [] if isinstance(r, dict) and PROJECT_RE.fullmatch(str(r.get("name") or ""))]
+    avail = sorted((r for r in rows if r.get("available")), key=lambda r: (not r.get("everywhere"), r["name"].lower()))
+    other = [r for r in rows if not r.get("available")]
+    names = sorted(boxes)
+    where = (", ".join(names[:-1]) + " and " + names[-1]) if len(names) > 1 else (names[0] if names else "your other boxes")
+
+    def box_line(b, v):
+        state = str(v.get("state") or "waiting")
+        err = str((boxes.get(b) or {}).get("error") or "")
+        if state == "waiting":
+            if err:
+                return f"<span class='pb'><span class='dot warn'></span>{e(b)}: {e(err[:160])}</span>"
+            return f"<span class='pb'><span class='spin' aria-hidden='true'></span>{e(b)}: copying at the next sync</span>"
+        cls, label = PROJECT_STATE.get(state, ("", state))
+        note = str(v.get("note") or "")
+        t3 = "" if state == "error" or v.get("t3") else ". Not in T3 there yet"
+        return (f"<span class='pb'><span class='dot {cls}'></span>{e(b)}: {e(label)}"
+                + (f" <span class='sub'>{e(note[:200])}</span>" if note else "") + (f"<span class='sub'>{t3}</span>" if t3 else "")
+                + "</span>")
+
+    items = []
+    for r in avail:
+        n = r["name"]
+        if r.get("everywhere"):
+            d = "".join(box_line(b, v) for b, v in sorted((r.get("boxes") or {}).items()) if isinstance(v, dict)) \
+                or "<span class='sub'>On. Copies start at the next sync.</span>"
+            act = f"<form method='post' action='{base}/me'>{hidden(tok, action='projects', key=n, op='off')}" \
+                  "<button class='secondary sm'>Stop syncing</button></form>"
+        else:
+            d = "<span class='sub'>Only on this box</span>"
+            act = f"<form method='post' action='{base}/me'>{hidden(tok, action='projects', key=n, op='on')}" \
+                  "<button class='secondary sm'>Keep on all boxes</button></form>"
+        items.append(f"<li><span class='k mono'>{e(n)}</span><span class='d'>{d}</span><span class='a'>{act}</span></li>")
+    out = [head, slot("projects"),
+           f"<p class='sub' style='margin-top:0'>A project you turn on is cloned into the same folder on {e(where)}, "
+           "added to T3 there and kept up to date from GitHub, so the T3 app's load balancing (Settings, Environments) "
+           "can run it on any box. A copy with changes of its own is never touched. Stopping keeps the copies.</p>"]
+    if items:
+        out.append("<ul class='rows prj'>" + "".join(items) + "</ul>")
+    elif not other:
+        out.append("<p class='mut'>No git projects in your home folder yet.</p>")
+    if other:
+        out.append("<details class='p' style='margin-top:12px'><summary class='sub' style='cursor:pointer'>"
+                   + e(plural(len(other), "project")) + " not on GitHub yet</summary><ul class='rows prj'>" + "".join(
+                       f"<li><span class='k mono'>{e(r['name'])}</span><span class='d sub'>{e(str(r.get('why') or ''))}</span></li>"
+                       for r in other) + "</ul></details>")
+    if any(r.get("everywhere") for r in avail):
+        out.append("<p class='sub'>Last sync: " + " · ".join(
+            f"{e(b)} {e(ago_text(v['last_sync']) if v.get('last_sync') else 'not yet')}" for b, v in sorted(boxes.items()))
+            + ". It runs every 30 minutes, and within 10 minutes of a change.</p>")
+    return "".join(out) + "</section></div>"
+
+
 def archive_notice(name, tok, base, slot=None):
     """Projects about to be archived, and archived ones with a Restore button (`box restore`, as this user)."""
     e = html.escape
@@ -2642,6 +2715,7 @@ def account_tab(who, name, rec, st, logins, tg, team, where, tok, base, btn, slo
         row(*trow)
     parts = ["<div class='blk' id='account' data-card='account'><h2>Your account</h2><section class='sec'>"
              + slot("account") + "<ul class='rows'>" + "".join(acct) + "</ul></section></div>"]
+    parts.append(projects_section(st, tok, base, slot))
     parts.append(team_section(team, display_names(where), tok, base, slot))
     parts.append(archive_notice(name, tok, base, slot))
     try:
@@ -3057,6 +3131,12 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, "telegram-setup", **({"op": "off"} if form.get("op") == "off" else
                                                            {"token": form.get("tgtoken", "").strip()[:200]}))
             return self.after_post(ip, who, name, rec, dict(res, _view="telegram-setup"))
+        if action == "projects":  # "Projects on all your boxes": keep one repo in ~ on every box, or stop
+            op = form.get("op", "")
+            if not PROJECT_RE.fullmatch(key) or op not in ("on", "off"):
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such project", "_view": "projects"})
+            res = portal_call(ip, who, "projects", key=key, op=op)
+            return self.after_post(ip, who, name, rec, dict(res, _view="projects"))
         if action in ("peer-login", "peer-check"):  # the T3 app / ChatGPT on this person's other boxes
             if key not in PEER_LABEL:
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown login", "_view": action})

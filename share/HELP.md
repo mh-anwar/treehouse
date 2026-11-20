@@ -263,7 +263,25 @@ Friends have the same account (same name, files limits and port block) on every 
 so the human can start a thread "on minastirith" from their usual T3. GitHub and git identity are copied over.
 Claude/Codex logins are not (copying them breaks both): `box boxes setup` lists what's missing, then
 `box boxes login claude --on minastirith` prints a link (and for Claude asks for the code back with `--code X`).
-The human only clicks the link. Files are NOT shared between boxes: push to git, or use `box run`.
+The human only clicks the link. Files are NOT shared between boxes: push to git, use `box run`, or keep a project on
+every box (`box help projects`).
+
+@@ projects
+Projects on all the user's boxes: the same git repo in the same folder (`~/<name>`) on every box they have, so the
+T3 app's automatic load balancing (Settings > Environments > Load balancing, which only balances a project that
+exists on several connected boxes) can run it anywhere. The user turns projects on in the Account tab of
+{portal}, or you do it:
+- `box projects [--json]`: every git repo directly in ~, whether another box can clone it (it needs a remote on
+  GitHub or another server: "push it to GitHub first" otherwise), whether it's on every box, and per other box
+  the last result (cloned, updated, current, skipped, error, waiting) with a note and whether T3 there lists it.
+- `box projects everywhere NAME on|off`, then `box projects sync` to copy now instead of within 10 minutes.
+How it works: from the box where it was turned on, every 30 minutes (and within 10 minutes of a change), as the
+user and at low priority, each other box gets a blobless clone from the remote (never from this box: only pushed
+commits travel), then `git fetch` and a fast-forward only when the copy has no uncommitted or untracked files and
+no commits of its own. A different repo or folder at that path, local changes or unpushed commits there: skipped
+and reported, never overwritten, reset or deleted. Each copy is added to T3 on that box (`t3 project add`).
+Turning a project off stops the syncing; the copies stay. Work done on another box reaches this one through git
+(push there, pull here), like any clone.
 
 @@ msg
 The inbox: short, structured messages between this box's accounts. Root delivers them, so the sender is

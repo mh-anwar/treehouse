@@ -224,6 +224,27 @@ ACCOUNTS = {  # what `box _portal status` would say for each account
     ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
          "servers": [{"name": "site", "state": "running", "port": "8080"}], "ssh": True},
 }
+PROJECTS = {  # what `box _portal status` says under "projects" (lib/sbprojects.py summary), per account
+    "alice": {"ok": True, "every": 1800, "last_sync": NOW - 300, "missing": [],
+              "boxes": {"minastirith": {"last_sync": NOW - 300, "error": ""},
+                        "krishbox": {"last_sync": NOW - 300, "error": "Can't log in to that box over SSH yet."}},
+              "projects": [
+                  {"name": "blog", "url": "https://github.com/alice/blog.git", "available": True, "why": "",
+                   "everywhere": True, "boxes": {"minastirith": {"state": "current", "note": "", "t3": True},
+                                                 "krishbox": {"state": "waiting", "note": ""}}},
+                  {"name": "game-jam-2026-final-version", "url": "git@github.com:alice/game-jam.git", "available": True,
+                   "why": "", "everywhere": True,
+                   "boxes": {"minastirith": {"state": "skipped", "note": "Has uncommitted changes there; not updated.",
+                                             "t3": True}, "krishbox": {"state": "waiting", "note": ""}}},
+                  {"name": "notes", "url": "https://github.com/alice/notes", "available": True, "why": "",
+                   "everywhere": False, "boxes": {}},
+                  {"name": "scratch", "url": "", "available": False, "why": "No remote yet. Push it to GitHub first.",
+                   "everywhere": False, "boxes": {}}]},
+    ME: {"ok": True, "every": 1800, "last_sync": None, "missing": [],
+         "boxes": {"minastirith": {"last_sync": None, "error": ""}},
+         "projects": [{"name": "treehouse", "url": "https://github.com/owner/treehouse.git", "available": True, "why": "",
+                       "everywhere": True, "boxes": {"minastirith": {"state": "waiting", "note": ""}}}]},
+}
 G = 1 << 30
 M = 1 << 20
 RUNNING = {  # what `box _portal status` says under "running" (lib/sbrunning.py), biggest first
@@ -336,7 +357,7 @@ def _fake_root(req):
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
                                 "request-approve", "request-done", "request-decline", "self-update", "invite",
                                 "boost", "hackathon", "running-stop", "running-all", "msg", "where", "telegram",
-                                "telegram-setup", "restore"):
+                                "telegram-setup", "restore", "projects"):
         return {"ok": False, "error": "not available for the owner's account"}
     if action == "boost":  # root: boosts are gone (dynamic memory), it only explains
         return {"ok": True, "until": 0, "message": "Boosts aren't needed any more."}
@@ -469,7 +490,17 @@ def _fake_root(req):
                 "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "box": "mybox",
                 "boxes": acct.get("boxes") or {},
                 "servers": [dict(s) for s in acct["servers"]],
-                "running": [dict(i) for i in RUNNING.get(name, [])]}
+                "running": [dict(i) for i in RUNNING.get(name, [])],
+                **({"projects": json.loads(json.dumps(PROJECTS[name]))} if name in PROJECTS else {})}
+    if action == "projects":  # "Projects on all your boxes": on/off
+        pj = PROJECTS.get(name) or {"projects": []}
+        r = next((r for r in pj["projects"] if r["name"] == key), None)
+        if not r or not r["available"]:
+            return {"ok": False, "error": f"There's no git project called {key} in your home folder."}
+        r["everywhere"] = req.get("op") == "on"
+        r["boxes"] = {b: {"state": "waiting", "note": ""} for b in pj["boxes"]} if r["everywhere"] else {}
+        return {"ok": True, "message": f"{key} will be on all your boxes. The first copy starts within 10 minutes."
+                if r["everywhere"] else f"{key} is no longer synced. Copies already on your other boxes stay where they are."}
     if action == "shared-ls":
         return {"ok": True, "servers": [dict(s) for s in SHARED]}
     if action in ("serve-ctl", "shared-ctl"):

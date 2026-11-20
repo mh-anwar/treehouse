@@ -27,6 +27,7 @@ You run on **{host}**, a remote Linux box, as user `{user}`. Topic details: `box
 - Each project is a git repo directly in your home (`~/<name>`). One untouched for {project_ttl} days is archived
   (`box restore NAME` within {archive_days} days), but only when everything in it is pushed to a remote. Push often:
   nothing is backed up. `~/keep/` is never touched; servers' code goes in `~/services/<name>/`. `box help files`.
+  The same project on all the user's boxes (for T3's load balancing): `box help projects`.
 
 ## Running things
 - Long-running servers: `box serve add <name> -- <cmd>` (survives logout and the {reboot_time} reboots), never
