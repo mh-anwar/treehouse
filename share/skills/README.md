@@ -11,7 +11,7 @@ an agent may **suggest** one, but must ask its owner before installing it.
 
 | Skill | Say | What it does | Notes |
 |---|---|---|---|
-| `council` | "council" | Review from Claude Opus + GPT-6 Luna + Muse Spark Open + DeepSeek Flash, looping until they agree | Needs OpenCode with an OpenRouter key; ~15-20¢/round |
+| `council` | "council" | Review from 3-4 models, looping until they agree. Standard: Claude Opus + GPT Terra + Gemini Neon + DeepSeek Flash. Full (Theo's): Claude Opus + GPT Sol + Gemini Neon | Uses Claude/ChatGPT/Google subscriptions where you have them, an OpenRouter key for the rest; first run walks you through it |
 | `full-send` | "full send" | Proves, files, babysits and **merges** a PR with nobody watching | Uses `sol-loop`, `file-pr`, `babysit-pr`. Merges on its own |
 | `full-stop` | "full stop" | Same as `full-send`, stops when the PR is ready for you to merge | Uses `full-send` |
 | `sol-loop` | "sol loop" | Reviews a change with GPT Sol in a loop until both agents agree | GPT Sol is pricey via OpenRouter; fine on a ChatGPT/Codex plan |
@@ -32,7 +32,7 @@ Install a skill's dependencies too (the Notes column lists them).
 Unchanged copies, refreshed with `./sync-upstream.sh` (exact commits in `UPSTREAM`):
 
 - Theo Browne's [tstack](https://github.com/t3dotgg/tstack): the PR skills (MIT, `LICENSE-tstack`).
-  `council` is our own adaptation of his, with cheap OpenRouter members.
+  `council` is our own adaptation of his: his flagship lineup plus a cheaper one, and a setup step.
 - Anthropic's [skills](https://github.com/anthropics/skills): `skill-creator`, `webapp-testing`,
   `frontend-design`, `mcp-builder` (Apache-2.0, `LICENSE.txt` in each).
 

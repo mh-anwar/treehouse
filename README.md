@@ -67,7 +67,7 @@ No terminal, no VPN invites, no "can you run this command for me".
 - 📬 **Health email.** A weekly report plus hourly urgent checks: disk, failed services, SMART, pending
   updates, security audit, and a section for **what slowed agents down**, logged by the agents themselves
   via `box issue`.
-- 🧩 **Shared skills.** A catalog of agent skills everyone's agents can see (`box skills`): a 4-model
+- 🧩 **Shared skills.** A catalog of agent skills everyone's agents can see (`box skills`): a multi-model
   `council` review and Theo Browne's [tstack](https://github.com/t3dotgg/tstack) PR skills. Agents suggest
   one and install it only after their owner says yes. Admins publish their own with `box skills share DIR`.
 - 🪤 **Tripwire + trap.** Decoy secrets on disk: if anything opens them (say, a malicious npm package
