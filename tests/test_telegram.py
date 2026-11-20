@@ -139,6 +139,34 @@ class BotTest(unittest.TestCase):
         bob_inbox = sbmsg.list_dir(os.path.join(self.mail, "bob"))
         self.assertEqual(sorted(m.get("status") or m["title"] for m in bob_inbox), ["done", "on it after lunch"])
 
+    def test_done_is_shared_with_box_msg_and_the_dashboard(self):
+        """Done in Telegram clears the message for `box msg`/the dashboard (root's mirror in the mail folder);
+        done or archived there hides it from /inbox here, though the bot can't read anyone's home."""
+        self.link()
+        x = self.send("bob", "alice", "Fix CI")["id"]
+        y = self.send("bob", "alice", "Review PR")["id"]
+        self.bot.handle({"callback_query": {"id": "q1", "data": f"done:{x}", "message": {"chat": {"id": 11}}}})
+        self.assertIn(x, sbmsg.root_done("alice", self.mail))
+        home = os.path.join(self.d, "home-alice")
+        st = sbmsg.load_state(home, "alice", root=self.mail)
+        self.assertIn(x, st["done"])
+        self.assertNotIn(y, st["done"])
+        self.api.calls.clear()
+        self.text(11, "/inbox")
+        self.assertEqual([t for t in self.api.texts(11) if "Fix CI" in t], [])
+        self.assertTrue([t for t in self.api.texts(11) if "Review PR" in t])
+        sbmsg.mark_done("alice", [y], now=self.t, root=self.mail, as_root=False)  # archived on the dashboard
+        self.api.calls.clear()
+        self.text(11, "/inbox")
+        self.assertEqual(self.api.texts(11), ["Nothing waiting for you."])
+        sbmsg.mark_done("alice", [y], done=False, root=self.mail, as_root=False)  # box msg unarchive
+        self.assertNotIn(y, sbmsg.root_done("alice", self.mail))
+        st = sbmsg.load_state(home, "alice", root=self.mail)
+        self.assertEqual(sbmsg.unmirrored(dict(st, done=dict(st["done"], **{y: 1})), {x, y}), [y])
+        self.assertEqual(sbmsg.mark_done("alice", ["../x", 5], root=self.mail, as_root=False), {"ok": True})
+        self.assertEqual(set(sbmsg.root_done("alice", self.mail)), {x})
+        self.assertFalse(sbmsg.mark_done("nobody", [x], root=self.mail, as_root=False)["ok"])
+
     def test_button_on_someone_elses_message_refused(self):
         self.link()
         mid = self.send("alice", "bob", "Not yours")["id"]

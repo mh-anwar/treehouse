@@ -2607,7 +2607,7 @@ def portal_msg(req):
     root = sbmsg.mail_root()
     inbox, sent = os.path.join(root, user), os.path.join(root, user, "sent")
     op = req.get("op")
-    st = sbmsg.load_state(ME.pw_dir)
+    st = sbmsg.load_state(ME.pw_dir, user)
 
     def card(m):
         c = {k: m.get(k) for k in ("id", "from", "to", "title", "level", "due", "status", "ts", "count", "reply_to",
@@ -2617,8 +2617,11 @@ def portal_msg(req):
         c["read"] = m["id"] in st["read"]
         return c
     if op == "inbox":
-        msgs = sorted((m for m in sbmsg.list_dir(inbox) if m["id"] not in st["done"]),
-                      key=lambda m: sbmsg.sort_key(m, now))
+        every = sbmsg.list_dir(inbox)
+        missing = sbmsg.unmirrored(st, {m["id"] for m in every})
+        if missing:  # older marks root hasn't mirrored yet: tell it, so Telegram's /inbox agrees
+            shared_request({"action": "msg-done", "ids": missing, "done": True}, 0)
+        msgs = sorted((m for m in every if m["id"] not in st["done"]), key=lambda m: sbmsg.sort_key(m, now))
         mine = sorted(sbmsg.list_dir(sent), key=lambda m: -(m.get("ts") or 0))[:5]
         answered = {m.get("reply_to"): m.get("status") or "replied" for m in sbmsg.list_dir(inbox) if m.get("reply_to")}
         out = [dict(card(m), answer=answered.get(m["id"], "")) for m in mine]
@@ -2659,6 +2662,7 @@ def portal_msg(req):
             st["read"].setdefault(mid, int(now))
             if op == "done":
                 st["done"][mid] = int(now)
+                shared_request({"action": "msg-done", "ids": [mid], "done": True}, 0)
             sbmsg.save_state(ME.pw_dir, st)
             res["message"] = "Marked done; they'll see it." if op == "done" else "Reply sent."
         return res
@@ -2666,6 +2670,7 @@ def portal_msg(req):
         st["done"][mid] = int(now)
         st["read"].setdefault(mid, int(now))
         sbmsg.save_state(ME.pw_dir, st)
+        shared_request({"action": "msg-done", "ids": [mid], "done": True}, 0)
         return {"ok": True, "message": "Cleared from your inbox."}
     return {"ok": False, "error": "unknown action"}
 
