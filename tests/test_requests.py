@@ -287,8 +287,6 @@ class Hackathon(unittest.TestCase):
     def test_on_overlays_and_opens_requests(self):
         c = self.cfg("2999-01-01 00:00", HACKATHON_USERS="krish")
         self.assertEqual(c["HACKATHON"], "1")
-        for k in ("TRAP_ENABLED", "CANARY_ENABLED"):
-            self.assertEqual(c[k], "0", k)
         self.assertEqual(c["REQUEST_OPEN_USERS"].split(), ["pippin", "krish"])
         self.assertTrue(adm.open_for(c, "krish"))
         self.assertFalse(adm.open_for(c, "dave"))
@@ -297,7 +295,6 @@ class Hackathon(unittest.TestCase):
         for until in ("2000-01-01 00:00", "tonight", ""):
             c = self.cfg(until)
             self.assertEqual(c["HACKATHON"], "", until)
-            self.assertEqual(c["TRAP_ENABLED"], adm.sb.DEFAULTS["TRAP_ENABLED"])
 
     def test_reconcile_acts_only_on_transitions(self):
         calls = []
@@ -312,11 +309,11 @@ class Hackathon(unittest.TestCase):
         adm.sb.log_event = lambda *a, **k: None
         on = self.cfg("2999-01-01 00:00")
         self.assertEqual(adm.sb.hackathon_reconcile(on), "on")
-        self.assertIn(["systemctl", "stop", "sharedbox-trap.service"], calls)
+        self.assertEqual(calls, [])
         self.assertIsNone(adm.sb.hackathon_reconcile(on))
         calls.clear()
-        self.assertEqual(adm.sb.hackathon_reconcile(self.cfg("2000-01-01 00:00", CANARY_ENABLED="0")), "off")
-        self.assertEqual(calls, [["systemctl", "enable", "--now", "sharedbox-trap.service"]])
+        self.assertEqual(adm.sb.hackathon_reconcile(self.cfg("2000-01-01 00:00")), "off")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

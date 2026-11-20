@@ -139,7 +139,7 @@ There's nothing to set up. For each friend, the owner opens the Tailscale admin 
 this machine → **Share…**. `box invite` prints the matching message.
 
 ## 6. Check it works
-- `systemctl is-active sharedbox-web sharedbox-canary sharedbox-tick.timer sharedbox-janitor.timer`
+- `systemctl is-active sharedbox-web sharedbox-tick.timer sharedbox-janitor.timer`
 - `curl -s http://$(tailscale ip -4 | head -1):8090/healthz` prints `ok`
 - `sudo sharedbox-health report | head -40` reads sensibly
 - `box shared ls` runs (as the owner's account) and `sudo sharedbox-admin shared-sync` lists the friends and
