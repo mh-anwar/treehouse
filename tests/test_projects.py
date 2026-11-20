@@ -342,6 +342,20 @@ class Card(unittest.TestCase):
         self.assertIn("name=\"op\" value=\"off\"", out)
         self.assertEqual(self.w.place_of({"_view": "projects"}), ("account", "projects"))
 
+    def test_button_result_is_a_notice(self):
+        """Root answers {ok, message} for "Keep on all boxes" / "Stop syncing"; that is a plain notice, not the
+        login-in-progress card (which needs a login token and used to raise KeyError, a 502 at the gate)."""
+        btn = lambda *a, **k: ""  # noqa: E731
+        out = self.w.result_html({"ok": True, "message": "App is no longer synced.", "_view": "projects"},
+                                 btn, "tok", "/_box")
+        self.assertIn("App is no longer synced.", out)
+        self.assertIn("note ok", out)
+        out = self.w.result_html({"ok": True, "message": "The first copy starts soon.", "_view": "projects",
+                                  "_busy": True}, btn, "tok", "/_box")
+        self.assertIn("note busy", out)  # only queued: the in-progress state, never a check mark
+        out = self.w.portal_result({"ok": True, "message": "Something finished."}, btn, "/_box")
+        self.assertIn("Something finished.", out)  # any other answer without a login token: a notice, no crash
+
 
 if __name__ == "__main__":
     unittest.main()

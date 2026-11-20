@@ -2798,6 +2798,8 @@ def portal_result(res, btn, base=""):
         return logs_card(res, btn, base)
     if view == "boost":  # older pages: boosts are gone, root explains why
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
+    if view == "projects":  # "Keep on all boxes" only queues the first copy: in progress, not a check mark
+        return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]), "busy" if res.get("_busy") else "ok")
     if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team"):
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     if view.endswith("-ctl") or view.startswith("request-"):
@@ -2817,6 +2819,8 @@ or come back here for a new link on another device.</p></div>"""
         return notice("SSH key added.")
     if res.get("done"):
         return notice("Logged in.")
+    if "_tok" not in res:  # not a login in progress: any other answer is a finished sentence from root
+        return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
     open_btn = f'<a class="btn" style="margin-top:0" href="{e(url)}" target="_blank" rel="noopener">Open the login page</a>'
     if res.get("paste"):
@@ -3136,7 +3140,7 @@ class Handler(BaseHTTPRequestHandler):
             if not PROJECT_RE.fullmatch(key) or op not in ("on", "off"):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such project", "_view": "projects"})
             res = portal_call(ip, who, "projects", key=key, op=op)
-            return self.after_post(ip, who, name, rec, dict(res, _view="projects"))
+            return self.after_post(ip, who, name, rec, dict(res, _view="projects", _busy=op == "on"))
         if action in ("peer-login", "peer-check"):  # the T3 app / ChatGPT on this person's other boxes
             if key not in PEER_LABEL:
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown login", "_view": action})
