@@ -308,6 +308,8 @@ class Bot:
                                                     "text": f"{display(m.get('from'))} will see you've read it"})
         if act == "done":
             res = self.deliver(user, {"action": "msg", "reply_to": mid, "status": "done"})
+            if res.get("ok"):  # cleared in `box msg` and on the dashboard too, not only answered
+                sbmsg.mark_done(user, [mid], now=self.now(), root=self.mail_root, as_root=self.as_root)
             return self.api("answerCallbackQuery", {"callback_query_id": q.get("id"),
                                                     "text": "Marked done" if res.get("ok") else res.get("error", "failed")[:190]})
         pend = self.store.get("pending")
@@ -338,7 +340,9 @@ class Bot:
     def inbox(self, chat, user):
         now = self.now()
         msgs = sorted(sbmsg.list_dir(os.path.join(self.mail_root, user)), key=lambda m: sbmsg.sort_key(m, now))
-        open_ = [m for m in msgs if not (m.get("reply_to") and m.get("status") in ("done", "declined"))][:5]
+        done = sbmsg.root_done(user, self.mail_root)  # marked done/archived in box msg, the dashboard or here
+        open_ = [m for m in msgs if m["id"] not in done
+                 and not (m.get("reply_to") and m.get("status") in ("done", "declined"))][:5]
         if not open_:
             return self.send(chat, "Nothing waiting for you.")
         for m in open_:

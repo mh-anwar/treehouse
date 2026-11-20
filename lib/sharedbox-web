@@ -1909,7 +1909,8 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
             start = [f"<h2>Hi {e(name)}</h2><p class='mut'>You're the owner of {e(HOST)}, signed in as "
                      f"<b>{e(who.get('login', ''))}</b>.</p>"]
             if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
-                start.append('<div class="line"><a class="btn" href="/_box/app">Open T3</a></div>')
+                start.append('<div class="line btns"><a class="btn" href="/_box/app">Open T3 in this browser</a>'
+                             + owner_app_details(st) + '</div>')
             parts.append("<section class='start' id='start' data-card='start'>" + slot("start") + "".join(start)
                          + "</section>")
             parts.append(hackathon_banner(name))
@@ -1926,12 +1927,13 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
             parts.append(servers_section(st, shared, btn, base, own_public=False, slot=slot))
             parts.append(running_section(name, rec, st, btn, slot))
         elif tab == "account":
-            trow = telegram_row(tg, tok, base, owner=True)
-            if trow:
+            rows = [r for r in (owner_app_row(st, base), telegram_row(tg, tok, base, owner=True)) if r]
+            if rows:
                 parts.append("<div class='blk' id='account' data-card='account'><h2>Your account</h2><section class='sec'>"
-                             + slot("account") + "<ul class='rows'><li><span class='k'>" + trow[0] + "</span>"
-                             "<span class='d'>" + trow[1] + "</span>" + (f"<span class='a'>{trow[2]}</span>" if trow[2] else "")
-                             + "</li></ul></section></div>")
+                             + slot("account") + "<ul class='rows'>" + "".join(
+                                 f"<li><span class='k'>{k}</span><span class='d'>{d}</span>"
+                                 + (f"<span class='a'>{a}</span>" if a else "") + "</li>" for k, d, a in rows)
+                             + "</ul></section></div>")
             parts.append(projects_section(st, tok, base, slot))
             try:
                 parts.append("<div class='blk' id='dash' data-card='dash'><h2>Usage</h2><section class='sec'>"
@@ -2337,9 +2339,39 @@ def app_help(more=""):
             f"shows up by itself. No app yet? <a href='{T3_DOWNLOAD}' target='_blank' rel='noopener'>Download T3</a>.</p>"
             f"<p><b>Phone:</b> get T3 Code for <a href='{T3_IOS}' target='_blank' rel='noopener'>iPhone</a> or "
             f"<a href='{T3_ANDROID}' target='_blank' rel='noopener'>Android</a> and sign in the same way.</p>"
-            "<p class='sub'>Use the T3 account you just signed in with. Any number of phones and laptops work. "
+            "<p class='sub'>Use the same T3 account you signed in with here. Any number of phones and laptops work. "
             "T3's free plan links up to 3 boxes per person.</p>"
             + (f"<p>Your other boxes don't have it yet. {more}</p>" if more else "") + "</div>")
+
+
+OWNER_APP_LINK = ("Your T3 isn't linked to a T3 account yet, so the app can't find this box by itself. Ask your "
+                  "agent here to link your T3 Code to T3 Connect and restart it. After that, this shows how to sign in "
+                  "on your phone and laptop.")
+
+
+def owner_app_details(st):
+    """The owner's "Open T3 app", next to "Open T3 in this browser": how to sign in once their own T3 Code is
+    linked to T3 Connect (`box _portal status` reads the same data folder), else what to ask their agent. The
+    owner's T3 is their own server, not the friends' sb-t3 unit, so there is no dashboard sign-in for it."""
+    if not CFG.get("OWNER_T3_PORT", "").strip().isdigit():
+        return ""
+    t3c = (st.get("logins") or {}).get("t3connect")
+    if not t3c:
+        return ""
+    body = app_help() if t3c.get("ok") else f"<div class='appbox'><p>{html.escape(OWNER_APP_LINK)}</p></div>"
+    return f"<details class='appd' id='app'><summary class='btn secondary'>Open T3 app</summary>{body}</details>"
+
+
+def owner_app_row(st, base):
+    """(label, description, action) for the owner's Account tab, or None when T3 isn't on this box."""
+    t3c = (st.get("logins") or {}).get("t3connect")
+    if not t3c or not CFG.get("OWNER_T3_PORT", "").strip().isdigit():
+        return None
+    how = f"<a class='btn secondary sm' href='{base}/me?tab=home#app'>How</a>"
+    if t3c.get("ok"):
+        return ("T3 app", '<span class="dot ok"></span>Connected. Open the T3 app on your phone or laptop and sign in.',
+                how)
+    return ("T3 app", '<span class="dot"></span>Not connected. Use T3 from your phone or laptop.', how)
 
 
 def team_section(team, names, tok, base, slot=None):
@@ -2388,11 +2420,11 @@ def boxes_row(st, logins, btn):
     for b, v in sorted(boxes.items()):
         got = v.get("logins") or {}
         if not v.get("ssh"):
-            parts.append(f"{e(b)} <span class='sub'>(not reachable yet)</span>")
+            parts.append(f"{e(b)} <span class='sub'>(not connected yet)</span>")
             continue
         miss = [PEER_LABEL[k] for k in PEER_LABEL if (logins.get(k) or {}).get("ok") and got.get(k) is not True]
         parts.append(e(b) + (f" <span class='sub'>(needs {e(' and '.join(miss))})</span>" if miss else
-                             " <span class='sub'>(same as here)</span>"))
+                             " <span class='sub'>(all set)</span>"))
     for k in PEER_LABEL:
         if (logins.get(k) or {}).get("ok") and any(v.get("ssh") and (v.get("logins") or {}).get(k) is not True
                                                     for v in boxes.values()):
@@ -2475,8 +2507,8 @@ def projects_section(st, tok, base, slot=None):
         state = str(v.get("state") or "waiting")
         err = str((boxes.get(b) or {}).get("error") or "")
         if state == "waiting":
-            if err:
-                return f"<span class='pb'><span class='dot warn'></span>{e(b)}: {e(err[:160])}</span>"
+            if err:  # why is said once, under the list, with the next step
+                return f"<span class='pb'><span class='dot warn'></span>{e(b)}: waiting for that box</span>"
             return f"<span class='pb'><span class='spin' aria-hidden='true'></span>{e(b)}: copying at the next sync</span>"
         cls, label = PROJECT_STATE.get(state, ("", state))
         note = str(v.get("note") or "")
@@ -2499,9 +2531,9 @@ def projects_section(st, tok, base, slot=None):
                   "<button class='secondary sm'>Keep on all boxes</button></form>"
         items.append(f"<li><span class='k mono'>{e(n)}</span><span class='d'>{d}</span><span class='a'>{act}</span></li>")
     out = [head, slot("projects"),
-           f"<p class='sub' style='margin-top:0'>A project you turn on is cloned into the same folder on {e(where)}, "
-           "added to T3 there and kept up to date from GitHub, so the T3 app's load balancing (Settings, Environments) "
-           "can run it on any box. A copy with changes of its own is never touched. Stopping keeps the copies.</p>"]
+           f"<p class='sub' style='margin-top:0'>Turn a project on and it's copied to {e(where)}, shows up in T3 there "
+           "and stays up to date from GitHub, so you and the T3 app can work on it from any of your boxes. "
+           "If a copy has changes of its own, it's left alone. Turning it off keeps the copies.</p>"]
     if items:
         out.append("<ul class='rows prj'>" + "".join(items) + "</ul>")
     elif not other:
@@ -2511,6 +2543,11 @@ def projects_section(st, tok, base, slot=None):
                    + e(plural(len(other), "project")) + " not on GitHub yet</summary><ul class='rows prj'>" + "".join(
                        f"<li><span class='k mono'>{e(r['name'])}</span><span class='d sub'>{e(str(r.get('why') or ''))}</span></li>"
                        for r in other) + "</ul></details>")
+    bad = [(b, str(v.get("error"))) for b, v in sorted(boxes.items()) if v.get("error")]
+    if bad and any(r.get("everywhere") for r in avail):
+        out.append("<p class='sub'>" + " ".join(f"<span class='dot warn'></span><b>{e(b)}</b>: {e(err[:200])}"
+                                               for b, err in bad)
+                   + f" <a href='{base}/me?tab=messages'>Message the owner</a></p>")
     if any(r.get("everywhere") for r in avail):
         out.append("<p class='sub'>Last sync: " + " · ".join(
             f"{e(b)} {e(ago_text(v['last_sync']) if v.get('last_sync') else 'not yet')}" for b, v in sorted(boxes.items()))
@@ -2540,7 +2577,7 @@ def archive_notice(name, tok, base, slot=None):
     slot = slot or NO_SLOT
     if not out and slot.card != "archive":
         return ""
-    return ("<div class='blk' id='archive' data-card='archive'><h2>Projects</h2><section class='sec warnsec'>"
+    return ("<div class='blk' id='archive' data-card='archive'><h2>Archive</h2><section class='sec warnsec'>"
             + slot("archive") + ("".join(out) or "<p class='mut'>Nothing archived right now.</p>") + "</section></div>")
 
 
@@ -2798,6 +2835,8 @@ def portal_result(res, btn, base=""):
         return logs_card(res, btn, base)
     if view == "boost":  # older pages: boosts are gone, root explains why
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
+    if view == "projects":  # "Keep on all boxes" only queues the first copy: in progress, not a check mark
+        return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]), "busy" if res.get("_busy") else "ok")
     if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team"):
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     if view.endswith("-ctl") or view.startswith("request-"):
@@ -2817,6 +2856,8 @@ or come back here for a new link on another device.</p></div>"""
         return notice("SSH key added.")
     if res.get("done"):
         return notice("Logged in.")
+    if "_tok" not in res:  # not a login in progress: any other answer is a finished sentence from root
+        return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
     open_btn = f'<a class="btn" style="margin-top:0" href="{e(url)}" target="_blank" rel="noopener">Open the login page</a>'
     if res.get("paste"):
@@ -3136,7 +3177,7 @@ class Handler(BaseHTTPRequestHandler):
             if not PROJECT_RE.fullmatch(key) or op not in ("on", "off"):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such project", "_view": "projects"})
             res = portal_call(ip, who, "projects", key=key, op=op)
-            return self.after_post(ip, who, name, rec, dict(res, _view="projects"))
+            return self.after_post(ip, who, name, rec, dict(res, _view="projects", _busy=op == "on"))
         if action in ("peer-login", "peer-check"):  # the T3 app / ChatGPT on this person's other boxes
             if key not in PEER_LABEL:
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown login", "_view": action})

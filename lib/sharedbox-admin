@@ -691,6 +691,9 @@ def process_shared_drop(cfg):
             res = handle_msg(boosters[owner], req, set(boosters.values()))
         elif isinstance(req, dict) and req.get("action") == "msg-seen":
             res = sbmsg.mark_seen(boosters[owner], req.get("ids"))
+        elif isinstance(req, dict) and req.get("action") == "msg-done":  # done/archive marks, for Telegram
+            res = sbmsg.mark_done(boosters[owner], req.get("ids") if isinstance(req.get("ids"), list) else [],
+                                  done=req.get("done") is not False)
         elif isinstance(req, dict) and req.get("action") == "presence":
             res = handle_presence(boosters[owner], req)
         elif isinstance(req, dict) and owner in allowed:

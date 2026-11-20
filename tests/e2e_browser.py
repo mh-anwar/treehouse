@@ -227,7 +227,7 @@ ACCOUNTS = {  # what `box _portal status` would say for each account
 PROJECTS = {  # what `box _portal status` says under "projects" (lib/sbprojects.py summary), per account
     "alice": {"ok": True, "every": 1800, "last_sync": NOW - 300, "missing": [],
               "boxes": {"minastirith": {"last_sync": NOW - 300, "error": ""},
-                        "krishbox": {"last_sync": NOW - 300, "error": "Can't log in to that box over SSH yet."}},
+                        "krishbox": {"last_sync": NOW - 300, "error": "Not connected yet. Your boxes connect to each other by themselves within a few minutes; if this stays for a day, the owner can fix it."}},
               "projects": [
                   {"name": "blog", "url": "https://github.com/alice/blog.git", "available": True, "why": "",
                    "everywhere": True, "boxes": {"minastirith": {"state": "current", "note": "", "t3": True},
