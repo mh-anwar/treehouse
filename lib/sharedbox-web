@@ -2891,7 +2891,7 @@ def portal_result(res, btn, base=""):
                 f"{e(str(res['invite_message']))}</pre></div>")
     if res.get("pair_url"):
         return f"""<div class="card"><h3>Your T3 Code is ready</h3>
-<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in browser</a></p>
+<p><a class="btn" href="{e(safe_url(res['pair_url']))}" target="_blank" rel="noopener">Open T3 in this browser</a></p>
 <p class="sub">This link works once, for 30 minutes. Next time just open <b>{e(res.get('url', ''))}</b>,
 or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
@@ -3496,7 +3496,7 @@ class GateHandler(Handler):
             c = ("tb_direct=1; Path=/; Max-Age=31536000" if kind == "direct-on" else "tb_direct=; Path=/; Max-Age=0")
             return self.redirect("/_box/app" if kind == "direct-on" else "/_box/me",
                                  [("Set-Cookie", c + "; Secure; HttpOnly; SameSite=Lax")])
-        if kind == "app":  # "Open T3 in browser": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
+        if kind == "app":  # "Open T3 in this browser": "/" goes to T3 (pairing first if needed). A one-minute marker cookie
             # tells the gate this is the button, not a bookmark (browsers' Sec-Fetch-Site may not survive Cloudflare)
             return self.redirect("/", [("Set-Cookie", "tb_open=1; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Lax")])
         who = self.who()

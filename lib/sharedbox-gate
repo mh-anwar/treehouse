@@ -292,7 +292,7 @@ def owner_t3(email):
 
 
 DIRECT_COOKIE = "tb_direct"  # the person chose "open T3 directly": their bookmark skips the dashboard
-OPEN_COOKIE = "tb_open"  # set for a minute by /_box/app ("Open T3 in browser"): this load of / goes to T3
+OPEN_COOKIE = "tb_open"  # set for a minute by /_box/app ("Open T3 in this browser"): this load of / goes to T3
 
 
 def has_cookie(headers, name):
