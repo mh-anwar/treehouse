@@ -179,7 +179,7 @@ write("events.jsonl", "\n".join(json.dumps(e) for e in [
     {"ts": NOW - 5000, "kind": "tools_updated"},
     {"ts": NOW - 4000, "kind": "skill_shared", "user": "alice", "skill": "deploy"},
     {"ts": NOW - 3000, "kind": "balance", "cpu_busy": True},
-    {"ts": NOW - 2000, "kind": "gate_login", "user": "bob"},
+    {"ts": NOW - 2000, "kind": "owner_paired", "user": "bob"},
     {"ts": NOW - 1000, "kind": "something_new", "user": "alice", "detail": "x"},
 ]) + "\n")
 write("requests.json", {"requests": [
@@ -343,7 +343,7 @@ def _fake_root(req):
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
                 "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
-                "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "updates": "auto",
+                "git": {"name": name, "email": ""}, "ssh": acct["ssh"],
                 "servers": [dict(s) for s in acct["servers"]],
                 "running": [dict(i) for i in RUNNING.get(name, [])]}
     if action == "shared-ls":
@@ -390,8 +390,6 @@ def _fake_root(req):
     if action == "add-key":
         k, err = sb.validate_pubkey(req.get("sshkey", ""))
         return {"ok": False, "error": err} if err else {"ok": True, "key_added": True}
-    if action == "updates":
-        return {"ok": True, "updates": key}
     if key not in LABELS:
         return {"ok": False, "error": "unknown login"}
     if action == "login":

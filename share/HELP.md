@@ -115,9 +115,8 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 (live in the next session). Never install one unasked.
 
 @@ updates
-The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed and updated by the owner. `box updates` shows
-whether this user's agents update nightly (`auto`) or stay put (`manual`; `box updates now` moves up). Change it
-only when the user asks. Serious security fixes are applied to everyone.
+The coding agents (`claude`, `codex`, `opencode`, `t3`) are installed by the owner and update automatically every
+night, for everyone. `box updates` shows the installed versions.
 
 @@ connect
 The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this
@@ -140,16 +139,16 @@ account, with no VPN: SSH goes through Cloudflare. {connect}
   name; check it first (`apt-cache policy PKG` / `pacman -Si PKG`).
 - Servers and daemons install too, but their system service stays off: run the program as yourself (in your
   home, on your own port, `box serve add` to keep it up). A few kinds (hacking/sniffing tools, privileged
-  container/VM engines, mail servers, huge installs) go to an AI reviewer for a few seconds; a decline says why
-  and what to do instead. Follow that instead of asking again. Packages that touch the box's security (sudo, SSH, firewall, kernel) are never
-  installed on request. Rarely it says "sent to the owner": keep working around it; don't ask again.
+  container/VM engines, mail servers, huge installs) are sent to the owner to approve: when it says "sent to the
+  owner", keep working around it; don't ask again. Packages that touch the box's security (sudo, SSH, firewall,
+  kernel) are never installed on request; a decline says why and what to do instead.
 - Anything else (a config change, more disk, a service): `box request "<plain words>"`. The owner sees it.
 - `box request status` lists yours with their state. When the owner answers, `box status` shows it.
 
 @@ friends
 Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` to any of these.
-- `box friends`: every friend (username, email, status, joined, disk, last active), signups waiting for
-  approval, open requests. `box friends approve ID` / `box friends deny ID` for signups.
+- `box friends`: every friend (username, email, status, joined, disk, last active), open requests.
+  Tailnet self-join is immediate when JOIN_MODE=open; there is no signup approval queue.
 - `box friends remove NAME [--archive]` deletes the account and its files (--archive keeps a tarball first);
   `box friends suspend NAME` / `resume NAME` locks them out / lets them back (files kept). Confirm with the
   owner before remove. The owner's own accounts can't be changed here.

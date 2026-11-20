@@ -24,20 +24,18 @@ REGISTRY = os.path.join(STATE_DIR, "users.json")
 USAGE = os.path.join(STATE_DIR, "usage.json")
 EVENTS = os.path.join(STATE_DIR, "events.jsonl")
 SPOOL = os.path.join(STATE_DIR, "spool")
-PENDING = os.path.join(STATE_DIR, "pending")
 REQUESTS = os.path.join(STATE_DIR, "requests")
 TOOLS_JSON = os.path.join(STATE_DIR, "tools.json")
 # versioned coding agents: AGENTS_DIR/<slug>/<version>/ (npm prefix) + <slug>/current -> newest
 AGENTS_DIR = os.environ.get("SHAREDBOX_AGENTS", "/opt/sharedbox/agents")
-AGENT_PINS = os.path.join(STATE_DIR, "agent-pins")    # <user>/<slug> -> pinned version dir (root writes)
-AGENT_PREF_REL = os.path.join(".sharedbox", "agent-updates")  # "auto" | "manual", written by the user
+USER_STATE = os.path.join(STATE_DIR, "user-state")  # <user>/requests.json, notices.json (root writes)
 AGENT_RENAMED = {"opencode-ai": "@opencode/cli"}   # npm packages that moved (opencode v2 = @opencode/cli)
-# public front door (sharedbox-gate): invite, session and device-login records, keyed by sha256(token).
+# public front door (sharedbox-gate): invite records, keyed by sha256(token).
 # Root writes them (0640 root:sharedbox); the gate and sharedbox-web only read them.
 GATE_DIR = os.path.join(STATE_DIR, "gate")
 ADMIN_DROP = os.path.join(STATE_DIR, "admin")          # 1733: admins drop requests (box invite), root acts
 ADMIN_REPLIES = os.path.join(STATE_DIR, "admin-replies")  # 0711: root's answer, readable only by the asker
-GATE_KINDS = ("invites", "sessions", "logins")
+GATE_KINDS = ("invites",)
 # group-owned shared servers (box shared): registry root writes (0644), and a drop box like ADMIN_DROP
 # that friends and admins write to
 SHARED_JSON = os.path.join(STATE_DIR, "shared.json")
@@ -57,7 +55,7 @@ DEFAULTS = {
     # the name people see on pages, emails and broadcasts ("treehouse · <hostname>"). Commands, paths and
     # unit names stay sharedbox-*.
     "BRAND": "treehouse",
-    # who may join: open | approve | closed. Not set in the conf file + PUBLIC_MODE=cloudflare = closed
+    # who may join: open | closed. Not set in the conf file + PUBLIC_MODE=cloudflare = closed
     # (invites only; see load_config)
     "JOIN_MODE": "open",
     "MAX_USERS": "25",
@@ -122,36 +120,22 @@ DEFAULTS = {
     "REBOOT_TIME": "04:00",
     "SCHEDULED_REBOOT_DAYS": "Wed,Sun",
     "TOOLS_ANDROID": "0",
-    # coding agents (TOOLS_NPM): "auto" = everyone gets the newest version daily unless they opt out
-    # (`box updates manual`); "manual" = people stay on the version they had unless they opt in.
-    # Either way, a pinned version is moved to the newest one when it has a security advisory at or
-    # above AGENT_FORCE_SEVERITY (low|moderate|high|critical|off) that the newest version doesn't.
-    "AGENT_UPDATES_DEFAULT": "auto",
-    "AGENT_FORCE_SEVERITY": "high",
     "ANDROID_SDK_ROOT": "/opt/android-sdk",
     # `box request install PKG`: install a requested system package right away (no owner needed) when it's in
     # the distro's repos, not installed yet, matches none of REQUEST_DENY (globs, also checked against every
     # package it would pull in) and pulls in at most REQUEST_MAX_DEPS new packages; at most REQUEST_DAILY_LIMIT
-    # auto-installed packages per friend per day. Everything else goes to REQUEST_REVIEWER.
+    # auto-installed packages per friend per day. Everything else is emailed to the owner to approve.
     "REQUEST_AUTO_INSTALL": "yes",
     # vetted third-party packages (sbdistro.VETTED: Google Chrome) may add their vendor repo by themselves
     "REQUEST_VETTED_SOURCES": "yes",
-    # needs a second look (the AI reviewer) instead of installing right away: privileged container/VM
+    # needs the owner's OK instead of installing right away: privileged container/VM
     # engines, mail servers, system-wide app stores, hacking/sniffing/mining/anonymizing tools. Servers and
     # daemons are fine: a requested package never starts or enables a system service.
     "REQUEST_DENY": ("docker* containerd* runc lxc* lxd* incus* libvirt* virtualbox* snapd flatpak postfix* exim* "
                      "sendmail* opensmtpd* nmap masscan zmap hydra* medusa john hashcat aircrack-ng ettercap* "
                      "bettercap* sqlmap nikto metasploit* tcpdump wireshark* tshark dsniff macchanger xmrig* "
                      "cpuminer* ethminer* tor torsocks proxychains* firmware* linux-firmware*"),
-    # who answers a request the rules above don't auto-install: "ai" = an AI reviewer (the owner only gets an
-    # hourly FYI), "owner" = email the owner to approve. The AI is OpenRouter (REQUEST_REVIEW_MODEL, paid with
-    # the owner's OpenRouter key from OpenCode's login or OPENROUTER_KEY_FILE), else Claude Code as the owner's
-    # account (REQUEST_REVIEW_CLAUDE_MODEL, no tools); if neither answers, the owner is asked.
-    "REQUEST_REVIEWER": "ai",
-    "REQUEST_REVIEW_MODEL": "~deepseek/deepseek-flash-latest",
-    "REQUEST_REVIEW_CLAUDE_MODEL": "claude-sonnet-5-5",
-    "OPENROUTER_KEY_FILE": "/etc/sharedbox/openrouter-key",
-    # never installed on request, whatever the reviewer says (the box's own security: root, logins, network,
+    # never installed on request, even for open users (the box's own security: root, logins, network,
     # boot); also checked against every package they'd pull in. The owner can still approve one by hand.
     "REQUEST_NEVER": ("sudo doas polkit* pkexec openssh-server linux linux-lts linux-zen linux-hardened "
                       "linux-image* linux-headers* linux-modules* kernel* grub* systemd systemd-* libpam* shadow "
@@ -174,20 +158,16 @@ DEFAULTS = {
     "SMTP_USER": "",
     "SMTP_PASSWORD_FILE": "/etc/sharedbox/smtp-password",
     "HEALTH_REPORT_TIME": "Mon 09:00",
-    # public front door (sharedbox-gate behind Tailscale Funnel); empty PUBLIC_URL = off
+    # public front door (sharedbox-gate behind Cloudflare Tunnel + Access); empty PUBLIC_URL = off
     "PUBLIC_URL": "",
     "GATE_PORT": "8091",
     # where friends' T3 Code listens, as seen from the gate: "tailscale" = this box's Tailscale IPv4
     # (that's what `box t3` binds T3 to), or an explicit address
     "GATE_BACKEND_HOST": "tailscale",
-    "SESSION_DAYS": "90",
     "INVITE_DAYS": "7",
-    "LOGIN_LINK_MINUTES": "10",
     # how `invite` picks a username when none is given: "email" (from the email or note) or "lotr"
     "AUTO_USERNAMES": "email",
-    # how the public front door is reached: "funnel" (Tailscale Funnel; the default when PUBLIC_URL is set)
-    # or "cloudflare" (Cloudflare Tunnel + Access: every request carries a Cloudflare-signed JWT the gate
-    # verifies). `sharedbox-admin cloudflare setup` fills in the CF_* values.
+    # Public access requires Cloudflare Tunnel + Access; anything else disables the gate.
     "PUBLIC_MODE": "",
     "CF_ACCOUNT_ID": "",
     "CF_TEAM_DOMAIN": "",
@@ -367,22 +347,6 @@ def write_json(path, data, mode=0o644, owner=None):
 def agent_slug(name):
     """'@anthropic-ai/claude-code' -> 'anthropic-ai+claude-code' (a directory name)"""
     return name.lstrip("@").replace("/", "+")
-
-
-def agent_pref(cfg, home=None):
-    """(mode, mtime) of a user's agent update choice; run as that user. mtime 0 = never chose."""
-    home = home or os.path.expanduser("~")
-    try:
-        path = os.path.join(home, AGENT_PREF_REL)
-        with open(path) as f:
-            mode = f.read(16).strip()
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        mode, mtime = "", 0
-    if mode not in ("auto", "manual"):
-        mode, mtime = (cfg.get("AGENT_UPDATES_DEFAULT") if cfg.get("AGENT_UPDATES_DEFAULT") in ("auto", "manual")
-                       else "auto"), 0
-    return mode, mtime
 
 
 def log_event(kind, user=None, **fields):
@@ -903,21 +867,20 @@ def tailscale_whois(ip):
 # ---------- public front door (sharedbox-gate) ----------
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
-SESSION_COOKIE = "__Host-sbgate"
+LEGACY_SESSION_COOKIE = "__Host-sbgate"  # stripped at the proxy boundary; never authenticates requests
 
 
 def public_url(cfg):
     """PUBLIC_URL without a trailing slash, or "" if the gateway is off (or misconfigured)."""
+    if (cfg.get("PUBLIC_MODE") or "").strip().lower() != "cloudflare":
+        return ""
     u = (cfg.get("PUBLIC_URL") or "").strip().rstrip("/")
     return u if re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?", u) else ""
 
 
 def public_mode(cfg):
-    """"" (front door off), "funnel" or "cloudflare". Anything but PUBLIC_MODE=cloudflare is funnel, so
-    configs from before PUBLIC_MODE existed keep working unchanged."""
-    if not public_url(cfg):
-        return ""
-    return "cloudflare" if (cfg.get("PUBLIC_MODE") or "").strip().lower() == "cloudflare" else "funnel"
+    """Cloudflare is the only public mode; otherwise public access is disabled."""
+    return "cloudflare" if public_url(cfg) else ""
 
 
 def ssh_host(cfg):
@@ -1283,3 +1246,25 @@ def boost_reconcile(cfg, now=None):
                            capture_output=True)
     if changed:
         write_json(BOOSTS, st, mode=0o644)
+
+
+def migrate_user_state():
+    """Root: move request records and account notices out of the retired per-user agent pin store
+    (STATE_DIR/agent-pins/<user>/) into USER_STATE/<user>/, then delete the pins. Idempotent."""
+    import shutil
+    old = os.path.join(STATE_DIR, "agent-pins")
+    if not os.path.isdir(old) or os.path.islink(old):
+        return
+    for user in os.listdir(old):
+        src = os.path.join(old, user)
+        if os.path.islink(src) or not os.path.isdir(src):
+            continue
+        dest = os.path.join(USER_STATE, user)
+        os.makedirs(dest, mode=0o755, exist_ok=True)
+        if os.path.islink(dest):
+            continue
+        for filename in ("requests.json", "notices.json"):
+            path = os.path.join(src, filename)
+            if os.path.isfile(path) and not os.path.islink(path) and not os.path.exists(os.path.join(dest, filename)):
+                os.replace(path, os.path.join(dest, filename))
+    shutil.rmtree(old)

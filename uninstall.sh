@@ -19,6 +19,8 @@ systemctl disable --now sharedbox-cloudflared.service sharedbox-gate.service sha
 python3 -I "$(dirname "$0")/lib/sbretired.py" /etc/sharedbox/sharedbox.conf /var/lib/sharedbox || true
 rm -rf /var/lib/sharedbox/trap /var/lib/sharedbox/alerts
 rm -f /var/lib/sharedbox/canary.jsonl /var/lib/sharedbox/canary-planted.json
+# retired per-user agent version pins (`box updates manual`)
+rm -rf /var/lib/sharedbox/agent-pins
 # shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
 for u in /etc/systemd/system/sb-shared-*.service; do
     [[ -e $u ]] && systemctl disable --now "$(basename "$u")" 2>/dev/null || true

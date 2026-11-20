@@ -70,8 +70,7 @@ No terminal, no VPN invites, no "can you run this command for me".
 - 🧩 **Shared skills.** A catalog of agent skills everyone's agents can see (`box skills`): a multi-model
   `council` review and Theo Browne's [tstack](https://github.com/t3dotgg/tstack) PR skills. Agents suggest
   one and install it only after their owner says yes. Admins publish their own with `box skills share DIR`.
-- 🔁 **Self-updating.** Agents update nightly (each person can opt out with `box updates manual`; serious
-  security fixes still reach everyone). Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
+- 🔁 **Self-updating.** Agents update nightly for everyone. Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
   clear leaks; they wait up to 2 hours for agents that are mid-turn, and the dashboards show the next one.
 
 ## Quick start
@@ -132,10 +131,9 @@ emails you invited get through. The tunnel is outbound-only: nothing on the box 
  limits, boost   + session snapshot   archives, notices
 ```
 
-Two other ways in, both still supported: **Tailscale only** (each friend joins your tailnet; the
-dashboard and `/join` trust `tailscale whois`, nothing is public) and **Tailscale Funnel** (a public
-`*.ts.net` link with one-time login links instead of Cloudflare; simpler, but the login pages face the
-internet). The installer prints the steps for each; `INSTALL.md` walks an agent through choosing.
+Private **Tailscale only** access remains supported: the dashboard and `/join` verify `tailscale whois`.
+Public access requires Cloudflare Tunnel + Access; legacy Funnel configurations disable the gate.
+Tailnet self-join is immediate with `JOIN_MODE=open`, disabled with `closed`; there is no approval queue.
 
 | | Per account, owner included (default) | Mechanism |
 |---|---|---|
@@ -181,7 +179,7 @@ invites (`/join`, `box invite`), and Cloudflare seat alerts.
 box invite [--note WHO] [--json]        # owner accounts, no sudo: one-time invite link
 box skills share DIR | unshare NAME     # owner accounts, no sudo: publish a skill to everyone
 box shared ls | create NAME | set NAME -- CMD... | logs NAME   # anyone: group-owned servers in /srv/shared
-sharedbox-admin list | invite | sessions | issues | requests
+sharedbox-admin list | invite | issues | requests
 sharedbox-admin limits NAME MEMORY_HIGH=10G MEMORY_MAX=11G DISK_BUDGET_GB=50
 sharedbox-admin boost NAME [--why TEXT] # same as `box boost` for that account
 sharedbox-admin suspend NAME | resume NAME | remove NAME --archive
