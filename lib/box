@@ -179,18 +179,6 @@ REBOOT_BACK = ("Comes back by itself: `box serve` services, group servers (`box 
 
 def advice(g):
     out = []
-    al = sb.security_alert(ME.pw_name)
-    if al:
-        # only a cleaned program name: the command line is chosen by whatever tripped the wire, and this text
-        # lands in every agent's instructions (no room for injected "instructions")
-        prog = re.sub(r"[^A-Za-z0-9._+-]", "", os.path.basename(str(al.get("exe") or str(al.get("cmd") or "?").split()[0])))[:40] or "?"
-        out.append(f"SECURITY: on {fmt_ts(al['ts'])} a program running as this user "
-                   f"(`{prog}`) opened the box's decoy secrets "
-                   f"({sb.printable(str(al.get('file') or '?'))[:120]}). Tell the user at the start of your next reply, in plain words: nothing "
-                   "real leaked, but something on their account looked for passwords/keys, usually a "
-                   "malicious package or script. Offer to check recently installed npm/pip packages, "
-                   "autostarts (~/.config/autostart, systemd --user units, shell rc files) and running "
-                   "processes. Never open files under the decoy directory yourself.")
     for n in agent_notices()[-3:]:
         out.append(f"Agent UPDATED for security on {fmt_ts(n['ts'])}: {n['name']} {n['from']} -> {n['to']} "
                    f"({n['why']}). Mention it to the user if they ask why a tool changed.")
@@ -263,7 +251,7 @@ def hackathon_line(cfg=None):
     cfg = cfg or CFG
     if cfg.get("HACKATHON") != "1":
         return ""
-    return (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: trap/tripwire off, package requests open for "
+    return (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: package requests open for "
             f"{cfg.get('REQUEST_OPEN_USERS') or 'the owner'} (`box help hackathon`)")
 
 
@@ -2986,7 +2974,7 @@ def main():
     x = s.add_parser("restore", help="put an archived project back in ~ (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
-    x = s.add_parser("hackathon", help="develop freely until a set time: no trap/tripwire, open installs")
+    x = s.add_parser("hackathon", help="develop freely until a set time: open installs")
     x.add_argument("op", nargs="?", choices=["status", "on", "off"])
     x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
     x.add_argument("--hours", type=float, help="or: end this many hours from now")

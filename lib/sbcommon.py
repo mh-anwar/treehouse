@@ -32,8 +32,6 @@ AGENTS_DIR = os.environ.get("SHAREDBOX_AGENTS", "/opt/sharedbox/agents")
 AGENT_PINS = os.path.join(STATE_DIR, "agent-pins")    # <user>/<slug> -> pinned version dir (root writes)
 AGENT_PREF_REL = os.path.join(".sharedbox", "agent-updates")  # "auto" | "manual", written by the user
 AGENT_RENAMED = {"opencode-ai": "@opencode/cli"}   # npm packages that moved (opencode v2 = @opencode/cli)
-ALERTS = os.path.join(STATE_DIR, "alerts")   # per-friend security alerts (tripwire), root-owned, group=friend
-ALERT_DAYS = 7
 # public front door (sharedbox-gate): invite, session and device-login records, keyed by sha256(token).
 # Root writes them (0640 root:sharedbox); the gate and sharedbox-web only read them.
 GATE_DIR = os.path.join(STATE_DIR, "gate")
@@ -113,7 +111,7 @@ DEFAULTS = {
     "ARCHIVE_DAYS": "14",
     # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
     "TUNE_SWAP": "auto",
-    # SOLO=1: a lean server for one person. No trap, no tripwire, no signups/invites (checked where each is used)
+    # SOLO=1: a lean server for one person. No signups/invites (checked where each is used)
     "SOLO": "0",
     "OVER_BUDGET_GRACE_HOURS": "24",
     "DISK_LOW_FREE_PCT": "20",
@@ -176,28 +174,6 @@ DEFAULTS = {
     "SMTP_USER": "",
     "SMTP_PASSWORD_FILE": "/etc/sharedbox/smtp-password",
     "HEALTH_REPORT_TIME": "Mon 09:00",
-    # trap (decoy ports, bait URLs, AI-crawler maze)
-    "TRAP_ENABLED": "1",
-    "TRAP_BIND": "lan,tailscale",
-    "TRAP_PORTS": "21,23,445,1433,2375,2376,3306,3389,5432,5900,6379,8080,8888,9200,11211,27017",
-    "TRAP_BOMB_GB": "10",
-    "TRAP_MAX_CONNS": "1000",
-    "TRAP_MAX_BOMBS": "4",
-    "TRAP_BOMBS_PER_IP_HOUR": "3",
-    "TRAP_TARPIT_HOURS": "6",
-    "TRAP_MAZE_PREFIX": "archive",
-    "TRAP_MAZE_DELAY": "3-8",
-    "TRAP_BAIT_PATHS": ("/.env /.env.local /.env.production /.git/ /.aws/ /.ssh/ /wp-login.php /wp-admin/ "
-                        "/wp-config.php /xmlrpc.php /phpmyadmin/ /pma/ /phpinfo.php /info.php /shell.php "
-                        "/admin.php /server-status /actuator/ /.DS_Store /.vscode/ /config.php /backup.zip "
-                        "/backup.sql /db.sql /vendor/phpunit/ /cgi-bin/ /boaform/ /HNAP1 /owa/ /solr/ "
-                        "/console/ /.htpasswd /.svn/ /api/.env /laravel/.env /docker-compose.yml"),
-    "TRAP_AI_AGENTS_EXTRA": "",
-    "TRAP_PROXY_BASE": "8800",
-    # tripwire decoy secrets
-    "CANARY_DIR": "/srv/backups/prod",
-    "CANARY_ACTION": "alert",
-    "CANARY_ENABLED": "1",  # 0 = tripwire off (e.g. a hackathon); install.sh stops it, like TRAP_ENABLED=0
     # public front door (sharedbox-gate behind Tailscale Funnel); empty PUBLIC_URL = off
     "PUBLIC_URL": "",
     "GATE_PORT": "8091",
@@ -261,6 +237,9 @@ def load_config(path=CONF_PATH):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
+                # Retired features: leave old live config lines inert.
+                if k.strip().startswith(("TRAP_", "CANARY_")):
+                    continue
                 cfg[k.strip()] = v.strip().strip('"').strip("'")
                 explicit.add(k.strip())
     except FileNotFoundError:
@@ -277,12 +256,10 @@ def load_config(path=CONF_PATH):
 
 # ---------- hackathon mode: one switch for "develop freely" ----------
 # HACKATHON_UNTIL="YYYY-MM-DD HH:MM" (local time, in the future) turns it on; it ends by itself at that time.
-# While on: no trap or tripwire, and package requests from the owner and HACKATHON_USERS skip the deny list and
+# While on: package requests from the owner and HACKATHON_USERS skip the deny list and
 # limits (REQUEST_NEVER still applies). `box hackathon on|off|status`.
-HACKATHON_OVERRIDES = {"TRAP_ENABLED": "0", "CANARY_ENABLED": "0"}
-# SOLO=1: one person, no friends. The friend-only machinery is off: decoy-port trap, decoy-secrets tripwire,
-# self-signup and invites.
-SOLO_OVERRIDES = {"TRAP_ENABLED": "0", "CANARY_ENABLED": "0", "JOIN_MODE": "closed", "MAX_USERS": "0"}
+# SOLO=1: one person, no friends. Self-signup and invites are off.
+SOLO_OVERRIDES = {"JOIN_MODE": "closed", "MAX_USERS": "0"}
 
 
 def solo(cfg):
@@ -309,7 +286,6 @@ def apply_hackathon(cfg, now=None):
         cfg["HACKATHON"] = ""
         return cfg
     cfg["HACKATHON"] = "1"
-    cfg.update(HACKATHON_OVERRIDES)
     owner = (cfg.get("OWNER_T3_USER") or "").strip() or next(iter(admin_users(cfg)), "")
     names = re.split(r"[\s,]+", " ".join((cfg.get("REQUEST_OPEN_USERS") or "", owner,
                                          cfg.get("HACKATHON_USERS") or "")))
@@ -318,24 +294,14 @@ def apply_hackathon(cfg, now=None):
     return cfg
 
 
-HACKATHON_UNITS = (("TRAP_ENABLED", "sharedbox-trap.service"), ("CANARY_ENABLED", "sharedbox-canary.service"))
-
-
 def hackathon_reconcile(cfg):
-    """Root: when hackathon mode turns on or off, stop or bring back the trap and tripwire. Returns
+    """Record hackathon mode transitions. Returns
     "on"/"off" when it acted, None when nothing changed. Called by the janitor's tick timer and `box hackathon`."""
     path = os.path.join(STATE_DIR, "hackathon.json")
     active = cfg.get("HACKATHON") == "1"
     st = read_json(path, {}) or {}
     if bool(st.get("active")) == active:
         return None
-    for key, unit in HACKATHON_UNITS:
-        if active:
-            subprocess.run(["systemctl", "stop", unit], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif (cfg.get(key) or "1").strip() != "0":
-            subprocess.run(["systemctl", "enable", "--now", unit], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     write_json(path, {"active": active, "ts": int(time.time()), "until": cfg.get("HACKATHON_UNTIL", "")},
                mode=0o644)
     log_event("hackathon_on" if active else "hackathon_off", None, until=cfg.get("HACKATHON_UNTIL", ""))
@@ -445,14 +411,6 @@ def recent_events(n=50):
 
 
 # ---------- registry ----------
-
-def security_alert(user):
-    """The friend's latest tripwire alert if it is recent, else None."""
-    rec = read_json(os.path.join(ALERTS, f"{user}.json"))
-    if rec and time.time() - rec.get("ts", 0) < ALERT_DAYS * 86400:
-        return rec
-    return None
-
 
 def registry():
     return read_json(REGISTRY, {"users": {}})
@@ -907,18 +865,6 @@ def boxes(cfg):
         name = name.strip().lower()
         if BOX_NAME_RE.fullmatch(name) and BOX_IP_RE.fullmatch(ip) and name not in out and ip not in out.values():
             out[name] = ip
-    return out
-
-
-def own_ips(cfg):
-    """This box's own addresses (every interface, from `ip -j addr`, plus loopback) and the owner's other
-    boxes (BOXES). Traffic from these is the box (or its owner) talking to itself, not a scan. Never raises."""
-    out = {"127.0.0.1", "::1", *boxes(cfg).values()}
-    try:
-        r = subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, timeout=5)
-        out |= {a["local"] for i in json.loads(r.stdout or "[]") for a in i.get("addr_info", []) if a.get("local")}
-    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
-        pass
     return out
 
 

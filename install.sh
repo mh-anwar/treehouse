@@ -8,7 +8,7 @@
 #   sudo ./install.sh --apply --mail-to you@gmail.com   where weekly health reports + alerts go
 #
 # This script never restarts or reconfigures sshd, tailscaled, networking or the firewall,
-# and never changes limits of existing users. The trap only listens on ports nothing else uses. It only adds files, creates the `friends`
+# and never changes limits of existing users. It installs files, creates the `friends`
 # group, a `sharedbox` system user and an `sbshared` system user/group (shared servers), runs `systemctl daemon-reload`
 # and starts its own units.
 set -euo pipefail
@@ -65,9 +65,6 @@ fi
 
 # read existing config if present, else defaults from the shipped file
 conf_get() { sed -n "s/^$1=//p" "${ETC}/sharedbox.conf" 2>/dev/null | tail -1 || true; }
-# the value the box actually uses, hackathon mode included (sbcommon.load_config); falls back to the raw line
-conf_eff() { SHAREDBOX_CONF="${ETC}/sharedbox.conf" PYTHONPATH="$SRC/lib" python3 -c \
-    "import sys, sbcommon; print(sbcommon.load_config().get(sys.argv[1], ''))" "$1" 2>/dev/null || conf_get "$1"; }
 SSH_GROUP=$(conf_get SSH_GROUP); SSH_GROUP=${SSH_GROUP:-ssh-users}
 FRIENDS_GROUP=$(conf_get FRIENDS_GROUP); FRIENDS_GROUP=${FRIENDS_GROUP:-friends}
 SHARED_USER=$(conf_get SHARED_USER); SHARED_USER=${SHARED_USER:-sbshared}
@@ -80,6 +77,17 @@ if [[ -n $ALLOW ]] && ! tr ' ' '\n' <<<"$ALLOW" | grep -qx "$SSH_GROUP"; then
     warn "set SSH_GROUP in $ETC/sharedbox.conf to one of those groups. (sshd is not modified by this installer.)"
 fi
 getent group "$SSH_GROUP" >/dev/null || warn "group $SSH_GROUP does not exist; it will be created"
+
+# Retired security daemons: clean up on every update, including units left by older installs.
+for unit in sharedbox-trap sharedbox-canary; do
+    do_ systemctl disable --now "$unit.service" 2>/dev/null || true
+    do_ rm -f "/etc/systemd/system/$unit.service" "/usr/lib/systemd/system/$unit.service" \
+        "$LIB/$unit" "/usr/local/sbin/$unit"
+done
+do_ python3 -I "$SRC/lib/sbretired.py" "$ETC/sharedbox.conf" "$STATE"
+do_ rm -rf "$STATE/trap" "$STATE/alerts"
+do_ rm -f "$STATE/canary.jsonl" "$STATE/canary-planted.json"
+do_ systemctl daemon-reload
 
 # ---------- accounts ----------
 say "groups and service user"
@@ -98,8 +106,8 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
 for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
-for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap sharedbox-update \
-         sharedbox-canary sharedbox-gate sharedbox-tune; do
+for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-update \
+         sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
 done
 do_ install -m 644 "$SRC/share/AGENTS.md" "$SHARE/AGENTS.md"
@@ -173,7 +181,7 @@ do_ ln -sfn "$LIB/box" /usr/local/bin/box
 do_ ln -sfn "$LIB/sharedbox-admin" /usr/local/sbin/sharedbox-admin
 do_ ln -sfn "$LIB/sharedbox-janitor" /usr/local/sbin/sharedbox-janitor
 do_ ln -sfn "$LIB/sharedbox-tools" /usr/local/sbin/sharedbox-tools
-for f in sharedbox-health sharedbox-trap sharedbox-canary; do do_ ln -sfn "$LIB/$f" "/usr/local/sbin/$f"; done
+do_ ln -sfn "$LIB/sharedbox-health" /usr/local/sbin/sharedbox-health
 
 say "state directory"
 do_ install -d -m 755 "$STATE"
@@ -187,7 +195,6 @@ do_ install -d -m 1753 -g sharedbox "$STATE/requests"   # anyone may drop a requ
 do_ install -d -m 755 "$STATE/health"
 do_ install -d -m 755 "$STATE/skills"   # skills admins publish with `box skills share`
 do_ install -d -m 700 "$STATE/audit"
-do_ install -d -m 755 -o sharedbox -g sharedbox "$STATE/trap"
 # public front door: invite/session/login records, written only by root, readable by sharedbox-gate/-web
 do_ install -d -m 750 -g sharedbox "$STATE/gate" "$STATE/gate/invites" "$STATE/gate/sessions" "$STATE/gate/logins"
 # `box invite` without sudo: anyone can drop a file, root only acts on files owned by ADMIN_USERS
@@ -308,7 +315,7 @@ elif [[ $PUBLIC_MODE != cloudflare || -z $PUBLIC_URL ]]; then
     if [[ -e $GATE_DROPIN ]]; then do_ rm -f "$GATE_DROPIN"; do_ systemctl daemon-reload; fi
 fi
 
-# ---------- health email, trap, tripwire ----------
+# ---------- health email ----------
 REPORT_AT=$(conf_get HEALTH_REPORT_TIME); REPORT_AT=${REPORT_AT:-Mon 09:00}
 say "health: metrics every 5 min, urgent check hourly, weekly report $REPORT_AT"
 do_ sh -c "printf '[Unit]\\nDescription=sharedbox health: weekly report ($REPORT_AT)\\n\\n[Timer]\\nOnCalendar=${REPORT_AT% *} *-*-* ${REPORT_AT#* }\\nPersistent=true\\nRandomizedDelaySec=5min\\n\\n[Install]\\nWantedBy=timers.target\\n' > /etc/systemd/system/sharedbox-health-report.timer"
@@ -329,21 +336,6 @@ if [[ ! -s $(conf_get SMTP_PASSWORD_FILE || true) && ! -s $ETC/smtp-password ]];
     warn "password in $ETC/smtp-password:  sudo install -m 600 /dev/stdin $ETC/smtp-password  (paste, Enter, Ctrl-D)"
     warn "then test: sudo sharedbox-health test-email"
 fi
-if [[ $(conf_eff TRAP_ENABLED) != 0 ]]; then
-    say "trap: decoy ports + bait URLs + AI-crawler maze (sharedbox-trap stats for the score)"
-    do_ systemctl enable sharedbox-trap.service
-    do_ systemctl restart sharedbox-trap.service
-else
-    do_ systemctl disable --now sharedbox-trap.service 2>/dev/null || true
-fi
-if [[ $(conf_eff CANARY_ENABLED) != 0 ]]; then
-    say "tripwire: decoy secrets in $(conf_get CANARY_DIR || true) (default /srv/backups/prod)"
-    do_ systemctl enable sharedbox-canary.service
-    do_ systemctl restart sharedbox-canary.service
-else
-    do_ systemctl disable --now sharedbox-canary.service 2>/dev/null || true
-fi
-
 # ---------- nightly security updates ----------
 # Ubuntu installs security updates daily around 06:00-07:00 by default. Move that to the night so
 # updates that need a reboot are applied by the Automatic-Reboot-Time the same night, not a day later.

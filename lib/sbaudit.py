@@ -6,7 +6,7 @@ the system. Each finding has a stable id so the report can say what is new since
 Areas: network exposure, sshd, privileged groups/sudo, home isolation, SSH key and persistence
 changes, setuid inventory, world-writable system paths, package integrity (dpkg --verify / pacman -Qkk),
 live compromise indicators (processes from /tmp or memfd, reverse shells, miners), kernel
-hardening, pending (security) updates and reboot-required, tripwire (canary) hits.
+hardening, pending (security) updates and reboot-required.
 Distro differences (Debian/Ubuntu vs Arch/Omarchy) live in sbdistro.
 """
 
@@ -29,7 +29,6 @@ import sbdistro as distro
 AUDIT_DIR = os.path.join(sb.STATE_DIR, "audit")
 LAST = os.path.join(AUDIT_DIR, "last.json")
 BASELINE = os.path.join(AUDIT_DIR, "baseline.json")
-CANARY_LOG = os.path.join(sb.STATE_DIR, "canary.jsonl")
 
 SEV_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 TAILNET4 = ipaddress.ip_network("100.64.0.0/10")
@@ -143,8 +142,8 @@ class Audit:
         for proto, port, proc, where in exposed:
             if proc in ("sshd", "sshd-session") or (port == "22" and proc == "?"):
                 continue
-            if proc.startswith("sharedbox-trap") or (proc == "cloudflared" and proto == "udp"):
-                continue  # the trap's decoys belong on the LAN; cloudflared's UDP sockets are its outbound tunnel
+            if proc == "cloudflared" and proto == "udp":
+                continue  # cloudflared's UDP sockets are its outbound tunnel
             groups.setdefault((proc, where), []).append(f"{proto}/{port}")
         for (proc, where), ports in groups.items():
             proto, port = ports[0].split("/")
@@ -535,32 +534,11 @@ class Audit:
                      "was upgraded (its modules are gone, so new USB/filesystem drivers can't load)",
                      "", "reboot at a quiet time (or wait for the scheduled reboot)")
 
-    def check_canary(self, since):
-        hits = []
-        for line in (read(CANARY_LOG) or "").splitlines():
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if r.get("ts", 0) >= since:
-                hits.append(r)
-        self.facts["canary_hits"] = hits
-        users = sorted({h.get("user", "?") for h in hits})
-        for u in users:
-            n = sum(1 for h in hits if h.get("user") == u)
-            ex = next(h for h in hits if h.get("user") == u)
-            frozen = any(h.get("frozen") for h in hits if h.get("user") == u)
-            self.add(f"canary:{u}", "high", f"TRIPWIRE: {u} opened decoy secrets ({n}x)",
-                     f"e.g. {ex.get('file')} by `{ex.get('cmd', '')[:100]}`" + (" (account was frozen)" if frozen else ""),
-                     f"investigate; sharedbox-canary thaw {u} to unfreeze" if frozen else
-                     "investigate what ran it (ignore if it was a test)")
-
     # ------------------------------------------------------------------ driver
-    def run_all(self, deep=True, since=None):
-        since = since or time.time() - 7 * 86400
+    def run_all(self, deep=True):
         checks = [self.check_exposure, self.check_sshd, self.check_accounts, self.check_homes,
                   self.check_keys, self.check_watched, self.check_processes, self.check_kernel,
-                  self.check_updates, lambda: self.check_canary(since)]
+                  self.check_updates]
         if deep:
             checks += [self.check_setuid, self.check_writable,
                        self.check_pacman if distro.current() == "arch" else self.check_dpkg]

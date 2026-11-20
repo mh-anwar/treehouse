@@ -1,5 +1,5 @@
 [Unit]
-Description=sharedbox health: email about urgent problems (disk, failed services, security, tripwires)
+Description=sharedbox health: email about urgent problems (disk, failed services, security)
 After=network-online.target
 
 [Service]

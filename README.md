@@ -70,9 +70,6 @@ No terminal, no VPN invites, no "can you run this command for me".
 - 🧩 **Shared skills.** A catalog of agent skills everyone's agents can see (`box skills`): a multi-model
   `council` review and Theo Browne's [tstack](https://github.com/t3dotgg/tstack) PR skills. Agents suggest
   one and install it only after their owner says yes. Admins publish their own with `box skills share DIR`.
-- 🪤 **Tripwire + trap.** Decoy secrets on disk: if anything opens them (say, a malicious npm package
-  snooping), both you *and* the affected friend are told, by email, terminal banner and their agent.
-  Decoy ports and an AI-crawler maze catch outside scanners.
 - 🔁 **Self-updating.** Agents update nightly (each person can opt out with `box updates manual`; serious
   security fixes still reach everyone). Scheduled reboots twice a week (Wed and Sun at 04:00, configurable)
   clear leaks; they wait up to 2 hours for agents that are mid-turn, and the dashboards show the next one.
@@ -173,7 +170,7 @@ Below 20% free disk all TTLs halve; below 10% caches are wiped.
 
 Set `SOLO=1` in `/etc/sharedbox/sharedbox.conf` and re-run `sudo ./install.sh --apply`. treehouse then runs as a
 lean personal server: equal limits, `box boost`, the janitor, agent rules, `box serve`, health email and T3 all
-work as usual, while the friend-only parts are off: the decoy-port trap, the decoy-secrets tripwire, signups and
+work as usual, while the friend-only parts are off: signups and
 invites (`/join`, `box invite`), and Cloudflare seat alerts.
 </details>
 
@@ -190,7 +187,6 @@ sharedbox-admin boost NAME [--why TEXT] # same as `box boost` for that account
 sharedbox-admin suspend NAME | resume NAME | remove NAME --archive
 sharedbox-tools add pkg ffmpeg          # install for everyone, remembered across reinstalls
 sharedbox-health report | test-email
-sharedbox-canary status
 ```
 </details>
 
