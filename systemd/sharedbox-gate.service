@@ -1,5 +1,5 @@
 [Unit]
-Description=sharedbox public front door (behind Tailscale Funnel or Cloudflare Tunnel; only runs with PUBLIC_URL set)
+Description=sharedbox public front door (behind Cloudflare Tunnel + Access)
 After=network-online.target tailscaled.service sharedbox-web.service
 Wants=network-online.target sharedbox-web.service
 

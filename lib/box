@@ -276,6 +276,9 @@ def cmd_hackathon(a):
 
 
 def cmd_status(a):
+    if (CFG.get("PUBLIC_MODE") or "").strip().lower() == "funnel":
+        print("Public access is off: Tailscale Funnel is no longer supported. The owner can set up Cloudflare instead "
+              "(sudo bash /usr/share/sharedbox/cloudflare-setup.sh).", file=sys.stderr)
     if a.agent:
         try:
             auto_issues()
@@ -590,13 +593,12 @@ def render_rules(notices=()):
         extras.append("- This is the box OWNER's account. Invite a friend: `box invite --email <their email> "
                       "--note \"<who>\"` (no sudo), then give the owner the message it prints. It creates the account "
                       "and lets that email through Cloudflare, so the friend just signs in with it. "
-                      "Manage friends, their requests and signups with `box friends` (no sudo; `box help friends`).")
+                      "Manage friends and their requests with `box friends` (no sudo; `box help friends`).")
     elif ME.pw_name in sb.admin_users(CFG):
         extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
                       "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
-                      "asked you to. With a public link it creates their account right away and the link logs them "
-                      "straight in (once). `box invite --json` gives `username`, `link`, `expires`. "
-                      "Manage friends, their requests and signups with `box friends` (no sudo; `box help friends`).")
+                      "asked you to. `box invite --json` gives `username`, `link`, `expires`. "
+                      "Manage friends and their requests with `box friends` (no sudo; `box help friends`).")
     if ME.pw_name in sb.admin_users(CFG):
         extras.append("- The box's own efficiency (kernel, memory, disk, network): `box tune` (read-only). Run it at setup, "
                       "after updates, and when the box itself feels slow; `box help tune` for finding more and getting "
@@ -1464,7 +1466,7 @@ def cmd_invite(a):
 
 # ---------- friends (box owner/admins, no sudo): root acts on admin-drop requests ----------
 
-FRIENDS_USAGE = """usage: box friends [--json]                      list friends (+ signups waiting for approval)
+FRIENDS_USAGE = """usage: box friends [--json]                      list friends
        box friends remove NAME [--archive]       delete the account (--archive: keep a tarball of the home first)
        box friends suspend NAME | resume NAME    lock out / let back in (files kept)
        box friends email NAME EMAIL              link an email to NAME and let it through Cloudflare Access
@@ -1473,7 +1475,6 @@ FRIENDS_USAGE = """usage: box friends [--json]                      list friends
        box friends requests approve|done|decline ID [--why TEXT]
                                                  approve = install it (REQUEST_DENY aside); done = handled it
        box friends issues [--days N]             what everyone's agents logged with `box issue`
-       box friends approve ID | deny ID          signups waiting for approval (JOIN_MODE=approve)
        box friends boxes ["NAME=IP NAME=IP"]     your treehouse boxes for the dashboard's Boxes card (same line
                                                  on every box; Tailscale IPs; "" clears it)"""
 
@@ -1489,7 +1490,7 @@ def friends_ago(ts):
 
 
 def cmd_friends(a):
-    """Owner self-serve: list/remove/suspend friends, link emails, requests, issues, signups. Root does the work;
+    """Owner self-serve: list/remove/suspend friends, link emails, requests, issues. Root does the work;
     only ADMIN_USERS accounts get an answer (the drop file's owner is the identity)."""
     def fail(msg):
         if a.json:
@@ -1500,7 +1501,7 @@ def cmd_friends(a):
     if ME.pw_name not in sb.admin_users(CFG):
         fail("only the box owner's accounts can manage friends. Ask the owner.")
     act, args = a.action or "list", list(a.args or [])
-    need = {"remove": 1, "suspend": 1, "resume": 1, "email": 2, "approve": 1, "deny": 1}
+    need = {"remove": 1, "suspend": 1, "resume": 1, "email": 2}
     if act in need and len(args) != need[act]:
         fail(FRIENDS_USAGE)
     if act == "requests" and args and (args[0] not in ("approve", "done", "decline") or len(args) != 2):
@@ -1523,9 +1524,6 @@ def cmd_friends(a):
             req["archive"] = True
     elif act == "email":
         req.update(name=args[0], email=args[1])
-    elif act in ("approve", "deny"):
-        req["id"] = args[0]
-        wait = 180
     elif act == "requests" and args:
         req = {"action": "friends-request", "op": args[0], "id": args[1], "reason": (a.why or "")[:200]}
     elif act == "requests":
@@ -1558,10 +1556,6 @@ def cmd_friends(a):
             print(f"{P(r['username']):<16}{P(r['status']):<11}{joined:<12}{disk:>8}  "
                   f"{friends_ago(r.get('last_active')) if r.get('last_active') else 'not this week':<12} "
                   f"{P(r.get('email') or '-')}{over}")
-        for p in res.get("pending_signups") or []:
-            print(f"\nwaiting for approval: {P(p.get('username'))} ({P(p.get('login') or '?')}"
-                  f"{', ' + P(p['email']) if p.get('email') else ''}), "
-                  f"{friends_ago(p.get('ts'))}: box friends approve {p['id']}  |  box friends deny {p['id']}")
         if res.get("open_requests"):
             print(f"\n{res['open_requests']} open request(s): box friends requests")
     elif act == "access":
@@ -2947,10 +2941,10 @@ def main():
     x.add_argument("--no-create", action="store_true",
                    help="old style: an invite link and the friend picks a username on a signup form")
     x.set_defaults(fn=cmd_invite)
-    x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues, signups")
+    x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues")
     x.add_argument("action", nargs="?", default="list",
                    choices=["list", "remove", "suspend", "resume", "email", "access", "requests", "issues",
-                            "approve", "deny", "update", "boxes"])
+                            "update", "boxes"])
     x.add_argument("args", nargs="*"); x.add_argument("--archive", action="store_true")
     x.add_argument("--days", type=int, default=7); x.add_argument("--json", action="store_true")
     x.add_argument("--all", action="store_true"); x.add_argument("--why", help="decline: the reason they see")
