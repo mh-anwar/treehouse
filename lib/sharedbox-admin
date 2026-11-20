@@ -54,6 +54,8 @@ sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbshared  # noqa: E402
 import sbteam  # noqa: E402
+import sbmsg  # noqa: E402
+import sbwhere  # noqa: E402
 import sbfed  # noqa: E402
 import sbrunning  # noqa: E402
 
@@ -478,6 +480,41 @@ def shared_uids(cfg):
     return out
 
 
+def handle_msg(user, req, recipients):
+    """`box msg send|reply`: root files the message, so the sender is the drop file's owner and nobody
+    can write into anyone else's inbox."""
+    try:
+        res = sbmsg.deliver(user, req, recipients)
+        try:  # they're away: say so right away, so the sender's agent can tell its human
+            rec = sbwhere.load().get(res.get("to")) or {}
+            v = sbwhere.view(res["to"], rec, time.time())
+            if v.get("status"):
+                res["recipient"] = v
+                res["message"] += f". {v['name']} set their status: {v['status']}" + (
+                    f", until {v['until_text']}" if v.get("until") else "")
+        except Exception:  # noqa: BLE001 - the message is delivered either way
+            pass
+        sb.log_event("msg", user, to=res.get("to"), id=res.get("id"), level=req.get("level"),
+                     reply=bool(req.get("reply_to")))
+        return res
+    except sbmsg.MsgError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        print(f"msg request: {e!r}", file=sys.stderr)
+        return {"ok": False, "error": "internal error; ask the owner"}
+
+
+def handle_presence(user, req):
+    """`box where --set/--clear/--name/--private`: people change only their own entry."""
+    try:
+        return sbwhere.handle(user, req)
+    except sbmsg.MsgError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        print(f"presence request: {e!r}", file=sys.stderr)
+        return {"ok": False, "error": "internal error; ask the owner"}
+
+
 def shared_handle(cfg, user, req):
     """sbshared.handle, with every failure turned into a reply (one bad request never wedges the path unit)."""
     try:
@@ -523,6 +560,12 @@ def process_shared_drop(cfg):
             req = None
         if isinstance(req, dict) and req.get("action") == "boost":
             res = handle_boost(cfg, boosters[owner], req)
+        elif isinstance(req, dict) and req.get("action") == "msg":
+            res = handle_msg(boosters[owner], req, set(boosters.values()))
+        elif isinstance(req, dict) and req.get("action") == "msg-seen":
+            res = sbmsg.mark_seen(boosters[owner], req.get("ids"))
+        elif isinstance(req, dict) and req.get("action") == "presence":
+            res = handle_presence(boosters[owner], req)
         elif isinstance(req, dict) and owner in allowed:
             res = shared_handle(cfg, allowed[owner], req)
         else:

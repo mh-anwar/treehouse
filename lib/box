@@ -18,6 +18,8 @@
   box request "TEXT"               ask the owner for something (e.g. a system package)
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
+  box msg [inbox|read ID|send USER|reply ID|done ID|sent|who]   messages between accounts (box help msg)
+  box where [NAME] | --set TEXT [--until WHEN] | --clear | --name NAME   where someone is (box help where)
   box team create NAME --members a,b | board | task | claim | done | wait | inbox set | crew start ROLE
                                    hackathon team: one board, agents hand off directly (box team -h)
 """
@@ -287,6 +289,8 @@ def cmd_status(a):
     g = gather(0.1 if a.agent else 0.5)
     if a.json:
         g["advice"] = advice(g)
+        import sbmsg
+        g["inbox"] = dict(zip(("open", "unread"), sbmsg.unread_count(ME.pw_name, HOME)))
         print(json.dumps(g, indent=2))
         return
     b, live, lim, j = g["box"], g["live"] or {}, g["limits"], g["janitor"]
@@ -311,6 +315,11 @@ def cmd_status(a):
                          + (", ".join(f"{s['name']}({s['state']})" for s in j.get("services", [])) or "none"))
     for ad in advice(g):
         lines.append(("- " if a.agent else "! ") + ad)
+    import sbmsg
+    n_open, n_unread = sbmsg.unread_count(ME.pw_name, HOME)
+    if n_unread:
+        lines.append(f"Inbox: {n_unread} unread of {n_open} open message(s)"
+                     + (" (mention it; `box msg inbox` when your user asks)" if a.agent else " (box msg inbox)"))
     if a.agent and g["friend"]:
         lines.append("Rules: projects are git repos in ~ (archived after "
                      f"{CFG['PROJECT_TTL_DAYS']} idle days, only if fully pushed), ~/keep is never touched; servers via "
@@ -1239,6 +1248,10 @@ def cmd_setup(a):
         missing.append("GitHub login (gh auth login --web && gh auth setup-git)")
     if not any(shutil.which(n) and logged_in(f, e) for n, _, _, f, e, _ in AGENTS):
         missing.append("no coding agent is logged in yet (see `box agents`)")
+    import sbwhere
+    if not (sbwhere.load().get(ME.pw_name) or {}).get("name"):
+        missing.append("a display name, so friends' agents find your user by name: ask what people call them, then "
+                       f"`box where --name \"{name if name and ' ' in name.strip() else 'Their Name'}\"`")
     if a.check or not sys.stdin.isatty():
         print("setup complete" if not missing else "missing:\n" + "\n".join(f"- {m}" for m in missing))
         return
@@ -1598,7 +1611,11 @@ def shared_request(req, wait=60):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
+        if not wait:
+            return {"ok": False}
         return {"ok": False, "error": provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})")}
+    if not wait:  # fire and forget (e.g. "seen" receipts)
+        return {"ok": True, "queued": True}
     reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -2961,6 +2978,10 @@ def main():
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
+    import sbmsg  # noqa: E402
+    sbmsg.add_parsers(s, sb, CFG, ME.pw_name, HOME, lambda req, wait=30: shared_request(req, wait))
+    import sbwhere  # noqa: E402
+    sbwhere.add_parsers(s, sb, CFG, ME.pw_name, lambda req: shared_request(req, 30))
     # ---- multi-box (lib/sbmulti.py): `box boxes`, `box run --anywhere` ----
     import sbmulti  # noqa: E402
     sbmulti.add_parsers(s, sb, CFG, ME.pw_name, HOME, os.path.abspath(sys.argv[0]))

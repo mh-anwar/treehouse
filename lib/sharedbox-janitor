@@ -284,8 +284,24 @@ def cmd_tick(cfg, a):
         except Exception as e:  # one friend's trouble must not stop the others
             print(f"{name}: t3 wake error: {str(e)[-500:]!r}", file=sys.stderr)
     if not a.dry_run:
+        refresh_presence(cfg, users)
         refresh_rules(cfg, users, state)
         sb.write_json(TICK_STATE, state, mode=0o600)
+
+
+def refresh_presence(cfg, users):
+    """`box where`'s rounded "active on the box" hint: newest agent session change per account."""
+    try:
+        import sbwhere
+        homes = {}
+        for name in set(users) | set(sb.admin_users(cfg)):
+            try:
+                homes[name] = pwd.getpwnam(name).pw_dir
+            except KeyError:
+                pass
+        sbwhere.refresh_activity(homes)
+    except Exception as e:  # noqa: BLE001 - never stop the tick
+        print(f"presence: {e!r}", file=sys.stderr)
 
 
 def boot_id():
