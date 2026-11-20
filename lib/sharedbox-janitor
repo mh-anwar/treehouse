@@ -172,7 +172,7 @@ def oom_label(cg):
     else:
         kind, name, _ = sbrunning._unit_kind(unit, [])
         what = {"server": f"the server {name}", "agent": f"an {name.lower()}" if name[0] in "AEIOU" else
-                f"a {name.lower()}", "terminal": "a tmux terminal", "t3": "T3 Code"}.get(kind, name)
+                f"a {name.lower()}", "terminal": f"a {name}", "t3": "T3 Code"}.get(kind, name)
     return pw.pw_name, what
 
 
@@ -181,21 +181,29 @@ def record_oom_kills():
     dashboard shows it) and an event."""
     # journalctl takes --since or --cursor-file, not both: the first run looks back 15 minutes, then the cursor
     # file is seeded from the journal's newest entry; later runs read only what came after it
-    if os.path.exists(OOM_CURSOR):
+    try:
+        good = os.path.getsize(OOM_CURSOR) > 0  # an empty file would make journalctl replay everything
+    except OSError:
+        good = False
+    seed = None
+    if good:
         cmd = ["journalctl", "-u", "systemd-oomd", "-o", "cat", "--no-pager", f"--cursor-file={OOM_CURSOR}"]
-    else:
+    else:  # first run (or a broken file): look back 15 minutes; the cursor is taken first so nothing falls between
+        s = subprocess.run(["journalctl", "-n", "1", "--show-cursor", "-o", "cat", "--no-pager"],
+                           capture_output=True, text=True, timeout=60, check=False)
+        cur = [ln[len("-- cursor: "):] for ln in s.stdout.splitlines() if ln.startswith("-- cursor: ")]
+        seed = cur[-1].strip() if cur else None
         cmd = ["journalctl", "-u", "systemd-oomd", "-o", "cat", "--no-pager", "--since=-15min"]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
     if r.returncode != 0:
         print(f"oom kills: journalctl failed: {(r.stderr or '').strip()[-300:]}", file=sys.stderr)
+        if good:  # an unreadable cursor: start over next tick instead of failing forever
+            os.unlink(OOM_CURSOR)
         return
-    if not os.path.exists(OOM_CURSOR):
-        seed = subprocess.run(["journalctl", "-n", "1", "--show-cursor", "-o", "cat", "--no-pager"],
-                              capture_output=True, text=True, timeout=60, check=False)
-        cur = [ln[len("-- cursor: "):] for ln in seed.stdout.splitlines() if ln.startswith("-- cursor: ")]
-        if cur:
-            with open(OOM_CURSOR, "w") as f:
-                f.write(cur[-1].strip())
+    if seed:
+        with open(OOM_CURSOR + ".tmp", "w") as f:
+            f.write(seed)
+        os.replace(OOM_CURSOR + ".tmp", OOM_CURSOR)
     for line in r.stdout.splitlines():
         m = OOM_RE.search(line)
         if not m:
@@ -244,6 +252,15 @@ def cmd_tick(cfg, a):
             record_oom_kills()
         except Exception as e:  # noqa: BLE001
             print(f"oom kills: {e!r}", file=sys.stderr)
+        try:  # MEMORY_MAX=auto is written as bytes: after a RAM change (an upgrade), work the limits out again
+            with open("/sys/fs/cgroup/user.slice/memory.max") as f:
+                live = f.read().strip()
+            if live != str(sb.auto_memory_max(cfg)):
+                subprocess.run([os.path.join(sb.LIB_DIR, "sharedbox-admin"), "reapply"], capture_output=True,
+                               timeout=300, check=False)
+                print(f"memory limits re-applied (user.slice was {live}, now {sb.auto_memory_max(cfg)})")
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"memory limits: {e!r}", file=sys.stderr)
         for what, fn in (("hackathon reconcile", sb.hackathon_reconcile), ("boosts", sb.boost_reconcile)):
             try:
                 done = fn(cfg)

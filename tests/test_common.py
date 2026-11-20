@@ -71,6 +71,11 @@ class Limits(unittest.TestCase):
         self.assertGreater(mx, total - 3 * G - (256 << 20))
         self.assertEqual(sb.parse_size(sb.user_limits(dict(cfg, MEMORY_RESERVE="999T"))["MEMORY_MAX"]), G)  # floor
         self.assertEqual(sb.user_limits(cfg, {"limits": {"MEMORY_MAX": "9G"}})["MEMORY_MAX"], "9G")  # explicit wins
+        # all accounts together: protection leaves the box's own services and group servers room, never below one share
+        low = sb.user_slice_low(cfg)
+        self.assertLessEqual(low, mx - sb.parse_size(cfg["SHARED_MEMORY_MAX"]))
+        self.assertGreaterEqual(low, 16 * G if total > 19 * G else 0)
+        self.assertEqual(sb.user_slice_low(dict(cfg, MEMORY_RESERVE="999T")), 16 * G)
 
 
 class Boost(unittest.TestCase):

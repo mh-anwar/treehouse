@@ -243,6 +243,14 @@ do_ systemctl daemon-reload
 # systemd-oomd: when memory really runs out it stops the process group causing it, instead of everyone's programs
 # stalling (each account's slice asks for it in its drop-in). Ubuntu's package also turns it on for every user@
 # service at 50%, which stops heavy builds too early: same limit as the slices instead.
+# our oomd settings first: the package's own postinst starts systemd-oomd with Ubuntu's 50%/20s otherwise
+OOM_LIMIT=$(conf_get OOM_PRESSURE_LIMIT || true); OOM_LIMIT=${OOM_LIMIT:-80%}
+OOM_SECS=$(conf_get OOM_PRESSURE_SECONDS || true); OOM_SECS=${OOM_SECS:-30}
+do_ mkdir -p /etc/systemd/oomd.conf.d /etc/systemd/system/user@.service.d
+printf '# managed by sharedbox (OOM_PRESSURE_SECONDS)\n[OOM]\nDefaultMemoryPressureDurationSec=%ss\n' "$OOM_SECS" \
+    | do_ tee /etc/systemd/oomd.conf.d/60-sharedbox.conf >/dev/null
+printf '# managed by sharedbox: same as the account slices (OOM_PRESSURE_LIMIT)\n[Service]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=%s\n' "$OOM_LIMIT" \
+    | do_ tee /etc/systemd/system/user@.service.d/60-sharedbox-oomd.conf >/dev/null
 if ! command -v oomctl >/dev/null; then
     case $DISTRO_FAMILY in
         arch) : ;;  # part of systemd there
@@ -251,13 +259,6 @@ if ! command -v oomctl >/dev/null; then
                || warn "systemd-oomd not installed; when memory runs out the box may freeze instead of stopping one thing" ;;
     esac
 fi
-OOM_LIMIT=$(conf_get OOM_PRESSURE_LIMIT || true); OOM_LIMIT=${OOM_LIMIT:-80%}
-OOM_SECS=$(conf_get OOM_PRESSURE_SECONDS || true); OOM_SECS=${OOM_SECS:-30}
-do_ mkdir -p /etc/systemd/oomd.conf.d /etc/systemd/system/user@.service.d
-printf '# managed by sharedbox (OOM_PRESSURE_SECONDS)\n[OOM]\nDefaultMemoryPressureDurationSec=%ss\n' "$OOM_SECS" \
-    | do_ tee /etc/systemd/oomd.conf.d/60-sharedbox.conf >/dev/null
-printf '# managed by sharedbox: same as the account slices (OOM_PRESSURE_LIMIT)\n[Service]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=%s\n' "$OOM_LIMIT" \
-    | do_ tee /etc/systemd/system/user@.service.d/60-sharedbox-oomd.conf >/dev/null
 # equal limits for every account, the owner's included (16G guaranteed RAM, no CPU cap, equal weight): rewrite
 # every slice drop-in, and drop what older versions left (OOM preference for friends, the guard's runtime values)
 do_ "$LIB/sharedbox-admin" reapply >/dev/null

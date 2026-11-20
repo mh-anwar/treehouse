@@ -29,7 +29,7 @@ Never ask for passwords or tokens in chat.
 @@ memory
 - Every account is guaranteed {mem_low} of RAM and may use up to {mem_max} while nobody else needs it. Nothing to
   ask for (`box boost` is gone). When others need memory back, the kernel takes it from whoever is above their
-  guaranteed share first.
+  guaranteed share first (if several people all need their full share at once, it's split fairly).
 - When memory really runs out (the box spends most of its time freeing memory for {oom_seconds}s), the box stops the
   single process group causing it: a container, a server, an agent session or a terminal. `box status` says what
   was stopped. Restart it if it's needed, with less memory (fewer test workers, a smaller model, `--max-old-space-size`).

@@ -24,7 +24,11 @@ rm -rf /etc/systemd/system/sharedbox-gate.service.d
 # apt timer drop-ins exist only on Debian/Ubuntu (install.sh adds nothing like it on Arch); no-ops elsewhere
 rm -f /etc/systemd/system/apt-daily.timer.d/sharedbox.conf /etc/systemd/system/apt-daily-upgrade.timer.d/sharedbox.conf
 rmdir /etc/systemd/system/apt-daily.timer.d /etc/systemd/system/apt-daily-upgrade.timer.d 2>/dev/null || true
+rm -f /etc/systemd/system/user.slice.d/60-sharedbox.conf /etc/systemd/system/user@.service.d/60-sharedbox-oomd.conf \
+    /etc/systemd/oomd.conf.d/60-sharedbox.conf
+rmdir /etc/systemd/system/user.slice.d /etc/systemd/system/user@.service.d /etc/systemd/oomd.conf.d 2>/dev/null || true
 systemctl daemon-reload
+systemctl try-restart systemd-oomd 2>/dev/null || true
 if systemctl cat apt-daily-upgrade.timer >/dev/null 2>&1; then
     systemctl restart apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true   # back to Ubuntu's schedule
 fi

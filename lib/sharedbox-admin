@@ -2848,7 +2848,7 @@ def write_user_slice(cfg):
     inside the account that happens to be waiting."""
     total = sb.auto_memory_max(cfg)
     lines = ["# managed by sharedbox (MEMORY_RESERVE, OOM_PRESSURE_LIMIT): sharedbox-admin reapply", "[Slice]",
-             f"MemoryLow={total}", f"MemoryMax={total}"]
+             f"MemoryLow={sb.user_slice_low(cfg)}", f"MemoryMax={total}"]
     if cfg.get("OOM_PRESSURE_LIMIT"):
         lines += ["ManagedOOMMemoryPressure=kill", f"ManagedOOMMemoryPressureLimit={cfg['OOM_PRESSURE_LIMIT']}"]
     d = os.path.join(SYSTEMD_DIR, "user.slice.d")

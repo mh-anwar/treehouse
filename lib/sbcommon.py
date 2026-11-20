@@ -496,6 +496,21 @@ def auto_memory_max(cfg):
     return max(1 << 30, (total - reserve) // step * step)
 
 
+def user_slice_low(cfg):
+    """Protection all accounts share (user.slice MemoryLow): the box minus twice the reserve (the box's own services:
+    sshd, Tailscale, the website) minus what group servers may use, so under pressure those aren't the only things
+    the kernel takes memory from. Never below one account's MEMORY_LOW."""
+    total = 0
+    for line in (_read("/proc/meminfo") or "").splitlines():
+        if line.startswith("MemTotal:"):
+            total = int(line.split()[1]) * 1024
+    reserve = parse_size(cfg.get("MEMORY_RESERVE") or "3G") or 0
+    shared = parse_size(cfg.get("SHARED_MEMORY_MAX") or "0") or 0
+    one = parse_size(cfg.get("MEMORY_LOW") or "0") or 0
+    step = 256 << 20
+    return max(one, min(auto_memory_max(cfg), (total - 2 * reserve - shared) // step * step), 0)
+
+
 def user_limits(cfg, rec=None):
     """The account's limits with MEMORY_MAX=auto worked out (systemd needs a number)."""
     lim = {k: cfg.get(k, "") for k in LIMIT_KEYS}
@@ -1227,7 +1242,10 @@ def _boost_props(cfg, rec):
     """Memory limits are dynamic now (MemoryHigh=infinity, MemoryMax=auto), so a boost (root only, rarely needed)
     just raises the hard cap; an account with an old explicit soft limit keeps the same gap above it."""
     lim = user_limits(cfg, rec)
-    high = max(parse_size(cfg["BOOST_MEMORY"]), parse_size(lim["MEMORY_MAX"]) or 0)  # never lowers the cap
+    cur_max = parse_size(lim["MEMORY_MAX"]) if lim.get("MEMORY_MAX") else None
+    if cur_max is None:  # already unlimited: a boost must not add a cap
+        return None, [f"MemoryHigh={lim.get('MEMORY_HIGH') or 'infinity'}", "MemoryMax=infinity"]
+    high = max(parse_size(cfg["BOOST_MEMORY"]), cur_max)  # never lowers the cap
     soft = parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
     if soft is None:
         return high, ["MemoryHigh=infinity", f"MemoryMax={high}"]
@@ -1245,6 +1263,8 @@ def boost_start(cfg, name, why="", now=None):
     if rec and rec.get("status", "active") != "active":
         return {"ok": False, "until": 0, "error": "the account is suspended"}
     high, props = _boost_props(cfg, rec)
+    if high is None:
+        return {"ok": False, "until": 0, "error": f"{name} has no memory cap to raise"}
     st = read_json(BOOSTS, {}) or {}
     cur = st.get(name) if isinstance(st.get(name), dict) else None
     if not (cur and cur.get("until", 0) > now):
