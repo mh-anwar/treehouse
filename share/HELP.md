@@ -129,7 +129,7 @@ account, with no VPN: SSH goes through Cloudflare. {connect}
 - If they ask how: point them to that page and its Copy button. Don't walk them through it in a terminal, and
   don't add keys for them by hand.
 - The T3 Code desktop app on their laptop needs Tailscale there (the app can't pass Cloudflare). Their dashboard's
-  "Make my setup prompt" (or `box t3 app-link --prompt`) gives their laptop's agent the steps: check Tailscale and
+  "Make a setup prompt" (or `box t3 app-link --prompt`) gives their laptop's agent the steps: check Tailscale and
   the account first, fix only what's broken, then open a one-time pairing link. The box's address is always its
   Tailscale IP. No Tailscale: T3 in the browser (dashboard, Open T3) always works. T3 Connect isn't tested here yet.
 

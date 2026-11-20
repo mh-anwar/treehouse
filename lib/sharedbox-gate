@@ -646,7 +646,7 @@ async def handle_request(reader, writer, head, peer):
             msg = "The box is busy. Try again in a minute."
         elif app_kind == "s":
             msg = (f"The group server <b>{prefix[3:]}</b> isn't running (or isn't listening on its port, "
-                   f"{dest[2]}). Start or restart it under <b>Group servers</b> on <a href='/_box/me'>your page</a>, "
+                   f"{dest[2]}). Start or restart it under <b>Shared with everyone</b> on <a href='/_box/me'>your page</a>, "
                    "or with <code>box shared start NAME</code>.")
         elif app_kind == "p":
             msg = (f"Nothing is listening on port {dest[2]}. Start the server under <b>Your servers</b> on "
