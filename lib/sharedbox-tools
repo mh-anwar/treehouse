@@ -15,16 +15,23 @@ Coding agents (TOOLS_NPM) are kept per version in /opt/sharedbox/agents/<pkg>/<v
 (one hard-linked store, ~40% less disk than npm; npm is the fallback if pnpm can't be installed), and /usr/local/bin
 has a small launcher per command that always follows <pkg>/current. A new version is installed next to the old
 one and switched to atomically, so running sessions don't break mid-update.
+
+Agents that aren't on npm (TOOLS_MANIFEST, e.g. Google's Antigravity CLI) use the same store: their vendor's update
+manifest names the newest version, a tarball and its sha512; the tarball is checked, unpacked into its own version
+directory and switched to the same way. Their own self-updaters are turned off in the launcher.
 """
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import traceback
@@ -45,6 +52,12 @@ SHIM_DIR = "/usr/local/bin"
 SHIM_MARK = "# sharedbox agent shim"
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?")
 KEEP_PREVIOUS = 1          # old versions kept after a switch, for sessions started just before it
+# TOOLS_MANIFEST agents: name=https://...{arch}...json#binary[,alias...]; the first binary is the tarball's only member
+MANIFEST = {}              # name -> {"url": manifest url, "bins": [...], "latest": {version, url, sha512}}
+MANIFEST_ENTRY = re.compile(r"([a-z0-9][\w.-]*(?:/[a-z0-9][\w.-]*)?)=(https://[^\s#]+)"
+                            r"#([A-Za-z0-9][\w.-]*(?:,[A-Za-z0-9][\w.-]*)*)")
+MANIFEST_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+MANIFEST_MAX = 1 << 30     # the download is refused past 1 GiB (Antigravity 1.5 is ~100 MB packed, 270 MB unpacked)
 
 # binary -> how to show it to users
 KNOWN = [
@@ -53,7 +66,7 @@ KNOWN = [
     ("uv", "uv"), ("pipx", "pipx"), ("git", "git"), ("gh", "GitHub CLI"), ("tmux", "tmux"),
     ("rg", "ripgrep"), ("fdfind", "fd"), ("jq", "jq"), ("sqlite3", "sqlite3"), ("gcc", "gcc"),
     ("make", "make"), ("java", "Java"), ("go", "Go"), ("rustup", "rustup"),
-    ("sdkmanager", "Android SDK"), ("xvfb-run", "Xvfb"),
+    ("sdkmanager", "Android SDK"), ("xvfb-run", "Xvfb"), ("antigravity", "Antigravity CLI"),
 ]
 
 
@@ -161,8 +174,24 @@ def npm_extras_pinned():
 
 # ---------- coding agents: versioned store ----------
 
+def manifest_specs(cfg):
+    """TOOLS_MANIFEST entries as {name: {"url", "bins"}}; malformed entries are skipped with a note."""
+    out = {}
+    for spec in words(cfg, "TOOLS_MANIFEST"):
+        m = MANIFEST_ENTRY.fullmatch(spec)
+        if not m:
+            print(f"    skipping TOOLS_MANIFEST entry {spec!r}: expected name=https://...json#binary[,alias]",
+                  file=sys.stderr)
+            continue
+        out[m.group(1)] = {"url": m.group(2), "bins": m.group(3).split(",")}
+    return out
+
+
 def agent_specs(cfg):
-    """TOOLS_NPM as [(name, wanted)], renamed packages mapped to their new name ("latest" unless pinned)."""
+    """TOOLS_NPM + TOOLS_MANIFEST as [(name, wanted)], renamed npm packages mapped to their new name ("latest" unless
+    pinned). Fills MANIFEST, which tells the other steps which agents aren't npm packages."""
+    MANIFEST.clear()
+    MANIFEST.update(manifest_specs(cfg))
     out = []
     for spec in words(cfg, "TOOLS_NPM"):
         name, _, wanted = spec[1:].partition("@") if spec.startswith("@") else spec.partition("@")
@@ -171,9 +200,9 @@ def agent_specs(cfg):
             log(f"{name} is now {sb.AGENT_RENAMED[name]} (renamed on npm); using that. "
                 f"Update TOOLS_NPM in {sb.CONF_PATH} to drop this note.")
             name, wanted = sb.AGENT_RENAMED[name], ""
-        if NPM_SPEC.fullmatch(name):
+        if NPM_SPEC.fullmatch(name) and name not in MANIFEST:
             out.append((name, wanted or "latest"))
-    return out
+    return out + [(name, "latest") for name in MANIFEST]
 
 
 def vkey(v):
@@ -202,7 +231,36 @@ def current_version(name):
     return v if VERSION_RE.fullmatch(v) and installed_ok(name, v) else None
 
 
+def manifest_arch():
+    arch = MANIFEST_ARCH.get(platform.machine().lower())
+    if not arch:
+        raise RuntimeError(f"no build for this CPU ({platform.machine()})")
+    return arch
+
+
+def http_get(url, timeout=60):
+    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "sharedbox-tools"}),
+                                  timeout=timeout)
+
+
+def manifest_latest(name):
+    """The vendor manifest's newest {version, url, sha512}, checked: a plain version, an https tarball, a sha512."""
+    url = MANIFEST[name]["url"].replace("{arch}", manifest_arch())
+    with http_get(url) as r:
+        data = json.loads(r.read(1 << 16) or b"null")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{url}: not a manifest")
+    ver, tar, sha = (str(data.get(k) or "") for k in ("version", "url", "sha512"))
+    sha = sha.lower()
+    if not VERSION_RE.fullmatch(ver) or not tar.startswith("https://") or not re.fullmatch(r"[0-9a-f]{128}", sha):
+        raise RuntimeError(f"{url}: unexpected manifest {json.dumps(data)[:200]}")
+    MANIFEST[name]["latest"] = {"version": ver, "url": tar, "sha512": sha}
+    return ver
+
+
 def resolve_version(name, wanted):
+    if name in MANIFEST:
+        return manifest_latest(name)
     r = subprocess.run(["npm", "view", "--json", f"{name}@{wanted}", "version"],
                        capture_output=True, text=True, timeout=120)
     try:
@@ -236,11 +294,71 @@ def pnpm():
     return _pnpm[0]
 
 
+def ensure_manifest(name, ver, dry):
+    """Download the manifest's tarball to a temporary directory next to the store, check its sha512 while it
+    streams, unpack its one binary, run `--version` once with a throwaway HOME, then rename the directory into
+    place. Any failure leaves only the temporary directory (removed here) and the current version untouched."""
+    info = MANIFEST[name].get("latest") or {}
+    if info.get("version") != ver:
+        raise RuntimeError(f"{name}: no manifest entry for {ver}")
+    final = version_dir(name, ver)
+    member = MANIFEST[name]["bins"][0]
+    if dry:
+        print(f"    would download {info['url']} (sha512 checked) into {final}")
+        return
+    os.makedirs(agent_root(name), mode=0o755, exist_ok=True)
+    tmp = f"{final}.tmp-{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, mode=0o755)
+    try:
+        tgz = os.path.join(tmp, ".download.tar.gz")
+        h, size = hashlib.sha512(), 0
+        with http_get(info["url"], timeout=600) as r, open(tgz, "wb") as f:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                size += len(chunk)
+                if size > MANIFEST_MAX:
+                    raise RuntimeError(f"{name} {ver}: download is larger than {MANIFEST_MAX >> 20} MB")
+                h.update(chunk)
+                f.write(chunk)
+        if not hmac.compare_digest(h.hexdigest(), info["sha512"]):
+            raise RuntimeError(f"{name} {ver}: checksum mismatch, download refused")
+        with tarfile.open(tgz, "r:gz") as tf:
+            members = tf.getmembers()
+            if len(members) != 1 or not members[0].isreg() or os.path.normpath(members[0].name) != member \
+                    or members[0].size > MANIFEST_MAX:
+                raise RuntimeError(f"{name} {ver}: expected one file named {member} in the archive, got "
+                                   + ", ".join(m.name for m in members[:5]))
+            src = tf.extractfile(members[0])
+            dest = os.path.join(tmp, member)
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o755)
+            with src, os.fdopen(fd, "wb") as out:
+                shutil.copyfileobj(src, out, 1 << 20)
+        os.unlink(tgz)
+        with tempfile.TemporaryDirectory(prefix="sharedbox-smoke-") as home:
+            r = subprocess.run([dest, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=120, env={"HOME": home, "PATH": "/usr/local/bin:/usr/bin:/bin",
+                                                 "AGY_CLI_DISABLE_AUTO_UPDATE": "true", "NO_COLOR": "1"})
+        if r.returncode != 0:
+            raise RuntimeError(f"{name} {ver}: `{member} --version` failed (exit {r.returncode}): "
+                               + (r.stderr or r.stdout).strip()[-200:])
+        if ver not in (r.stdout + r.stderr):
+            print(f"    note: {member} --version says {(r.stdout or r.stderr).strip()[:80]!r}, manifest says {ver}",
+                  file=sys.stderr)
+        open(os.path.join(tmp, ".sharedbox-complete"), "w").close()
+        subprocess.run(["chmod", "-R", "a+rX,go-w", tmp], check=False)
+        shutil.rmtree(final, ignore_errors=True)   # an incomplete earlier attempt
+        os.rename(tmp, final)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def ensure_version(name, ver, dry):
     """Install name@ver into its own directory. It's only used once .sharedbox-complete exists, so a
     half-finished install is never run (installed in place: pnpm's .bin wrappers hold absolute paths)."""
     if installed_ok(name, ver):
         return
+    if name in MANIFEST:
+        return ensure_manifest(name, ver, dry)
     final = version_dir(name, ver)
     if dry:
         print(f"    would install {name}@{ver} into {final}")
@@ -267,6 +385,8 @@ def ensure_version(name, ver, dry):
 
 
 def agent_bins(name, d):
+    if name in MANIFEST:
+        return list(MANIFEST[name]["bins"]) if os.path.isfile(os.path.join(d, MANIFEST[name]["bins"][0])) else []
     pj = sb.read_json(os.path.join(d, "node_modules", name, "package.json"), {}) or {}
     b = pj.get("bin")
     if isinstance(b, str):
@@ -297,10 +417,15 @@ def shim_text(cfg, name, binary):
                'if [ -z "$CLAUDE_CODE_OAUTH_TOKEN$ANTHROPIC_API_KEY" ] && [ -r "$t" ]; then\n'
                '    read -r CLAUDE_CODE_OAUTH_TOKEN < "$t" && export CLAUDE_CODE_OAUTH_TOKEN\n'
                'fi\n')
+    target = f"node_modules/.bin/{binary}"
+    off = "DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1"
+    if name in MANIFEST:  # one binary under every name; its self-updater can't write /opt, so it must not try
+        target = MANIFEST[name]["bins"][0]
+        off += " AGY_CLI_DISABLE_AUTO_UPDATE=true"   # Antigravity only honours "true" (not 1 or yes)
     return f'''#!/bin/sh
 {SHIM_MARK} for {name}: written by sharedbox-tools, don't edit (rewritten on every update).
-{pre}export DISABLE_AUTOUPDATER=1 OPENCODE_DISABLE_AUTOUPDATE=1
-exec "{sb.AGENTS_DIR}/{sb.agent_slug(name)}/current/node_modules/.bin/{binary}" "$@"
+{pre}export {off}
+exec "{sb.AGENTS_DIR}/{sb.agent_slug(name)}/current/{target}" "$@"
 '''
 
 
@@ -315,8 +440,10 @@ def is_shim(path):
 def write_shim(cfg, name, binary):
     path = os.path.join(SHIM_DIR, binary)
     if os.path.lexists(path) and not is_shim(path):
+        # ours to replace: an old global npm install, or a link into this agent's store (also when it dangles:
+        # a hand-made link to a version that was cleaned up)
         tgt = os.path.realpath(path)
-        if not tgt.startswith(os.path.join(NPM_PREFIX, "lib", "node_modules") + "/"):
+        if not tgt.startswith((os.path.join(NPM_PREFIX, "lib", "node_modules") + "/", agent_root(name) + "/")):
             print(f"    warning: {path} exists and isn't ours; not replacing it with the {name} shim",
                   file=sys.stderr)
             return
@@ -401,6 +528,13 @@ def remove_stale_shims(names):
     slugs = {sb.agent_slug(n) for n in names}
     for fn in os.listdir(SHIM_DIR):
         path = os.path.join(SHIM_DIR, fn)
+        if os.path.islink(path) and not os.path.exists(path):
+            # a dangling link into the store (a hand-made link to a version that's gone) only gives
+            # "command not found" with extra confusion; one for a live agent was replaced by its shim already
+            if os.readlink(path).startswith(sb.AGENTS_DIR + "/"):
+                log(f"removing {path} (a broken link into {sb.AGENTS_DIR})")
+                os.unlink(path)
+            continue
         if os.path.isfile(path) and is_shim(path):
             with open(path) as f:
                 # old pin-aware shims: `a=AGENTS_DIR/slug`; launchers: `exec "AGENTS_DIR/slug/current/..."`
@@ -432,9 +566,9 @@ def sync_agents(cfg, dry, errors):
     names = [n for n, _ in specs]
     if not specs:
         return
-    if not shutil.which("npm") and not dry:
-        errors.append("npm missing; coding agents not installed")
-        return
+    if not shutil.which("npm") and not dry and any(n not in MANIFEST for n in names):
+        errors.append("npm missing; npm coding agents not installed")
+        specs = [s for s in specs if s[0] in MANIFEST]   # the manifest agents don't need npm
     # Lookups and downloads are network/disk bound: do them side by side (measured on a fresh store, 4 agents:
     # lookups 2.0 s -> 0.6 s, installs 38 s -> 22 s). Switching versions stays one at a time, in order.
     from concurrent.futures import ThreadPoolExecutor
@@ -446,7 +580,7 @@ def sync_agents(cfg, dry, errors):
             return None, e
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        resolved = dict(zip(names, pool.map(resolve, specs)))
+        resolved = dict(zip([n for n, _ in specs], pool.map(resolve, specs)))
     todo = []
     for name, _ in specs:
         ver, err = resolved[name]
@@ -467,7 +601,7 @@ def sync_agents(cfg, dry, errors):
             traceback.print_exc()
             return e
 
-    if todo and not dry:
+    if any(n not in MANIFEST for n, _ in todo) and not dry:
         pnpm()  # set up once, before the parallel installs share it
     with ThreadPoolExecutor(max_workers=4) as pool:
         failed = dict(zip([n for n, _ in todo], pool.map(install, todo)))
@@ -479,7 +613,7 @@ def sync_agents(cfg, dry, errors):
     if dry:
         return
     # only once the replacement is installed, so a failed install never leaves people without the agent
-    ready = [n for n in names if current_version(n)]
+    ready = [n for n in names if current_version(n) and n not in MANIFEST]
     drop_legacy_global(ready + [o for o, n in sb.AGENT_RENAMED.items() if n in ready], dry)
     for name in names:
         cur = current_version(name)
@@ -609,7 +743,8 @@ def _versions(home):
         try:
             r = subprocess.run([path, flag], capture_output=True, text=True, timeout=20,
                                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home,
-                                    "DISABLE_AUTOUPDATER": "1", "NO_COLOR": "1"})
+                                    "DISABLE_AUTOUPDATER": "1", "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
+                                    "NO_COLOR": "1"})
             text = (r.stdout or r.stderr).strip()
         except (OSError, subprocess.TimeoutExpired):
             text = ""
@@ -639,7 +774,7 @@ def cmd_install(cfg, a):
     log(f"{'apt' if distro.current() == 'debian' else 'system'} packages"
         + ("" if distro.current() == "debian" else f" ({distro.package_manager() or 'unsupported distro'})"))
     pkgs_ok = pkg_install(sorted(set(pkgs)), dry)
-    log(f"coding agents (npm, versioned under {sb.AGENTS_DIR})")
+    log(f"coding agents (npm + vendor manifests, versioned under {sb.AGENTS_DIR})")
     errors = []
     sync_agents(cfg, dry, errors)
     npm_install(npm_extras_pinned(), dry, scripts=False)

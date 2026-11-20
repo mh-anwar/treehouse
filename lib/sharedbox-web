@@ -156,7 +156,8 @@ def api_state():
     return {"host": HOST, "time": int(time.time()), "box": sb.box_load(), "rows": out_rows,
             "janitor_ran": usage.get("generated"), "join_mode": CFG["JOIN_MODE"],
             "open_requests": requests,
-            "agents": [f"{tv[k]['label']} {tv[k]['version']}" for k in ("claude", "codex", "gemini", "opencode") if k in tv],
+            "agents": [f"{tv[k]['label']} {tv[k]['version']}" for k in ("claude", "codex", "gemini", "antigravity",
+                                                                          "opencode") if k in tv],
             "events": events[::-1]}
 
 
@@ -1161,7 +1162,8 @@ def portal_btn(tok, base):
 
 OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs", "running-stop",  # root allows only these
                  "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon",
-                 "msg", "where", "telegram", "telegram-setup", "restore", "projects")
+                 "msg", "where", "telegram", "telegram-setup", "restore", "projects",
+                 "login", "code", "check", "peer-login", "peer-check")  # the owner's own AI / GitHub logins
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -1736,13 +1738,13 @@ def resolve_tab(tab, owner=False, nreq=0, boxes=True):
 
 def place_of(res, owner=False):
     """(tab, card) for a button's result, from what was pressed. Logins land in the start card, except GitHub
-    (an Account row)."""
+    (an Account row) and the owner's (their logins are Account rows)."""
     view, key = str((res or {}).get("_view") or ""), str((res or {}).get("key") or "")
     if view in VIEW_PLACE:
         return VIEW_PLACE[view]
     if view.startswith("request-"):
         return "requests", "requests"
-    if view in ("login", "code", "check") and key == "gh":
+    if view in ("login", "code", "check") and (key == "gh" or owner):
         return "account", "account"
     return "home", "start"
 
@@ -1927,7 +1929,10 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
             parts.append(servers_section(st, shared, btn, base, own_public=False, slot=slot))
             parts.append(running_section(name, rec, st, btn, slot))
         elif tab == "account":
-            rows = [r for r in (owner_app_row(st, base), telegram_row(tg, tok, base, owner=True)) if r]
+            logins = st.get("logins") or {}
+            rows = [r for r in [owner_app_row(st, base)] + owner_login_rows(logins, btn)
+                    + [antigravity_row(logins, btn), boxes_row(st, logins, btn),
+                       telegram_row(tg, tok, base, owner=True)] if r]
             if rows:
                 parts.append("<div class='blk' id='account' data-card='account'><h2>Your account</h2><section class='sec'>"
                              + slot("account") + "<ul class='rows'>" + "".join(
@@ -1967,7 +1972,36 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
     return page("Owner dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
-AI_NAMES = {"claude": "Claude", "codex": "Codex"}
+AI_NAMES = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
+AGY_T3 = ("To use it in T3, open Settings &gt; Providers &gt; Antigravity there, turn it on and sign in once more: "
+          "T3 keeps its own sign-in.")
+
+
+def owner_login_rows(logins, btn):
+    """The owner's Account tab: Claude, ChatGPT and GitHub, each with its login button until it's done (the same
+    logins friends do on their page; root checks each one the same way)."""
+    out = []
+    for k, label, verb in (("claude", "Claude", "Log in with Claude"), ("codex", "ChatGPT", "Log in with ChatGPT"),
+                           ("gh", "GitHub", "Connect GitHub")):
+        if k not in logins:
+            continue
+        ok = (logins[k] or {}).get("ok")
+        out.append((label, '<span class="dot ok"></span>' + ("Connected" if k == "gh" else "Logged in") if ok else
+                    '<span class="dot"></span>Not ' + ("connected" if k == "gh" else "logged in") + " yet",
+                    "" if ok else btn("login", verb, k, primary=False, small=True)))
+    return out
+
+
+def antigravity_row(logins, btn):
+    """(label, description, action) for Google's Antigravity agent, or None when it isn't installed. Its Google
+    sign-in is never copied between boxes, and T3 keeps a sign-in of its own."""
+    a = logins.get("antigravity")
+    if not a:
+        return None
+    if a.get("ok"):
+        return ("Antigravity", f'<span class="dot ok"></span>Signed in with Google on this box. {AGY_T3}', "")
+    return ("Antigravity", '<span class="dot"></span>Not signed in. Google\'s coding agent, with your Google account. '
+            "Sign in on each of your boxes.", btn("login", "Log in with Google", "antigravity", primary=False, small=True))
 PROMPT_FAIL = "Couldn't make your prompt. Try again in a minute. If it still fails, tell the owner."
 
 START_JS = r"""
@@ -2430,7 +2464,8 @@ def boxes_row(st, logins, btn):
                                                     for v in boxes.values()):
             acts.append(btn("peer-login", f"Set up {PEER_LABEL[k]} there", k, primary=False, small=True))
     return ("Your boxes", " · ".join(parts) + "<div class='sub' style='margin-top:4px'>Claude and GitHub follow you "
-            "to every box by themselves.</div>", " ".join(acts))
+            "to every box by themselves." + (" Sign in to Google (Antigravity) on each box's own page."
+                                             if "antigravity" in logins else "") + "</div>", " ".join(acts))
 
 
 def peer_card(res, tok, base):
@@ -2605,7 +2640,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         tab = tab or ptab
     in_start = bool(result) and card == "start"
 
-    ai = [k for k in ("claude", "codex") if k in logins]
+    ai = [k for k in ("claude", "codex", "antigravity") if k in logins]
     ai_ok = any(logins[k]["ok"] for k in ai)
     # Whether they can reach the box over Tailscale isn't known here (friends invited by email have no Tailscale
     # id on record even once the owner shares the box), so everyone gets the setup prompt: its first step checks.
@@ -2647,12 +2682,16 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                 sc.append("<p>No coding agents are installed on the box yet. Tell the owner.</p>")
             else:
                 sc.append("<p>Your agents on the box use your Claude or ChatGPT plan. You only do this once.</p>")
-                first = "claude" if "claude" in logins else "codex"
-                sc.append("<div class='line'>" + btn("login", "Log in with Claude" if first == "claude" else
-                                                     "Log in with ChatGPT", first) + "</div>")
+                verbs = {"claude": "Log in with Claude", "codex": "Log in with ChatGPT",
+                         "antigravity": "Log in with Google (Antigravity)"}
+                first = ai[0]
+                sc.append("<div class='line'>" + btn("login", verbs[first], first) + "</div>")
                 if first == "claude" and "codex" in logins:
                     sc.append("<div class='line sub'>Or use your ChatGPT plan: "
                               + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
+                if first != "antigravity" and "antigravity" in logins:
+                    sc.append("<div class='line sub'>Or use your Google account: "
+                              + btn("login", verbs["antigravity"], "antigravity", link=True) + ".</div>")
         else:  # S2, S3: T3 in this browser, or the T3 app on their laptop or phone (T3 Connect: no VPN)
             t3c = logins.get("t3connect")
             if t3c and t3c.get("ok"):
@@ -2739,6 +2778,9 @@ def account_tab(who, name, rec, st, logins, tg, team, where, tok, base, btn, slo
         row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
             '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
             "" if logins["gh"]["ok"] else btn("login", "Connect GitHub", "gh", primary=False, small=True))
+    arow = antigravity_row(logins, btn)
+    if arow:
+        row(*arow)
     if "t3connect" in logins:
         row("T3 app", '<span class="dot ok"></span>Connected. Open the T3 app on your phone or laptop and sign in.'
             if logins["t3connect"]["ok"] else '<span class="dot"></span>Not connected. Use T3 from your phone or laptop.',
@@ -2855,7 +2897,7 @@ or come back here for a new link on another device.</p></div>"""
     if res.get("key_added"):
         return notice("SSH key added.")
     if res.get("done"):
-        return notice("Logged in.")
+        return notice("Signed in with Google. " + AGY_T3 if res.get("key") == "antigravity" else "Logged in.")
     if "_tok" not in res:  # not a login in progress: any other answer is a finished sentence from root
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     key, url = res.get("key", ""), safe_url(res.get("url"), ("https://",))
@@ -3203,7 +3245,7 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, "restore", key=key)
             return self.after_post(ip, who, name, rec, dict(res, _view="restore"))
         actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key")
-        keys = ("", "claude", "codex", "gh", "t3connect")
+        keys = ("", "claude", "codex", "gh", "t3connect", "antigravity")
         if action not in actions or key not in keys:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if action == "add-key":

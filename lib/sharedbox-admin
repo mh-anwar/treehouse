@@ -915,7 +915,7 @@ def handle_invite_join(cfg, rid, req):
 
 # ---------- portal (web page actions for an existing account) ----------
 
-PORTAL_KEYS = ("claude", "codex", "gh", "t3connect")
+PORTAL_KEYS = ("claude", "codex", "gh", "t3connect", "antigravity")
 
 
 def box_portal(pw, args, input_text=None):
@@ -961,14 +961,16 @@ def handle_owner_pair(cfg, rid, req):
     return {"ok": True, "pair_url": m.group(1)}
 
 
-# what the owner's /_box/me page may do as the owner's own account: the dashboard's server controls only.
-# Their logins, SSH keys and T3 Code are their own business, set up on the box itself.
+# what the owner's /_box/me page may do as the owner's own account: the dashboard's server controls, and the same
+# AI / GitHub logins friends get (login, code, check, peer-login, peer-check: checked below exactly as for a friend).
+# Their SSH keys and T3 Code are their own business, set up on the box itself.
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
                         "shared-logs", "self-update", "invite", "boost", "running-stop",
                         "running-all", "telegram", "telegram-setup",
                         "msg", "where", "restore", "projects") + REQUEST_PORTAL_ACTIONS
 OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as `box hackathon on|off`
+OWNER_PORTAL_ACTIONS += ("login", "code", "check", "peer-login", "peer-check")  # the owner's Account tab logins
 
 
 def handle_boost(cfg, name, req):

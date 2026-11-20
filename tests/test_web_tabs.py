@@ -198,5 +198,77 @@ class Posts(unittest.TestCase):
         self.assertTrue(r["headers"]["Location"].endswith("&tab=home#start"), r["headers"])
 
 
+
+class Antigravity(unittest.TestCase):
+    """Log in with Google (Antigravity): the start card offers it, the paste-code finish says how to turn it on in T3,
+    the owner's Account tab has the same logins as friends."""
+    EMAIL, handler, post, tearDown = Posts.EMAIL, Posts.handler, Posts.post, Posts.tearDown
+    card = staticmethod(Posts.card)
+
+    def setUp(self):
+        Posts.setUp(self)
+        self.logins = {"claude": {"label": "Claude", "ok": False},
+                       "antigravity": {"label": "Google (Antigravity)", "ok": False}}
+        self.calls = []
+
+        def portal_call(ip, who, action, **kw):
+            self.calls.append((action, kw))
+            if action == "status":
+                return {"ok": True, "ssh": True, "logins": self.logins, "running": [], "servers": [],
+                        "t3": {"url": "http://100.64.0.5:31000/", "running": True}}
+            if action == "login":
+                return {"ok": True, "url": "https://accounts.google.com/o/oauth2/auth?x=1", "code": None, "paste": True}
+            if action == "code":
+                self.logins["antigravity"]["ok"] = True
+                return {"ok": True, "done": True}
+            return {"ok": True}
+        w.portal_call = portal_call
+
+    def test_start_card_offers_google(self):
+        page = self.handler("GET", "/_box/me")["body"]
+        self.assertIn("Log in with Claude", page)
+        self.assertIn("Log in with Google (Antigravity)", page)
+
+    def test_paste_login_then_t3_note(self):
+        r = self.post({"action": "login", "key": "antigravity"}, (("X-Requested-With", "fetch"),))
+        card = self.card(r["body"], "start")
+        self.assertIn("accounts.google.com", card)
+        self.assertIn("name=\"code\"", card)
+        r = self.post({"action": "code", "key": "antigravity", "code": "4/0AbCd-eF_gh"}, (("X-Requested-With", "fetch"),))
+        self.assertIn(("code", {"key": "antigravity", "code": "4/0AbCd-eF_gh"}), self.calls)
+        self.assertIn("Settings &gt; Providers &gt; Antigravity", r["body"])
+
+    def test_rows(self):
+        btn = w.portal_btn("tok", "/_box")
+        row = w.antigravity_row({"antigravity": {"ok": False}}, btn)
+        self.assertIn("Log in with Google", row[2])
+        self.assertIn("each of your boxes", row[1])
+        self.assertIn("T3 keeps its own sign-in", w.antigravity_row({"antigravity": {"ok": True}}, btn)[1])
+        self.assertIsNone(w.antigravity_row({}, btn))
+        rows = w.owner_login_rows({"claude": {"ok": True}, "codex": {"ok": False}, "gh": {"ok": False}}, btn)
+        self.assertEqual([r[0] for r in rows], ["Claude", "ChatGPT", "GitHub"])
+        self.assertEqual(rows[0][2], "")
+        self.assertIn("Log in with ChatGPT", rows[1][2])
+        self.assertIn("Connect GitHub", rows[2][2])
+
+    def test_owner_logins_allowed_on_both_sides(self):
+        self.assertEqual(w.place_of({"_view": "code", "key": "antigravity"}, owner=True), ("account", "account"))
+        self.assertEqual(w.place_of({"_view": "login", "key": "antigravity"}), ("home", "start"))
+        adm = load_admin()
+        for act in ("login", "code", "check", "peer-login", "peer-check"):
+            self.assertIn(act, w.OWNER_ACTIONS)
+            self.assertIn(act, adm.OWNER_PORTAL_ACTIONS)
+        self.assertIn("antigravity", adm.PORTAL_KEYS)
+        # every action the owner's page may send, root lets the owner's account do
+        self.assertEqual(set(w.OWNER_ACTIONS) - set(adm.OWNER_PORTAL_ACTIONS), set())
+
+
+def load_admin():
+    loader = importlib.machinery.SourceFileLoader("sbadmin_tabs", os.path.join(LIB, "sharedbox-admin"))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("sbadmin_tabs", loader))
+    loader.exec_module(mod)
+    return mod
+
+
 if __name__ == "__main__":
     unittest.main()
