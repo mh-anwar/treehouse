@@ -2064,11 +2064,14 @@ def t3_connect_on():
 
 AGY_TOKEN = os.path.join(HOME, ".gemini", "antigravity-cli", "antigravity-oauth-token")
 AGY_CHECK = os.path.join(HOME, ".sharedbox", "antigravity-check.json")
+AGY_OK_TTL = 600  # a "signed in" answer is re-checked after this many seconds: Google can revoke or expire the grant
+#                   without the CLI ever rewriting the token file
 
 
-def antigravity_ok():
+def antigravity_ok(fresh=False):
     """Signed in to Antigravity: its token file has something in it, and `antigravity models` doesn't ask to sign in
-    (checked once per version of the token file, ~1 s; when it can't tell, e.g. offline, the file decides)."""
+    (~1 s; when it can't tell, e.g. offline, the file decides). A "signed out" answer is kept for that version of the
+    token file (a new sign-in rewrites it); a "signed in" one only for AGY_OK_TTL. fresh=True skips the cache."""
     try:
         st = os.stat(AGY_TOKEN)
     except OSError:
@@ -2076,8 +2079,12 @@ def antigravity_ok():
     if not st.st_size:
         return False
     seen = sb.read_json(AGY_CHECK, {}) or {}
-    if isinstance(seen, dict) and seen.get("key") == f"{st.st_mtime_ns}:{st.st_size}":
-        return bool(seen.get("ok"))
+    if not fresh and isinstance(seen, dict) and seen.get("key") == f"{st.st_mtime_ns}:{st.st_size}":
+        if not seen.get("ok"):
+            return False
+        at = seen.get("at")
+        if isinstance(at, (int, float)) and 0 <= time.time() - at < AGY_OK_TTL:
+            return True
     ok = True
     try:
         r = subprocess.run(["antigravity", "models"], env=dict(user_env(), AGY_CLI_DISABLE_AUTO_UPDATE="true"),
@@ -2088,19 +2095,20 @@ def antigravity_ok():
     try:  # the check may have refreshed the token: remember the file as it is now
         st = os.stat(AGY_TOKEN)
         os.makedirs(os.path.dirname(AGY_CHECK), exist_ok=True)
-        sb.write_json(AGY_CHECK, {"key": f"{st.st_mtime_ns}:{st.st_size}", "ok": ok}, mode=0o600)
+        sb.write_json(AGY_CHECK, {"key": f"{st.st_mtime_ns}:{st.st_size}", "ok": ok, "at": time.time()},
+                      mode=0o600)
     except OSError:
         pass
     return ok
 
 
-def portal_logged_in(key):
+def portal_logged_in(key, fresh=False):
     if key == "gh":
         return gh_ok()
     if key == "t3connect":
         return t3_connect_on()
     if key == "antigravity":
-        return antigravity_ok()
+        return antigravity_ok(fresh)
     for name, _, _, files, envs, _ in AGENTS:
         if name == key:
             return logged_in(files, envs)
@@ -2337,7 +2345,7 @@ def portal_login_start(key, console=False):
     label, cmd, paste = PORTAL_LOGINS[key]
     if not shutil.which(cmd[0]):
         return {"ok": False, "error": f"{label} isn't installed on this box. Ask the owner."}
-    if portal_logged_in(key):
+    if portal_logged_in(key, fresh=True):  # never let a cached "signed in" block signing in again
         if key == "gh":
             gh_finish()
         mark_setup_done(key)

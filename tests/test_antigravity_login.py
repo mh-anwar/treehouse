@@ -1,5 +1,5 @@
 """`box`'s Antigravity sign-in check: the token file must have something in it, and `antigravity models` must not ask
-to sign in (run once per version of the file). A fake `antigravity` on the account's PATH, no network."""
+to sign in (a "signed out" answer is kept per version of the file, a "signed in" one for a few minutes). A fake `antigravity` on the account's PATH, no network."""
 
 import importlib.machinery
 import importlib.util
@@ -73,6 +73,49 @@ class AntigravityLoggedIn(unittest.TestCase):
         self.fake(0, "gemini-3-pro")
         self.assertTrue(box.portal_logged_in("antigravity"))
         self.assertEqual(len(self.runs_seen()), 2)
+
+    def test_signed_in_is_rechecked_after_ttl(self):
+        # the grant can be revoked without the CLI rewriting the token file: a cached "signed in" must expire
+        self.token('{"refresh_token": "r"}')
+        self.fake(0, "gemini-3-pro")
+        self.assertTrue(box.portal_logged_in("antigravity"))
+        self.fake(1, "Error: Please sign in to view available models.")
+        self.assertTrue(box.portal_logged_in("antigravity"))       # within the TTL: cached
+        self.assertEqual(len(self.runs_seen()), 1)
+        seen = box.sb.read_json(box.AGY_CHECK, {})
+        seen["at"] -= box.AGY_OK_TTL + 1
+        box.sb.write_json(box.AGY_CHECK, seen, mode=0o600)
+        self.assertFalse(box.portal_logged_in("antigravity"))      # TTL over: re-checked, now signed out
+        self.assertFalse(box.portal_logged_in("antigravity"))      # and that is kept for this token file
+        self.assertEqual(len(self.runs_seen()), 2)
+
+    def test_fresh_skips_a_cached_signed_in(self):
+        # login-start asks with fresh=True so a stale "signed in" can't block signing in again
+        self.token('{"refresh_token": "r"}')
+        self.fake(0, "gemini-3-pro")
+        self.assertTrue(box.portal_logged_in("antigravity"))
+        self.fake(1, "Error: Please sign in to view available models.")
+        self.assertFalse(box.portal_logged_in("antigravity", fresh=True))
+        self.assertFalse(box.portal_logged_in("antigravity"))
+
+    def test_login_start_rechecks_before_short_circuit(self):
+        self.token('{"refresh_token": "r"}')
+        self.fake(0, "gemini-3-pro")
+        self.assertTrue(box.portal_logged_in("antigravity"))
+        self.fake(1, "Error: Please sign in to view available models.")
+        calls = []
+        orig = box.portal_logged_in
+        box.portal_logged_in = lambda key, fresh=False: calls.append(fresh) or orig(key, fresh)
+        orig_which, box.shutil.which = box.shutil.which, lambda name: "/bin/true"
+        def stop(*a):
+            raise RuntimeError("login started")
+        orig_tmux, box.tmux = box.tmux, stop
+        try:
+            with self.assertRaises(RuntimeError):   # got past the "already signed in" check to starting the login
+                box.portal_login_start("antigravity")
+        finally:
+            box.portal_logged_in, box.shutil.which, box.tmux = orig, orig_which, orig_tmux
+        self.assertEqual(calls, [True])
 
     def test_other_failures_trust_the_file(self):
         self.token('{"refresh_token": "r"}')
