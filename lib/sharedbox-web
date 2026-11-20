@@ -426,6 +426,14 @@ details.appd>summary{list-style:none}details.appd>summary::-webkit-details-marke
 details.appd[open]{flex-basis:100%}details.appd[open]>summary{margin-bottom:4px}
 .appbox{border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;margin-top:8px}.appbox p{margin:0}.appbox p+p{margin-top:8px}
 form.status select{flex:1 1 160px;width:auto;margin:0}
+/* dashboard tabs (one URL each) and cards: a button's result shows at the top of its own card */
+.tabs .tsep{flex:none;width:1px;background:var(--line);margin:12px 4px}@media(min-width:561px){.tabs a{padding:0 10px}}
+.blk{scroll-margin-top:16px}.blk>h2,.blk>.dash-h{margin:28px 0 12px}
+.tabc>.blk:first-child>h2,.tabc>.blk:first-child>.dash-h{margin-top:0}.tabc>.start:first-child{margin-top:0}
+.out:empty{display:none}.out>.note{margin:0 0 16px;background:var(--inset)}.start .out>.note{margin:0 0 12px}
+.out>.card,.out>.logbox{border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;padding:0 0 16px;margin:0 0 16px}
+.logbox h3{margin:0 0 8px}.logbox pre.logs{margin:0}.logbox .lacts{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin:10px 0 0}
+.needs .d b{font-weight:600}.adm{margin:0 0 16px}details.blk{margin-top:28px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
 """
 
@@ -492,7 +500,7 @@ def dashboard():
 <p class="sub" id="foot"></p><script>{DASH_JS}</script>""")
 
 
-def join_page(ip, who, msg=None, err=None, form=None, rng="24h"):
+def join_page(ip, who, msg=None, err=None, form=None, rng="24h", tab="", result=None, card=""):
     e = html.escape
     if not who:
         return page("join", f"""<div class="box"><h2>Can't identify you</h2>
@@ -500,7 +508,7 @@ def join_page(ip, who, msg=None, err=None, form=None, rng="24h"):
 invite, then open <b>http://{html.escape(box_ip())}:{html.escape(str(CFG['WEB_PORT']))}/join</b>.</p></div>""")
     name, rec = existing_account(who["id"])
     if name:
-        return portal_page(ip, who, name, rec, rng=rng)
+        return portal_page(ip, who, name, rec, result, rng=rng, tab=tab, card=card)
     if CFG["JOIN_MODE"] != "open":
         return page("join", "<div class='box'><h2>Signups are closed</h2><p>Ask the owner.</p></div>")
     if msg:
@@ -786,9 +794,8 @@ def mem_limit(lim):
     return lim.get("mem_max") or sb.parse_size(sb.user_limits(CFG)["MEMORY_MAX"]) or lim.get("mem_high")
 
 
-def you_strip(name, rec, st, btn, rng="24h", base="", fold=False):
-    """One card: your memory/CPU/disk now, one small memory chart, one line about the box.
-    fold=True (friends): a collapsed "Usage" section, opened by itself when memory or disk is over 70%."""
+def you_strip(name, rec, st, btn, rng="24h", base=""):
+    """The Usage card's insides: your memory/CPU/disk now, one small memory chart, one line about the box."""
     e = html.escape
     rng = rng if rng in RANGES else "24h"
     now = time.time()
@@ -825,24 +832,15 @@ def you_strip(name, rec, st, btn, rng="24h", base="", fold=False):
                           bar(disk, budget) if budget and disk is not None else
                           (f'<div class="sub">{e(sb.human(budget))} to use</div>' if budget else "")))
     stats.append(stat("Projects", str(int(u.get("projects") or 0)), '<div class="sub">in your home folder</div>'))
-    mem_pct = 100 * (mem_now or 0) / ml if ml else 0
-    disk_pct = 100 * (disk or 0) / budget if budget else 0
-    if fold:
-        summ = [f"{e(sb.human(mem_now or 0))} memory"] + ([f"{e(sb.human(disk))} disk"] if disk is not None else [])
-        hot = mem_pct > 70 or disk_pct > 70
-        out = [f'<details class="sec usage" id="dash"{" open" if hot else ""}><summary>Usage'
-               f'<span class="sub">{" · ".join(summ)}</span></summary>'
-               f'<div class="you">{"".join(stats)}</div>']
-    else:
-        out = ['<section class="sec" id="dash">'
-               f'<div class="you">{"".join(stats)}</div>']
+    out = [f'<div class="you">{"".join(stats)}</div>']
     # one small chart: memory against the limit
     if any(v is not None for _, v in mem):
         mem_b = bucket(mem, t0, t1)
         top = nice_max(peak(mem_b), ml, 256 << 20)
         head = (f'<div class="chart-h"><b>Your memory</b><span class="sub">peak {e(sb.human(peak(mem)))}</span>'
                 f'<span style="margin-left:auto" class="seg">'
-                + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
+                + "".join(f'<a href="{base}/me?tab=account&amp;range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>'
+                          for r in RANGES)
                 + "</span></div>")
         marks = ([(ml, f"most {sb.human(ml)}")] if ml else []) + (
             [(guar, f"guaranteed {sb.human(guar)}")] if guar and ml and guar < ml else [])
@@ -859,8 +857,7 @@ def you_strip(name, rec, st, btn, rng="24h", base="", fold=False):
     rb = reboot_text()
     if rb:
         bits.append(e(rb))
-    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span></div>'
-               + ("</details>" if fold else "</section>"))
+    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span></div>')
     return "".join(out)
 
 
@@ -965,15 +962,14 @@ def run_rows(items, btn=None):
     return rows
 
 
-def running_section(name, rec, st, btn, result=None):
+def running_section(name, rec, st, btn, slot=None):
     """Everything running for this account (containers, databases, servers, agents, terminals), biggest first,
-    with Stop buttons; from `box _portal status` (it runs as the account, so container names are there)."""
+    with Stop buttons; from `box _portal status` (it runs as the account, so container names are there).
+    What a Stop did shows at the top of this card (slot)."""
     e = html.escape
     items = st.get("running")
-    out = ["<h2 id='running'>Running for you</h2>"]
-    if result:  # what the Stop button just did, right where it was pressed
-        out.append(portal_result(result, btn))
-    out.append("<section class='sec'>")
+    out = ["<div class='blk' id='running' data-card='running'><h2>Running for you</h2><section class='sec'>",
+           (slot or NO_SLOT)("running")]
     lim = friend_limits(rec) if rec and rec.get("uid") is not None else {"mem_low": None, "mem_max": None}
     for k in oom_notes(name):
         when = time.strftime("%a %H:%M", time.localtime(float(k.get("ts") or 0)))
@@ -981,10 +977,10 @@ def running_section(name, rec, st, btn, result=None):
                    f"{e(sb.printable(str(k.get('what') or 'something'))[:100])} so everything else kept running. "
                    "Start it again if you still need it.</p>")
     if items is None:
-        out.append("<p class='mut' style='margin:0'>Couldn't load this just now. Refresh in a minute.</p></section>")
+        out.append("<p class='mut' style='margin:0'>Couldn't load this just now. Refresh in a minute.</p></section></div>")
         return "".join(out)
     if not items:
-        out.append("<p class='mut' style='margin:0'>Nothing running right now.</p></section>")
+        out.append("<p class='mut' style='margin:0'>Nothing running right now.</p></section></div>")
         return "".join(out)
     total = sum(int(i.get("mem") or 0) for i in items if isinstance(i, dict))
     mx, low = mem_limit(lim) if lim.get("mem_max") else None, lim.get("mem_low")
@@ -1000,7 +996,7 @@ def running_section(name, rec, st, btn, result=None):
         out.append(f"<details class='run-more'><summary>{len(rest)} more</summary><ul class='run'>"
                    + "".join(run_rows(rest, btn)) + "</ul></details>")
     out.append("<p class='sub' style='margin:14px 0 0'>Agent sessions and T3 Code end on their own. Your agent "
-               "can also list this: <code>box running</code>.</p></section>")
+               "can also list this: <code>box running</code>.</p></section></div>")
     return "".join(out)
 
 
@@ -1031,10 +1027,12 @@ def running_all_section(ip, who):
     return "".join(out)
 
 
-def servers_section(st, shared, btn, base="", own_public=True):
-    """Your own `box serve` servers and the group's shared ones, with start/stop/restart and logs.
-    own_public=False (the owner): the gate only opens friends' port blocks at /p/PORT, so no public links."""
+def servers_section(st, shared, btn, base="", own_public=True, slot=None):
+    """Your own `box serve` servers and the group's shared ones (two cards), with start/stop/restart and logs.
+    own_public=False (the owner): the gate only opens friends' port blocks at /p/PORT, so no public links.
+    A button's result (a notice, or the logs) shows at the top of the card it was pressed in (slot)."""
     e = html.escape
+    slot = slot or NO_SLOT
 
     def acts(kind, s, group=False):
         n, running = s["name"], s.get("state") == "running"
@@ -1066,7 +1064,7 @@ def servers_section(st, shared, btn, base="", own_public=True):
         return (f'<a href="{e(pu)}" target="_blank" rel="noopener">{e(pu)}</a>'
                 f' <span class="mut">· <a href="{e(u)}" target="_blank" rel="noopener" class="mut">Tailscale link</a></span>')
 
-    out = ["<h2>Your servers</h2><section class='sec'>"]
+    out = ["<div class='blk' id='servers' data-card='servers'><h2>Your servers</h2><section class='sec'>", slot("servers")]
     mine = st.get("servers")
     if mine is None:
         out.append("<p class='mut'>Couldn't load your servers just now.</p>")
@@ -1081,10 +1079,11 @@ def servers_section(st, shared, btn, base="", own_public=True):
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
         out.append("<p class='sub' style='margin:12px 0 0'>" + ("Links open only for you, behind your usual login."
                    if PUBLIC and own_public else "Links work from devices on Tailscale.") + "</p>")
-    end = "</section>"
+    end = "</section></div>"
     if shared.get("unavailable"):
         return "".join(out) + end
-    out.append("</section><h2>Shared with everyone</h2><section class='sec'>")
+    out.append("</section></div><div class='blk' id='shared' data-card='shared'><h2>Shared with everyone</h2>"
+               "<section class='sec'>" + slot("shared"))
     if not shared.get("ok"):
         out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
         return "".join(out) + end
@@ -1118,16 +1117,18 @@ def servers_section(st, shared, btn, base="", own_public=True):
     return "".join(out) + end
 
 
-def logs_card(res, btn):
+def logs_card(res, btn, base=""):
+    """A server's last log lines, inside the server's own card: a scrollable box, scrolled to the newest line."""
     e = html.escape
     kind = "shared" if str(res.get("_view", "")).startswith("shared") else "serve"
     name = str(res.get("name") or res.get("key") or "")
     lines = [sb.printable(str(x).replace("\t", "    ")) for x in (res.get("lines") or [])][-200:]
     text = "\n".join(lines) or "(no log lines yet)"
-    return f"""<div class="card" id="logs"><h3>Logs: {e(name)}{" (group)" if kind == "shared" else ""}</h3>
-<pre class="logs" id="logpre">{e(text)}</pre>
-<p style="display:flex;gap:6px;flex-wrap:wrap">{btn(kind + "-logs", "Refresh", name, primary=False, small=True)}
-<a href="me" style="align-self:center;font-size:13px">Close</a></p></div>
+    card = "shared" if kind == "shared" else "servers"
+    return f"""<div class="logbox" id="logs"><h3>Logs: {e(name)}{" (group)" if kind == "shared" else ""}</h3>
+<pre class="logs" id="logpre" tabindex="0" aria-label="Log lines">{e(text)}</pre>
+<div class="lacts">{btn(kind + "-logs", "Refresh", name, primary=False, small=True)}
+<a href="{base}/me?tab=servers#{card}" data-close style="font-size:13px">Close</a></div></div>
 <script>(function(){{var p=document.getElementById("logpre");if(p)p.scrollTop=p.scrollHeight}})();</script>"""
 
 
@@ -1328,14 +1329,14 @@ REQUEST_STATE_TEXT = {"new": "just in", "queued": "queued", "installing": "insta
                       "approved": "approved, installing…", "waiting": "needs you"}
 
 
-def requests_section(btn=None):
-    """Friends' open `box request`s with Approve / Done / Decline (owner only)."""
+def requests_section(btn=None, slot=None):
+    """Friends' open `box request`s with Approve / Done / Decline (owner only), as one card."""
     e = html.escape
     reqs = [r for r in (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") or [] if isinstance(r, dict)]
-    out = ['<h3 id="requests" style="margin:0 0 10px">Requests</h3>']
+    head = "<div class='blk' id='requests' data-card='requests'><h2>Requests</h2><section class='sec'>" + (slot or NO_SLOT)("requests")
     if not reqs:
-        out.append("<p class='mut'>No open requests.</p>")
-        return "".join(out)
+        return head + "<p class='mut' style='margin:0'>No open requests.</p></section></div>"
+    out = [head]
     trs = []
     for r in reqs:
         rid = str(r.get("id") or "")
@@ -1362,13 +1363,14 @@ def requests_section(btn=None):
                    f"<td><span class='pill {'warn' if r.get('state') == 'waiting' else ''}'>"
                    f"{e(REQUEST_STATE_TEXT.get(r.get('state'), str(r.get('state'))))}</span></td>"
                    f"<td style='white-space:nowrap'>{acts}</td></tr>")
-    out.append('<div class="sec"><div class="tw"><table style="min-width:620px"><thead><tr><th>Who</th><th>Asked for</th><th>When</th>'
-               '<th>State</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div></div>")
-    out.append("<p class='sub'>Approve installs it. Done means it's handled. Their agent is told either way.</p>")
+    out.append('<div class="tw"><table style="min-width:620px"><thead><tr><th>Who</th><th>Asked for</th><th>When</th>'
+               '<th>State</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
+    out.append("<p class='sub' style='margin:16px 0 0'>Approve installs it. Done means it's handled. Their agent is "
+               "told either way.</p></section></div>")
     return "".join(out)
 
 
-def update_section(btn):
+def update_section(btn, slot=None):
     """The owner's "Update treehouse" button and how the last update went."""
     e = html.escape
     st = sb.read_json(os.path.join(sb.STATE_DIR, "update.json"), {}) or {}
@@ -1384,9 +1386,9 @@ def update_section(btn):
         line = "Installs the latest version of treehouse and refreshes everyone's agent rules."
     if not (CFG.get("UPDATE_SOURCE") or "").strip():
         return ""
-    return ("<h3 id='update' style='margin:24px 0 10px'>Update treehouse</h3><section class='sec'><ul class='rows'><li>"
-            "<span class='d'>" + line + "</span><span class='a'>"
-            + btn("self-update", "Update treehouse", primary=False, small=True) + "</span></li></ul></section>")
+    return ("<div class='blk' id='update' data-card='update'><h2>Update treehouse</h2><section class='sec'>"
+            + (slot or NO_SLOT)("update") + "<ul class='rows'><li><span class='d'>" + line + "</span><span class='a'>"
+            + btn("self-update", "Update treehouse", primary=False, small=True) + "</span></li></ul></section></div>")
 
 
 # ---------- the owner's other boxes (BOXES) ----------
@@ -1552,17 +1554,18 @@ def boxes_section():
         ver = f"<code>{e(d['version'])}</code>" if d.get("version") else "<span class='mut'>–</span>"
         trs.append(f'<tr><td><b>{e(name)}</b><div class="mut">{e(ip)}</div></td><td class="num">{state}</td>'
                    f'<td class="num">{load}</td>{mem}{disk}<td class="num">{ver}</td><td class="num">{links}</td></tr>')
-    return ('<h3 id="boxes" style="margin:0 0 10px">Boxes <span class="sub" style="font-weight:400">your treehouse '
-            'machines</span></h3><div class="sec"><div class="tw"><table><thead><tr><th>Box</th><th>Status</th><th>Load</th><th>Memory</th>'
-            '<th>Disk</th><th>Version</th><th>Open</th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div></div>")
+    return ('<div class="blk" id="boxes"><h2>Boxes <span class="sub" style="font-weight:400">your treehouse '
+            'machines</span></h2><section class="sec"><div class="tw"><table><thead><tr><th>Box</th><th>Status</th>'
+            '<th>Load</th><th>Memory</th><th>Disk</th><th>Version</th><th>Open</th></tr></thead><tbody>'
+            + "".join(trs) + "</tbody></table></div></section></div>")
 
 
-def box_section(n_events=30, btn=None):
-    """Friends, invites, Cloudflare seats, everything that happened. Only ever rendered for the owner;
-    read from world-readable state files (and the gate's invite records, which this process may read)."""
+def box_section(n_events=30, btn=None, slot=None):
+    """Friends, invites, Cloudflare seats. Only ever rendered for the owner; read from world-readable state files
+    (and the gate's invite records, which this process may read). The invite's result shows in its card (slot)."""
     e = html.escape
     now = time.time()
-    out = ['<h3 id="friends" style="margin:0 0 10px">Friends</h3>']
+    out = ['<div class="blk" id="friends"><h2>Friends</h2>']
     users = sb.registry().get("users") or {}
     usage = (sb.read_json(sb.USAGE, {}) or {}).get("users") or {}
     rows = metrics_tail(RANGES["7d"])
@@ -1622,14 +1625,15 @@ def box_section(n_events=30, btn=None):
                    + "".join(trs) + "</tbody></table></div></section>")
     else:
         out.append("<p class='mut'>Nobody has joined yet.</p>")
-    out.append('<p class="sub">To remove, suspend or link an email, ask your agent.</p>')
+    out.append('<p class="sub">To remove, suspend or link an email, ask your agent.</p></div>')
     if btn:
-        out.append("<h3 id='invite' style='margin:24px 0 10px'>Invite someone</h3><section class='sec'>"
+        out.append("<div class='blk' id='invite' data-card='invite'><h2>Invite someone</h2><section class='sec'>"
+                   + (slot or NO_SLOT)("invite")
                    + btn("invite", "Invite", attrs=" class='inv'",
                          extra="<input type='email' name='email' placeholder='their email' required>"
                                "<input name='note' placeholder='name (optional)' maxlength='120' class='short'>")
                    + "<p class='sub' style='margin-bottom:0'>They get an account right away and sign in with that "
-                   "email.</p></section>")
+                   "email.</p></section></div>")
     return "".join(out)
 
 
@@ -1655,7 +1659,7 @@ def events_section(n_events=40):
     return "".join(out)
 
 
-def hackathon_section(btn):
+def hackathon_section(btn, slot=None):
     """Owner settings: hackathon mode (sharedbox-admin hackathon_set: op on|off, until "YYYY-MM-DD HH:MM", users)."""
     e = html.escape
     cfg = sb.load_config()  # live: `box hackathon` and this form change it while we run
@@ -1680,19 +1684,202 @@ def hackathon_section(btn):
                      f"<div class='grid'>{boxes}</div>")
     off = btn("hackathon", "Turn off", primary=False, small=True,
               extra="<input type='hidden' name='op' value='off'>") if until else ""
-    return ("<h3 id='settings' style='margin:0 0 10px'>Hackathon mode</h3><section class='sec'>"
-            f"<p style='margin-top:0'>{state}</p>"
+    return ("<div class='blk' id='hackathon' data-card='hackathon'><h2>Hackathon mode</h2><section class='sec'>"
+            + (slot or NO_SLOT)("hackathon") + f"<p style='margin-top:0'>{state}</p>"
             "<p class='sub'>For a build day: package requests from the "
             "people you pick skip the deny list. It ends by itself at the time you set (at most 7 days).</p>"
-            f"{form}<div style='margin-top:10px'>{off}</div></section>")
+            f"{form}<div style='margin-top:10px'>{off}</div></section></div>")
 
 
-ADMIN_TABS = (("people", "Friends"), ("running", "Running"), ("requests", "Requests"), ("boxes", "Boxes"), ("settings", "Settings"),
-              ("events", "Events"))
+# ---------- tabs and in-place results ----------
+# /_box/me is split into tabs, each its own URL (?tab=...). Everyone gets the first four; the owner also gets the
+# admin tabs, in the same bar after a divider. A button's result shows at the top of the card holding the button:
+# with JavaScript the page posts with fetch and swaps that card in place (no reload, no jump to the top); without
+# it, post/redirect/get comes back to the same tab with #card in the URL.
+
+FRIEND_TABS = (("home", "Home"), ("messages", "Messages"), ("servers", "Servers"), ("account", "Account"))
+ADMIN_TABS = (("people", "Friends"), ("running", "All running"), ("requests", "Requests"), ("boxes", "Boxes"),
+              ("settings", "Settings"), ("events", "Events"))
+# old links and bookmarks to /_box/me#something: which tab that card lives on now (the page's script moves there)
+HASH_TAB = {"start": "home", "app": "home", "people": "home", "activity": "home", "needs": "home",
+            "messages": "messages", "servers": "servers", "shared": "servers", "running": "servers", "logs": "servers",
+            "account": "account", "dash": "account", "team": "account", "telegram": "account", "peers": "account",
+            "archive": "account", "more": "account",
+            "admin": "admin", "friends": "people", "invite": "people", "requests": "requests", "boxes": "boxes",
+            "settings": "settings", "hackathon": "settings", "telegram-setup": "settings", "update": "settings",
+            "events": "events"}
+# where each button's result goes (tab, card) when the page can't say (no JavaScript): by what was pressed
+VIEW_PLACE = {"running-ctl": ("servers", "running"), "serve-ctl": ("servers", "servers"),
+              "serve-logs": ("servers", "servers"), "shared-ctl": ("servers", "shared"),
+              "shared-logs": ("servers", "shared"), "msg": ("messages", "messages"), "where": ("home", "people"),
+              "telegram": ("account", "account"), "peer-login": ("account", "account"), "team": ("account", "team"),
+              "restore": ("account", "archive"), "boost": ("account", "dash"), "add-key": ("account", "more"),
+              "invite": ("people", "invite"), "hackathon": ("settings", "hackathon"),
+              "telegram-setup": ("settings", "telegram-setup"), "request-update": ("settings", "update")}
+CARD_RE = re.compile(r"[a-z][a-z-]{0,30}")
 
 
-def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
-    """The owner's /_box/me: same top as a friend's (open T3, you, your servers), then an Admin area in tabs."""
+def page_tabs(owner=False, boxes=True):
+    """[(key, label)] in the tab bar. boxes=False: the owner has no other boxes, so no Boxes tab."""
+    return FRIEND_TABS + (tuple((k, v) for k, v in ADMIN_TABS if k != "boxes" or boxes) if owner else ())
+
+
+def resolve_tab(tab, owner=False, nreq=0, boxes=True):
+    """The tab to show for ?tab=: unknown or someone else's tab -> Home. "admin" (old links to the owner's admin
+    area) -> Requests when some are open, else Friends."""
+    if owner and tab == "admin":
+        return "requests" if nreq else "people"
+    return tab if tab in dict(page_tabs(owner, boxes)) else "home"
+
+
+def place_of(res, owner=False):
+    """(tab, card) for a button's result, from what was pressed. Logins land in the start card, except GitHub
+    (an Account row)."""
+    view, key = str((res or {}).get("_view") or ""), str((res or {}).get("key") or "")
+    if view in VIEW_PLACE:
+        return VIEW_PLACE[view]
+    if view.startswith("request-"):
+        return "requests", "requests"
+    if view in ("login", "code", "check") and key == "gh":
+        return "account", "account"
+    return "home", "start"
+
+
+def result_place(res, form=None, owner=False):
+    """(tab, card): the card the button was pressed in when the page said so (_tab/_card, sent by its script),
+    else where that kind of result goes."""
+    form = form or {}
+    t, c = str(form.get("_tab") or ""), str(form.get("_card") or "")
+    if CARD_RE.fullmatch(c) and t in dict(page_tabs(owner)):
+        return t, c
+    return place_of(res, owner)
+
+
+def redirect_url(base, fid, tab, card):
+    """Post/redirect/get without JavaScript: back to the same tab, scrolled to the card that shows the result."""
+    return f"{base}/me?r={fid}&tab={tab}" + (f"#{card}" if card and CARD_RE.fullmatch(card) else "")
+
+
+def flash_put(who_id, result, card):
+    now = time.time()
+    for k in [k for k, v in FLASH.items() if now - v[0] > 900]:
+        FLASH.pop(k, None)
+    fid = secrets.token_urlsafe(9)
+    FLASH[fid] = (now, who_id, result, card)
+    return fid
+
+
+def flash_get(fid, who_id):
+    """(result, card) stored by flash_put for this person, else (None, "")."""
+    fl = FLASH.get(fid or "")
+    return (fl[2], fl[3]) if fl and fl[1] == who_id else (None, "")
+
+
+class Slot:
+    """The result area at the top of each card: empty, except in the card the button was pressed in."""
+
+    def __init__(self, card="", body=""):
+        self.card, self.body, self.used = card, body, False
+
+    def __call__(self, cid):
+        if cid == self.card and self.body and not self.used:
+            self.used = True
+            return f"<div class='out' data-out>{self.body}</div>"
+        return "<div class='out' data-out></div>"
+
+
+NO_SLOT = Slot()
+
+
+def result_html(res, btn, tok, base):
+    """What a button's result looks like inside its card."""
+    if not res:
+        return ""
+    view = str(res.get("_view") or "")
+    if view == "telegram" and res.get("ok") and res.get("url"):
+        return telegram_link_card(res, tok, base)
+    if view == "peer-login" and res.get("ok"):
+        return peer_card(res, tok, base)
+    return portal_result(res, btn, base)
+
+
+def tab_bar(base, tabs, cur, counts=None, owner=False):
+    """Links styled as tabs (keyboard and back button work as usual); aria-current on the one showing."""
+    e = html.escape
+    counts = counts or {}
+    keys = dict(tabs)
+    hmap = {h: t for h, t in HASH_TAB.items() if t in keys or (owner and t == "admin")}
+    out = []
+    for k, label in tabs:
+        if owner and k == ADMIN_TABS[0][0]:
+            out.append("<span class='tsep' aria-hidden='true'></span>")
+        n, cls = counts.get(k, (0, ""))
+        out.append(f"<a href='{base}/me?tab={k}' data-tab='{k}'"
+                   + (" class='on' aria-current='page'" if k == cur else "") + f">{e(label)}"
+                   + (f"<span class='pill {cls}'>{int(n)}</span>" if n else "") + "</a>")
+    return (f"<nav class='tabs' aria-label='Dashboard' data-cur='{e(cur)}' data-hash='{e(json.dumps(hmap))}'>"
+            + "".join(out) + "</nav>")
+
+
+def needs_items(base, msg, st, name, nreq=0):
+    """Home's "Needs you": new messages, open requests (owner), servers that crashed, what the box stopped when
+    memory ran out, big things left running for days, projects about to be archived. Each links to its tab."""
+    e = html.escape
+    out = []
+    new = [m for m in (msg.get("messages") or []) if isinstance(m, dict) and m.get("id") and not m.get("read")] \
+        if msg.get("ok") else []
+    if new:
+        out.append((f"<b>{plural(len(new), 'new message')}</b><div class='sub'>{e(str(new[0].get('title') or ''))[:120]}</div>",
+                    f"{base}/me?tab=messages", "Read"))
+    if nreq:
+        out.append((f"<b>{plural(nreq, 'open request')}</b> from friends' agents", f"{base}/me?tab=requests", "Review"))
+    failed = [str(s.get("name")) for s in st.get("servers") or [] if isinstance(s, dict) and s.get("state") == "failed"
+              and SERVER_RE.fullmatch(str(s.get("name", "")))]
+    if failed:
+        out.append((f"<b>{e(', '.join(failed[:5]))}</b> stopped with an error", f"{base}/me?tab=servers#servers", "Look"))
+    for k in oom_notes(name)[-2:]:
+        out.append((f"The box ran out of memory and stopped <b>{e(sb.printable(str(k.get('what') or 'something'))[:80])}</b>",
+                    f"{base}/me?tab=servers#running", "Look"))
+    for it in [i for i in st.get("running") or [] if isinstance(i, dict)][:RUN_SHOWN]:
+        age = it.get("age") if isinstance(it.get("age"), (int, float)) else None
+        if age is not None and age >= RUN_OLD and int(it.get("mem") or 0) >= RUN_OLD_MEM \
+                and it.get("kind") in ("database", "container", "terminal", "app"):
+            out.append((f"<b>{e(sb.printable(str(it.get('name') or '?'))[:60])}</b> has been running for "
+                        f"{e(sbrunning.ago(age))} ({e(sb.human(int(it.get('mem') or 0)))}). Still need it?",
+                        f"{base}/me?tab=servers#running", "Review"))
+            if len(out) >= 6:
+                break
+    pend = [str(p) for p in ((((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {})
+                             .get("pending_deletions") or [])][:5]
+    if pend:
+        out.append((f"Soon to be archived: <b>{e(', '.join(pend))}</b>", f"{base}/me?tab=account#archive", "See"))
+    return out
+
+
+def needs_section(items):
+    if not items:
+        return ""
+    return ("<div class='blk' id='needs'><h2>Needs you</h2><section class='sec needs'><ul class='rows'>" + "".join(
+        f"<li><span class='d'>{d}</span><span class='a'><a class='btn secondary sm' href='{href}'>{html.escape(label)}"
+        "</a></span></li>" for d, href, label in items) + "</ul></section></div>")
+
+
+def tab_body(tab, parts, slot, fallback=""):
+    """One tab's cards. A result whose card isn't on this tab still shows, at the top."""
+    body = "".join(p for p in parts if p)
+    if fallback and not slot.used:
+        body = f"<div class='out' data-out>{fallback}</div>" + body
+    return f"<div class='tabc' id='tab-{tab}'>{body}</div>"
+
+
+def unread_count(msg):
+    return sum(1 for m in (msg.get("messages") or []) if isinstance(m, dict) and m.get("id") and not m.get("read")) \
+        if msg.get("ok") else 0
+
+
+def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
+    """The owner's /_box/me: their own account (Home, Messages, Servers, Account) and the whole box (admin tabs)
+    in one tab bar."""
     e = html.escape
     base = "/_box"
     tok = token_for(ip, who["id"])
@@ -1700,104 +1887,158 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
     st, more_data = portal_bundle(ip, who)
     shared, msg, where, tg = (more_data[k] for k in ("shared", "msg", "where", "tg"))
     view = str((result or {}).get("_view") or "")
-    out = []
-    start = [f"<h2>Hi {e(name)}</h2><p class='mut'>You're the owner of {e(HOST)}, signed in as "
-             f"<b>{e(who.get('login', ''))}</b>.</p>"]
-    if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
-        start.append('<div class="line"><a class="btn" href="/_box/app">Open T3</a></div>')
-    out.append("<section class='start' id='start'>" + "".join(start) + "</section>")
-    out.append(hackathon_banner(name))
-    out.append(inbox_section(msg, where, tok, base, bool(tg.get("linked")), result))
-    out.append(people_section(where, name, tok, base, result))
-    trow = telegram_row(tg, tok, base, owner=True)
-    if result and view == "telegram" and result.get("ok") and result.get("url"):
-        out.append(telegram_link_card(result, tok, base))
-    elif result and view == "telegram":
-        out.append(portal_result(result, btn, base))
-    if trow:
-        out.append("<section class='sec'><ul class='rows'><li><span class='k'>" + trow[0] + "</span><span class='d'>"
-                   + trow[1] + "</span>" + (f"<span class='a'>{trow[2]}</span>" if trow[2] else "") + "</li></ul></section>")
-    if result and view != "running-ctl" and (view == "boost" or view.endswith(("-ctl", "-logs"))):
-        out.append(portal_result(result, btn, base))
-    try:
-        out.append(you_strip(name, rec, st, btn, rng, base))
-    except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
-        print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
-    out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
-    out.append(servers_section(st, shared, btn, base, own_public=False))
-    # ---- admin ----
+    if result and not card:
+        ptab, card = place_of(result, owner=True)
+        tab = tab or ptab
     try:
         boxes = boxes_section()
     except Exception as ex:  # noqa: BLE001 - a bad peer answer must never take the page down
         print(f"boxes section: {ex!r}", file=sys.stderr, flush=True)
         boxes = ""
     nreq = len([r for r in (sb.read_json(REQUESTS_JSON, {}) or {}).get("requests") or [] if isinstance(r, dict)])
-    tabs = [(k, label) for k, label in ADMIN_TABS if k != "boxes" or boxes]
-    if tab not in dict(tabs):
-        tab = "requests" if nreq else "people"
-    out.append("<div class='admin-h' id='admin'><h2>Admin</h2><span class='sub'>only you see this</span></div>"
-               "<nav class='tabs' aria-label='Admin'>" + "".join(
-                   f"<a href='{base}/me?tab={k}#admin' class='{'on' if k == tab else ''}'>{e(label)}"
-                   + (f"<span class='pill warn'>{nreq}</span>" if k == "requests" and nreq else "") + "</a>"
-                   for k, label in tabs) + "</nav>")
-    if result and not (view in ("boost", "msg", "where", "telegram") or view.endswith(("-ctl", "-logs"))):
-        out.append(portal_result(result, btn, base))
+    tabs = page_tabs(True, bool(boxes))
+    tab = resolve_tab(tab, True, nreq, bool(boxes))
+    res_html = result_html(result, btn, tok, base)
+    slot = Slot(card, res_html)
+    out = [tab_bar(base, tabs, tab, {"messages": (unread_count(msg), ""), "requests": (nreq, "warn")}, owner=True)]
+    parts = []
     try:
-        if tab == "people":
-            out.append(box_section(btn=btn))
-        elif tab == "requests":
-            out.append(requests_section(btn))
-        elif tab == "running":
-            out.append(running_all_section(ip, who))
-        elif tab == "boxes":
-            out.append(boxes)
-        elif tab == "settings":
-            out.append(hackathon_section(btn))
-            out.append(telegram_setup_section(tg, tok, base))
-            out.append(update_section(btn))
+        if tab == "home":
+            start = [f"<h2>Hi {e(name)}</h2><p class='mut'>You're the owner of {e(HOST)}, signed in as "
+                     f"<b>{e(who.get('login', ''))}</b>.</p>"]
+            if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
+                start.append('<div class="line"><a class="btn" href="/_box/app">Open T3</a></div>')
+            parts.append("<section class='start' id='start' data-card='start'>" + slot("start") + "".join(start)
+                         + "</section>")
+            parts.append(hackathon_banner(name))
+            parts.append(needs_section(needs_items(base, msg, st, name, nreq)))
+            parts.append(people_section(where, name, tok, base, slot))
+            try:
+                parts.append(activity_section(name, owner=True))
+            except Exception as ex:  # noqa: BLE001
+                print(f"activity: {ex!r}", file=sys.stderr, flush=True)
+        elif tab == "messages":
+            parts.append(inbox_section(msg, where, tok, base, bool(tg.get("linked")), slot,
+                                       compose_open=view == "msg" and not (result or {}).get("ok")))
+        elif tab == "servers":
+            parts.append(servers_section(st, shared, btn, base, own_public=False, slot=slot))
+            parts.append(running_section(name, rec, st, btn, slot))
+        elif tab == "account":
+            trow = telegram_row(tg, tok, base, owner=True)
+            if trow:
+                parts.append("<div class='blk' id='account' data-card='account'><h2>Your account</h2><section class='sec'>"
+                             + slot("account") + "<ul class='rows'><li><span class='k'>" + trow[0] + "</span>"
+                             "<span class='d'>" + trow[1] + "</span>" + (f"<span class='a'>{trow[2]}</span>" if trow[2] else "")
+                             + "</li></ul></section></div>")
+            try:
+                parts.append("<div class='blk' id='dash' data-card='dash'><h2>Usage</h2><section class='sec'>"
+                             + slot("dash") + you_strip(name, rec, st, btn, rng, base) + "</section></div>")
+            except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
+                print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
         else:
-            out.append(events_section())
+            parts.append("<p class='sub adm'>Only you see this tab.</p>")
+            if tab == "people":
+                parts.append(box_section(btn=btn, slot=slot))
+            elif tab == "requests":
+                parts.append(requests_section(btn, slot))
+            elif tab == "running":
+                parts.append(running_all_section(ip, who))
+            elif tab == "boxes":
+                parts.append(boxes)
+            elif tab == "settings":
+                parts.append(hackathon_section(btn, slot))
+                parts.append(telegram_setup_section(tg, tok, base, slot))
+                parts.append(update_section(btn, slot))
+            else:
+                parts.append(events_section())
     except Exception as ex:  # noqa: BLE001
-        print(f"admin {tab}: {ex!r}", file=sys.stderr, flush=True)
-        out.append("<p class='err'>Couldn't load this part of the page.</p>")
-    try:
-        out.append(activity_section(name, owner=True))
-    except Exception as ex:  # noqa: BLE001
-        print(f"activity: {ex!r}", file=sys.stderr, flush=True)
+        print(f"owner {tab}: {ex!r}", file=sys.stderr, flush=True)
+        parts.append("<p class='err'>Couldn't load this part of the page.</p>")
+    out.append(tab_body(tab, parts, slot, res_html))
     if st.get("ok") is False and st.get("error"):
         out.append(f"<p class='err'>{e(st['error'])}</p>")
     out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
-    out.append(f"<script>{START_JS}</script>")
+    out.append(page_script())
     return page("Owner dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=True)
 
 
 AI_NAMES = {"claude": "Claude", "codex": "Codex"}
-START_VIEWS = ("", "login", "code", "check", "t3", "t3prompt")  # results shown inside the start card
 PROMPT_FAIL = "Couldn't make your prompt. Try again in a minute. If it still fails, tell the owner."
 
 START_JS = r"""
 (function(){
+if(window.sbInit)return;window.sbInit=1;  // once per page, even when a swap brings this script back
 function copyText(v){if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(v);
 const t=document.createElement("textarea");t.value=v;t.style.position="fixed";t.style.opacity="0";
 document.body.appendChild(t);t.select();try{document.execCommand("copy")}finally{t.remove()}return Promise.resolve()}
-document.querySelectorAll("[data-copy]").forEach(function(b){b.addEventListener("click",function(){
-const src=document.getElementById(b.getAttribute("data-copy"));const label=b.dataset.label||(b.dataset.label=b.textContent);
-b.textContent="Copied";setTimeout(function(){b.textContent=label},2000);
-copyText(src.value).catch(function(){})})});
-// any one-button form: a spinner on the clicked button while the page loads (never a check mark)
-document.querySelectorAll("form[method=post]:not([data-busy])").forEach(function(f){f.addEventListener("submit",function(ev){
-if(ev.defaultPrevented)return;const b=ev.submitter||f.querySelector("button");if(!b||b.classList.contains("linkbtn"))return;
-b.classList.add("busy");setTimeout(function(){b.disabled=true},0)})});
-window.addEventListener("pageshow",function(ev){if(ev.persisted)document.querySelectorAll("button.busy").forEach(function(b){
+// one listener for the whole page, so buttons inside a card that was just swapped in work too
+document.addEventListener("click",function(ev){
+var b=ev.target.closest("[data-copy]");
+if(b){const src=document.getElementById(b.getAttribute("data-copy"));if(!src)return;
+const label=b.dataset.label||(b.dataset.label=b.textContent);b.textContent="Copied";
+setTimeout(function(){b.textContent=label},2000);copyText(src.value).catch(function(){});return}
+var x=ev.target.closest("[data-close]"),o=x&&x.closest("[data-out]");if(o){ev.preventDefault();o.innerHTML=""}});
+function each(l,f){Array.prototype.forEach.call(l,f)}
+function scripts(el){each(el.querySelectorAll("script"),function(s){var n=document.createElement("script");
+n.textContent=s.textContent;s.replaceWith(n)})}
+function pristine(el){  // nothing typed or opened in it: safe to refresh with the server's newer copy
+if(el.querySelector("details[open]"))return false;
+return Array.prototype.every.call(el.querySelectorAll("input:not([type=hidden]),textarea,select"),function(i){
+if(i.tagName==="SELECT")return Array.prototype.every.call(i.options,function(o){return o.selected===o.defaultSelected});
+if(i.type==="checkbox"||i.type==="radio")return i.checked===i.defaultChecked;return i.value===i.defaultValue})}
+function show(c){var r=c.querySelector("[data-out]>*");if(!r)return;r.setAttribute("tabindex","-1");
+r.focus({preventScroll:true});var b=r.getBoundingClientRect();
+if(b.top<0||b.bottom>innerHeight)r.scrollIntoView({block:b.height>innerHeight?"start":"nearest"})}
+function swap(c,text){
+var doc=new DOMParser().parseFromString(text,"text/html"),id=c.getAttribute("data-card");
+var n=doc.querySelector('[data-card="'+id+'"]'),m=document.querySelector("main");
+if(!n){var nm=doc.querySelector("main");if(!nm||!m)return false;m.innerHTML=nm.innerHTML;scripts(m);
+var r=m.querySelector("[data-out]>*");if(r)r.scrollIntoView({block:"nearest"});return true}
+var nn=document.importNode(n,true);c.replaceWith(nn);scripts(nn);
+var ot=document.querySelector("nav.tabs"),nt=doc.querySelector("nav.tabs");  // new counts on the tabs
+if(ot&&nt){var sl=ot.scrollLeft,t=document.importNode(nt,true);ot.replaceWith(t);t.scrollLeft=sl}
+each(document.querySelectorAll("[data-card]"),function(o){if(o===nn||nn.contains(o)||o.contains(nn))return;
+var k=doc.querySelector('[data-card="'+o.getAttribute("data-card")+'"]');
+if(k&&pristine(o)){var y=document.importNode(k,true);o.replaceWith(y);scripts(y)}});
+show(nn);return true}
+function spin(f,b,on){if(b&&!b.classList.contains("linkbtn"))b.classList.toggle("busy",on);
+each(f.querySelectorAll("button"),function(x){x.disabled=on})}
+document.addEventListener("submit",function(ev){
+if(ev.defaultPrevented)return;var f=ev.target,b=ev.submitter||f.querySelector("button");
+if(f.hasAttribute("data-busy")){var w=document.getElementById("start-busy");if(w)w.hidden=false}
+var c=f.closest("[data-card]");
+if(!c||(f.getAttribute("method")||"").toLowerCase()!=="post"||!window.fetch||!window.DOMParser){
+// a normal page load: a spinner on the clicked button meanwhile (never a check mark)
+if(b&&!b.classList.contains("linkbtn"))b.classList.add("busy");
+setTimeout(function(){each(f.querySelectorAll("button"),function(x){x.disabled=true})},0);return}
+ev.preventDefault();  // (f.action would be the hidden input named "action": read the attribute)
+var body=new URLSearchParams(new FormData(f));body.set("_card",c.getAttribute("data-card"));
+var nav=document.querySelector("nav.tabs");if(nav)body.set("_tab",nav.getAttribute("data-cur"));
+spin(f,b,true);
+fetch(f.getAttribute("action")||location.pathname,{method:"POST",body:body,headers:{"X-Requested-With":"fetch"},credentials:"same-origin"})
+.then(function(r){if((r.headers.get("Content-Type")||"").indexOf("text/html")<0)throw new Error("not a page");return r.text()})
+.then(function(t){if(!swap(c,t))throw new Error("no page")})
+.catch(function(){spin(f,b,false);var o=c.querySelector("[data-out]");if(o){o.innerHTML=window.SB_FAIL||"";show(c)}})
+.then(function(){window.sbDone=(window.sbDone||0)+1})});
+window.addEventListener("pageshow",function(ev){if(ev.persisted)each(document.querySelectorAll("button.busy"),function(b){
 b.classList.remove("busy");b.disabled=false})});
-document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){
-const n=document.getElementById("start-busy");if(n)n.hidden=false;
-setTimeout(function(){f.querySelectorAll("button").forEach(function(b){b.disabled=true})},0)})});
+// the tab bar: keep the current tab in sight on a phone; old #card links move to the tab that card is on now
+var nav=document.querySelector("nav.tabs");
+if(nav){var a=nav.querySelector("[aria-current]");if(a&&a.offsetLeft+a.offsetWidth>nav.clientWidth)nav.scrollLeft=a.offsetLeft-24;
+var h=location.hash.slice(1);if(h&&!/[?&]tab=/.test(location.search)){var map={};
+try{map=JSON.parse(nav.getAttribute("data-hash")||"{}")}catch(e){}
+var t=map[h];if(t&&t!==nav.getAttribute("data-cur"))location.replace(location.pathname+"?tab="+t+location.hash)}}
 // back from connecting the T3 app: show how to open it
 function openApp(){if(location.hash!=="#app")return;const d=document.getElementById("app");if(d){d.open=true;d.scrollIntoView({block:"center"})}}
 openApp();window.addEventListener("hashchange",openApp);
 })();
 """
+
+
+def page_script():
+    """The dashboard's one script: copy buttons, spinners, in-place results, tabs. The page works without it."""
+    fail = notice("Couldn't reach the box. Check your connection and try again.", "bad")
+    return f"<script>window.SB_FAIL={json.dumps(fail).replace('</', '<\\/')};{START_JS}</script>"
 
 
 def box_ip():
@@ -1889,21 +2130,21 @@ def hidden(tok, **kw):
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">' for k, v in kw.items())
 
 
-def inbox_section(msg, where, tok, base, tg_linked=False, result=None):
-    """Messages for this person, most urgent first, with Done / Reply / Clear, and a "Message someone" form."""
+def inbox_section(msg, where, tok, base, tg_linked=False, slot=None, compose_open=False):
+    """Messages for this person, most urgent first, with Done / Reply / Clear, and a "Message someone" form.
+    compose_open: the form stays open after a send that failed."""
     e = html.escape
+    head = "<div class='blk' id='messages' data-card='messages'><div class='dash-h'><h2>Messages"
     if not msg.get("ok"):
-        return ""
+        return (head + "</h2></div><section class='sec'>" + (slot or NO_SLOT)("messages")
+                + "<p class='mut' style='margin:0'>Couldn't load your messages just now. Refresh in a minute.</p>"
+                "</section></div>")
     names = display_names(where)
     nm = (lambda u: names.get(u) or u)
     msgs = [m for m in msg.get("messages") or [] if isinstance(m, dict) and m.get("id")]
     unread = sum(1 for m in msgs if not m.get("read"))
-    view = str((result or {}).get("_view") or "")
-    out = ["<div class='dash-h' id='messages'><h2>Messages"
-           + (f" <span class='pill warn'>{unread} new</span>" if unread else "") + "</h2></div>"]
-    if result and view == "msg":
-        out.append(portal_result(result, None, base))
-    out.append("<section class='sec'>")
+    out = [head + (f" <span class='pill warn'>{unread} new</span>" if unread else "") + "</h2></div>",
+           "<section class='sec'>", (slot or NO_SLOT)("messages")]
     if not msgs:
         out.append("<p class='mut' style='margin:0'>Nothing waiting for you. When a teammate (or their agent) sends you "
                    "something, it shows up here" + (" and on your phone." if tg_linked else ".") + "</p>")
@@ -1939,7 +2180,7 @@ def inbox_section(msg, where, tok, base, tg_linked=False, result=None):
     if people:
         opts = "".join(f"<option value='{e(u)}'>{e(nm(u))}</option>" for u in people)
         out.append(
-            f"<details class='compose'{' open' if view == 'msg' and not (result or {}).get('ok') else ''}>"
+            f"<details class='compose'{' open' if compose_open else ''}>"
             "<summary class='btn secondary sm'>Message someone</summary>"
             f"<form method='post' action='{base}/me'>{hidden(tok, action='msg', op='send')}"
             f"<label>To</label><select name='to' required>{opts}</select>"
@@ -1961,18 +2202,17 @@ def inbox_section(msg, where, tok, base, tg_linked=False, result=None):
         out.append("<h3 style='margin:20px 0 6px'>You sent</h3><ul class='ev'>" + "".join(
             f"<li><b>{e(m.get('title') or '')}</b> <span class='sub'>to {e(nm(m.get('to')))} · {answer(m)}</span></li>"
             for m in sent) + "</ul>")
-    out.append("</section>")
+    out.append("</section></div>")
     return "".join(out)
 
 
-def people_section(where, me, tok, base, result=None):
+def people_section(where, me, tok, base, slot=None):
     """Who's here: everyone's status in their own words and a rough "active" hint, and a form for your own."""
     e = html.escape
     if not where.get("ok"):
         return ""
     ppl = [p for p in where.get("people") or [] if isinstance(p, dict) and p.get("user")]
     mine = next((p for p in ppl if p["user"] == me), {"user": me, "name": me})
-    view = str((result or {}).get("_view") or "")
     rows = []
     for p in sorted(ppl, key=lambda p: (p["user"] != me, not p.get("active_now"), str(p.get("name")).lower())):
         act = str(p.get("activity") or "")
@@ -1997,12 +2237,11 @@ def people_section(where, me, tok, base, result=None):
     privacy = ("Others don't see when you were last active. " if private else
                f"Others see how recently you used the box (<b>{e(mine.get('activity') or 'new here')}</b>), never what "
                "you're doing. ") + priv
-    return ("<div class='dash-h' id='people'><h2>Who's here</h2></div>"
-            + (portal_result(result, None, base) if result and view == "where" else "")
-            + "<section class='sec'><ul class='pres'>" + "".join(rows) + "</ul>"
+    return ("<div class='blk' id='people' data-card='people'><div class='dash-h'><h2>Who's here</h2></div>"
+            + "<section class='sec'>" + (slot or NO_SLOT)("people") + "<ul class='pres'>" + "".join(rows) + "</ul>"
             + f"<div class='mystatus'>{form}<div class='sub' style='margin:8px 0 0'>Your agent can set this for you too "
               f"(\"tell people I'm in class till 3\"). {clear}</div><div class='sub' style='margin:4px 0 0'>{privacy}</div></div>"
-            + "</section>")
+            + "</section></div>")
 
 
 def telegram_row(tg, tok, base, owner=False):
@@ -2018,7 +2257,7 @@ def telegram_row(tg, tok, base, owner=False):
     if not tg.get("ready"):
         if owner:
             return ("Phone alerts", "<span class='dot'></span>Telegram isn't on for this box yet.",
-                    f"<a class='btn secondary sm' href='{base}/me?tab=settings#admin'>Set it up</a>")
+                    f"<a class='btn secondary sm' href='{base}/me?tab=settings#telegram-setup'>Set it up</a>")
         return ("Phone alerts", "<span class='dot'></span>Not on for this box yet. The owner can turn on Telegram.", "")
     if tg.get("linked"):
         quiet = tg.get("notify", "important") == "important"
@@ -2052,11 +2291,11 @@ Your messages always show on this page too.</p></div>
 <script>(function(){{const body=new URLSearchParams({{token:{json.dumps(tok)},action:"telegram",op:"status",format:"json"}});
 const t0=Date.now();async function poll(){{if(Date.now()-t0>15*60*1000){{document.getElementById("tgwait").textContent=
 "The link expired. Press Connect Telegram again.";return}}try{{const r=await fetch("{base}/me",{{method:"POST",body}});
-const j=await r.json();if(j.linked){{location.href="{base}/me#account";return}}}}catch(e){{}}setTimeout(poll,3000)}}
+const j=await r.json();if(j.linked){{location.href="{base}/me?tab=account#account";return}}}}catch(e){{}}setTimeout(poll,3000)}}
 setTimeout(poll,3000)}})();</script>"""
 
 
-def telegram_setup_section(tg, tok, base):
+def telegram_setup_section(tg, tok, base, slot=None):
     """Owner settings: give the box a Telegram bot (one token from @BotFather), or see that it's on."""
     e = html.escape
     if tg.get("ready"):
@@ -2074,11 +2313,12 @@ def telegram_setup_section(tg, tok, base):
                 "<li>In Telegram, open <a href='https://t.me/BotFather' target='_blank' rel='noopener'>@BotFather</a> "
                 "and send <code>/newbot</code>. Give it a name, like “Our treehouse”.</li>"
                 "<li>It answers with a token (it looks like <code>123456789:AAH…</code>). Paste it here.</li></ol>")
-    return ("<h3 style='margin:24px 0 10px'>Telegram</h3><section class='sec'>" + body
+    return ("<div class='blk' id='telegram-setup' data-card='telegram-setup'><h2>Telegram</h2><section class='sec'>"
+            + (slot or NO_SLOT)("telegram-setup") + body
             + f"<form method='post' action='{base}/me' class='inv'>{hidden(tok, action='telegram-setup')}"
             "<input type='password' name='tgtoken' required autocomplete='off' placeholder='bot token' "
             "aria-label='Bot token from BotFather'><button class='sm'>"
-            + ("Replace token" if tg.get("ready") else "Turn on") + "</button></form></section>")
+            + ("Replace token" if tg.get("ready") else "Turn on") + "</button></form></section></div>")
 
 
 T3_DOWNLOAD = "https://t3.codes/download"
@@ -2099,19 +2339,17 @@ def app_help(more=""):
             + (f"<p>Your other boxes don't have it yet. {more}</p>" if more else "") + "</div>")
 
 
-def team_section(team, names, tok, base, result=None):
+def team_section(team, names, tok, base, slot=None):
     """Teammates' agents in your T3: who can, a Stop button each, and a form to let someone in."""
     e = html.escape
     if not team.get("ok") or not team.get("people"):
         return ""
     nm = (lambda u: names.get(u) or u)
     access = team.get("access") or {}
-    view = str((result or {}).get("_view") or "")
     grants = [g for g in team.get("grants") or [] if isinstance(g, dict) and g.get("to")]
-    out = ["<div class='dash-h' id='team'><h2>Teammates' agents</h2></div>"]
-    if result and view == "team":
-        out.append(portal_result(result, None, base))
-    out.append("<section class='sec'><p class='sub' style='margin-top:0'>Let a teammate's agents work in your T3: open "
+    out = ["<div class='blk' id='team' data-card='team'><h2>Teammates' agents</h2><section class='sec'>",
+           (slot or NO_SLOT)("team")]
+    out.append("<p class='sub' style='margin-top:0'>Let a teammate's agents work in your T3: open "
                "your projects, read code, run things. Handy at a hackathon when their agent needs to fix something "
                "in your app. You can stop it any time.</p>")
     if grants:
@@ -2127,7 +2365,8 @@ def team_section(team, names, tok, base, result=None):
                f"<select name='to' aria-label='Teammate'>{opts}</select>"
                f"<select name='access' aria-label='What their agents may do'>{lv}</select>"
                "<button class='sm'>Allow</button></form>"
-               "<p class='sub' style='margin:8px 0 0'>If it stops working after a month, press Allow again.</p></section>")
+               "<p class='sub' style='margin:8px 0 0'>If it stops working after a month, press Allow again.</p>"
+               "</section></div>")
     return "".join(out)
 
 
@@ -2182,7 +2421,7 @@ def peer_card(res, tok, base):
     poll = (f"<script>(function(){{const body=new URLSearchParams({{token:{json.dumps(tok)},action:'peer-check',"
             f"key:{json.dumps(key)},format:'json'}});const t0=Date.now();async function poll(){{"
             "if(Date.now()-t0>15*60*1000)return;try{const r=await fetch('" + base + "/me',{method:'POST',body});"
-            "const j=await r.json();if(j.all_done){location.href='" + base + "/me#account';return}}catch(e){}"
+            "const j=await r.json();if(j.all_done){location.href='" + base + "/me?tab=account#account';return}}catch(e){}"
             "setTimeout(poll,4000)}setTimeout(poll,4000)})();</script>")
     return (f"<div class='card' id='peers'><h3>Set up {e(PEER_LABEL.get(key, key))} on your other boxes</h3>"
             "<ul class='rows'>" + "".join(rows) + "</ul><p class='sub'>This page notices by itself once each box is "
@@ -2203,10 +2442,10 @@ def hackathon_banner(me):
     when = time.strftime("%a %H:%M", time.localtime(until))
     extra = (" Your agent's package requests are approved straight away." if me in chosen else "")
     return (f"<div class='note hk-on' role='status'><span class='ic' aria-hidden='true'></span><p><b>Hackathon mode</b> "
-            f"until {e(when)}.{extra} Shared servers, messages and statuses below are how the team stays in sync.</p></div>")
+            f"until {e(when)}.{extra} Shared servers, messages and statuses here are how the team stays in sync.</p></div>")
 
 
-def archive_notice(name, tok, base):
+def archive_notice(name, tok, base, slot=None):
     """Projects about to be archived, and archived ones with a Restore button (`box restore`, as this user)."""
     e = html.escape
     u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
@@ -2225,17 +2464,23 @@ def archive_notice(name, tok, base):
             f"<b>{e(a)}</b> <form method='post' action='{base}/me' style='display:inline'>"
             f"{hidden(tok, action='restore', key=a)}<button class='linkbtn'>Restore</button></form>" for a in arch)
             + "</div>")
-    return "<section class='sec warnsec'>" + "".join(out) + "</section>" if out else ""
+    slot = slot or NO_SLOT
+    if not out and slot.card != "archive":
+        return ""
+    return ("<div class='blk' id='archive' data-card='archive'><h2>Projects</h2><section class='sec warnsec'>"
+            + slot("archive") + ("".join(out) or "<p class='mut'>Nothing archived right now.</p>") + "</section></div>")
 
 
 ARCHIVE_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/ -]{0,120}")
 
 
-def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab=""):
-    """The friend's home page: one start card (log in to an AI, then get the T3 app), their dashboard and
-    servers, a few account lines, and the rest under "More options". No terminal anywhere."""
+def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="", card=""):
+    """The friend's home page, in tabs: Home (the start card: log in to an AI, then open T3; what needs you;
+    who's here), Messages, Servers (yours, the group's, what's running) and Account (logins, phone alerts,
+    teammates, projects, usage, more options). Brand-new people see only the start card. No terminal anywhere.
+    `card`: the card a button's result shows in (see result_place)."""
     if who.get("owner"):
-        return owner_page(ip, who, name, rec, result, rng, tab)
+        return owner_page(ip, who, name, rec, result, rng, tab, card)
     e = html.escape
     tok = token_for(ip, who["id"])
     gate = bool(who.get("cf_jwt"))
@@ -2245,7 +2490,10 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     logins, t3 = st.get("logins") or {}, st.get("t3")
     btn = portal_btn(tok, base)
     view = str((result or {}).get("_view") or "")
-    in_start = bool(result) and view in START_VIEWS
+    if result and not card:
+        ptab, card = place_of(result)
+        tab = tab or ptab
+    in_start = bool(result) and card == "start"
 
     ai = [k for k in ("claude", "codex") if k in logins]
     ai_ok = any(logins[k]["ok"] for k in ai)
@@ -2271,30 +2519,30 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         def open_t3(label, small=False):
             return btn("t3", label, link=small)
     busy = ("<div id='start-busy' hidden>" + notice("Waking up T3. This can take a minute.", "busy") + "</div>")
-    card = []
+    sc = []
     if in_start and result.get("ok") and result.get("app_prompt"):
-        card.append(prompt_body(result))
+        sc.append(prompt_body(result))
     elif in_start and result.get("ok") and not result.get("done") and not result.get("pair_url") \
             and (result.get("url") or result.get("code") or result.get("paste")):
-        card.append(portal_result(result, btn, base))  # a login in progress: its steps are the card
+        sc.append(portal_result(result, btn, base))  # a login in progress: its steps are the card
     else:
         if in_start:
-            card.append(portal_result(result, btn, base))
+            sc.append(f"<div class='out' data-out>{portal_result(result, btn, base)}</div>")
         if state == "S0":
-            card.append("<h2>T3 isn't set up on this box yet</h2>"
-                        "<p>Tell the owner. Everything else on this page still works.</p>")
+            sc.append("<h2>T3 isn't set up on this box yet</h2>"
+                      "<p>Tell the owner. Everything else on this page still works.</p>")
         elif state == "S1":
-            card.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Log in to your AI'}</h2>")
+            sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Log in to your AI'}</h2>")
             if not ai:
-                card.append("<p>No coding agents are installed on the box yet. Tell the owner.</p>")
+                sc.append("<p>No coding agents are installed on the box yet. Tell the owner.</p>")
             else:
-                card.append("<p>Your agents on the box use your Claude or ChatGPT plan. You only do this once.</p>")
+                sc.append("<p>Your agents on the box use your Claude or ChatGPT plan. You only do this once.</p>")
                 first = "claude" if "claude" in logins else "codex"
-                card.append("<div class='line'>" + btn("login", "Log in with Claude" if first == "claude" else
-                                                       "Log in with ChatGPT", first) + "</div>")
+                sc.append("<div class='line'>" + btn("login", "Log in with Claude" if first == "claude" else
+                                                     "Log in with ChatGPT", first) + "</div>")
                 if first == "claude" and "codex" in logins:
-                    card.append("<div class='line sub'>Or use your ChatGPT plan: "
-                                + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
+                    sc.append("<div class='line sub'>Or use your ChatGPT plan: "
+                              + btn("login", "Log in with ChatGPT", "codex", link=True) + ".</div>")
         else:  # S2, S3: T3 in this browser, or the T3 app on their laptop or phone (T3 Connect: no VPN)
             t3c = logins.get("t3connect")
             if t3c and t3c.get("ok"):
@@ -2307,41 +2555,67 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                 app = btn("login", "Open T3 app", "t3connect", primary=False)
             else:
                 app = ""
-            card.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><p>T3 is where you talk to your "
-                        "agent. It runs on the box, so it keeps working when you close the tab or the app.</p>"
-                        f"<div class='line btns'>{open_t3('Open T3 in this browser')}{app}</div>" + busy
-                        + ("" if t3c and t3c.get("ok") else
-                           "<div class='line sub'>" + ("Setting up another laptop? " if state == "S3" else
-                                                        "Already on Tailscale? " if app else "Want the T3 app on your laptop? ")
-                           + btn("t3prompt", "Make a new setup prompt" if state == "S3" else "Make a setup prompt",
-                                 link=True, attrs=" data-busy='1'")
-                           + " and paste it into Claude Code or Codex there.</div>"))
+            sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><p>T3 is where you talk to your "
+                      "agent. It runs on the box, so it keeps working when you close the tab or the app.</p>"
+                      f"<div class='line btns'>{open_t3('Open T3 in this browser')}{app}</div>" + busy
+                      + ("" if t3c and t3c.get("ok") else
+                         "<div class='line sub'>" + ("Setting up another laptop? " if state == "S3" else
+                                                      "Already on Tailscale? " if app else "Want the T3 app on your laptop? ")
+                         + btn("t3prompt", "Make a new setup prompt" if state == "S3" else "Make a setup prompt",
+                               link=True, attrs=" data-busy='1'")
+                         + " and paste it into Claude Code or Codex there.</div>"))
+    start_card = "<section class='start' id='start' data-card='start'>" + "".join(sc) + "</section>"
 
     out = []
     if who["display"] != name:  # the start card is the greeting; only say which account this is when it differs
         out.append(f"<p class='greet'>Hi {e(who['display'])}. Your account on {e(HOST)} is <b>{e(name)}</b>.</p>")
-    out.append("<section class='start' id='start'>" + "".join(card) + "</section>")
-
-    if state == "S1":  # brand new: one thing to do. The rest of the page appears once their AI is logged in.
+    if state == "S1":  # brand new: one thing to do. The tabs appear once their AI is logged in.
+        out.append(start_card)
         if gate and CF:
             out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
-        out.append(f"<script>{START_JS}</script>")
+        out.append(page_script())
         return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
-    out.append(hackathon_banner(name))
-    out.append(archive_notice(name, tok, base))
-    if result and view == "restore":
-        out.append(portal_result(result, btn, base))
-    tg_link = bool(tg.get("linked"))
-    out.append(inbox_section(msg, where, tok, base, tg_link, result))
-    out.append(people_section(where, name, tok, base, result))
-    if result and view != "running-ctl" and view.endswith(("-ctl", "-logs")):
-        out.append(portal_result(result, btn, base))
-    out.append(servers_section(st, shared, btn, base))
-    # what's using memory right now, with Stop buttons (lib/sbrunning.py): right under the servers it includes
-    out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
-    out.append(team_section(team, display_names(where), tok, base, result))
 
-    # ---- your account: one row per thing, buttons on the right ----
+    tab = resolve_tab(tab)
+    res_html = "" if in_start or not result else result_html(result, btn, tok, base)
+    slot = Slot(card, res_html)
+    out.append(tab_bar(base, FRIEND_TABS, tab, {"messages": (unread_count(msg), "")}))
+    parts = []
+    try:
+        if tab == "home":
+            parts += [start_card, hackathon_banner(name), needs_section(needs_items(base, msg, st, name)),
+                      people_section(where, name, tok, base, slot)]
+            try:
+                parts.append(activity_section(name))
+            except Exception as ex:  # noqa: BLE001
+                print(f"activity: {ex!r}", file=sys.stderr, flush=True)
+        elif tab == "messages":
+            parts.append(inbox_section(msg, where, tok, base, bool(tg.get("linked")), slot,
+                                       compose_open=view == "msg" and not (result or {}).get("ok")))
+        elif tab == "servers":
+            parts.append(servers_section(st, shared, btn, base, slot=slot))
+            # what's using memory right now, with Stop buttons (lib/sbrunning.py): right under the servers it includes
+            parts.append(running_section(name, rec, st, btn, slot))
+        else:
+            parts += account_tab(who, name, rec, st, logins, tg, team, where, tok, base, btn, slot, rng,
+                                 ai, ai_ok, on_tailnet, gate, more_open=card == "more" and bool(result),
+                                 key_open=card == "more" and view == "add-key")
+    except Exception as ex:  # noqa: BLE001
+        print(f"portal {tab}: {ex!r}", file=sys.stderr, flush=True)
+        parts.append("<p class='err'>Couldn't load this part of the page.</p>")
+    out.append(tab_body(tab, parts, slot, res_html))
+    if st.get("ok") is False and st.get("error"):
+        out.append(f"<p class='err'>{e(st['error'])}</p>")
+    if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
+        out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
+    out.append(page_script())
+    return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
+
+
+def account_tab(who, name, rec, st, logins, tg, team, where, tok, base, btn, slot, rng, ai, ai_ok, on_tailnet, gate,
+                more_open=False, key_open=False):
+    """The friend's Account tab: one row per login and setting, teammates' agents, projects, usage, more options."""
+    e = html.escape
     acct = []
 
     def row(k, d, a=""):
@@ -2350,7 +2624,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     if ai:
         names = " and ".join(AI_NAMES.get(k, logins[k]["label"]) for k in ai if logins[k]["ok"])
         row("AI", f'<span class="dot ok"></span>{e(names)}, logged in' if ai_ok else
-            '<span class="dot warn"></span>Not logged in yet (see the top of the page)')
+            '<span class="dot warn"></span>Not logged in yet (see Home)')
     if "gh" in logins:
         row("GitHub", '<span class="dot ok"></span>Connected' if logins["gh"]["ok"] else
             '<span class="dot"></span>Not connected. Your agent uses it to save your code.',
@@ -2358,7 +2632,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     if "t3connect" in logins:
         row("T3 app", '<span class="dot ok"></span>Connected. Open the T3 app on your phone or laptop and sign in.'
             if logins["t3connect"]["ok"] else '<span class="dot"></span>Not connected. Use T3 from your phone or laptop.',
-            "<a class='btn secondary sm' href='#app'>How</a>" if logins["t3connect"]["ok"] else
+            f"<a class='btn secondary sm' href='{base}/me?tab=home#app'>How</a>" if logins["t3connect"]["ok"] else
             btn("login", "Connect", "t3connect", primary=False, small=True))
     brow = boxes_row(st, logins, btn)
     if brow:
@@ -2366,15 +2640,13 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     trow = telegram_row(tg, tok, base)
     if trow:
         row(*trow)
-    peer = peer_card(result, tok, base) if result and view == "peer-login" and result.get("ok") else ""
-    tg_card = telegram_link_card(result, tok, base) if result and view == "telegram" and result.get("ok") \
-        and result.get("url") else ""
-    out.append("<h2 id='account'>Your account</h2>"
-               + (portal_result(result, btn, base) if result and view in ("telegram", "boost", "peer-login")
-                  and not tg_card and not peer else "")
-               + tg_card + peer + "<section class='sec'><ul class='rows'>" + "".join(acct) + "</ul></section>")
+    parts = ["<div class='blk' id='account' data-card='account'><h2>Your account</h2><section class='sec'>"
+             + slot("account") + "<ul class='rows'>" + "".join(acct) + "</ul></section></div>"]
+    parts.append(team_section(team, display_names(where), tok, base, slot))
+    parts.append(archive_notice(name, tok, base, slot))
     try:
-        out.append(you_strip(name, rec, st, btn, rng, base, fold=True))
+        parts.append("<div class='blk' id='dash' data-card='dash'><h2>Usage</h2><section class='sec'>" + slot("dash")
+                     + you_strip(name, rec, st, btn, rng, base) + "</section></div>")
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
 
@@ -2392,16 +2664,14 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     term = ["<h3>Terminal access</h3>"]
     if CF and gate:
         term.append(connect_section(name))
-    key_open = bool(result and view == "add-key")
     ssh_cmd = f"ssh {name}@{box_ip()}"
     term.append(f"""<details{' open' if key_open else ''}><summary class="sub" style="cursor:pointer">Add an SSH key yourself</summary>
-{portal_result(result, btn, base) if key_open else ''}
 {('<p>Your key is set up. Connect with:</p><pre>' + e(ssh_cmd) + '</pre>' if on_tailnet else
   '<p>Your key is set up.</p>') if st.get('ssh') else
  '<p class="mut">Paste your public key (<code>cat ~/.ssh/id_ed25519.pub</code> on your computer).</p>'}
 <form method="post" action="{base}/me"><input type="hidden" name="token" value="{tok}">
 <input type="hidden" name="action" value="add-key">
-<textarea name="sshkey" required placeholder="ssh-ed25519 AAAA... you@laptop"></textarea>
+<textarea name="sshkey" required placeholder="ssh-ed25519 AAAA... you@laptop" aria-label="Your SSH public key"></textarea>
 <button class="secondary">Add SSH key</button></form></details>""")
     more.append("".join(term))
     if "claude" in logins and not ai_ok:
@@ -2412,19 +2682,10 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
         more.append("<h3>This page</h3><p>" + ("<a href='/_box/direct-off'>Show this page first again</a>"
                                               if who.get("direct") else
                                               "<a href='/_box/direct-on'>Go straight to T3 next time</a>") + ".</p>")
-    out.append(f"<details class='sec more'{' open' if key_open else ''}>"
-               "<summary>More options<span class='sub'>phone, terminal, SSH</span></summary>" + "".join(more) + "</details>")
-    try:
-        out.append(activity_section(name))
-    except Exception as ex:  # noqa: BLE001
-        print(f"activity: {ex!r}", file=sys.stderr, flush=True)
-
-    if st.get("ok") is False and st.get("error"):
-        out.append(f"<p class='err'>{e(st['error'])}</p>")
-    if gate and CF:  # Cloudflare ends its own session at this path on the app's hostname
-        out.append('<p class="foot"><a class="btn secondary sm" href="/cdn-cgi/access/logout">Log out of this browser</a></p>')
-    out.append(f"<script>{START_JS}</script>")
-    return page("My dashboard", "<div class='box me'>" + "".join(out) + "</div>", gate=gate)
+    parts.append(f"<details class='sec more blk' id='more' data-card='more'{' open' if more_open else ''}>"
+                 "<summary>More options<span class='sub'>phone, terminal, SSH</span></summary>" + slot("more")
+                 + "".join(more) + "</details>")
+    return parts
 
 
 def public_pair(res):
@@ -2451,13 +2712,16 @@ def notice(text, kind="ok"):
     return f"<div class='note {kind}' role='status'><span class='ic' aria-hidden='true'>{icon}</span><p>{text}</p></div>"
 
 
+LOGIN_DONE = {"t3connect": "?tab=home#app", "gh": "?tab=account#account"}  # where a finished login's page lands
+
+
 def portal_result(res, btn, base=""):
     e = html.escape
     if not res.get("ok"):
         return notice(e(res.get('error') or 'something went wrong'), "bad")
     view = str(res.get("_view") or "")
     if view.endswith("-logs"):
-        return logs_card(res, btn)
+        return logs_card(res, btn, base)
     if view == "boost":  # older pages: boosts are gone, root explains why
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
     if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team"):
@@ -2505,7 +2769,7 @@ key:{json.dumps(key)},format:"json"}});const t0=Date.now();
 async function poll(){{if(Date.now()-t0>15*60*1000){{document.getElementById("wait").textContent=
 "The code expired. Reload this page and start again.";return}}
 try{{const r=await fetch("{base}/me",{{method:"POST",body}});const j=await r.json();
-if(j.done){{location.href="{base}/me{'#app' if key == 't3connect' else ''}";return}}}}catch(e){{}}setTimeout(poll,3000)}}
+if(j.done){{location.href="{base}/me{LOGIN_DONE.get(key, '')}";return}}}}catch(e){{}}setTimeout(poll,3000)}}
 setTimeout(poll,4000)}})();</script>"""
 
 
@@ -2612,7 +2876,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/join", "/me"):
             ip, who = self.ident()
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            self.send(200, join_page(ip, who, rng=(q.get("range") or ["24h"])[0]))
+            result, card = flash_get((q.get("r") or [""])[0], who["id"]) if who else (None, "")
+            self.send(200, join_page(ip, who, rng=(q.get("range") or ["24h"])[0], tab=(q.get("tab") or [""])[0],
+                                     result=result, card=card))
         elif path == "/healthz":
             self.send(200, "ok", "text/plain")
         else:
@@ -2636,6 +2902,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(413, "too large", "text/plain")
         body = self.rfile.read(n).decode(errors="replace")
         form = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+        self._form = form
         ip, who = self.ident()
         if not who:
             return self.send(403, join_page(ip, None))
@@ -2666,25 +2933,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, join_page(ip, who, msg="<h2>Account created</h2><p>Reload this page.</p>"))
         return self.send(200, portal_page(ip, who, name, rec, welcome=True))
 
-    def after_post(self, ip, who, name, rec, result):
-        """Post/redirect/get on the public site: show the result on a normal GET, so a refresh never resends a
+    def redirect(self, where, headers=()):
+        self.send(303, "", "text/plain", [("Location", where), *headers])
+
+    def is_fetch(self):
+        """The page's own script posting a form (it swaps the card in place): answer with the page, no redirect."""
+        return (self.headers.get("X-Requested-With") or "") == "fetch"
+
+    def after_post(self, ip, who, name, rec, result, code=200):
+        """A button's result, shown in the card the button was pressed in. From the page's script (fetch): the
+        page for that tab with the result in that card, which the script swaps in. Otherwise post/redirect/get:
+        the result on a normal GET of the same tab, scrolled to the card (#card), so a refresh never resends a
         button press (no "resend the form?" dialog, no repeated actions)."""
-        if ip != "gate":
-            return self.send(200, portal_page(ip, who, name, rec, result))
-        now = time.time()
-        for k in [k for k, v in FLASH.items() if now - v[0] > 900]:
-            FLASH.pop(k, None)
-        fid = secrets.token_urlsafe(9)
-        FLASH[fid] = (now, who["id"], result)
-        view = str(result.get("_view") or "")
-        anchor = "#start" if view in START_VIEWS else {"running-ctl": "#running", "telegram": "#account",
-                                                       "peer-login": "#account", "msg": "#messages", "where": "#people", "team": "#team"}.get(view, "")
-        tab = {"invite": "people", "hackathon": "settings", "request-update": "settings",
-               "telegram-setup": "settings"}.get(
-            view, "requests" if view.startswith("request-") else "")
-        if tab and who.get("owner"):
-            return self.redirect(f"/_box/me?r={fid}&tab={tab}#admin")
-        return self.redirect(f"/_box/me?r={fid}{anchor}")
+        tab, card = result_place(result, getattr(self, "_form", None), bool(who.get("owner")))
+        if self.is_fetch():
+            return self.send(code, portal_page(ip, who, name, rec, result, tab=tab, card=card),
+                             headers=[("X-Treehouse-Card", card)])
+        fid = flash_put(who["id"], result, card)
+        return self.redirect(redirect_url("/_box" if ip == "gate" else "", fid, tab, card))
 
     def portal_post(self, ip, who, form):
         name, rec = (who["name"], who["rec"]) if who.get("cf_jwt") else existing_account(who["id"])
@@ -2701,8 +2967,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             q = portal_rate.setdefault(who["id"], deque(maxlen=40))
             if len([t for t in q if now - t < 600]) >= 30:
-                return self.send(429, portal_page(ip, who, name, rec,
-                                                  {"ok": False, "error": "too many tries; wait a few minutes"}))
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "too many tries; wait a few minutes"},
+                                       code=429)
             q.append(now)
         if who.get("owner") and action not in OWNER_ACTIONS:
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
@@ -2840,7 +3106,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps({"ok": bool(res.get("ok")), "done": bool(res.get("done"))}),
                              "application/json")
         res = dict(res, key=key, _tok=token_for(ip, who["id"]), _view=action)
-        self.send(200, portal_page(ip, who, name, rec, res))
+        return self.after_post(ip, who, name, rec, res)
 
 
 # ---------- public front door pages (only reachable through sharedbox-gate's unix socket) ----------
@@ -3018,9 +3284,6 @@ class GateHandler(Handler):
         if data:  # a redirect has no body; the gate may already have hung up after reading the head
             self.wfile.write(data)
 
-    def redirect(self, where, headers=()):
-        self.send(303, "", "text/plain", [("Location", where), *headers])
-
     def client_ip(self):
         return self.headers.get("X-Sharedbox-Client-IP") or "?"
 
@@ -3065,7 +3328,7 @@ class GateHandler(Handler):
         if kind == "login":
             return self.redirect("/")
         if kind == "settings":  # the owner's settings live in the dashboard's Admin area
-            return self.redirect("/_box/me?tab=settings#admin")
+            return self.redirect("/_box/me?tab=settings")
         if kind in ("direct-on", "direct-off"):  # remember: visiting the site opens T3 directly (or the dashboard)
             c = ("tb_direct=1; Path=/; Max-Age=31536000" if kind == "direct-on" else "tb_direct=; Path=/; Max-Age=0")
             return self.redirect("/_box/app" if kind == "direct-on" else "/_box/me",
@@ -3094,10 +3357,10 @@ class GateHandler(Handler):
         if kind == "features":
             return self.send(200, features_page(owner=not self.who() and CF and self.cf_email() in sb.owner_emails(CFG)))
         if kind == "me" and who:
-            fl = FLASH.get((q.get("r") or [""])[0])
-            result = fl[2] if fl and fl[1] == who["id"] else None  # a button's outcome, after post/redirect/get
+            result, card = flash_get((q.get("r") or [""])[0], who["id"])  # a button's outcome, after post/redirect/get
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], result, welcome="welcome" in q,
-                                              rng=(q.get("range") or ["24h"])[0], tab=(q.get("tab") or [""])[0]))
+                                              rng=(q.get("range") or ["24h"])[0], tab=(q.get("tab") or [""])[0],
+                                              card=card))
         if kind == "landing" and who and who.get("owner"):
             return self.redirect("/_box/me")  # the owner always has a page: their dashboard
         if kind == "landing" and arg not in ("/", "/_box/me", "/_box/", "/_box"):
@@ -3165,6 +3428,7 @@ class GateHandler(Handler):
         if not 0 <= n <= 16384:
             return self.send(413, "too large", "text/plain")
         form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(n).decode(errors="replace")).items()}
+        self._form = form
         origin = self.headers.get("Origin")
         if origin is not None and origin not in (PUBLIC, "null"):  # "null": older pages; every form has a token
             return self.send(403, "bad origin", "text/plain")
@@ -3194,8 +3458,8 @@ class GateHandler(Handler):
         if not who:
             return self.redirect("/")
         if not hmac.compare_digest(form.get("token", ""), token_for("gate", who["id"])):
-            return self.send(400, portal_page("gate", who, who["name"], who["rec"],
-                                              {"ok": False, "error": "form expired, please try again"}))
+            return self.after_post("gate", who, who["name"], who["rec"],
+                                   {"ok": False, "error": "form expired, please try again"}, code=400)
         if kind == "me":
             return self.portal_post("gate", who, form)
         return self.send(404, "not found", "text/plain")

@@ -2296,7 +2296,7 @@ def write_request_views(cfg, db=None):
 
 def req_link(cfg):
     pub = sb.public_url(cfg)
-    return f"{pub}/_box/me#requests" if pub else "ask your agent: box friends requests"
+    return f"{pub}/_box/me?tab=requests#requests" if pub else "ask your agent: box friends requests"
 
 
 def req_mail_owner(cfg):
