@@ -194,6 +194,9 @@ DEFAULTS = {
     # `sharedbox-admin cloudflare setup|ssh`; set SSH_HOST before that to pick the hostname, or "off".
     "SSH_HOST": "",
     "CF_SSH_APP_ID": "",
+    # Telegram bot (sbtelegram.py): the token from @BotFather; set it on the owner's dashboard or with
+    # `sharedbox-admin telegram setup` (reads it from stdin)
+    "TELEGRAM_TOKEN_FILE": "/etc/sharedbox/telegram-token",
     # group-owned shared servers (box shared): code in SHARED_DIR/NAME, every friend and admin may edit and
     # run it; each runs as SHARED_USER (no login, not in FRIENDS_GROUP/SSH_GROUP) in one slice capped below
     "SHARED_USER": "sbshared",

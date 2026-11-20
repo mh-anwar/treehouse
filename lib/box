@@ -2471,6 +2471,101 @@ def portal_shared_logs(name):
                                "error": "group servers aren't set up on this box yet"}), name=name)
 
 
+def portal_msg(req):
+    """The dashboard's inbox (JSON from root on stdin, as this user): the same marks and requests as `box msg`."""
+    import sbmsg
+    now, user = time.time(), ME.pw_name
+    root = sbmsg.mail_root()
+    inbox, sent = os.path.join(root, user), os.path.join(root, user, "sent")
+    op = req.get("op")
+    st = sbmsg.load_state(ME.pw_dir)
+
+    def card(m):
+        c = {k: m.get(k) for k in ("id", "from", "to", "title", "level", "due", "status", "ts", "count", "reply_to",
+                                   "seen")}
+        c["context"] = str((m.get("brief") or {}).get("context") or "")[:600]
+        c["due_text"] = sbmsg.fmt_due(m["due"], now) if m.get("due") else ""
+        c["read"] = m["id"] in st["read"]
+        return c
+    if op == "inbox":
+        msgs = sorted((m for m in sbmsg.list_dir(inbox) if m["id"] not in st["done"]),
+                      key=lambda m: sbmsg.sort_key(m, now))
+        mine = sorted(sbmsg.list_dir(sent), key=lambda m: -(m.get("ts") or 0))[:5]
+        answered = {m.get("reply_to"): m.get("status") or "replied" for m in sbmsg.list_dir(inbox) if m.get("reply_to")}
+        out = [dict(card(m), answer=answered.get(m["id"], "")) for m in mine]
+        return {"ok": True, "messages": [card(m) for m in msgs[:20]], "open": len(msgs), "sent": out,
+                "people": sbmsg.recipients(sb, CFG), "you": user}
+    if op == "send":
+        try:
+            to = sbmsg.resolve(sb, CFG, str(req.get("to") or ""))
+            m = {"action": "msg", "to": to, "title": str(req.get("title") or "")[:200],
+                 "level": req.get("level") if req.get("level") in sbmsg.LEVELS else "normal",
+                 "brief": {"context": str(req.get("context") or "")[:sbmsg.TEXT_MAX], "via": "web"}}
+            if req.get("due"):
+                m["due"] = sbmsg.parse_due(str(req["due"])[:60], now)
+        except (sbmsg.MsgError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+        return shared_request(m)
+    mid = str(req.get("id") or "")
+    m = sbmsg._load(os.path.join(inbox, f"{mid}.json")) if sbmsg.ID_RE.match(mid) else None
+    if not m:
+        return {"ok": False, "error": "that message isn't in your inbox any more"}
+    if op == "seen":
+        if mid not in st["read"]:
+            st["read"][mid] = int(now)
+            shared_request({"action": "msg-seen", "ids": [mid]}, 0)
+        sbmsg.save_state(ME.pw_dir, st)
+        return {"ok": True}
+    if op in ("done", "reply"):
+        text = str(req.get("text") or "").strip()
+        r = {"action": "msg", "reply_to": mid, "brief": {"context": text[:sbmsg.TEXT_MAX], "via": "web"}}
+        if op == "done":
+            r["status"] = "done"
+        elif not text:
+            return {"ok": False, "error": "write a reply first"}
+        elif len(text) <= sbmsg.TITLE_MAX:
+            r["title"] = text
+        res = shared_request(r)
+        if res.get("ok"):
+            st["read"].setdefault(mid, int(now))
+            if op == "done":
+                st["done"][mid] = int(now)
+            sbmsg.save_state(ME.pw_dir, st)
+            res["message"] = "Marked done; they'll see it." if op == "done" else "Reply sent."
+        return res
+    if op == "archive":
+        st["done"][mid] = int(now)
+        st["read"].setdefault(mid, int(now))
+        sbmsg.save_state(ME.pw_dir, st)
+        return {"ok": True, "message": "Cleared from your inbox."}
+    return {"ok": False, "error": "unknown action"}
+
+
+def portal_where(req):
+    """The dashboard's "where is everyone" card and your own status."""
+    import sbmsg
+    import sbwhere
+    now = time.time()
+    if req.get("op") == "set":
+        r = {"action": "presence"}
+        if req.get("clear"):
+            r["clear"] = True
+        else:
+            r["status"] = str(req.get("status") or "")[:200]
+            if req.get("until"):
+                try:
+                    r["until"] = sbmsg.parse_due(str(req["until"])[:60], now)
+                except ValueError as e:
+                    return {"ok": False, "error": str(e).replace("due:", "until:")}
+        res = shared_request(r)
+        if res.get("ok"):
+            res["message"] = "Status cleared." if req.get("clear") else "Status saved. " + res.get("message", "")
+        return res
+    d = sbwhere.load()
+    people = sbmsg.recipients(sb, CFG)
+    return {"ok": True, "you": ME.pw_name, "people": [sbwhere.view(u, d.get(u) or {}, now) for u in people]}
+
+
 def cmd_portal(a):
     try:
         if a.action == "status":
@@ -2507,6 +2602,13 @@ def cmd_portal(a):
             out = portal_add_key(sys.stdin.read(8192))
         elif a.action == "login-check" and a.key in PORTAL_LOGINS:
             out = portal_login_wait(a.key, 5)
+        elif a.action in ("msg", "where"):
+            try:
+                req = json.loads(sys.stdin.read(16 << 10) or "{}")
+            except ValueError:
+                req = None
+            out = ((portal_msg if a.action == "msg" else portal_where)(req) if isinstance(req, dict)
+                   else {"ok": False, "error": "bad request"})
         else:
             out = {"ok": False, "error": "unknown action"}
     except (OSError, subprocess.SubprocessError) as e:
