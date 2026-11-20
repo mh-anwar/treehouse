@@ -49,6 +49,35 @@ class SharedDropRuns(unittest.TestCase):
             admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES = old
             admin._secure_dir, admin.shared_uids, admin.sb.owner_account = real
 
+    def test_msg_goes_through_the_drop_with_the_file_owner_as_sender(self):
+        """`box msg send`: root reads the drop file's owner, not the "from" in the request."""
+        import functools
+        import json
+        import sbmsg
+        d = tempfile.mkdtemp()
+        old = (admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES)
+        admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES = os.path.join(d, "drop"), os.path.join(d, "replies")
+        real = (admin._secure_dir, admin.shared_uids, admin.sb.owner_account, admin.sb.write_json, sbmsg.deliver)
+        try:
+            admin._secure_dir = lambda path, mode: os.makedirs(path, exist_ok=True)
+            admin.shared_uids = lambda cfg: {os.getuid(): "alice", os.getuid() + 1: "bob"}
+            admin.sb.owner_account = lambda cfg: None
+            admin.sb.write_json = lambda path, data, mode=0o644, owner=None: real[3](path, data, mode=mode)
+            sbmsg.deliver = functools.partial(real[4], root=os.path.join(d, "mail"), as_root=False)
+            os.makedirs(admin.sb.SHARED_DROP)
+            with open(os.path.join(admin.sb.SHARED_DROP, "m1.json"), "w") as f:
+                json.dump({"action": "msg", "to": "bob", "from": "bob", "title": "Fix CI",
+                           "brief": {"context": "tests fail"}}, f)
+            admin.process_shared_drop({})
+            with open(os.path.join(admin.sb.SHARED_REPLIES, "m1.json")) as f:
+                res = json.load(f)
+            self.assertTrue(res["ok"], res)
+            [m] = sbmsg.list_dir(os.path.join(d, "mail", "bob"))
+            self.assertEqual((m["from"], m["title"]), ("alice", "Fix CI"))
+        finally:
+            admin.sb.SHARED_DROP, admin.sb.SHARED_REPLIES = old
+            admin._secure_dir, admin.shared_uids, admin.sb.owner_account, admin.sb.write_json, sbmsg.deliver = real
+
 
 if __name__ == "__main__":
     unittest.main()

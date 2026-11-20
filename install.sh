@@ -105,7 +105,7 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py sbmsg.py sbwhere.py sbtelegram.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-update \
          sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -304,6 +304,11 @@ do_ systemctl enable sharedbox-tune.service   # every boot; applied right now to
 do_ "$LIB/sharedbox-tune" apply || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
 do_ systemctl restart sharedbox-janitor.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
+# Telegram bot: only once the owner has given it a token (dashboard Settings, or sharedbox-admin telegram setup)
+if [[ -e $ETC/telegram-token ]]; then
+    do_ systemctl enable sharedbox-telegram.service
+    do_ systemctl restart sharedbox-telegram.service || warn "the Telegram bot didn't start (journalctl -u sharedbox-telegram)"
+fi
 do_ systemctl enable sharedbox-web.service
 do_ systemctl restart sharedbox-web.service
 # public front door: its own unit, only on when PUBLIC_URL is set. Friends' T3 services are not touched.

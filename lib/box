@@ -18,6 +18,8 @@
   box request "TEXT"               ask the owner for something (e.g. a system package)
   box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
   box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
+  box msg [inbox|read ID|send USER|reply ID|done ID|sent|who]   messages between accounts (box help msg)
+  box where [NAME] | --set TEXT [--until WHEN] | --clear | --name NAME   where someone is (box help where)
   box team create NAME --members a,b | board | task | claim | done | wait | inbox set | crew start ROLE
                                    hackathon team: one board, agents hand off directly (box team -h)
 """
@@ -287,6 +289,8 @@ def cmd_status(a):
     g = gather(0.1 if a.agent else 0.5)
     if a.json:
         g["advice"] = advice(g)
+        import sbmsg
+        g["inbox"] = dict(zip(("open", "unread"), sbmsg.unread_count(ME.pw_name, HOME)))
         print(json.dumps(g, indent=2))
         return
     b, live, lim, j = g["box"], g["live"] or {}, g["limits"], g["janitor"]
@@ -311,6 +315,11 @@ def cmd_status(a):
                          + (", ".join(f"{s['name']}({s['state']})" for s in j.get("services", [])) or "none"))
     for ad in advice(g):
         lines.append(("- " if a.agent else "! ") + ad)
+    import sbmsg
+    n_open, n_unread = sbmsg.unread_count(ME.pw_name, HOME)
+    if n_unread:
+        lines.append(f"Inbox: {n_unread} unread of {n_open} open message(s)"
+                     + (" (mention it; `box msg inbox` when your user asks)" if a.agent else " (box msg inbox)"))
     if a.agent and g["friend"]:
         lines.append("Rules: projects are git repos in ~ (archived after "
                      f"{CFG['PROJECT_TTL_DAYS']} idle days, only if fully pushed), ~/keep is never touched; servers via "
@@ -1239,6 +1248,10 @@ def cmd_setup(a):
         missing.append("GitHub login (gh auth login --web && gh auth setup-git)")
     if not any(shutil.which(n) and logged_in(f, e) for n, _, _, f, e, _ in AGENTS):
         missing.append("no coding agent is logged in yet (see `box agents`)")
+    import sbwhere
+    if not (sbwhere.load().get(ME.pw_name) or {}).get("name"):
+        missing.append("a display name, so friends' agents find your user by name: ask what people call them, then "
+                       f"`box where --name \"{name if name and ' ' in name.strip() else 'Their Name'}\"`")
     if a.check or not sys.stdin.isatty():
         print("setup complete" if not missing else "missing:\n" + "\n".join(f"- {m}" for m in missing))
         return
@@ -1598,7 +1611,11 @@ def shared_request(req, wait=60):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
+        if not wait:
+            return {"ok": False}
         return {"ok": False, "error": provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})")}
+    if not wait:  # fire and forget (e.g. "seen" receipts)
+        return {"ok": True, "queued": True}
     reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -2454,6 +2471,101 @@ def portal_shared_logs(name):
                                "error": "group servers aren't set up on this box yet"}), name=name)
 
 
+def portal_msg(req):
+    """The dashboard's inbox (JSON from root on stdin, as this user): the same marks and requests as `box msg`."""
+    import sbmsg
+    now, user = time.time(), ME.pw_name
+    root = sbmsg.mail_root()
+    inbox, sent = os.path.join(root, user), os.path.join(root, user, "sent")
+    op = req.get("op")
+    st = sbmsg.load_state(ME.pw_dir)
+
+    def card(m):
+        c = {k: m.get(k) for k in ("id", "from", "to", "title", "level", "due", "status", "ts", "count", "reply_to",
+                                   "seen")}
+        c["context"] = str((m.get("brief") or {}).get("context") or "")[:600]
+        c["due_text"] = sbmsg.fmt_due(m["due"], now) if m.get("due") else ""
+        c["read"] = m["id"] in st["read"]
+        return c
+    if op == "inbox":
+        msgs = sorted((m for m in sbmsg.list_dir(inbox) if m["id"] not in st["done"]),
+                      key=lambda m: sbmsg.sort_key(m, now))
+        mine = sorted(sbmsg.list_dir(sent), key=lambda m: -(m.get("ts") or 0))[:5]
+        answered = {m.get("reply_to"): m.get("status") or "replied" for m in sbmsg.list_dir(inbox) if m.get("reply_to")}
+        out = [dict(card(m), answer=answered.get(m["id"], "")) for m in mine]
+        return {"ok": True, "messages": [card(m) for m in msgs[:20]], "open": len(msgs), "sent": out,
+                "people": sbmsg.recipients(sb, CFG), "you": user}
+    if op == "send":
+        try:
+            to = sbmsg.resolve(sb, CFG, str(req.get("to") or ""))
+            m = {"action": "msg", "to": to, "title": str(req.get("title") or "")[:200],
+                 "level": req.get("level") if req.get("level") in sbmsg.LEVELS else "normal",
+                 "brief": {"context": str(req.get("context") or "")[:sbmsg.TEXT_MAX], "via": "web"}}
+            if req.get("due"):
+                m["due"] = sbmsg.parse_due(str(req["due"])[:60], now)
+        except (sbmsg.MsgError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+        return shared_request(m)
+    mid = str(req.get("id") or "")
+    m = sbmsg._load(os.path.join(inbox, f"{mid}.json")) if sbmsg.ID_RE.match(mid) else None
+    if not m:
+        return {"ok": False, "error": "that message isn't in your inbox any more"}
+    if op == "seen":
+        if mid not in st["read"]:
+            st["read"][mid] = int(now)
+            shared_request({"action": "msg-seen", "ids": [mid]}, 0)
+        sbmsg.save_state(ME.pw_dir, st)
+        return {"ok": True}
+    if op in ("done", "reply"):
+        text = str(req.get("text") or "").strip()
+        r = {"action": "msg", "reply_to": mid, "brief": {"context": text[:sbmsg.TEXT_MAX], "via": "web"}}
+        if op == "done":
+            r["status"] = "done"
+        elif not text:
+            return {"ok": False, "error": "write a reply first"}
+        elif len(text) <= sbmsg.TITLE_MAX:
+            r["title"] = text
+        res = shared_request(r)
+        if res.get("ok"):
+            st["read"].setdefault(mid, int(now))
+            if op == "done":
+                st["done"][mid] = int(now)
+            sbmsg.save_state(ME.pw_dir, st)
+            res["message"] = "Marked done; they'll see it." if op == "done" else "Reply sent."
+        return res
+    if op == "archive":
+        st["done"][mid] = int(now)
+        st["read"].setdefault(mid, int(now))
+        sbmsg.save_state(ME.pw_dir, st)
+        return {"ok": True, "message": "Cleared from your inbox."}
+    return {"ok": False, "error": "unknown action"}
+
+
+def portal_where(req):
+    """The dashboard's "where is everyone" card and your own status."""
+    import sbmsg
+    import sbwhere
+    now = time.time()
+    if req.get("op") == "set":
+        r = {"action": "presence"}
+        if req.get("clear"):
+            r["clear"] = True
+        else:
+            r["status"] = str(req.get("status") or "")[:200]
+            if req.get("until"):
+                try:
+                    r["until"] = sbmsg.parse_due(str(req["until"])[:60], now)
+                except ValueError as e:
+                    return {"ok": False, "error": str(e).replace("due:", "until:")}
+        res = shared_request(r)
+        if res.get("ok"):
+            res["message"] = "Status cleared." if req.get("clear") else "Status saved. " + res.get("message", "")
+        return res
+    d = sbwhere.load()
+    people = sbmsg.recipients(sb, CFG)
+    return {"ok": True, "you": ME.pw_name, "people": [sbwhere.view(u, d.get(u) or {}, now) for u in people]}
+
+
 def cmd_portal(a):
     try:
         if a.action == "status":
@@ -2490,6 +2602,13 @@ def cmd_portal(a):
             out = portal_add_key(sys.stdin.read(8192))
         elif a.action == "login-check" and a.key in PORTAL_LOGINS:
             out = portal_login_wait(a.key, 5)
+        elif a.action in ("msg", "where"):
+            try:
+                req = json.loads(sys.stdin.read(16 << 10) or "{}")
+            except ValueError:
+                req = None
+            out = ((portal_msg if a.action == "msg" else portal_where)(req) if isinstance(req, dict)
+                   else {"ok": False, "error": "bad request"})
         else:
             out = {"ok": False, "error": "unknown action"}
     except (OSError, subprocess.SubprocessError) as e:
@@ -2961,6 +3080,10 @@ def main():
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
+    import sbmsg  # noqa: E402
+    sbmsg.add_parsers(s, sb, CFG, ME.pw_name, HOME, lambda req, wait=30: shared_request(req, wait))
+    import sbwhere  # noqa: E402
+    sbwhere.add_parsers(s, sb, CFG, ME.pw_name, lambda req: shared_request(req, 30))
     # ---- multi-box (lib/sbmulti.py): `box boxes`, `box run --anywhere` ----
     import sbmulti  # noqa: E402
     sbmulti.add_parsers(s, sb, CFG, ME.pw_name, HOME, os.path.abspath(sys.argv[0]))
