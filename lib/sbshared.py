@@ -24,7 +24,21 @@ import sbcommon as sb
 SYSTEMD_DIR = "/etc/systemd/system"
 SLICE = "sharedbox-shared.slice"
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
-ACTIONS = ("create", "set", "start", "stop", "restart", "rm", "logs")
+ACTIONS = ("create", "describe", "set", "start", "stop", "restart", "rm", "logs")
+DESC_MIN, DESC_MAX = 12, 300
+
+
+def check_desc(desc):
+    """(clean one-line description, error or None). Required on create; shown on everyone's dashboard."""
+    if not isinstance(desc, str):
+        return "", "a description is required: --desc \"what it does and who it's for\""
+    d = " ".join("".join(c if c.isprintable() else " " for c in desc).split())
+    if len(d) < DESC_MIN:
+        return "", (f"the description needs at least {DESC_MIN} characters: one plain sentence saying what it does "
+                    "and who it's for (e.g. \"Discord bot that posts the week's hackathon schedule\")")
+    if len(d) > DESC_MAX:
+        return "", f"the description can be at most {DESC_MAX} characters"
+    return d, None
 EXEC_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
 MAX_ARGS, MAX_CMD_BYTES, MAX_LOG_LINES = 64, 4096, 500
 LOCK = os.path.join(sb.STATE_DIR, ".shared.lock")
@@ -75,6 +89,7 @@ def list_servers(cfg):
                     # "new" = created, nothing set to run yet (no unit)
                     "state": st.get(name, "unknown") if r.get("cmd") else "new",
                     "dir": server_dir(cfg, name),
+                    "desc": r.get("desc") or "",
                     **{k: r.get(k) for k in ("created_by", "created", "updated_by", "updated")}})
     return out
 
@@ -87,10 +102,12 @@ def parse_tail(a):
         i = rest.index("--")
     else:
         i = next((k for k, t in enumerate(rest)
-                  if not t.startswith("-") and (k == 0 or rest[k - 1] not in ("--port", "-n", "--lines"))), len(rest))
+                  if not t.startswith("-") and (k == 0 or rest[k - 1] not in ("--port", "-n", "--lines", "--desc"))),
+                 len(rest))
     opts, a.cmd = rest[:i], rest[i + 1:] if "--" in rest else rest[i:]
     p = argparse.ArgumentParser(add_help=False, exit_on_error=False, argument_default=argparse.SUPPRESS)
     p.add_argument("--port", type=int)
+    p.add_argument("--desc")
     p.add_argument("-n", "--lines", type=int)
     p.add_argument("--json", action="store_true")
     try:
@@ -295,6 +312,9 @@ def _handle(cfg, user, action, name, req):
     if action == "create":
         if rec:
             return {"ok": False, "error": f"{name} already exists ({d})"}
+        desc, err = check_desc(req.get("desc"))
+        if err:
+            return {"ok": False, "error": err}
         if len(reg) >= sb.cfg_int(cfg, "SHARED_MAX"):
             return {"ok": False, "error": f"the box already has {len(reg)} shared servers (SHARED_MAX)"}
         port, err = _free_port(cfg, reg)
@@ -306,7 +326,7 @@ def _handle(cfg, user, action, name, req):
         uid, gid = _ids(cfg)
         _secure(d, 0o2775, uid, gid)  # an existing folder (registry lost) is adopted, code kept
         _group_acl(cfg, d)
-        reg[name] = {"port": port, "cmd": [], "created_by": user, "created": now,
+        reg[name] = {"port": port, "cmd": [], "desc": desc, "created_by": user, "created": now,
                      "updated_by": user, "updated": now}
         save(reg)
         sb.log_event("shared_created", user, server=name, port=port)
@@ -315,6 +335,14 @@ def _handle(cfg, user, action, name, req):
                 "dir": d, "port": port}
     if not rec:
         return {"ok": False, "error": f"no shared server called {name} (box shared ls)"}
+    if action == "describe":
+        desc, err = check_desc(req.get("desc"))
+        if err:
+            return {"ok": False, "error": err}
+        rec.update(desc=desc, updated_by=user, updated=now)
+        save(reg)
+        sb.log_event("shared_described", user, server=name)
+        return {"ok": True, "message": f"{name}: description saved"}
     if action == "set":
         cmd = req.get("cmd")
         err = check_cmd(cmd)

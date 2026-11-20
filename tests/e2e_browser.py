@@ -221,9 +221,32 @@ ACCOUNTS = {  # what `box _portal status` would say for each account
     ME: {"logins": {"claude": True, "codex": True, "gh": True, "t3connect": False},
          "servers": [{"name": "site", "state": "running", "port": "8080"}], "ssh": True},
 }
+G = 1 << 30
+M = 1 << 20
+RUNNING = {  # what `box _portal status` says under "running" (lib/sbrunning.py), biggest first
+    "alice": [
+        {"key": "c:shop-db", "kind": "database", "name": "shop-db", "detail": "Supabase · 5 containers",
+         "mem": int(1.4 * G), "age": 3 * 86400 + 7200, "pids": 40, "stop": "containers", "cpu_usec": 3 * 86400 * 40_000},
+        {"key": "", "kind": "agent", "name": "Claude session", "detail": "claude, node, python", "mem": 900 * M,
+         "age": 5400, "pids": 12, "stop": None, "cpu_usec": 5400 * 50_000},
+        {"key": "u:sb-blog.service", "kind": "server", "name": "blog", "detail": "node", "mem": 220 * M,
+         "age": 86400 * 2, "pids": 3, "stop": "server", "cpu_usec": 1000},
+        {"key": "c:3e184558f4de", "kind": "database", "name": "legacy-siege-mongo-with-a-really-long-container-name",
+         "detail": "mongodb-atlas-local:8.0", "mem": 120 * M, "age": 600, "pids": 30, "stop": "containers",
+         "cpu_usec": 600 * 300_000},
+        {"key": "u:tmux-spawn-1.scope", "kind": "terminal", "name": "tmux terminal", "detail": "tmux, bash",
+         "mem": 40 * M, "age": 4000, "pids": 2, "stop": "unit", "cpu_usec": 0},
+        {"key": "", "kind": "background", "name": "Background", "detail": "Docker engine, dbus, init",
+         "mem": 260 * M, "age": None, "pids": 9, "stop": None, "cpu_usec": 0},
+    ],
+}
+RUNNING[ME] = [dict(x, name=x["name"].replace("shop-db", "uoft-index")) for x in RUNNING["alice"]] + [
+    {"key": f"u:sb-s{i}.service", "kind": "server", "name": f"small-server-{i}", "detail": "python3", "mem": (9 - i) * M,
+     "age": 3600 * i, "pids": 1, "stop": "server", "cpu_usec": 0} for i in range(1, 6)]
 LABELS = {"claude": "Claude Code", "codex": "Codex", "gh": "GitHub", "t3connect": "T3 Connect"}
 SHARED = [{"name": "web", "state": "running", "port": SHARED_BASE, "created_by": "alice", "created": NOW - 86400,
-           "updated_by": "bob", "updated": NOW - 600},
+           "updated_by": "bob", "updated": NOW - 600,
+           "desc": "Discord bot that posts the week's hackathon schedule <b>every Monday</b>"},
           {"name": "down", "state": "stopped", "port": SHARED_BASE + 1, "created_by": "bob", "created": NOW - 3600}]
 PAIR_TOKENS = set()
 ROOT_LOG = []
@@ -275,12 +298,24 @@ def _fake_root(req):
         return {"ok": True, "pair_url": f"http://{TS_IP}:{OWNER_T3_PORT}/pair#token={tok}"}
     if owner and action not in ("status", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "shared-logs",
                                 "request-approve", "request-done", "request-decline", "self-update", "invite",
-                                "boost", "hackathon"):
+                                "boost", "hackathon", "running-stop", "running-all"):
         return {"ok": False, "error": "not available for the owner's account"}
-    if action == "boost":  # root: raise this account's memory limit to 28G for 4 hours
-        if req.get("user") != name:
-            return {"ok": False, "error": "you can only boost your own account"}
-        return {"ok": True, "until": int(time.time()) + 4 * 3600, "error": ""}
+    if action == "boost":  # root: boosts are gone (dynamic memory), it only explains
+        return {"ok": True, "until": 0, "message": "Boosts aren't needed any more."}
+    if action == "running-all":  # root: every account's Running list
+        if not owner:
+            return {"ok": False, "error": "not the owner"}
+        accts = [{"user": n, "mem": sum(i["mem"] for i in RUNNING.get(n, [])),
+                  "items": [{k: v for k, v in i.items() if k not in ("key", "stop")} for i in RUNNING.get(n, [])]}
+                 for n in (ME, "alice", "bob")]
+        return {"ok": True, "accounts": sorted(accts, key=lambda a: -a["mem"])}
+    if action == "running-stop":  # `box _portal running-stop KEY`: only a live, stoppable item of this account
+        items = RUNNING.get(name, [])
+        it = next((i for i in items if i["key"] == req.get("key") and i["stop"]), None)
+        if not it:
+            return {"ok": False, "error": "That isn't running any more (or it can't be stopped from here). Refresh the page."}
+        items.remove(it)
+        return {"ok": True, "message": f"Stopped {it['name']}. It stays off, reboots included, until someone starts it again."}
     if action == "hackathon":  # root: sharedbox-admin hackathon_set
         if not owner:
             return {"ok": False, "error": "not the owner"}
@@ -309,7 +344,8 @@ def _fake_root(req):
                 "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
                 "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "updates": "auto",
-                "servers": [dict(s) for s in acct["servers"]]}
+                "servers": [dict(s) for s in acct["servers"]],
+                "running": [dict(i) for i in RUNNING.get(name, [])]}
     if action == "shared-ls":
         return {"ok": True, "servers": [dict(s) for s in SHARED]}
     if action in ("serve-ctl", "shared-ctl"):
@@ -922,7 +958,7 @@ SHOT_PAGES = {
     "bob": ["/_box/me?welcome=1", "/_box/me"],
     "dave": ["/_box/me"],
     "erin": ["/_box/me"],
-    "owner": ["/_box/me", "/_box/me?tab=people", "/_box/me?tab=settings"],
+    "owner": ["/_box/me", "/_box/me?tab=people", "/_box/me?tab=running", "/_box/me?tab=settings"],
     "stranger": ["/", f"/i/{INVITE_TOK}", "/_box/nope"],
 }
 SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stranger": "tok-stranger", "dave": "tok-dave",
@@ -1125,6 +1161,60 @@ def boxes_card(browser):
     s.close()
 
 
+def running_card(browser):
+    """The Running card (alice: rows, the forgotten-database flag, Stop with its result in the card), the owner's
+    Running tab, and group-server descriptions (escaped; a missing one asks for it)."""
+    import copy
+    saved = copy.deepcopy(RUNNING)
+    s = Session(browser, "alice", "tok-alice")
+    s.page.goto(url("/_box/me"))
+    where = "running card"
+    inspect(s, where)
+    card = s.page.locator("#running + section")
+    text = card.inner_text() if card.count() else ""
+    for must in ("shop-db", "Supabase · 5 containers", "1.4G", "up 3d 2h", "Claude session", "blog",
+                 "1 more", "guaranteed", "box running"):
+        if must not in text:
+            fail("alice", where, f"card lacks {must!r}")
+    if card.locator("li").first.locator(".pill.warn").count() != 1:
+        fail("alice", where, "a database up 3 days with 1.4G isn't flagged")
+    stops = card.locator("button", has_text="Stop")
+    if stops.count() != 4:  # shop-db, blog, mongo, tmux (+0 for the agent and the background line)
+        fail("alice", where, f"expected 4 Stop buttons, got {stops.count()}")
+    stops.first.click()
+    s.page.wait_for_load_state("load")
+    body = s.page.locator("#running").evaluate("h => h.parentElement.innerText")
+    if "Stopped shop-db" not in body:
+        fail("alice", where, "no 'Stopped shop-db' notice next to the card")
+    if "shop-db" in s.page.locator("#running ~ section.sec").first.inner_text():
+        fail("alice", where, "shop-db still listed after Stop")
+    if not s.page.url.endswith("#running"):
+        fail("alice", where, f"Stop didn't come back to the card: {s.page.url}")
+    grp = s.page.locator(".srv .desc")
+    if not grp.count() or "every Monday" not in grp.first.inner_text() or grp.first.locator("b").count():
+        fail("alice", where, "group server description missing or not escaped")
+    if "No description yet" not in s.page.inner_text("body"):
+        fail("alice", where, "a group server without a description doesn't ask for one")
+    if s.page.locator("button", has_text="boost").count() or "Emergency memory boost" in s.page.inner_text("body"):
+        fail("alice", where, "the boost button is still there")
+    s.drain(where)
+    s.close()
+    s = Session(browser, "owner", "tok-owner")
+    s.page.goto(url("/_box/me?tab=running"))
+    where = "owner running tab"
+    inspect(s, where)
+    t = s.page.locator(".runall").inner_text() if s.page.locator(".runall").count() else ""
+    for must in ("alice", "bob", "uoft-index", "Nothing running", "in use across 3 accounts"):
+        if must not in t:
+            fail("owner", where, f"tab lacks {must!r}")
+    if s.page.locator(".runall button").count():
+        fail("owner", where, "the owner gets Stop buttons for other people's things")
+    s.drain(where)
+    s.close()
+    RUNNING.clear()
+    RUNNING.update(saved)
+
+
 def tailnet_view():
     """The tailnet page (port 8090, gate=False): same start card, no device-link, no /_box/ links (404 there)."""
     alice = {"id": "nAlice1", "display": "Alice A", "login": "alice@github", "node": "laptop"}
@@ -1178,6 +1268,7 @@ def main():
         start_cards(browser)  # the start card's states, the setup prompt, the tailnet page: in every mode
         tailnet_view()
         boxes_card(browser)
+        running_card(browser)
         w.portal_rate.clear()
         reg = sb.registry()  # bob's first visit (flow_login) must still see the welcome page
         reg["users"]["bob"]["welcome"] = True

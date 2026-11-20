@@ -97,7 +97,7 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-trap sharedbox-update \
          sharedbox-canary sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -147,6 +147,22 @@ sb.set_config({"MEMORY_HIGH": "16G", "MEMORY_MAX": "17G", "CPU_WEIGHT": "100", "
                "PROJECT_TTL_DAYS": "20", "CACHE_TTL_DAYS": "30"}, p)
 '
         do_ touch "$ETC/.v2-limits"
+    fi
+    # v3 (2026-11-20): dynamic memory (MEMORY_LOW guaranteed, MEMORY_MAX=auto, no soft limit). A soft limit froze
+    # the owner's account for 20 minutes. Rewrite the v2 numbers once; values an owner chose themselves stay.
+    if [[ ! -e $ETC/.v3-memory ]]; then
+        do_ env SHAREDBOX_CONF="$ETC/sharedbox.conf" PYTHONPATH="$SRC/lib" PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sbcommon as sb
+cfg = sb.load_config()
+new = {}
+if str(cfg.get("MEMORY_HIGH")).upper() in ("16G", "16384M"):
+    new["MEMORY_HIGH"] = "infinity"
+if str(cfg.get("MEMORY_MAX")).upper() in ("17G", "17408M"):
+    new["MEMORY_MAX"] = "auto"
+if new:
+    sb.set_config(new, sb.CONF_PATH)
+'
+        do_ touch "$ETC/.v3-memory"
     fi
 fi
 if [[ -n $MAIL_TO ]]; then
@@ -224,9 +240,31 @@ for u in sharedbox-guard.timer sharedbox-t3-naps.timer; do
 done
 for u in "$SRC"/systemd/*; do do_ install -m 644 "$u" "/etc/systemd/system/$(basename "$u")"; done
 do_ systemctl daemon-reload
-# equal limits for every account, the owner's included (16G RAM, no CPU cap, equal weight): rewrite every slice
-# drop-in, and drop what older versions left (OOM preference for friends, the guard's runtime CPU/RAM values)
+# systemd-oomd: when memory really runs out it stops the process group causing it, instead of everyone's programs
+# stalling (each account's slice asks for it in its drop-in). Ubuntu's package also turns it on for every user@
+# service at 50%, which stops heavy builds too early: same limit as the slices instead.
+if ! command -v oomctl >/dev/null; then
+    case $DISTRO_FAMILY in
+        arch) : ;;  # part of systemd there
+        unknown) warn "systemd-oomd not installed; when memory runs out the box may freeze instead of stopping one thing" ;;
+        *) do_ apt-get install -y --no-install-recommends systemd-oomd \
+               || warn "systemd-oomd not installed; when memory runs out the box may freeze instead of stopping one thing" ;;
+    esac
+fi
+OOM_LIMIT=$(conf_get OOM_PRESSURE_LIMIT || true); OOM_LIMIT=${OOM_LIMIT:-80%}
+OOM_SECS=$(conf_get OOM_PRESSURE_SECONDS || true); OOM_SECS=${OOM_SECS:-30}
+do_ mkdir -p /etc/systemd/oomd.conf.d /etc/systemd/system/user@.service.d
+printf '# managed by sharedbox (OOM_PRESSURE_SECONDS)\n[OOM]\nDefaultMemoryPressureDurationSec=%ss\n' "$OOM_SECS" \
+    | do_ tee /etc/systemd/oomd.conf.d/60-sharedbox.conf >/dev/null
+printf '# managed by sharedbox: same as the account slices (OOM_PRESSURE_LIMIT)\n[Service]\nManagedOOMMemoryPressure=kill\nManagedOOMMemoryPressureLimit=%s\n' "$OOM_LIMIT" \
+    | do_ tee /etc/systemd/system/user@.service.d/60-sharedbox-oomd.conf >/dev/null
+# equal limits for every account, the owner's included (16G guaranteed RAM, no CPU cap, equal weight): rewrite
+# every slice drop-in, and drop what older versions left (OOM preference for friends, the guard's runtime values)
 do_ "$LIB/sharedbox-admin" reapply >/dev/null
+if command -v oomctl >/dev/null; then
+    do_ systemctl enable systemd-oomd.service 2>/dev/null || true
+    do_ systemctl restart systemd-oomd.service || warn "systemd-oomd didn't start; see journalctl -u systemd-oomd"
+fi
 # shared servers: slice limits, folder owners, SHARED_GROUP = friends + admins (never starts/stops a server)
 do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path sharedbox-janitor.timer \
     sharedbox-tools-update.timer sharedbox-tick.timer

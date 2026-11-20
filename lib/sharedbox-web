@@ -35,6 +35,7 @@ sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbconnect  # noqa: E402
 import sbqr  # noqa: E402
+import sbrunning  # noqa: E402
 
 CFG = sb.load_config()
 def _form_key():
@@ -379,7 +380,15 @@ background:var(--panel);padding:0 4px;border-radius:3px;line-height:1.3}.plot .y
 .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
 .srv{display:grid;gap:0}.srv>.item{display:flex;flex-direction:column;gap:4px;padding:16px 0;border-bottom:1px solid var(--line);min-width:0}
 .srv>.item:first-child{padding-top:0}.srv>.item:last-child{border:0;padding-bottom:0}.srv .sub{overflow-wrap:anywhere}
-.srv .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.srv .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.srv .desc{font-size:14px;margin:2px 0}
+/* the Running card: one row per container / server / agent, biggest first */
+.run{list-style:none;padding:0;margin:0}.run li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px 16px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.run li:last-child{border:0;padding-bottom:0}.run li:first-child{padding-top:0}.run .nm{min-width:0;overflow-wrap:anywhere}
+.run .nm .pill{margin-left:6px;vertical-align:1px}.run .num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;font-size:14px}
+.run .num .sub{display:block;font-size:12px}.run .act{justify-self:end;min-width:64px;text-align:right}.runall .run li{grid-template-columns:minmax(0,1fr) auto}
+.run li.bg{color:var(--mut)}.run-more>summary{cursor:pointer;color:var(--mut);font-size:13px;margin-top:12px;list-style:none}
+.run-more>summary::-webkit-details-marker{display:none}.run-more[open]>summary{margin-bottom:12px}
+.runall h3{display:flex;gap:12px;align-items:baseline;margin:20px 0 8px;font-size:15px}.runall h3:first-child{margin-top:0}
 .people{list-style:none;padding:0;margin:0}
 .people li{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
 .people li:last-child{border:0}.people .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -392,7 +401,8 @@ pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:12
 .box:not(.me){padding:20px;margin-top:8px}
 details.sec{padding:0}details.sec>summary{padding:0 16px}details.sec>:not(summary){margin-left:16px;margin-right:16px}details.sec h3{margin-left:16px}details.sec[open]{padding-bottom:16px}
 :root{--h:40px}button.sm,a.btn.sm{min-height:40px;padding:0 14px;font-size:14px}input,textarea,select{font-size:16px}
-header nav{margin:0 -10px}.inv input,.inv input.short{max-width:none;flex-basis:100%}.inv button{width:100%}.tabs a{padding:0 9px}.tabs{margin-left:-9px;margin-right:-16px;padding-right:16px}.people .c{min-width:56px;font-size:12px}.people svg{width:56px}}
+header nav{margin:0 -10px}.inv input,.inv input.short{max-width:none;flex-basis:100%}.inv button{width:100%}.tabs a{padding:0 9px}.tabs{margin-left:-9px;margin-right:-16px;padding-right:16px}.people .c{min-width:56px;font-size:12px}.people svg{width:56px}
+.run li{grid-template-columns:minmax(0,1fr) auto}.run .act{grid-column:1/-1;justify-self:start;text-align:left}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
 """
 
@@ -502,8 +512,9 @@ Run <code>cat ~/.ssh/id_ed25519.pub</code> on your computer to get it.</label>
 
 def limits_text():
     """What everyone gets, from the config (never hard-coded)."""
-    mem = str(CFG.get("MEMORY_MAX") or CFG.get("MEMORY_HIGH") or "")
-    return (f"{mem} of memory each ({boost_size()} on demand for a few hours), an equal share of the CPU, "
+    lim = sb.user_limits(CFG)
+    return (f"{lim.get('MEMORY_LOW') or 'an equal share of'} of memory guaranteed each, up to "
+            f"{sb.human(sb.parse_size(lim['MEMORY_MAX']))} when the box is quiet, an equal share of the CPU, "
             f"and {CFG['DISK_BUDGET_GB']}G of disk.")
 
 
@@ -697,8 +708,9 @@ def friend_limits(rec):
     lim = sb.user_limits(CFG, rec)
     cfg_mem = sb.parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
     return {"cpu": (c or {}).get("cpu_quota_cores"),
-            "mem_high": (c or {}).get("mem_high") or cfg_mem, "mem_max": (c or {}).get("mem_max"),
-            "lim": lim}
+            "mem_high": (c or {}).get("mem_high") or cfg_mem,
+            "mem_max": (c or {}).get("mem_max") or sb.parse_size(lim["MEMORY_MAX"]),
+            "mem_low": sb.memory_guaranteed(lim), "lim": lim}
 
 
 SAFE_EVENTS = ("user_created", "tools_updated", "skill_shared")
@@ -748,23 +760,13 @@ def reboot_text():
     return "next reboot " + time.strftime("%a %H:%M", time.localtime(rb["at"]))
 
 
-def boost_until(name, st=None):
-    """Epoch until which `name`'s memory boost lasts, or 0 (root's boosts.json, via sb.boosts())."""
-    return sb.boosts().get(name, 0)
-
-
-def boost_size():
-    return str(CFG.get("BOOST_MEMORY_MAX") or CFG.get("BOOST_MEMORY") or "28G")
-
-
 def mem_limit(lim):
     """The memory limit to show: the live hard cap, else MEMORY_MAX from the config, else the soft limit."""
-    return lim.get("mem_max") or (sb.parse_size(CFG["MEMORY_MAX"]) if CFG.get("MEMORY_MAX") else None) \
-        or lim.get("mem_high")
+    return lim.get("mem_max") or sb.parse_size(sb.user_limits(CFG)["MEMORY_MAX"]) or lim.get("mem_high")
 
 
 def you_strip(name, rec, st, btn, rng="24h", base=""):
-    """One card: your memory/CPU/disk/ports now, one small memory chart, one line about the box, the boost button."""
+    """One card: your memory/CPU/disk/ports now, one small memory chart, one line about the box."""
     e = html.escape
     rng = rng if rng in RANGES else "24h"
     now = time.time()
@@ -776,8 +778,7 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
     lim = friend_limits(rec)
     cpu, mem = user_series(rows, name, step)
     cpu_now, mem_now = last_val(cpu), last_val(mem)
-    boosted = boost_until(name, st)
-    ml = sb.parse_size(boost_size()) if boosted else mem_limit(lim)
+    ml = mem_limit(lim)
     ncpu = os.cpu_count() or 1
     u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
     budget = u.get("budget") or (None if owner else sb.cfg_int(CFG, "DISK_BUDGET_GB") << 30)
@@ -790,8 +791,11 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
 
     def stat(label, v, sub):
         return f'<div class="stat"><h4>{e(label)}</h4><div class="v">{v}</div>{sub}</div>'
+    guar = lim.get("mem_low")
     stats = [stat("Memory", f"{e(sb.human(mem_now or 0))}" + (f"<small> of {e(sb.human(ml))}</small>" if ml else ""),
-                  bar(mem_now, ml) if ml else '<div class="sub">no limit</div>'),
+                  (bar(mem_now, ml) if ml else '<div class="sub">no limit</div>')
+                  + (f'<div class="sub">{e(sb.human(guar))} guaranteed, the rest while the box is quiet</div>'
+                     if guar and ml and guar < ml else "")),
              stat("CPU", e(fmt_cores(cpu_now or 0)), f'<div class="sub">equal share of {ncpu} cores</div>')]
     if disk is not None or budget:
         stats.append(stat("Disk", (e(sb.human(disk)) if disk is not None else "–")
@@ -813,8 +817,9 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
                 f'<span style="margin-left:auto" class="seg">'
                 + "".join(f'<a href="{base}/me?range={r}#dash" class="{"on" if r == rng else ""}">{r}</a>' for r in RANGES)
                 + "</span></div>")
-        out.append(svg_chart([(mem_b, "b")], t0, t1, top, gap, sb.human,
-                             [(ml, f"limit {sb.human(ml)}")] if ml else [], rng, head))
+        marks = ([(ml, f"most {sb.human(ml)}")] if ml else []) + (
+            [(guar, f"guaranteed {sb.human(guar)}")] if guar and ml and guar < ml else [])
+        out.append(svg_chart([(mem_b, "b")], t0, t1, top, gap, sb.human, marks, rng, head))
     # archive warnings
     pend = [str(p) for p in (u.get("pending_deletions") or [])]
     arch = [str(a.get("name")) for a in (u.get("archives") or []) if isinstance(a, dict)
@@ -826,7 +831,7 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
     if arch:
         out.append(f'<p class="sub" style="margin:8px 0 0">Archived, restorable for {e(CFG["ARCHIVE_DAYS"])} days: '
                    f'{e(", ".join(arch))}. Ask your agent to restore one.</p>')
-    # the box in one line, and the boost
+    # the box in one line
     last = rows[-1] if rows else {}
     level = {"calm": ("ok", "quiet"), "moderate": ("warn", "moderate"), "busy": ("bad", "busy")}.get(
         sb.box_load().get("level"), ("ok", "quiet"))
@@ -838,13 +843,7 @@ def you_strip(name, rec, st, btn, rng="24h", base=""):
     rb = reboot_text()
     if rb:
         bits.append(e(rb))
-    if boosted:
-        boost = (f'<span class="pill ok">Boosted to {e(boost_size())} until '
-                 f'{e(time.strftime("%H:%M", time.localtime(boosted)))}</span>')
-    else:
-        boost = btn("boost", "Emergency memory boost", primary=False, small=True,
-                    attrs=f" onsubmit=\"return confirm({e(json.dumps(f'Raise your memory limit to {boost_size()} for 4 hours? Only use it when a job runs out of memory.'))})\"")
-    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span>{boost}</div></section>')
+    out.append(f'<div class="youx"><span class="boxline">{" · ".join(bits)}</span></div></section>')
     return "".join(out)
 
 
@@ -889,6 +888,130 @@ def activity_section(name, owner=False, rng="24h"):
     return (f"<details class='sec' id='activity'><summary>Activity<span class='sub'>"
             f"{working} working now</span></summary>"
             + "".join(out) + "</details>")
+
+
+RUN_SHOWN = 8           # rows before "N more"
+RUN_OLD = 86400         # up this long with RUN_OLD_MEM or more: flagged, it may be forgotten
+RUN_OLD_MEM = 200 << 20
+RUN_STOP_TEXT = {
+    "containers": "Stop {name}? It stays off, reboots included, until someone starts it again.",
+    "server": "Stop {name}? It stays off, reboots included, until you start it again under Your servers.",
+    "unit": "Stop {name}? Anything running inside it ends now.",
+}
+
+
+def oom_notes(name, days=2):
+    """What the box stopped for this account when memory ran out (root's oom.jsonl, from the janitor tick)."""
+    out = []
+    try:
+        with open(os.path.join(sb.STATE_DIR, "oom.jsonl")) as f:
+            for line in f.readlines()[-300:]:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("user") == name and float(r.get("ts") or 0) > time.time() - days * 86400:
+                    out.append(r)
+    except OSError:
+        pass
+    return out[-3:]
+
+
+def run_rows(items, btn=None):
+    """<li> rows for the Running card (btn=None: read-only, the owner's view of everyone)."""
+    e = html.escape
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        kind = str(it.get("kind") or "")
+        age = it.get("age") if isinstance(it.get("age"), (int, float)) else None
+        mem = int(it.get("mem") or 0)
+        label = sbrunning.KIND_LABEL.get(kind, kind.title())
+        old = age is not None and age >= RUN_OLD and mem >= RUN_OLD_MEM and kind in ("database", "container", "terminal", "app")
+        pill = (f'<span class="pill warn">up {e(sbrunning.ago(age))}</span>' if old else
+                f'<span class="pill">{e(label)}</span>')
+        detail = sb.printable(str(it.get("detail") or ""))[:120]
+        sub_txt = (f"{e(label)} · " if old else "") + e(detail)
+        cpu = sbrunning.cpu_avg({"age": age, "cpu_usec": it.get("cpu_usec") or 0}) if age else 0
+        act = ""
+        if btn and it.get("stop") in RUN_STOP_TEXT and sbrunning.KEY_RE.match(str(it.get("key") or "")):
+            msg = RUN_STOP_TEXT[it["stop"]].format(name=sb.printable(str(it.get("name")))[:60])
+            act = btn("running-stop", "Stop", str(it["key"]), primary=False, small=True,
+                      attrs=f" onsubmit=\"return confirm({e(json.dumps(msg))})\"")
+        rows.append(f'<li class="{"bg" if kind == "background" else ""}"><div class="nm"><b>'
+                    f'{e(sb.printable(str(it.get("name") or "?"))[:80])}</b>{pill if kind != "background" else ""}'
+                    f'<div class="sub">{sub_txt}</div></div>'
+                    f'<div class="num">{e(sb.human(mem))}<span class="sub">'
+                    + (f"up {e(sbrunning.ago(age))}" + (f" · {cpu:g}% CPU" if cpu >= 0.1 else "") if age else "&nbsp;")
+                    + "</span></div>" + (f'<div class="act">{act}</div>' if btn else "") + "</li>")
+    return rows
+
+
+def running_section(name, rec, st, btn, result=None):
+    """Everything running for this account (containers, databases, servers, agents, terminals), biggest first,
+    with Stop buttons; from `box _portal status` (it runs as the account, so container names are there)."""
+    e = html.escape
+    items = st.get("running")
+    out = ["<h2 id='running'>Running for you</h2>"]
+    if result:  # what the Stop button just did, right where it was pressed
+        out.append(portal_result(result, btn))
+    out.append("<section class='sec'>")
+    lim = friend_limits(rec) if rec and rec.get("uid") is not None else {"mem_low": None, "mem_max": None}
+    for k in oom_notes(name):
+        when = time.strftime("%a %H:%M", time.localtime(float(k.get("ts") or 0)))
+        out.append(f"<p class='warnline' style='margin:0 0 12px'>{e(when)}: the box ran out of memory and stopped "
+                   f"{e(sb.printable(str(k.get('what') or 'something'))[:100])} so everything else kept running. "
+                   "Start it again if you still need it.</p>")
+    if items is None:
+        out.append("<p class='mut' style='margin:0'>Couldn't load this just now. Refresh in a minute.</p></section>")
+        return "".join(out)
+    if not items:
+        out.append("<p class='mut' style='margin:0'>Nothing running right now.</p></section>")
+        return "".join(out)
+    total = sum(int(i.get("mem") or 0) for i in items if isinstance(i, dict))
+    mx, low = mem_limit(lim) if lim.get("mem_max") else None, lim.get("mem_low")
+    out.append(f"<p class='sub' style='margin:0 0 14px'>{e(sb.human(total))} in use"
+               + (f" · {e(sb.human(low))} guaranteed, up to {e(sb.human(mx))} while the box is quiet" if low and mx else "")
+               + ". Databases and containers keep running until someone stops them, so stop what you don't use."
+               "</p>")
+    main = [i for i in items if isinstance(i, dict) and i.get("kind") != "background"]
+    bg = [i for i in items if isinstance(i, dict) and i.get("kind") == "background"]
+    shown, rest = main[:RUN_SHOWN], main[RUN_SHOWN:] + bg
+    out.append("<ul class='run'>" + "".join(run_rows(shown, btn)) + "</ul>")
+    if rest:
+        out.append(f"<details class='run-more'><summary>{len(rest)} more</summary><ul class='run'>"
+                   + "".join(run_rows(rest, btn)) + "</ul></details>")
+    out.append("<p class='sub' style='margin:14px 0 0'>Agent sessions and T3 Code end on their own. Your agent "
+               "can also list this: <code>box running</code>.</p></section>")
+    return "".join(out)
+
+
+def running_all_section(ip, who):
+    """The owner's Running tab: what every account on the box runs (root collects it, with container names)."""
+    e = html.escape
+    res = portal_call(ip, who, "running-all")
+    if not res.get("ok"):
+        return f"<p class='err'>Couldn't load what's running: {e(str(res.get('error') or 'no answer'))}</p>"
+    accts = [a for a in res.get("accounts") or [] if isinstance(a, dict)]
+    total = sum(int(a.get("mem") or 0) for a in accts)
+    out = ["<section class='sec runall'>",
+           f"<p class='sub' style='margin:0 0 16px'>{e(sb.human(total))} in use across {len(accts)} accounts. "
+           "Only each account's owner can stop their things (on their own page); ask them about anything that "
+           "looks forgotten.</p>"]
+    for a in accts:
+        items = [i for i in a.get("items") or [] if isinstance(i, dict) and i.get("kind") != "background"]
+        out.append(f"<h3>{e(sb.printable(str(a.get('user')))[:40])}<span class='sub'>{e(sb.human(int(a.get('mem') or 0)))}"
+                   "</span></h3>")
+        if not items:
+            out.append("<p class='mut' style='margin:0'>Nothing running.</p>")
+            continue
+        out.append("<ul class='run'>" + "".join(run_rows(items[:RUN_SHOWN])) + "</ul>")
+        if len(items) > RUN_SHOWN:
+            out.append(f"<details class='run-more'><summary>{len(items) - RUN_SHOWN} more</summary><ul class='run'>"
+                       + "".join(run_rows(items[RUN_SHOWN:])) + "</ul></details>")
+    out.append("</section>")
+    return "".join(out)
 
 
 def servers_section(st, shared, btn, base="", own_public=True):
@@ -953,8 +1076,9 @@ def servers_section(st, shared, btn, base="", own_public=True):
     group = [s for s in shared.get("servers") or []
              if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))]
     if not group:
-        out.append("<p class='mut' style='margin:0'>Nothing yet. Servers the whole group owns show up here; anyone can restart "
-                   "them. Ask your agent to make one with <code>box shared</code>.</p>")
+        out.append("<p class='mut' style='margin:0'>Nothing yet. Servers the whole group owns show up here, each with a short "
+                   "description of what it does; anyone can restart them. Ask your agent to make one with "
+                   "<code>box shared</code>.</p>")
         return "".join(out) + end
 
     def who_when(by, ts):
@@ -963,7 +1087,10 @@ def servers_section(st, shared, btn, base="", own_public=True):
     out.append('<div class="srv">' + "".join(
         f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
         f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
-        f'<div class="sub">{link(s.get("port"), "/s/" + s["name"], sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"))}</div>'
+        + (f'<div class="desc">{e(sb.printable(str(s["desc"]))[:300])}</div>' if s.get("desc") else
+           f'<div class="sub warnline" style="margin:0">No description yet. Ask your agent to add one '
+           f'(<code>box shared describe {e(s["name"])} ...</code>).</div>')
+        + f'<div class="sub">{link(s.get("port"), "/s/" + s["name"], sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"))}</div>'
         f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
         + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
         + f'</div><div class="sub">Code lives in <code>/srv/shared/{e(s["name"])}</code>. Ask your agent to edit it.'
@@ -1014,7 +1141,7 @@ def portal_btn(tok, base):
 
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
 
-OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs",  # root allows only these (+ the lists)
+OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs", "running-stop",  # root allows only these
                  "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon")
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
@@ -1061,6 +1188,8 @@ EVENT_TEXT = {
     "skill_shared": "{user} shared the skill {skill}",
     "skill_unshared": "{user} removed the skill {skill}",
     "shared_created": "{user} created the group server {server}",
+    "shared_described": "{user} described the group server {server}",
+    "oom_kill": "the box ran out of memory and stopped {what} ({user})",
     "shared_set": "{user} set the group server {server} to run `{cmd}`",
     "shared_start": "{user} started the group server {server}",
     "shared_stop": "{user} stopped the group server {server}",
@@ -1119,7 +1248,7 @@ def features_page(owner=False):
             return f"{float(str(v).rstrip('%')) / 100:g}"
         except ValueError:
             return str(v)
-    mem = str(CFG.get("MEMORY_MAX") or CFG.get("MEMORY_HIGH") or "").replace("G", " GB")
+    mem = str(sb.user_limits(CFG).get("MEMORY_LOW") or CFG.get("MEMORY_MAX") or "").replace("G", " GB")
     days = " and ".join({"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday",
                          "Sat": "Saturday", "Sun": "Sunday"}.get(d, d)
                         for d in str(CFG.get("SCHEDULED_REBOOT_DAYS") or "").replace(",", " ").split())
@@ -1146,9 +1275,11 @@ def features_page(owner=False):
         row("Docker", "Docker works, no admin needed."),
         row("Projects", "Your projects live in your home folder.", "T3 starts new projects there too."),
         "</div><h3 class='fg'>Resources</h3><div class='flist'>",
-        row("Memory and CPU", f"{e(mem)} of memory each, and an equal share of the CPU.",
-            f"Running out? The Emergency memory boost on your dashboard raises it to {e(boost_size())} for a few hours "
-            "when the box has room."),
+        row("Memory and CPU", f"{e(mem)} of memory guaranteed each, and an equal share of the CPU.",
+            f"When the box is quiet you can use up to {e(sb.human(sb.parse_size(sb.user_limits(CFG)['MEMORY_MAX'])))}. "
+            "If memory runs out, the box stops whatever uses the most instead of freezing."),
+        row("What's running", "Your dashboard lists every container, database, server and agent you have running.",
+            "With how much memory each uses, how long it's been up, and a Stop button."),
         row("System tools", "Your agent can install what it needs through an auto-approver.",
             "Unusual installs get checked by the owner first."),
         "</div><h3 class='fg'>Upkeep and safety</h3><div class='flist'>",
@@ -1546,7 +1677,7 @@ def hackathon_section(btn):
             f"{form}<div style='margin-top:10px'>{off}</div></section>")
 
 
-ADMIN_TABS = (("people", "Friends"), ("requests", "Requests"), ("boxes", "Boxes"), ("settings", "Settings"),
+ADMIN_TABS = (("people", "Friends"), ("running", "Running"), ("requests", "Requests"), ("boxes", "Boxes"), ("settings", "Settings"),
               ("events", "Events"))
 
 
@@ -1563,12 +1694,13 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
     if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
         start.append('<div class="line"><a class="btn" href="/_box/app">Open T3</a></div>')
     out.append("<section class='start' id='start'>" + "".join(start) + "</section>")
-    if result and view in ("boost",) or result and view.endswith(("-ctl", "-logs")):
+    if result and view != "running-ctl" and (view == "boost" or view.endswith(("-ctl", "-logs"))):
         out.append(portal_result(result, btn, base))
     try:
         out.append(you_strip(name, rec, st, btn, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
+    out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
     out.append(servers_section(st, shared, btn, base, own_public=False))
     # ---- admin ----
     try:
@@ -1592,6 +1724,8 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab=""):
             out.append(box_section(btn=btn))
         elif tab == "requests":
             out.append(requests_section(btn))
+        elif tab == "running":
+            out.append(running_all_section(ip, who))
         elif tab == "boxes":
             out.append(boxes)
         elif tab == "settings":
@@ -1779,12 +1913,13 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     out.append("<section class='start' id='start'>" + "".join(card) + "</section>")
 
     # ---- you, now ----
-    if result and (view.endswith(("-ctl", "-logs")) or view == "boost"):
+    if result and view != "running-ctl" and (view.endswith(("-ctl", "-logs")) or view == "boost"):
         out.append(portal_result(result, btn, base))
     try:
         out.append(you_strip(name, rec, st, btn, rng, base))
     except Exception as ex:  # noqa: BLE001 - a bad metrics line must never take the page down
         print(f"dashboard: {ex!r}", file=sys.stderr, flush=True)
+    out.append(running_section(name, rec, st, btn, result if view == "running-ctl" else None))
     out.append(servers_section(st, shared, btn, base))
 
     # ---- your account: one row per thing, buttons on the right ----
@@ -1901,13 +2036,8 @@ def portal_result(res, btn, base=""):
     view = str(res.get("_view") or "")
     if view.endswith("-logs"):
         return logs_card(res, btn)
-    if view == "boost":
-        try:
-            until = time.strftime("%H:%M", time.localtime(float(res.get("until"))))
-        except (TypeError, ValueError):
-            until = ""
-        return notice(f"Boosted to {e(str(res.get('memory') or boost_size()))}" + (f" until {e(until)}" if until else "")
-                      + ". It goes back to normal by itself.")
+    if view == "boost":  # older pages: boosts are gone, root explains why
+        return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
     if view == "hackathon":
         return notice(e(str(res.get("message") or "Saved.")))
     if view.endswith("-ctl") or view.startswith("request-"):
@@ -2132,7 +2262,8 @@ class Handler(BaseHTTPRequestHandler):
         fid = secrets.token_urlsafe(9)
         FLASH[fid] = (now, who["id"], result)
         view = str(result.get("_view") or "")
-        anchor = "#start" if view in START_VIEWS else "#account" if view == "updates" else ""
+        anchor = ("#start" if view in START_VIEWS else "#account" if view == "updates" else
+                  "#running" if view == "running-ctl" else "")
         tab = {"invite": "people", "hackathon": "settings", "request-update": "settings"}.get(
             view, "requests" if view.startswith("request-") else "")
         if tab and who.get("owner"):
@@ -2199,6 +2330,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such request"})
             res = portal_call(ip, who, action, key=key)
             return self.after_post(ip, who, name, rec, dict(res, _view=action))
+        if action == "running-stop":  # the Running card's Stop (root and `box _portal` check the key again)
+            if not sbrunning.KEY_RE.match(key):
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "That isn't running any more."})
+            res = portal_call(ip, who, "running-stop", key=key)
+            return self.after_post(ip, who, name, rec, dict(res, _view="running-ctl", key=key))
         if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
             op = form.get("op", "")
             if not SERVER_RE.fullmatch(key) or (action.startswith("serve-") and key == "t3") \

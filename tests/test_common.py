@@ -56,7 +56,21 @@ class Limits(unittest.TestCase):
         rec = {"limits": {"MEMORY_HIGH": "4G", "DISK_BUDGET_GB": "10", "CPU_QUOTA": "999%", "ExecStart": "/bin/sh"}}
         lim = sb.user_limits(cfg, rec)
         self.assertEqual(set(lim), set(sb.LIMIT_KEYS))
-        self.assertEqual((lim["MEMORY_HIGH"], lim["DISK_BUDGET_GB"], lim["MEMORY_MAX"]), ("4G", "10", cfg["MEMORY_MAX"]))
+        self.assertEqual((lim["MEMORY_HIGH"], lim["DISK_BUDGET_GB"]), ("4G", "10"))
+        self.assertEqual(lim["MEMORY_MAX"], f"{sb.auto_memory_max(cfg) >> 20}M")  # auto -> a number systemd takes
+
+    def test_memory_is_dynamic_by_default(self):
+        """No soft limit (it froze an account in place on 2026-11-20); guaranteed share + the box minus a reserve."""
+        cfg = dict(sb.DEFAULTS)
+        lim = sb.user_limits(cfg)
+        self.assertIsNone(sb.parse_size(lim["MEMORY_HIGH"]))
+        self.assertEqual(sb.memory_guaranteed(lim), 16 * G)
+        total = sb.meminfo()["MemTotal"]
+        mx = sb.parse_size(lim["MEMORY_MAX"])
+        self.assertLessEqual(mx, total - 3 * G)
+        self.assertGreater(mx, total - 3 * G - (256 << 20))
+        self.assertEqual(sb.parse_size(sb.user_limits(dict(cfg, MEMORY_RESERVE="999T"))["MEMORY_MAX"]), G)  # floor
+        self.assertEqual(sb.user_limits(cfg, {"limits": {"MEMORY_MAX": "9G"}})["MEMORY_MAX"], "9G")  # explicit wins
 
 
 class Boost(unittest.TestCase):

@@ -81,13 +81,22 @@ DEFAULTS = {
     "PORT_BASE": "20000",
     "PORT_BLOCK": "100",
     # per-user resource limits (systemd slice properties). The same for everyone, the owner's accounts included:
-    # no CPU cap (CPUWeight shares CPU fairly when several people want it at once), MEMORY_HIGH soft / MEMORY_MAX
-    # hard RAM. Changing them: sudo sharedbox-admin reapply
+    # no CPU cap (CPUWeight shares CPU fairly when several people want it at once). Memory is dynamic:
+    # MEMORY_LOW is each account's guaranteed share (the kernel takes memory back from whoever is above theirs
+    # first), MEMORY_MAX=auto lets anyone use the whole box minus MEMORY_RESERVE while nobody else needs it.
+    # No soft limit (MEMORY_HIGH=infinity): a soft limit stalls an account that reaches it instead of freeing
+    # memory, which froze the owner's account for 20 minutes on 2026-11-20. When memory really runs out,
+    # systemd-oomd stops the cgroup causing it (OOM_PRESSURE_LIMIT for OOM_PRESSURE_SECONDS).
+    # Changing them: sudo sharedbox-admin reapply
     "CPU_WEIGHT": "100",
     "IO_WEIGHT": "100",
-    "MEMORY_HIGH": "16G",
-    "MEMORY_MAX": "17G",
+    "MEMORY_LOW": "16G",
+    "MEMORY_HIGH": "infinity",
+    "MEMORY_MAX": "auto",
+    "MEMORY_RESERVE": "3G",
     "MEMORY_SWAP_MAX": "1G",
+    "OOM_PRESSURE_LIMIT": "80%",
+    "OOM_PRESSURE_SECONDS": "30",
     "TASKS_MAX": "2048",
     # `box boost`: anyone may raise their own RAM to BOOST_MEMORY for BOOST_HOURS when the box has that much free
     "BOOST_MEMORY": "28G",
@@ -472,14 +481,37 @@ def port_range(cfg, uid):
     return base, base + cfg_int(cfg, "PORT_BLOCK") - 1
 
 
-LIMIT_KEYS = ("CPU_WEIGHT", "IO_WEIGHT", "MEMORY_HIGH", "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX", "DISK_BUDGET_GB")
+LIMIT_KEYS = ("CPU_WEIGHT", "IO_WEIGHT", "MEMORY_LOW", "MEMORY_HIGH", "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX",
+              "DISK_BUDGET_GB")
+
+
+def auto_memory_max(cfg):
+    """MEMORY_MAX=auto: the whole box minus MEMORY_RESERVE (rounded down to 256M), never below 1G."""
+    total = 0
+    for line in (_read("/proc/meminfo") or "").splitlines():
+        if line.startswith("MemTotal:"):
+            total = int(line.split()[1]) * 1024
+    reserve = parse_size(cfg.get("MEMORY_RESERVE") or "3G") or 0
+    step = 256 << 20
+    return max(1 << 30, (total - reserve) // step * step)
 
 
 def user_limits(cfg, rec=None):
-    lim = {k: cfg[k] for k in LIMIT_KEYS}
+    """The account's limits with MEMORY_MAX=auto worked out (systemd needs a number)."""
+    lim = {k: cfg.get(k, "") for k in LIMIT_KEYS}
     if rec:
         lim.update({k: v for k, v in rec.get("limits", {}).items() if k in LIMIT_KEYS})
+    if str(lim.get("MEMORY_MAX", "")).strip().lower() == "auto":
+        lim["MEMORY_MAX"] = f"{auto_memory_max(cfg) >> 20}M"
     return lim
+
+
+def memory_guaranteed(lim):
+    """Bytes of the account's guaranteed share (MEMORY_LOW), or None."""
+    try:
+        return parse_size(lim.get("MEMORY_LOW") or "") or None
+    except ValueError:
+        return None
 
 
 # ---------- sizes ----------
@@ -1192,9 +1224,14 @@ def _slice_mem_current(uid):
 
 
 def _boost_props(cfg, rec):
+    """Memory limits are dynamic now (MemoryHigh=infinity, MemoryMax=auto), so a boost (root only, rarely needed)
+    just raises the hard cap; an account with an old explicit soft limit keeps the same gap above it."""
     lim = user_limits(cfg, rec)
-    gap = max(0, parse_size(lim["MEMORY_MAX"]) - parse_size(lim["MEMORY_HIGH"]))
     high = parse_size(cfg["BOOST_MEMORY"])
+    soft = parse_size(lim["MEMORY_HIGH"]) if lim.get("MEMORY_HIGH") else None
+    if soft is None:
+        return high, ["MemoryHigh=infinity", f"MemoryMax={high}"]
+    gap = max(0, (parse_size(lim["MEMORY_MAX"]) or soft) - soft)
     return high, [f"MemoryHigh={high}", f"MemoryMax={high + gap}"]
 
 
@@ -1212,7 +1249,9 @@ def boost_start(cfg, name, why="", now=None):
     cur = st.get(name) if isinstance(st.get(name), dict) else None
     if not (cur and cur.get("until", 0) > now):
         # the extra room the boost allows must actually be free right now
-        need = high - max(_slice_mem_current(uid), parse_size(user_limits(cfg, rec)["MEMORY_HIGH"]))
+        lim = user_limits(cfg, rec)
+        now_cap = parse_size(lim["MEMORY_HIGH"]) or parse_size(lim["MEMORY_MAX"]) or 0
+        need = high - max(_slice_mem_current(uid), now_cap)
         avail = _mem_available()
         if need > 0 and avail < need:
             return {"ok": False, "until": 0,
@@ -1234,7 +1273,7 @@ def boost_end(cfg, name, uid, rec=None):
     alone may leave the live cgroup at the boosted value), then the runtime drop-ins go so /etc rules again."""
     lim = user_limits(cfg, rec)
     subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice",
-                    f"MemoryHigh={lim['MEMORY_HIGH']}", f"MemoryMax={lim['MEMORY_MAX']}"],
+                    f"MemoryHigh={lim['MEMORY_HIGH'] or 'infinity'}", f"MemoryMax={lim['MEMORY_MAX']}"],
                    capture_output=True, check=False)
     d = os.path.join(RUNTIME_CONTROL, f"user-{uid}.slice.d")
     for prop in ("MemoryHigh", "MemoryMax"):
@@ -1267,12 +1306,13 @@ def boost_reconcile(cfg, now=None):
             log_event("boost_ended", name)
             continue
         high, props = _boost_props(cfg, rec)
+        want = props[-1].split("=", 1)[1]  # the MemoryMax the boost set
         try:
-            with open(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/memory.high") as f:
+            with open(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/memory.max") as f:
                 cur = f.read().strip()
         except OSError:
             continue  # nothing running for them right now
-        if cur != str(high):
+        if cur != str(want):
             subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],
                            capture_output=True)
     if changed:

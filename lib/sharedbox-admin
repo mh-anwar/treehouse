@@ -5,7 +5,7 @@
   sharedbox-admin add USER --key 'ssh-ed25519 AAAA...' [--login someone@example.com]
   sharedbox-admin pending | approve ID | deny ID
   sharedbox-admin limits USER [KEY=VALUE ...]     e.g. MEMORY_HIGH=8G MEMORY_MAX=9G DISK_BUDGET_GB=40
-  sharedbox-admin boost USER [--why TEXT]         raise USER's RAM to BOOST_MEMORY for BOOST_HOURS
+  sharedbox-admin boost USER [--why TEXT]         raise USER's MemoryMax to BOOST_MEMORY for BOOST_HOURS (rarely needed)
   sharedbox-admin suspend USER | resume USER
   sharedbox-admin kill USER                       stop every process the user has (account stays)
   sharedbox-admin remove USER [--archive]
@@ -58,11 +58,13 @@ import sbcommon as sb  # noqa: E402
 import sbshared  # noqa: E402
 import sbteam  # noqa: E402
 import sbfed  # noqa: E402
+import sbrunning  # noqa: E402
 
 SYSTEMD_DIR = "/etc/systemd/system"
 MANAGED_PROPS = {
     "CPU_WEIGHT": "CPUWeight",
     "IO_WEIGHT": "IOWeight",
+    "MEMORY_LOW": "MemoryLow",
     "MEMORY_HIGH": "MemoryHigh",
     "MEMORY_MAX": "MemoryMax",
     "MEMORY_SWAP_MAX": "MemorySwapMax",
@@ -107,6 +109,10 @@ def write_dropins(cfg, name, rec, uid):
         if lim.get(key):
             lines.append(f"{prop}={lim[key]}")
     lines.append("CPUQuota=")  # no CPU cap (older versions set one)
+    # memory really running out: systemd-oomd stops the cgroup under this account causing it, instead of the whole
+    # account stalling in reclaim (2026-11-20). Harmless where systemd-oomd isn't installed.
+    if cfg.get("OOM_PRESSURE_LIMIT"):
+        lines += ["ManagedOOMMemoryPressure=kill", f"ManagedOOMMemoryPressureLimit={cfg['OOM_PRESSURE_LIMIT']}"]
     d = os.path.join(SYSTEMD_DIR, f"user-{uid}.slice.d")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "60-sharedbox.conf"), "w") as f:
@@ -119,7 +125,7 @@ def write_dropins(cfg, name, rec, uid):
             os.unlink(old)
         except FileNotFoundError:
             pass
-    if name not in sb.boosts():  # a running `box boost` keeps its runtime values until it ends
+    if name not in sb.boosts():  # a boost from before dynamic limits keeps its runtime values until the tick ends it
         for prop in ("MemoryHigh", "MemoryMax"):
             try:
                 os.unlink(os.path.join(sb.RUNTIME_CONTROL, f"user-{uid}.slice.d", f"50-{prop}.conf"))
@@ -884,17 +890,34 @@ def handle_owner_pair(cfg, rid, req):
 # Their logins, SSH keys, agent updates and T3 Code are their own business, set up on the box itself.
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
 OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
-                        "shared-logs", "self-update", "invite", "boost") + REQUEST_PORTAL_ACTIONS
+                        "shared-logs", "self-update", "invite", "boost", "running-stop",
+                        "running-all") + REQUEST_PORTAL_ACTIONS
 OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as `box hackathon on|off`
 
 
 def handle_boost(cfg, name, req):
-    """Spool/drop act "boost": {"user": name (optional; must be the verified caller), "why": text}.
-    Answer: {"ok": bool, "until": epoch seconds, "error": str}. Anyone may boost themselves, nobody anyone else."""
-    want = req.get("user")
-    if want not in (None, "", name):
-        return {"ok": False, "until": 0, "error": "you can only boost your own account"}
-    return sb.boost_start(cfg, name, str(req.get("why") or "")[:200])
+    """Spool/drop act "boost", from older pages and agents. Boosts are gone (memory limits are dynamic), so this
+    only explains. Answer: {"ok": True, "until": 0, "message": str}."""
+    lim = sb.user_limits(cfg, (sb.friend_users().get(name) or None))
+    return {"ok": True, "until": 0, "message": (
+        f"Boosts aren't needed any more: every account may use up to {sb.human(sb.parse_size(lim['MEMORY_MAX']))} of "
+        f"memory while nobody else needs it, with {lim.get('MEMORY_LOW') or 'an equal share'} guaranteed.")}
+
+
+def running_all(cfg):
+    """The owner's Running tab: what runs for every account on the box (root reads container names too)."""
+    accts = []
+    for name, (uid, rec) in sorted(sb.limited_accounts(cfg).items()):
+        try:
+            home = pwd.getpwnam(name).pw_dir
+        except KeyError:
+            continue
+        items = sbrunning.running(uid, home)
+        keep = ("kind", "name", "detail", "mem", "age", "cpu_usec", "pids")
+        accts.append({"user": name, "mem": sum(i["mem"] for i in items),
+                      "items": [{k: i.get(k) for k in keep} for i in items]})
+    return {"ok": True, "accounts": sorted(accts, key=lambda a: -a["mem"]),
+            "limits": {k: v for k, v in sb.user_limits(cfg).items() if k.startswith("MEMORY")}}
 
 
 def start_update(cfg, by):
@@ -945,6 +968,8 @@ def handle_portal(cfg, rid, req):
             return handle_boost(cfg, name, req)
         if req.get("action") == "self-update":
             return start_update(cfg, name)
+        if req.get("action") == "running-all":
+            return running_all(cfg)
         if req.get("action") == "hackathon":  # {"op": "on"|"off", "until": "YYYY-MM-DD HH:MM", "users": "a b"}
             return hackathon_set(cfg, {k: req.get(k) for k in ("op", "until", "users")}, name)
         if req.get("action") == "invite":  # the owner's dashboard: same as `box invite --email ... --note ...`
@@ -992,6 +1017,10 @@ def handle_portal(cfg, rid, req):
         return box_portal(pw, ["updates-set", key])
     if action in ("serve-ls", "shared-ls"):
         return box_portal(pw, [action])
+    if action == "running-stop":  # `box _portal` matches the key against this account's live list again
+        if not isinstance(key, str) or not sbrunning.KEY_RE.match(key):
+            return {"ok": False, "error": "That isn't running any more. Refresh the page."}
+        return box_portal(pw, ["running-stop", key])
     if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
         # `box _portal` checks again (and only touches sb-* units the friend made); never pass a leading "-"
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", key) \

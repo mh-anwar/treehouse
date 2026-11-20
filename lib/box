@@ -3,10 +3,10 @@
 
   box status [--agent|--json]      usage, limits, box load, pending deletions
   box ports                        your port range (+ which are in use)
-  box boost [--why TEXT]           more RAM for a few hours (BOOST_MEMORY for BOOST_HOURS), if the box has it free
+  box running [--json]             what runs for you (containers, databases, servers, agents), RAM and age
   box serve add NAME [--port P] -- CMD...   long-running server (survives logout/reboot)
   box serve ls | logs NAME | restart NAME | stop NAME | start NAME | rm NAME
-  box shared ls | create NAME | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
+  box shared ls | create NAME --desc TEXT | describe NAME TEXT | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
                                    servers the whole group owns (code in /srv/shared/NAME); add --json
   box clean [--dry-run]            clean unused caches and old tmp files now
   box restore [NAME]               put an archived project back in ~ (lists archives without NAME)
@@ -40,6 +40,7 @@ sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbconnect  # noqa: E402
 import sbdistro  # noqa: E402
+import sbrunning  # noqa: E402
 
 BEGIN = "<!-- sharedbox:begin (managed automatically; edits inside this block are overwritten) -->"
 END = "<!-- sharedbox:end -->"
@@ -110,9 +111,46 @@ def gather(sample=0.5):
         cg2["cpu_pct"] = round((cg2["cpu_usec"] - cg["cpu_usec"]) / 1e6 / dt * 100) if dt else 0
         cg2["throttled"] = cg2["throttled_usec"] > cg["throttled_usec"] or cpu_pressure() > 10
         cg = cg2
+    try:
+        run = sbrunning.worth_mentioning(sbrunning.running(ME.pw_uid, HOME))
+    except (OSError, ValueError):
+        run = []
     return {"user": ME.pw_name, "friend": is_friend(), "ports": ports(),
             "limits": my_limits(), "live": cg,
-            "box": sb.box_load(), "janitor": st}
+            "box": sb.box_load(), "janitor": st, "running": run}
+
+
+def size_text(v):
+    """'28160M' -> '27.5G' (limits as people read them); '' for nothing."""
+    try:
+        n = sb.parse_size(v) if v not in (None, "") else None
+    except ValueError:
+        return str(v)
+    return sb.human(n) if n else ""
+
+
+def running_line(it):
+    return (f"{it['name']} ({sbrunning.KIND_LABEL.get(it['kind'], it['kind']).lower()}"
+            + (f", {it['detail']}" if it.get("detail") and it["kind"] in ("database", "container") else "")
+            + f", {sb.human(it['mem'])}, up {sbrunning.ago(it.get('age'))})")
+
+
+def recent_oom_kills(days=2):
+    """What the box stopped for this account when memory ran out (root's oom.jsonl, written by the janitor tick)."""
+    out = []
+    try:
+        with open(os.path.join(sb.STATE_DIR, "oom.jsonl")) as f:
+            for line in f.readlines()[-200:]:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("user") == ME.pw_name and r.get("ts", 0) > time.time() - days * 86400:
+                    r["what"] = sb.printable(str(r.get("what") or "a process group"))[:120]
+                    out.append(r)
+    except OSError:
+        pass
+    return out[-3:]
 
 
 def cpu_pressure():
@@ -168,12 +206,22 @@ def advice(g):
     b = g["box"]
     live = g["live"] or {}
     used = live.get("mem_used") if live.get("mem_used") is not None else live.get("mem", 0)
-    if live.get("mem_high") and used > 0.85 * live["mem_high"]:
-        out.append("You are close to your RAM limit. If the work really needs more, run `box boost` (more RAM for a "
-                   "few hours) and tell the user in a line.")
-    boost = sb.boosts().get(ME.pw_name)
-    if boost:
-        out.append(f"Memory boost on until {fmt_ts(boost)} ({CFG['BOOST_MEMORY']} RAM).")
+    cap = live.get("mem_max") or live.get("mem_high")
+    if cap and used > 0.85 * cap:
+        out.append(f"You are using {sb.human(used)} of the {sb.human(cap)} this account can have. If memory runs out, "
+                   "the box stops whatever uses the most: free what you don't need (`box running`) and tell the user.")
+    elif b.get("mem_avail") is not None and b["mem_avail"] < 0.1 * b["mem_total"]:
+        out.append(f"The box is nearly out of memory ({sb.human(b['mem_avail'])} free). Avoid starting big jobs; "
+                   "`box running` shows what this account runs.")
+    for k in recent_oom_kills():
+        out.append(f"{fmt_ts(k['ts'])}: the box ran out of memory and stopped {k['what']} to keep everything "
+                   "else running. Tell the user in a line; start it again if it's needed, with less memory.")
+    big = g.get("running")
+    if big:
+        out.append("Running for this user: " + "; ".join(running_line(it) for it in big[:6])
+                   + (f"; and {len(big) - 6} more" if len(big) > 6 else "")
+                   + ". Full list: `box running`. Don't stop these yourself; if one has been up for days and nothing "
+                     "in this conversation uses it, mention it to the user.")
     j = g["janitor"]
     if j.get("over_budget"):
         out.append(f"You are OVER your disk budget. Caches and build outputs were wiped. "
@@ -260,9 +308,10 @@ def cmd_status(a):
     if hackathon_line():
         lines.append(hackathon_line())
     if lim:
-        boost = sb.boosts().get(ME.pw_name)
+        mem_cap = size_text(lim["MEMORY_MAX"])
+        mem_lim = (f"{size_text(lim['MEMORY_LOW'])} guaranteed, up to {mem_cap}" if lim.get("MEMORY_LOW") else mem_cap)
         lines.append(f"You: CPU {live.get('cpu_pct', 0)}% | "
-                     f"RAM {sb.human(live.get('mem_used') if live.get('mem_used') is not None else live.get('mem', 0))} (limit {CFG['BOOST_MEMORY'] + ', boosted' if boost else lim['MEMORY_HIGH']}) | "
+                     f"RAM {sb.human(live.get('mem_used') if live.get('mem_used') is not None else live.get('mem', 0))} ({mem_lim}) | "
                      f"procs {live.get('pids', 0)}/{lim['TASKS_MAX']} | "
                      f"disk {sb.human(j.get('disk')) if j.get('disk') else '?'} / {lim['DISK_BUDGET_GB']}G"
                      + (f" (measured {fmt_ts(j['measured'])})" if j.get('measured') else ""))
@@ -274,7 +323,7 @@ def cmd_status(a):
     if a.agent and g["friend"]:
         lines.append("Rules: projects are git repos in ~ (archived after "
                      f"{CFG['PROJECT_TTL_DAYS']} idle days, only if fully pushed), ~/keep is never touched; servers via "
-                     "`box serve`; more RAM: `box boost`; log anything about this machine that slows you down or "
+                     "`box serve`; what runs for you: `box running`; log anything about this machine that slows you down or "
                      "fails with `box issue \"...\"`. Full rules: `box rules`.")
     print("\n".join(lines))
 
@@ -318,14 +367,38 @@ def cmd_heavy(a):
 # ---------- boost ----------
 
 def cmd_boost(a):
-    res = shared_request({"action": "boost", "why": a.why or ""}, wait=60)
+    """Gone: memory limits are dynamic now. Kept so old habits get an answer instead of an error."""
+    lim = my_limits()
+    msg = (f"Not needed any more: this account may already use up to {size_text(lim['MEMORY_MAX'])} of RAM while "
+           f"nobody else needs it ({size_text(lim.get('MEMORY_LOW')) or 'an equal share'} is guaranteed). "
+           "`box help memory` explains.")
     if a.json:
-        print(json.dumps(res))
-        sys.exit(0 if res.get("ok") else 1)
-    if not res.get("ok"):
-        sys.exit(f"box boost: {res.get('error') or 'that did not work'}")
-    print(f"Memory boost on: up to {CFG['BOOST_MEMORY']} RAM until {fmt_ts(res['until'])}. "
-          "It ends by itself; nothing else to do.")
+        print(json.dumps({"ok": True, "message": msg, "until": 0}))
+        return
+    print(msg)
+
+
+# ---------- running ----------
+
+def cmd_running(a):
+    items = sbrunning.running(ME.pw_uid, HOME)
+    if a.json:
+        print(json.dumps([{k: v for k, v in it.items() if k not in ("ids",)} for it in items], indent=2))
+        return
+    if not items:
+        print("nothing running for this account")
+        return
+    lim = my_limits()
+    total = sum(it["mem"] for it in items)
+    print(f"{sb.human(total)} in use; {size_text(lim.get('MEMORY_LOW')) or '?'} guaranteed, "
+          f"up to {size_text(lim['MEMORY_MAX'])} while the box has it free\n")
+    print(f"{'RAM':>7}  {'KIND':<10} {'UP':>7} {'CPU':>6}  NAME")
+    for it in items:
+        print(f"{sb.human(it['mem']):>7}  {sbrunning.KIND_LABEL.get(it['kind'], it['kind']):<10} "
+              f"{sbrunning.ago(it.get('age')):>7} {sbrunning.cpu_avg(it):>5}%  {sb.printable(it['name'])}"
+              + (f"  ({sb.printable(it['detail'])[:70]})" if it.get("detail") else ""))
+    print("\nCPU = average since it started. The user can stop containers, servers and terminals on their page; "
+          "agents never stop them on their own.")
 
 
 # ---------- serve ----------
@@ -431,6 +504,13 @@ def cmd_serve(a):
             pass
         sctl("daemon-reload")
         print(f"removed {a.name}")
+        return
+    if act in PORTAL_SERVER_OPS:  # stop keeps it off across reboots; start/restart turn it back on for good
+        r = serve_op(act, u)
+        if r.returncode:
+            sys.exit(f"box serve {act} {a.name}: " + (r.stderr or r.stdout or "failed").strip()[-300:])
+        print(f"{a.name}: " + {"stop": "stopped (stays off across reboots until `box serve start`)",
+                                 "start": "started", "restart": "restarted"}[act])
         return
     sys.exit(sctl(act, u).returncode)
 
@@ -544,8 +624,10 @@ def rule_fields(tl="", extras=(), nt=""):
     r = ports() or (0, 0)
     return dict(
         host=socket.gethostname(), ip=sb.tailscale_ip4() or socket.gethostname(), user=ME.pw_name,
-        mem_high=lim["MEMORY_HIGH"], mem_max=lim["MEMORY_MAX"], tasks=lim["TASKS_MAX"],
-        boost_mem=CFG["BOOST_MEMORY"], boost_hours=CFG["BOOST_HOURS"],
+        mem_high=lim["MEMORY_HIGH"], mem_max=size_text(lim["MEMORY_MAX"]), tasks=lim["TASKS_MAX"],
+        mem_low=size_text(lim.get("MEMORY_LOW")) or size_text(lim["MEMORY_MAX"]),
+        oom_seconds=CFG.get("OOM_PRESSURE_SECONDS", "30"),
+        boost_mem=size_text(lim["MEMORY_MAX"]), boost_hours=CFG["BOOST_HOURS"],  # old templates only
         disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}", t3_ports=f"{r[0]} and {r[1]}",
         ports_line=(f"Ports: **{r[0]}-{r[1]}** only (the first and last are the user's T3 Code)." if r != (0, 0) else
                     "Ports: no fixed range for this account; check `ss -ltn` and pick a free one."),
@@ -1623,10 +1705,11 @@ def cmd_shared(a):
         servers = sbshared.list_servers(CFG)
         if not a.json:
             if not servers:
-                print("no shared servers yet. make one: box shared create NAME")
+                print("no shared servers yet. make one: box shared create NAME --desc \"what it does\"")
             for x in servers:
                 print(f"{x['name']:<20} {x['state']:<10} port {x['port'] or '-':<6} "
                       f"{sb.printable(' '.join(x['cmd'])) or '(nothing set to run)'}\n"
+                      f"{'':<20} {sb.printable(x.get('desc') or '') or '(no description yet: box shared describe ' + x['name'] + ' TEXT)'}\n"
                       f"{'':<20} {x['dir']}  by {x['created_by']}, last change {x['updated_by']} "
                       f"{fmt_ts(x['updated']) if x.get('updated') else ''}")
         done({"ok": True, "servers": servers})
@@ -1637,11 +1720,21 @@ def cmd_shared(a):
     if not sbshared.NAME_RE.match(a.name):
         done({"ok": False, "error": "name: 2-31 lowercase letters, digits or -, starting with a letter"})
     req = {"action": a.action, "name": a.name}
+    if a.action == "create":
+        if not getattr(a, "desc", None) or a.cmd:
+            done({"ok": False, "error": "usage: box shared create NAME --desc \"what it does and who it's for\""})
+        req["desc"] = a.desc
+    elif a.action == "describe":
+        text = " ".join(a.cmd or []) or getattr(a, "desc", None)
+        if not text:
+            done({"ok": False, "error": "usage: box shared describe NAME \"what it does and who it's for\""})
+        req["desc"] = text
+        a.cmd = None
     if a.action == "set":
         if not a.cmd:
             done({"ok": False, "error": "usage: box shared set NAME [--port P] -- COMMAND..."})
         req.update(cmd=a.cmd, port=a.port)
-    elif a.cmd or a.port is not None:
+    elif a.action not in ("create", "describe") and (a.cmd or a.port is not None):
         done({"ok": False, "error": f"box shared {a.action} takes only a NAME"})
     if a.action == "logs":
         req["lines"] = a.lines
@@ -2313,11 +2406,19 @@ def portal_serve_ls():
     return {"ok": True, "servers": sorted(servers, key=lambda s: s["name"])}
 
 
+def serve_op(op, u):
+    """stop = stays off across reboots too; start/restart = on, and back after a reboot (like group servers)."""
+    if op == "restart":
+        r = sctl("enable", u, capture=True)
+        return r if r.returncode else sctl("restart", u, capture=True)
+    return sctl(*{"start": ("enable", "--now"), "stop": ("disable", "--now")}[op], u, capture=True)
+
+
 def portal_serve_ctl(name, op):
     name = portal_own_server(name)
     if not name or op not in PORTAL_SERVER_OPS:
         return {"ok": False, "error": "no such server"}
-    r = sctl(op, f"sb-{name}.service", capture=True)
+    r = serve_op(op, f"sb-{name}.service")
     if r.returncode != 0:
         return {"ok": False, "error": f"{op} {name} failed: " + (r.stderr or r.stdout or "").strip()[-300:]}
     state = next((s["state"] for s in list_services() if s["name"] == name), "stopped")
@@ -2333,6 +2434,44 @@ def portal_serve_logs(name):
                         "--no-pager", "-o", "short-iso"], env=user_env(), capture_output=True,
                        text=True, errors="replace", timeout=30)
     return {"ok": True, "name": name, "lines": portal_cap_lines(r.stdout.splitlines())}
+
+
+def portal_running():
+    """The dashboard's Running card: what runs for this account, no container ids."""
+    keep = ("key", "kind", "name", "detail", "mem", "age", "pids", "stop", "cpu_usec")
+    return [{k: it.get(k) for k in keep} for it in sbrunning.running(ME.pw_uid, HOME)]
+
+
+def portal_running_stop(key):
+    """Stop one item of the Running card. The key is matched against the live list again, so only this account's
+    own containers and units can be named. Containers: `docker stop` (they stay stopped across reboots until started
+    again); `box serve` servers: disabled + stopped; other units (terminals, browsers, user services): stopped."""
+    it = sbrunning.find(sbrunning.running(ME.pw_uid, HOME), key)
+    if not it:
+        return {"ok": False, "error": "That isn't running any more (or it can't be stopped from here). Refresh the page."}
+    env = dict(os.environ, XDG_RUNTIME_DIR=f"/run/user/{ME.pw_uid}",
+               DOCKER_HOST=os.environ.get("DOCKER_HOST") or f"unix:///run/user/{ME.pw_uid}/docker.sock")
+    if it["stop"] == "containers":
+        ids = [i for i in it.get("ids") or [] if re.fullmatch(r"[0-9a-f]{64}", i)]
+        if not ids or not shutil.which("docker"):
+            return {"ok": False, "error": "Docker isn't reachable for this account right now."}
+        r = subprocess.run(["docker", "stop", "--time", "20", *ids], env=env, capture_output=True, text=True,
+                           timeout=180)
+        if r.returncode != 0:
+            return {"ok": False, "error": f"Couldn't stop {it['name']}: " + (r.stderr or r.stdout or "").strip()[-300:]}
+        n = len(ids)
+        return {"ok": True, "message": f"Stopped {it['name']}" + (f" ({n} containers)" if n > 1 else "")
+                + ". It stays off, reboots included, until someone starts it again."}
+    unit = it.get("unit") or key[2:]
+    if it["stop"] == "server":
+        r = serve_op("stop", unit)
+        what = f"Stopped {it['name']}. It stays off, reboots included, until you start it again under Your servers."
+    else:
+        r = sctl("stop", unit, capture=True)
+        what = f"Stopped {it['name']}."
+    if r.returncode != 0:
+        return {"ok": False, "error": f"Couldn't stop {it['name']}: " + (r.stderr or r.stdout or "").strip()[-300:]}
+    return {"ok": True, "message": what}
 
 
 def portal_shared(args, missing):
@@ -2387,6 +2526,12 @@ def cmd_portal(a):
                 out["servers"] = portal_serve_ls()["servers"]
             except (OSError, subprocess.SubprocessError):
                 out["servers"] = None
+            try:
+                out["running"] = portal_running()
+            except (OSError, ValueError):
+                out["running"] = None
+        elif a.action == "running-stop":
+            out = portal_running_stop(a.key)
         elif a.action == "serve-ls":
             out = portal_serve_ls()
         elif a.action == "serve-ctl" and a.arg in PORTAL_SERVER_OPS:
@@ -2799,15 +2944,18 @@ def main():
     s.add_parser("ports").set_defaults(fn=cmd_ports)
     x = s.add_parser("heavy"); x.add_argument("cmd", nargs=argparse.REMAINDER)  # old scripts: just runs CMD
     x.set_defaults(fn=cmd_heavy)
-    x = s.add_parser("boost", help="more RAM for a few hours, if the box has it free")
+    x = s.add_parser("boost", help=argparse.SUPPRESS)  # gone (limits are dynamic); explains that
     x.add_argument("--why"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_boost)
+    x = s.add_parser("running", help="what runs for you: containers, databases, servers, agents, with RAM and age")
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_running)
     x = s.add_parser("serve")
     x.add_argument("action", choices=["add", "ls", "logs", "restart", "stop", "start", "rm"])
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
     x.add_argument("-f", "--follow", action="store_true")
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_serve)
-    x = s.add_parser("shared", help="servers the whole group owns: ls, create, set, start, stop, restart, rm, logs")
-    x.add_argument("action", choices=["ls", "create", "set", "start", "stop", "restart", "rm", "logs"])
+    x = s.add_parser("shared", help="servers the whole group owns: ls, create, describe, set, start, stop, restart, "
+                                    "rm, logs")
+    x.add_argument("action", choices=["ls", "create", "describe", "set", "start", "stop", "restart", "rm", "logs"])
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
     x.add_argument("-n", "--lines", type=int, default=100); x.add_argument("--json", action="store_true")
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_shared)

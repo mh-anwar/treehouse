@@ -2,7 +2,7 @@
 """sharedbox-janitor: periodic housekeeping (root).
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
-  sharedbox-janitor tick [--dry-run]                 every 10 min: end expired `box boost`s, start T3 Code for
+  sharedbox-janitor tick [--dry-run]                 every 10 min: note what systemd-oomd stopped, end old boosts, start T3 Code for
                                                      scheduled tasks after a reboot, hackathon on/off, rule refresh
   sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import pwd
+import re
 import selectors
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import time
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
+import sbrunning  # noqa: E402
 
 STATE = os.path.join(sb.STATE_DIR, "janitor-state.json")
 TICK_STATE = os.path.join(sb.STATE_DIR, "tick.json")
@@ -145,12 +147,72 @@ def heal_provision():
     subprocess.run(["systemctl", "start", "sharedbox-provision.path"], check=False)
 
 
+OOM_LOG = os.path.join(sb.STATE_DIR, "oom.jsonl")
+OOM_CURSOR = os.path.join(sb.STATE_DIR, "oom.cursor")
+OOM_RE = re.compile(r"Killed (/\S+) due to (memory pressure|memory used|swap)")
+
+
+def oom_label(cg):
+    """(user, what) for a cgroup systemd-oomd stopped: '/user.slice/user-1002.slice/.../docker-ID.scope'."""
+    m = re.search(r"/user-(\d+)\.slice", cg)
+    if not m:
+        return None, cg.rsplit("/", 1)[-1]
+    uid = int(m.group(1))
+    try:
+        pw = pwd.getpwuid(uid)
+    except KeyError:
+        return None, cg.rsplit("/", 1)[-1]
+    unit = cg.rstrip("/").rsplit("/", 1)[-1]
+    d = sbrunning.DOCKER_SCOPE_RE.match(unit)
+    if d:
+        meta = sbrunning._docker_meta(pw.pw_dir, d.group(1))
+        what = f"the container {meta.get('name') or d.group(1)[:12]}"
+    else:
+        kind, name, _ = sbrunning._unit_kind(unit, [])
+        what = {"server": f"the server {name}", "agent": f"an {name.lower()}" if name[0] in "AEIOU" else
+                f"a {name.lower()}", "terminal": "a tmux terminal", "t3": "T3 Code"}.get(kind, name)
+    return pw.pw_name, what
+
+
+def record_oom_kills():
+    """What systemd-oomd stopped since the last tick, per account: oom.jsonl (box status tells their agents, the
+    dashboard shows it) and an event."""
+    first = not os.path.exists(OOM_CURSOR)
+    cmd = ["journalctl", "-u", "systemd-oomd", "-o", "cat", "--no-pager", f"--cursor-file={OOM_CURSOR}"]
+    if first:
+        cmd.append("--since=-15min")
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    for line in r.stdout.splitlines():
+        m = OOM_RE.search(line)
+        if not m:
+            continue
+        user, what = oom_label(m.group(1))
+        rec = {"ts": int(time.time()), "user": user, "what": what, "cgroup": m.group(1)[:300], "why": m.group(2)}
+        with open(OOM_LOG, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        os.chmod(OOM_LOG, 0o644)
+        sb.log_event("oom_kill", user, what=what)
+        print(f"systemd-oomd stopped {what} ({user})")
+    try:  # keep it short
+        with open(OOM_LOG) as f:
+            lines = f.readlines()
+        if len(lines) > 500:
+            with open(OOM_LOG, "w") as f:
+                f.writelines(lines[-300:])
+    except OSError:
+        pass
+
+
 def cmd_tick(cfg, a):
     if not a.dry_run:
         try:
             heal_provision()
         except Exception as e:  # noqa: BLE001
             print(f"heal provision: {e!r}", file=sys.stderr)
+        try:
+            record_oom_kills()
+        except Exception as e:  # noqa: BLE001
+            print(f"oom kills: {e!r}", file=sys.stderr)
         for what, fn in (("hackathon reconcile", sb.hackathon_reconcile), ("boosts", sb.boost_reconcile)):
             try:
                 done = fn(cfg)

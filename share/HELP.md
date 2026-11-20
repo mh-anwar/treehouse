@@ -26,10 +26,19 @@ Never ask for passwords or tokens in chat.
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
 
-@@ boost
-- `box boost [--why "<why>"]` raises your RAM limit to {boost_mem} for {boost_hours} hours, if the box has that much
-  free right now (otherwise it says so; try later or free memory). It ends by itself. The user can also press Boost
-  on their page {portal}. Use it when a real job needs it (a big build, a model, many test browsers), not by default.
+@@ memory
+- Every account is guaranteed {mem_low} of RAM and may use up to {mem_max} while nobody else needs it. Nothing to
+  ask for (`box boost` is gone). When others need memory back, the kernel takes it from whoever is above their
+  guaranteed share first.
+- When memory really runs out (the box spends most of its time freeing memory for {oom_seconds}s), the box stops the
+  single process group causing it: a container, a server, an agent session or a terminal. `box status` says what
+  was stopped. Restart it if it's needed, with less memory (fewer test workers, a smaller model, `--max-old-space-size`).
+- `box running [--json]`: everything running for this user, biggest first: containers (grouped by compose project,
+  so a Supabase stack is one line), databases, `box serve` servers, agent sessions, terminals, with RAM, age and
+  average CPU. The user's page {portal} shows the same list with Stop buttons.
+- Databases and containers stay up until someone stops them (nothing stops them when idle). If one that nothing
+  uses has been up for days, tell the user in a line; don't stop it yourself. Stopped containers stay stopped across
+  reboots until started again (`docker start NAME`, `supabase start`, `docker compose up -d`).
 
 @@ git
 Faster clones and CI. Measured on this box (ruff, a medium repo): full clone 17 s / 245 MB, blobless 9 s / 68 MB,
@@ -55,7 +64,7 @@ shallow 5 s / 18 MB.
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
 - Never start a long job (big build, long test run) close to a reboot `box status` announces.
 - Comes back: `box serve` services, group servers, the user's T3 Code, everything on disk.
-- Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, memory, a running `box boost`.
+- Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, memory.
 - Make servers safe to restart any time: keep state in files or a database.
 
 @@ servers
@@ -69,8 +78,11 @@ shallow 5 s / 18 MB.
 
 @@ shared
 Group servers belong to everyone: one shared copy of a bot/tool instead of each friend running their own.
-- `box shared ls` lists them (check first; don't make a duplicate). `box shared create NAME` makes
-  `{shared_dir}/NAME/` and picks a port in {shared_ports} (in `$PORT`).
+- `box shared ls` lists them (check first; don't make a duplicate). `box shared create NAME --desc "<what it is>"`
+  makes `{shared_dir}/NAME/` and picks a port in {shared_ports} (in `$PORT`).
+- The description is required and shows on everyone's page: one plain sentence saying what it does and who it's
+  for ("Discord bot that posts the week's hackathon schedule"), not how it's built. Change it with
+  `box shared describe NAME "<text>"` whenever what it does changes.
 - Put the code there, then `box shared set NAME -- COMMAND...` runs it. `./start.sh` = a file in that folder
   (`chmod +x` it); other commands must be installed system-wide, not in a home. Python: make the venv inside the
   folder and use `./.venv/bin/python app.py`.

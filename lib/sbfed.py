@@ -50,7 +50,7 @@ KEY_TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa
              "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
 NAME_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 STATUSES = ("active", "suspended")
-LIMIT_KEYS = ("CPU_WEIGHT", "IO_WEIGHT", "MEMORY_HIGH", "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX",
+LIMIT_KEYS = ("CPU_WEIGHT", "IO_WEIGHT", "MEMORY_LOW", "MEMORY_HIGH", "MEMORY_MAX", "MEMORY_SWAP_MAX", "TASKS_MAX",
               "DISK_BUDGET_GB")
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
