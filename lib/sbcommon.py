@@ -119,6 +119,10 @@ DEFAULTS = {
     # automatic updates, so only SCHEDULED_REBOOT_DAYS reboots it there)
     "REBOOT_TIME": "04:00",
     "SCHEDULED_REBOOT_DAYS": "Wed,Sun",
+    # coding agents that aren't on npm (sharedbox-tools): name=<vendor update manifest, {arch} = amd64|arm64>#binaries.
+    # A default so boxes installed before it get Antigravity without editing their conf; set it empty to opt out.
+    "TOOLS_MANIFEST": "google/antigravity=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app"
+                      "/manifests/linux_{arch}.json#antigravity,agy",
     "TOOLS_ANDROID": "0",
     "ANDROID_SDK_ROOT": "/opt/android-sdk",
     # `box request install PKG`: install a requested system package right away (no owner needed) when it's in
