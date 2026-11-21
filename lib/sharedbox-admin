@@ -1614,7 +1614,7 @@ REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedb
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-update", "tune-service", "hackathon", "friends-boxes")
+                   "friends-update", "tune-service", "hackathon", "reboot-hold", "friends-boxes")
 
 
 def friend_record(cfg, name):
@@ -1871,6 +1871,8 @@ def friends_action(cfg, by, req):
             return res
         if act == "hackathon":
             return hackathon_set(cfg, req, by)
+        if act == "reboot-hold":
+            return reboot_hold_set(cfg, req, by)
         if act == "friends-boxes":
             return boxes_set(str(req.get("boxes") or "")[:2000], by)
         if act == "tune-service":
@@ -1927,6 +1929,37 @@ def hackathon_set(cfg, req, by):
                  users=new.get("HACKATHON_USERS", ""))
     return {"ok": True, "active": new.get("HACKATHON") == "1", "until": new.get("HACKATHON_UNTIL", ""),
             "users": new.get("REQUEST_OPEN_USERS", "") if new.get("HACKATHON") == "1" else ""}
+
+
+REBOOT_HOLD_MAX_DAYS = 7
+
+
+def reboot_hold_set(cfg, req, by):
+    """`box reboot hold|off` from an admin: write REBOOT_HOLD_UNTIL and apply the override right away."""
+    op = str(req.get("op") or "")
+    if op == "off":
+        sb.set_config({"REBOOT_HOLD_UNTIL": ""})
+    elif op == "on":
+        until = str(req.get("until") or "").strip()
+        ts = sb.parse_local_time(until)
+        if not ts or ts <= time.time():
+            return {"ok": False, "error": f"--until must be a future local time like 2026-11-22 12:00 (got {until!r})"}
+        if ts - time.time() > REBOOT_HOLD_MAX_DAYS * 86400:
+            return {"ok": False, "error": f"at most {REBOOT_HOLD_MAX_DAYS} days ahead"}
+        sb.set_config({"REBOOT_HOLD_UNTIL": until})
+    else:
+        return {"ok": False, "error": "op must be on or off"}
+    new = sb.load_config()
+    sb.reboot_hold_reconcile(new)
+    cancelled = False
+    if op == "on" and sb.pending_shutdown():
+        r = run(["/sbin/shutdown", "-c"], check=False, capture_output=True, text=True)
+        cancelled = r.returncode == 0
+    run(["systemctl", "start", "--no-block", "sharedbox-tick.service"], check=False, capture_output=True)
+    sb.log_event("reboot_hold_set", by, op=op, until=new.get("REBOOT_HOLD_UNTIL", ""), cancelled=cancelled)
+    rb = sb.reboot_info(new)
+    return {"ok": True, "active": bool(sb.reboot_hold_until(new)), "until": new.get("REBOOT_HOLD_UNTIL", ""),
+            "cancelled": cancelled, "next_reboot": rb.get("at")}
 
 
 TUNE_STATE = os.path.join(sb.STATE_DIR, "tune.json")

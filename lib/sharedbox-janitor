@@ -261,11 +261,13 @@ def cmd_tick(cfg, a):
                 print(f"memory limits re-applied (user.slice was {live}, now {sb.auto_memory_max(cfg)})")
         except (OSError, subprocess.SubprocessError) as e:
             print(f"memory limits: {e!r}", file=sys.stderr)
-        for what, fn in (("hackathon reconcile", sb.hackathon_reconcile), ("boosts", sb.boost_reconcile)):
+        for what, fn in (("hackathon reconcile", sb.hackathon_reconcile),
+                         ("reboot hold", sb.reboot_hold_reconcile),
+                         ("boosts", sb.boost_reconcile)):
             try:
                 done = fn(cfg)
                 if done:
-                    print(f"hackathon mode {done}")
+                    print(f"{what}: {done}")
             except Exception as e:  # noqa: BLE001 - one part never stops the rest
                 print(f"{what}: {e!r}", file=sys.stderr)
     state = sb.read_json(TICK_STATE, {}) or {}
@@ -347,7 +349,8 @@ def refresh_rules(cfg, users, state):
     at a time already past. Cheap: nothing runs unless the picture changed."""
     rb = sb.reboot_info(cfg)
     soon = bool(rb["at"]) and rb["at"] - time.time() < 12 * 3600  # `box` bakes a scheduled reboot in 12 h ahead
-    key = [boot_id(), rb["at"] if rb["why"] == "updates" or rb["postponed"] else None, rb["postponed"], soon]
+    key = [boot_id(), rb["at"] if rb["why"] == "updates" or rb["postponed"] else None, rb["postponed"], soon,
+           rb.get("hold_until")]
     meta = state.setdefault("_rules", {})
     if meta.get("key") == key:
         return
@@ -511,6 +514,9 @@ def cmd_reboot(cfg, a):
     need are unattended-upgrades' and never wait here."""
     if cfg.get("HACKATHON") == "1":
         print("hackathon mode is on: skipping the scheduled reboot")
+        return
+    if sb.reboot_hold_until(cfg):
+        print(f"reboot hold is on until {cfg.get('REBOOT_HOLD_UNTIL')}: skipping the scheduled reboot")
         return
     start = time.time()
     deadline = start + REBOOT_WAIT_MAX

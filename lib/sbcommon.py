@@ -50,6 +50,8 @@ SKILL_MAX_FILES, SKILL_MAX_BYTES = 40, 256 << 10
 CF_CERTS_CACHE = os.path.join(GATE_DIR, "cf-certs.json")  # Cloudflare Access signing keys (root writes)
 # the scheduled reboot's state while it waits for agents to finish a turn (root writes, 0644)
 REBOOT_STATE = os.path.join(STATE_DIR, "reboot.json")
+REBOOT_HOLD_STATE = os.path.join(STATE_DIR, "reboot-hold.json")
+APT_NO_REBOOT = "/etc/apt/apt.conf.d/99sharedbox-no-reboot"
 
 DEFAULTS = {
     # the name people see on pages, emails and broadcasts ("treehouse · <hostname>"). Commands, paths and
@@ -119,6 +121,9 @@ DEFAULTS = {
     # automatic updates, so only SCHEDULED_REBOOT_DAYS reboots it there)
     "REBOOT_TIME": "04:00",
     "SCHEDULED_REBOOT_DAYS": "Wed,Sun",
+    # temporary reboot hold (`box reboot hold`): skip scheduled and unattended-upgrades reboots until this
+    # local time ("YYYY-MM-DD HH:MM"); clears itself once past
+    "REBOOT_HOLD_UNTIL": "",
     # coding agents that aren't on npm (sharedbox-tools): name=<vendor update manifest, {arch} = amd64|arm64>#binaries.
     # A default so boxes installed before it get Antigravity without editing their conf; set it empty to opt out.
     "TOOLS_MANIFEST": "google/antigravity=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app"
@@ -685,6 +690,41 @@ def reboot_schedule_text(cfg):
     return f"{times} ({_and(days)} at {t})"
 
 
+def reboot_hold_until(cfg, now=None):
+    """Epoch when a temporary reboot hold ends, or None when inactive (unset, malformed or past)."""
+    until = parse_local_time(cfg.get("REBOOT_HOLD_UNTIL"))
+    return until if until and (now or time.time()) < until else None
+
+
+def reboot_hold_reconcile(cfg, now=None):
+    """Keep apt's auto-reboot override in sync with REBOOT_HOLD_UNTIL and record transitions.
+    Returns "on"/"off" when state changed, else None. Called by sharedbox-admin and janitor tick."""
+    until = reboot_hold_until(cfg, now)
+    active = bool(until)
+    apt_dir = os.path.dirname(APT_NO_REBOOT)
+    if active:
+        if os.path.isdir(apt_dir):
+            content = ('// Temporary reboot hold managed by treehouse (REBOOT_HOLD_UNTIL); '
+                       'removed automatically when it expires.\n'
+                       'Unattended-Upgrade::Automatic-Reboot "false";\n')
+            if _read(APT_NO_REBOOT) != content:
+                with open(APT_NO_REBOOT, "w") as f:
+                    f.write(content)
+                os.chmod(APT_NO_REBOOT, 0o644)
+    else:
+        try:
+            os.unlink(APT_NO_REBOOT)
+        except FileNotFoundError:
+            pass
+    st = read_json(REBOOT_HOLD_STATE, {}) or {}
+    if bool(st.get("active")) == active:
+        return None
+    until_s = cfg.get("REBOOT_HOLD_UNTIL", "").strip() if active else ""
+    write_json(REBOOT_HOLD_STATE, {"active": active, "ts": int(time.time()), "until": until_s}, mode=0o644)
+    log_event("reboot_hold_on" if active else "reboot_hold_off", None, until=until_s)
+    return "on" if active else "off"
+
+
 def next_scheduled_reboot(cfg, now=None):
     """Epoch seconds of the next SCHEDULED_REBOOT_DAYS reboot, or None."""
     days = reboot_days(cfg)
@@ -693,12 +733,14 @@ def next_scheduled_reboot(cfg, now=None):
     except ValueError:
         return None
     now = now or time.time()
+    hold = reboot_hold_until(cfg, now)
+    after = max(now, hold) if hold else now
     for i in range(8):
-        t = time.localtime(now + i * 86400)
+        t = time.localtime(after + i * 86400)
         if WEEKDAYS[t.tm_wday] not in days:
             continue
         ts = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, hh, mm, 0, 0, 0, -1))
-        if ts > now:
+        if ts > after:
             return ts
     return None
 
@@ -716,11 +758,12 @@ def pending_shutdown():
 
 
 def reboot_info(cfg, now=None):
-    """What to tell people about the next reboot: {at, why ('updates'|'scheduled'), postponed, latest, schedule}.
-    `at` None = nothing planned. A scheduled reboot that is waiting for agents to finish their turn has
-    postponed=True and `latest` = when it happens regardless."""
+    """What to tell people about the next reboot: {at, why ('updates'|'scheduled'), postponed, latest, schedule,
+    hold_until}. `at` None = nothing planned. A scheduled reboot that is waiting for agents to finish their turn
+    has postponed=True and `latest` = when it happens regardless."""
     now = now or time.time()
-    out = {"at": None, "why": None, "postponed": False, "latest": None, "schedule": reboot_schedule_text(cfg)}
+    out = {"at": None, "why": None, "postponed": False, "latest": None, "schedule": reboot_schedule_text(cfg),
+           "hold_until": reboot_hold_until(cfg, now)}
     st = read_json(REBOOT_STATE, {}) or {}
     pend = pending_shutdown()
     if pend and pend > now - 600:

@@ -784,7 +784,7 @@ def ago_text(ts):
 
 def reboot_text():
     """"next reboot Wed 04:00" for the box line, or "" when no reboot is planned."""
-    rb = sb.reboot_info(CFG)
+    rb = sb.reboot_info(sb.load_config())
     if not rb["at"]:
         return ""
     if rb["postponed"]:
@@ -1214,6 +1214,9 @@ EVENT_TEXT = {
     "hackathon_set": "{user} changed hackathon mode",
     "hackathon_on": "hackathon mode started",
     "hackathon_off": "hackathon mode ended",
+    "reboot_hold_set": "{user} changed the temporary reboot hold",
+    "reboot_hold_on": "automatic reboots paused",
+    "reboot_hold_off": "automatic reboots resumed",
     "over_budget": "{user} went over their disk budget",
     "deleted": "the janitor cleaned up {user}'s {path}",
     "disk_pressure": "the disk is getting full",

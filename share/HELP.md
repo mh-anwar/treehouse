@@ -68,6 +68,8 @@ shallow 5 s / 18 MB.
 - Comes back: `box serve` services, group servers, the user's T3 Code, everything on disk.
 - Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, memory.
 - Make servers safe to restart any time: keep state in files or a database.
+- Owner: `box reboot hold --hours N` (or `--until "YYYY-MM-DD HH:MM"`) skips automatic and update reboots
+  temporarily without turning on hackathon mode; `box reboot off` resumes them early.
 
 @@ servers
 - `box serve add <name> [--port P] -- <command…>`, run inside the project dir. Survives logout and reboots,

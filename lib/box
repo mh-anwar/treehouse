@@ -278,6 +278,51 @@ def cmd_hackathon(a):
           else "Hackathon mode is off.")
 
 
+def cmd_reboot(a):
+    op = a.op or "status"
+    if op == "status":
+        rb = sb.reboot_info(CFG)
+        data = {"hold_until": CFG.get("REBOOT_HOLD_UNTIL", "").strip() if rb.get("hold_until") else "",
+                "next_reboot": fmt_ts(rb["at"]) if rb.get("at") else "",
+                "why": rb.get("why") or "", "schedule": rb.get("schedule") or ""}
+        if a.json:
+            print(json.dumps(data))
+            return
+        if data["hold_until"]:
+            print(f"Automatic reboots paused until {data['hold_until']}.")
+        if data["next_reboot"]:
+            print(f"Next reboot: {data['next_reboot']} ({data['why']}).")
+        else:
+            print("No reboot scheduled.")
+        return
+    if ME.pw_name not in sb.admin_users(CFG):
+        sys.exit("only the owner (an admin account) can pause or resume automatic reboots")
+    if op in ("off", "resume"):
+        req = {"action": "reboot-hold", "op": "off"}
+    else:
+        until = a.until
+        if a.hours is not None:
+            if a.hours <= 0:
+                sys.exit("--hours must be greater than 0")
+            until = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + a.hours * 3600))
+        if not until:
+            until = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + 24 * 3600))
+        req = {"action": "reboot-hold", "op": "on", "until": until}
+    res = admin_request(req, 60)
+    if not res.get("ok"):
+        sys.exit(res.get("error", "that didn't work"))
+    if a.json:
+        print(json.dumps(res))
+        return
+    if res.get("active"):
+        extra = " Cancelled a pending scheduled reboot." if res.get("cancelled") else ""
+        nxt = f" Next scheduled reboot: {fmt_ts(res['next_reboot'])}." if res.get("next_reboot") else ""
+        print(f"Automatic reboots paused until {res['until']}.{extra}{nxt}")
+    else:
+        nxt = f" Next scheduled reboot: {fmt_ts(res['next_reboot'])}." if res.get("next_reboot") else ""
+        print(f"Automatic reboots resumed.{nxt}")
+
+
 def cmd_status(a):
     if (CFG.get("PUBLIC_MODE") or "").strip().lower() == "funnel":
         print("Public access is off: Tailscale Funnel is no longer supported. The owner can set up Cloudflare instead "
@@ -3423,6 +3468,12 @@ def main():
     x.add_argument("--hours", type=float, help="or: end this many hours from now")
     x.add_argument("--users", help="friends who get open package requests too (the owner always does)")
     x.set_defaults(fn=cmd_hackathon)
+    x = s.add_parser("reboot", help="show the next reboot, or (owner) hold automatic reboots temporarily")
+    x.add_argument("op", nargs="?", choices=["status", "hold", "off", "resume"])
+    x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
+    x.add_argument("--hours", type=float, help="or: hold for this many hours (default 24)")
+    x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=cmd_reboot)
     x = s.add_parser("tune", help="how efficient the box itself is (kernel, memory, disk, network); read-only")
     x.add_argument("op", nargs="?", help="shell (speed up your shell start) | disable|enable NAME (owner only)")
     x.add_argument("unit", nargs="?")
