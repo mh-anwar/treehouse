@@ -1219,7 +1219,7 @@ def cmd_invite(cfg, a):
         print(f"\n({TAILSCALE_NOTE})", file=sys.stderr)
 
 
-SUBSCRIPTION_LINE = "You'll need your own Claude Pro/Max or ChatGPT Plus/Pro subscription to use the agents."
+SUBSCRIPTION_LINE = "You'll need your own Claude Pro/Max, ChatGPT Plus/Pro or Google AI subscription to use the agents."
 
 TAILSCALE_NOTE = ("no account was created: on a Tailscale-only box it needs the friend's Tailscale login, so "
                   "they pick a username on the join page")
@@ -1314,14 +1314,14 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
     if username in reg["users"]:  # first visit to / goes to the portal (log in to an AI) instead of T3
         reg["users"][username].update(welcome=True, invited_by=by or "root", **({"note": note} if note else {}))
         save_registry(reg)
-    hello = ("Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) "
+    hello = ("Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude, ChatGPT or Google Antigravity) "
              "that\nbuilds things for you in your browser and keeps running when you close your laptop. "
              "Works on your phone too.\n" + SUBSCRIPTION_LINE)
     sb.log_event("invite_created", by, account=username, email=email, note=note)
     message = f"""{hello}
 
 Open {pub}/ on any device, enter {email}, and type the code Cloudflare emails you. That's it.
-The first time, it walks you through logging in to your AI, then "Open T3 in browser". Your username is {username}.
+The first time, it walks you through logging in to your AI, then "Open T3 in this browser". Your username is {username}.
 Stuck? Ask the agent, or text me."""
     return {"ok": True, "message": message, "username": username, "link": f"{pub}/", "id": "",
             "email": email, "expires": None,
@@ -1355,14 +1355,14 @@ def public_invite(cfg, days=None, note=None, by=None, email=None):
     fields["email"] = email
     tok, h = gate_mint("invites", days * 86400, note=sb.printable(note or "")[:120], by=by or "root", **fields)
     sb.log_event("invite_created", by, invite=h[:12], note=note or "", email=fields.get("email"))
-    return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
+    return (f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude, ChatGPT or Google Antigravity) that
 builds things for you in your browser and keeps running when you close your laptop. Works on your phone too.
 {SUBSCRIPTION_LINE}
 
 1. Open this link (it works once, for the next {days} days):
    {pub}/i/{tok}
 2. It asks for your email: use {email}. You'll get a code by email; type it in.
-3. Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
+3. Pick a username, then click through: log in to your AI, then "Open T3 in this browser". That's it.
 
 Later, on any device, just open {pub}/ and sign in with {email} again. Stuck? Ask the agent, or text me.""",
             h, int(time.time()) + days * 86400)
@@ -1377,14 +1377,14 @@ def tailscale_invite(cfg):
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     url = f"http://{host}:{cfg['WEB_PORT']}/join"
-    return f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude or ChatGPT) that
+    return f"""Hey! I've set you up on my coding machine. You get your own AI coding agent (Claude, ChatGPT or Google Antigravity) that
 builds things for you in your browser and keeps running when you close your laptop.
 {SUBSCRIPTION_LINE}
 
 1. Install Tailscale and sign in: https://tailscale.com/download
 2. Accept the "shared machine" invite I sent you (check your email), using that same Tailscale account.
 3. Open {url}
-   Pick a username, then click through: log in to your AI, then "Open T3 in browser". That's it.
+   Pick a username, then click through: log in to your AI, then "Open T3 in this browser". That's it.
 
 Bookmark {url.replace('/join', '/me')} for later. Stuck? Ask the agent, or text me."""
 

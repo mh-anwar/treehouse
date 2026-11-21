@@ -1101,7 +1101,7 @@ def cmd_t3(a):
         wakes = sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active"
         state = ("running" if up else "stopped (it starts by itself in a few seconds when opened)"
                  if wakes else "not running (`box t3` starts it)")
-        print(f"T3 Code: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in browser")
+        print(f"T3 Code: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in this browser")
         return
     # start (if needed) + pair
     t3_ensure(host, port, env)
@@ -1144,7 +1144,7 @@ Open this link in your browser within 30 minutes to pair it:
 
   {url}
 
-Easiest from now on: open {portal_url()} on any device and click "Open T3 in browser".
+Easiest from now on: open {portal_url()} on any device and click "Open T3 in this browser".
 First time? Log in to your agent on that page too; T3 uses that login.
 T3_PAIR_URL={url}""")
 
@@ -1325,7 +1325,7 @@ Welcome to {BRAND} on {socket.gethostname()}, {ME.pw_name}!
   Agents installed:  {have}
   Your ports:        {f'{r[0]}-{r[1]}' if r else 'any'}
   Your page:         {portal_url()}
-                     log in to your agent + GitHub with a click, then "Open T3 in browser"
+                     log in to your agent + GitHub with a click, then "Open T3 in this browser"
   Or terminal:       tmux new -A -s main   →   mkdir ~/myapp && cd ~/myapp && claude
                      (`box setup` does the logins here instead)
 
