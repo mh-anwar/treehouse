@@ -127,15 +127,18 @@ The user can connect **their own computer's coding agent** (Claude Code, Codex, 
 account, with no VPN: SSH goes through Cloudflare. {connect}
 - Their agent does everything itself: installs `cloudflared`, makes a key `~/.ssh/treehouse`, runs
   `cloudflared access login <site>` (the user types one emailed code in the browser), registers the key with
-  `POST <site>/_box/api/ssh-key`, and adds a `Host treehouse` block to `~/.ssh/config`.
-- Afterwards, on their computer: `ssh treehouse 'box status'`, `ssh -t treehouse claude`, VS Code / Cursor
-  Remote-SSH to host `treehouse`, or just tell their local agent "run X on my treehouse box".
+  `POST <site>/_box/api/ssh-key`, and writes a managed block in `~/.ssh/config`: `Host treehouse` plus one
+  `tb-<box>` alias per box in BOXES (the other boxes are reached by ProxyJump through this one; the key reaches
+  them within ~10 minutes).
+- Afterwards, on their computer: `ssh treehouse 'box status'`, `ssh -t treehouse claude`, `ssh tb-<box>`,
+  VS Code / Cursor Remote-SSH to host `treehouse`, or just tell their local agent "run X on my treehouse box".
+- The T3 Code desktop app on their laptop: no Tailscale needed. In the app, Settings, Environments, Add
+  environment, SSH, host `tb-<box>` (once per box), then turn on Load balancing. The connect prompt ends with
+  these steps. A new box: run the prompt again (it replaces the managed block), then add that one host.
 - If they ask how: point them to that page and its Copy button. Don't walk them through it in a terminal, and
   don't add keys for them by hand.
-- The T3 Code desktop app on their laptop needs Tailscale there (the app can't pass Cloudflare). Their dashboard's
-  "Make a setup prompt" (or `box t3 app-link --prompt`) gives their laptop's agent the steps: check Tailscale and
-  the account first, fix only what's broken, then open a one-time pairing link. The box's address is always its
-  Tailscale IP. No Tailscale: T3 in the browser (dashboard, Open T3) always works. T3 Connect isn't tested here yet.
+- T3 on a phone: the T3 Code app with T3 Connect. T3 in a browser (dashboard, Open T3) always works. On
+  Tailscale, the dashboard's "Make a setup prompt" (or `box t3 app-link --prompt`) still pairs the app directly.
 
 @@ requests
 - A system package (apt/pacman) you can't install into your home: `box request install PKG [PKG...] --why "<why>"`.

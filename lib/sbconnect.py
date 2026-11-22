@@ -147,19 +147,58 @@ At the end, tell me in one line: it works, or what blocks it and the Tailscale a
 """
 
 
-def ssh_config_block(user, ssh_host, cloudflared="cloudflared", alias=ALIAS):
-    """The Host block for ~/.ssh/config. `cloudflared` is the command (Windows: its full path, quoted)."""
-    return (f"Host {alias}\n"
-            f"  HostName {ssh_host}\n"
-            f"  User {user}\n"
-            f"  IdentityFile ~/.ssh/{alias}\n"
-            f"  IdentitiesOnly yes\n"
-            f"  ProxyCommand {cloudflared} access ssh --hostname %h\n"
-            f"  ServerAliveInterval 30\n")
+FLEET_PREFIX = "tb-"
+BEGIN = "# >>> treehouse (written by the treehouse connect prompt; run it again to update) >>>"
+END = "# <<< treehouse <<<"
+_BOX_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
+_BOX_IP = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
 
 
-def connect_text(user, site, ssh_host, alias=ALIAS):
+def fleet(boxes, entry):
+    """[(alias, box, ip)] for every box a friend's laptop reaches: the entry box first (ip None: it IS `treehouse`,
+    reached through Cloudflare), then the other boxes in BOXES order, reached by ProxyJump through the entry box.
+    `boxes` is BOXES as {name: ip} (sbcommon.boxes); `entry` is this box's name. Bad names/IPs are dropped."""
+    entry = (entry or "").strip().lower()
+    out = [(FLEET_PREFIX + entry, entry, None)] if _BOX_NAME.fullmatch(entry) else []
+    for name, ip in (boxes or {}).items():
+        name = str(name or "").strip().lower()
+        if name != entry and _BOX_NAME.fullmatch(name) and _BOX_IP.fullmatch(str(ip or "")):
+            out.append((FLEET_PREFIX + name, name, str(ip)))
+    return out
+
+
+def ssh_config_block(user, ssh_host, cloudflared="cloudflared", alias=ALIAS, boxes=None, entry="", windows=False):
+    """The managed block for ~/.ssh/config, between BEGIN and END: `Host treehouse` (plus `tb-<entry>`, the same
+    host under the fleet name) through `cloudflared access ssh`, one `Host tb-<box>` per other box in BOXES that
+    jumps through it (sshd on the entry box allows TCP forwarding, and the boxes reach each other over the owner's
+    tailnet), and shared connection settings. ControlMaster lets the T3 desktop app and ProxyJump reuse one
+    signed-in connection (T3 recommends exactly these three lines); Windows' OpenSSH has no ControlMaster, so the
+    Windows variant leaves them out. `cloudflared` is the command (Windows: its full path, quoted)."""
+    rows = fleet(boxes, entry)
+    lines = [BEGIN,
+             "Host " + " ".join([alias] + [a for a, _, ip in rows if ip is None]),
+             f"  HostName {ssh_host}",
+             f"  User {user}",
+             f"  IdentityFile ~/.ssh/{alias}",
+             "  IdentitiesOnly yes",
+             f"  ProxyCommand {cloudflared} access ssh --hostname %h",
+             ""]
+    for a, _, ip in rows:
+        if ip:
+            lines += [f"Host {a}", f"  HostName {ip}", f"  User {user}", f"  IdentityFile ~/.ssh/{alias}",
+                      "  IdentitiesOnly yes", f"  ProxyJump {alias}", ""]
+    lines.append(f"Host {alias} {FLEET_PREFIX}*")
+    if not windows:
+        lines += ["  ControlMaster auto", "  ControlPath ~/.ssh/cm-%C", "  ControlPersist 8h"]
+    lines += ["  ServerAliveInterval 30", END]
+    return "\n".join(lines) + "\n"
+
+
+def connect_text(user, site, ssh_host, alias=ALIAS, boxes=None, entry=""):
     """Instructions written FOR a coding agent on the friend's computer. `site` is https://<public host>.
+    `boxes` (BOXES as {name: ip}) and `entry` (this box's name) add one `tb-<box>` SSH alias per box, which is
+    what the T3 desktop app connects to (Settings, Environments, Add environment, SSH), so its load balancing
+    can use every box with no Tailscale on the laptop. Running the prompt again refreshes the aliases.
     With ssh_host empty (the owner hasn't turned SSH on yet) it says so instead of half-working steps."""
     site = site.rstrip("/")
     if not ssh_host:
@@ -168,17 +207,54 @@ def connect_text(user, site, ssh_host, alias=ALIAS):
                 f"`sudo sharedbox-admin cloudflare ssh` on the box, then copy these instructions again from "
                 f"{site}/_box/me\". Don't try other ways in (no VPN, no port forwarding).\n")
     key = f"~/.ssh/{alias}"
-    block = ssh_config_block(user, ssh_host, alias=alias)
-    win_block = ssh_config_block(user, ssh_host, '"C:\\Program Files (x86)\\cloudflared\\cloudflared.exe"', alias)
+    rows = fleet(boxes, entry)
+    names = [a for a, _, _ in rows]
+    block = ssh_config_block(user, ssh_host, alias=alias, boxes=boxes, entry=entry)
+    win_block = ssh_config_block(user, ssh_host, '"C:\\Program Files (x86)\\cloudflared\\cloudflared.exe"', alias,
+                                 boxes, entry, windows=True)
+    tests = "\n".join(f"    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new {a} true" for a in names)
+    boxes_line = ", ".join(f"`{a}` ({b})" for a, b, _ in rows)
+    if names:
+        fleet_intro = (f" It also adds one alias per treehouse box ({boxes_line}) so the T3 Code desktop app can "
+                       f"use all of them.")
+        test_more = f"""
+Then check every box (the first one through each box can take a few seconds):
+{tests}
+Each must exit 0 with no output. "Permission denied (publickey)" on a box other than `{alias}`: the key reaches
+the other boxes within ~10 minutes of step 4; wait and retry. Still failing after that, or a timeout: tell the
+human which box failed and the error, and carry on with the boxes that work.
+"""
+        clicks = "\n".join(f"   - Host: `{a}`" for a in names)
+        t3 = f"""
+## 8. The T3 Code desktop app on this computer (every box, no Tailscale needed)
+Tell the human these exact steps (you can't click in the app yourself). If the app isn't installed, install it
+first (macOS: `brew install --cask t3-code`, or the .dmg from https://github.com/pingdotgg/t3code/releases/latest;
+Windows: `winget install --id T3Tools.T3Code -e`; Linux: the AppImage from https://t3.codes):
+1. In T3 Code, open Settings, then Environments.
+2. For each box, click Add environment, choose SSH, enter the host below, and click Add:
+{clicks}
+3. Back in Settings, Environments, turn on Load balancing so new threads go to the least busy box.
+The app reaches each box over the SSH aliases above (through Cloudflare, then from box to box), and starts or
+reuses T3 there by itself. If a box shows an error, ask the human for its exact text.
+
+## When the owner adds a box
+Run this prompt again: fetch it with
+    curl -sS {site}/_box/connect.md -H "cf-access-token: $(cloudflared access token -app={site})"
+(PowerShell: `Invoke-RestMethod -Uri {site}/_box/connect.md -Headers @{{"cf-access-token"=(cloudflared access token -app={site})}}`)
+and follow it. Steps 1-4 are skipped when they're done already; step 5 replaces the managed block, so the new
+`tb-<box>` alias appears. Then the human adds that one host in T3 (step 8).
+"""
+    else:
+        fleet_intro = test_more = t3 = ""
     return f"""# Connect this computer to the treehouse box ({site})
 
 You are a coding agent on the human's own computer. Set up SSH so that `ssh {alias}` reaches their account
-**{user}** on the shared Linux box at {site}. It goes through Cloudflare (no VPN, no Tailscale). Do every step
-yourself; the human only has to type one emailed code in a browser. Work out the OS first (macOS, Linux or
+**{user}** on the shared Linux box at {site}. It goes through Cloudflare (no VPN, no Tailscale).{fleet_intro} Do every
+step yourself; the human only has to type one emailed code in a browser. Work out the OS first (macOS, Linux or
 Windows) and use the matching commands. Never print or send a private key anywhere; only `{key}.pub` leaves
 this computer.
 
-Already set up? If `ssh -o BatchMode=yes {alias} true` succeeds, skip to step 7.
+Already set up? If `ssh -o BatchMode=yes {alias} true` succeeds, skip to step 5 (it refreshes the SSH config).
 
 ## 1. Install cloudflared (Cloudflare's client)
 - macOS: `brew install cloudflared` (no Homebrew: download `cloudflared-darwin-arm64.tgz` or
@@ -218,11 +294,20 @@ Windows (PowerShell):
 false, show the human the `error` text. A 403 "Not allowed" page means the Cloudflare login is missing or
 expired: redo step 3. `GET {site}/_box/api/whoami` (same header) shows who you're signed in as.
 
-## 5. Add the host to the SSH config (only if there's no `Host {alias}` in it yet)
-Append to `~/.ssh/config` (create it, mode 600 on macOS/Linux):
+## 5. Write the SSH config (a managed block: safe to repeat)
+In `~/.ssh/config` (create it with mode 600 on macOS/Linux; `~/.ssh` mode 700):
+- If it has a block from `{BEGIN}` to `{END}`, replace that whole block with the one below.
+- Otherwise, if it has an older hand-added `Host {alias}` section (from a `Host {alias}` line up to the next
+  `Host`/`Match` line or the end of the file), replace that section with the block below.
+- Otherwise append the block at the end. Never touch anything else in the file; keep a copy as
+  `~/.ssh/config.bak` before the first change.
+- macOS / Linux: in ProxyCommand, write cloudflared's full path (`command -v cloudflared`, for example
+  `/opt/homebrew/bin/cloudflared` or `/home/<you>/.local/bin/cloudflared`) instead of plain `cloudflared`: the
+  T3 desktop app starts ssh without your shell's PATH.
 
 {block}
-Windows: the file is `%USERPROFILE%\\.ssh\\config`, and ProxyCommand needs cloudflared's full path, quoted:
+Windows: the file is `%USERPROFILE%\\.ssh\\config`, and ProxyCommand needs cloudflared's full path, quoted
+(Windows' OpenSSH has no ControlMaster, so this variant leaves those lines out):
 
 {win_block}
 (If ssh can't run a path with spaces, copy cloudflared.exe to `%USERPROFILE%\\bin\\` and use that path.)
@@ -231,14 +316,14 @@ Windows: the file is `%USERPROFILE%\\.ssh\\config`, and ProxyCommand needs cloud
     ssh -o StrictHostKeyChecking=accept-new {alias} 'box status'
 It should print {user}'s usage and limits on the box. "Permission denied (publickey)": step 4 didn't work.
 A browser opening: Cloudflare wants the login again; tell the human to finish it.
-
+{test_more}
 ## 7. Tell the human what they can do now
 - "Run X on my treehouse box": you run `ssh {alias} '<command>'` for them.
 - `ssh -t {alias} claude` (or `codex`) starts a coding agent that lives on the box.
 - VS Code / Cursor: Remote-SSH, "Connect to Host...", pick `{alias}`.
 - Every few weeks Cloudflare asks for the email code again; a browser tab opens by itself when it does.
 - The website is still {site} (their dashboard: {site}/_box/me).
-
+{t3}
 ## Rules when you work on the box
 - It's a shared machine with no sudo for anyone. Never run `sudo` or ask for root/admin. Read
   `ssh {alias} 'box rules'` once before doing real work there and follow it.
@@ -249,8 +334,8 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
 - Memory: each account has a guaranteed share and may use most of the box while it's quiet; `ssh {alias} box running`
   shows what's using it, `box help memory` explains. `box help` lists more topics.
 
-To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`
-and follow the steps it prints (it checks Tailscale first, then pairs the app).
+T3 on a phone: the T3 Code app with T3 Connect (the dashboard's "Open T3 app" shows how). T3 in a browser:
+{site}/_box/me, Open T3.
 """
 
 
