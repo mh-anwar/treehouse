@@ -696,6 +696,14 @@ def process_shared_drop(cfg):
                                   done=req.get("done") is not False)
         elif isinstance(req, dict) and req.get("action") == "presence":
             res = handle_presence(boosters[owner], req)
+        elif isinstance(req, dict) and req.get("action") == "telegram" \
+                and req.get("op") in ("status", "link", "unlink", "notify", "test"):
+            res = handle_telegram(cfg, boosters[owner], req)  # `box telegram`: the Account tab's Telegram row
+        elif isinstance(req, dict) and req.get("action") == "t3-team" and owner in allowed:
+            try:  # `box teammates`: the Account tab's "Let a teammate's agents work in your T3"
+                res = handle_team(allowed[owner], pwd.getpwnam(allowed[owner]), req)
+            except (KeyError, OSError, subprocess.SubprocessError) as e:
+                res = {"ok": False, "error": f"that didn't work: {e}"}
         elif isinstance(req, dict) and owner in allowed:
             res = shared_handle(cfg, allowed[owner], req)
         else:
@@ -1614,7 +1622,7 @@ REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedb
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-update", "tune-service", "hackathon", "reboot-hold", "friends-boxes")
+                   "friends-update", "tune-service", "hackathon", "reboot-hold", "friends-boxes", "telegram-setup")
 
 
 def friend_record(cfg, name):
@@ -1877,6 +1885,11 @@ def friends_action(cfg, by, req):
             return boxes_set(str(req.get("boxes") or "")[:2000], by)
         if act == "tune-service":
             return tune_service(str(req.get("op") or ""), str(req.get("unit") or "")[:80], by=by)
+        if act == "telegram-setup":  # `box telegram setup|off`: the Settings tab's Telegram bot
+            if req.get("op") == "off":
+                telegram_off(cfg, by=by)
+                return {"ok": True, "message": "Telegram is off. People's links are kept for when it's back."}
+            return telegram_setup(cfg, req.get("token"), by=by)
     except FriendError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": False, "error": "unknown request"}
