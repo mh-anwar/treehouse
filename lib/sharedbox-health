@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """sharedbox-health: box health + security reporting by email (root).
 
-  sharedbox-health sample                 record a metrics sample (timer, every 5 min)
+  sharedbox-health sample                 record a metrics sample (timer, every minute)
   sharedbox-health report [--send]        weekly report; prints it unless --send
   sharedbox-health check  [--send]        urgent problems only; emails if anything is new (timer, hourly)
   sharedbox-health audit  [--quick]       run the security self-audit and print findings
@@ -30,6 +30,7 @@ import sbmail  # noqa: E402
 
 HDIR = os.path.join(sb.STATE_DIR, "health")
 METRICS = os.path.join(HDIR, "metrics.jsonl")
+HOURLY = os.path.join(HDIR, "metrics-hourly.jsonl")   # one line per hour, kept forever (~4 MB a year)
 SAMPLE_STATE = os.path.join(HDIR, "sample-state.json")
 ALERT_STATE = os.path.join(HDIR, "alerts.json")
 WEEK = 7 * 86400
@@ -109,18 +110,71 @@ def cmd_sample(cfg, a):
         "disk_free": round(100 * box["disk_free"] / box["disk_total"], 2),
         "disk_free_b": box["disk_free"],
         "psi": [box["psi_cpu"], box["psi_mem"], box["psi_io"]],
-        "temp": max_temp(), "users": users,
+        "temp": max_temp(), "users": users, "agents": agent_counts(),
     }
-    sb.write_json(SAMPLE_STATE, {"total": total, "idle": idle}, mode=0o600)
+    hour = int(now // 3600)
+    if st.get("hour") and hour > st["hour"]:
+        try:
+            roll_hour(st["hour"])
+        except Exception as e:  # noqa: BLE001 - a roll-up must never stop sampling
+            print(f"hourly roll-up: {e!r}", file=sys.stderr)
+    sb.write_json(SAMPLE_STATE, {"total": total, "idle": idle, "hour": hour}, mode=0o600)
     with open(METRICS, "a") as f:
         f.write(json.dumps(rec, separators=(",", ":")) + "\n")
-    if os.path.getsize(METRICS) > 4 << 20 or now % 86400 < 300:   # trim about once a day
+    if os.path.getsize(METRICS) > 24 << 20 or now % 86400 < 60:   # trim about once a day
         keep = jsonl(METRICS, now - KEEP)
         tmp = METRICS + ".tmp"
         with open(tmp, "w") as f:
             for r in keep:
                 f.write(json.dumps(r, separators=(",", ":")) + "\n")
         os.replace(tmp, METRICS)
+
+
+AGENT_RE = re.compile(r"^(claude|codex|opencode|gemini|antigravity|aider|cursor-agent)", re.I)
+
+
+def agent_counts():
+    """{user: number of coding-agent processes} from /proc (comm only: cheap, every minute)."""
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                comm = f.read().strip()
+            if not AGENT_RE.match(comm):
+                continue
+            uid = os.stat(f"/proc/{pid}").st_uid
+            name = pwd.getpwuid(uid).pw_name
+        except (OSError, KeyError):
+            continue
+        out[name] = out.get(name, 0) + 1
+    return out
+
+
+def roll_hour(hour):
+    """Average/max of the minute samples in `hour` (unix hours) appended to HOURLY, which is never trimmed."""
+    t0, t1 = hour * 3600, (hour + 1) * 3600
+    rows = [r for r in jsonl(METRICS, t0) if r.get("ts", 0) < t1]
+    if not rows:
+        return
+
+    def agg(vals):
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        return [round(sum(vals) / len(vals), 1), round(max(vals), 1)] if vals else None
+    users = {}
+    for name in {n for r in rows for n in (r.get("users") or {})}:
+        pts = [(r["ts"], r["users"][name]) for r in rows if name in (r.get("users") or {})]
+        cpu_s = round((pts[-1][1][0] - pts[0][1][0]) / 1e6) if len(pts) > 1 else 0
+        users[name] = {"cpu_s": max(cpu_s, 0), "mem_mb": agg([p[1][1] / 1e6 for p in pts]),
+                       "agents": agg([(r.get("agents") or {}).get(name, 0) for r in rows])}
+    rec = {"ts": t0, "n": len(rows), "cpu": agg([r.get("cpu") for r in rows]),
+           "load1": agg([r.get("load1") for r in rows]), "mem": agg([r.get("mem") for r in rows]),
+           "psi": [agg([(r.get("psi") or [None] * 3)[i] for r in rows]) for i in range(3)],
+           "temp": agg([r.get("temp") for r in rows]), "disk_free": rows[-1].get("disk_free"), "users": users}
+    with open(HOURLY, "a") as f:
+        f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    os.chmod(HOURLY, 0o644)
 
 
 # ---------------------------------------------------------------- gathering

@@ -1722,7 +1722,7 @@ def last_active_map(days=7, floor=0.05):
     try:
         with open(path, "rb") as f:
             size = os.fstat(f.fileno()).st_size
-            f.seek(max(0, size - (8 << 20)))
+            f.seek(max(0, size - (24 << 20)))  # 7 days of minute samples
             data = f.read().decode(errors="replace")
     except OSError:
         return out
