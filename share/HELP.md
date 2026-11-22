@@ -318,3 +318,18 @@ Where someone is: their own status plus a rough "active on the box" hint.
 - The hint comes from when the account's agent sessions last changed, checked every 10 minutes and rounded
   ("active now", "3h ago"). Nothing about what they work on is shown. `box where --private` hides it.
 - Need something from them? Send a message (`box help msg`) instead of waiting for them to be active.
+
+@@ me
+`~/me` is the user's own folder about themselves: their agent history and efficiency, private to them (0700).
+- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every box they have, kept forever. Tables:
+  `sessions` (box, agent, model, cwd, title, started/ended unix time, wall_s, active_s, prompts, tool_calls, tool_s,
+  errors, interrupts, out_tokens), `messages` (sid, ts, role, text; full-text index `messages_fts`), `tool_calls`
+  (sid, ts, name, input (2,000 chars), output (500), dur_s, is_error). Raw transcripts stay where the agents wrote them.
+- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`), `box me sql "SELECT
+  ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md` (slowest sessions, where tool time went,
+  sleep/poll loops, failing commands, usage per day).
+- Kept fresh automatically every ~15 minutes, at the lowest priority, on every box; the user's home box copies in
+  what their other boxes indexed. Now: `box me ingest`, `box me pull`.
+- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention).
+- Never copy their prompts off the box or into other people's places.
+

@@ -3328,6 +3328,85 @@ def cmd_projects_sync(a):
     print(json.dumps({"ok": True, "ran": bool(out.get("ran"))}))
 
 
+def me_box():
+    """This box's name in BOXES (falls back to the hostname): the `box` column in ~/me/agents.db."""
+    import sbfed
+    return sbfed.self_name(sb.boxes(CFG), sb.tailscale_ip4(), socket.gethostname()) or socket.gethostname()
+
+
+def cmd_me(a):
+    """~/me: your own searchable history of every agent session on all your boxes (lib/sbme.py)."""
+    import sbme
+    if a.op == "ingest":
+        sbme.keep_history(HOME)
+        out = sbme.ingest(HOME, me_box(), verbose=not a.json)
+        print(json.dumps(out) if a.json else
+              f"indexed {out['parsed']} new or changed sessions ({out['skipped']} unchanged) in {out['seconds']}s")
+    elif a.op == "pull":
+        import sbmulti
+        out = sbme.pull(HOME, projects_peers(), sbmulti.SSH_OPTS)
+        print(json.dumps(out) if a.json else "\n".join(f"{k}: {v}" for k, v in out.items()) or "no other boxes")
+    elif a.op == "stats":
+        out = sbme.stats(HOME)
+        if a.json or not out.get("exists"):
+            print(json.dumps(out) if a.json else "no ~/me/agents.db yet: run `box me ingest`")
+        else:
+            print(f"{out['path']}: {out['size_mb']} MB, {out['sessions']} sessions, {out['messages']} messages, "
+                  f"{out['tool_calls']} tool calls, {out['first']} .. {out['last']}")
+            for k, v in out["by_box_agent"].items():
+                print(f"  {k}: {v}")
+    elif a.op == "search":
+        if not a.args:
+            sys.exit("usage: box me search WORDS (SQLite FTS5 syntax: machina AND rules, \"exact phrase\", gast*)")
+        try:
+            rows = sbme.search(HOME, " ".join(a.args), a.limit)
+        except Exception as e:  # noqa: BLE001 - bad FTS syntax: say so
+            sys.exit(f"box me search: {e}")
+        if a.json:
+            print(json.dumps(rows))
+        for r in ([] if a.json else rows):
+            print(f"{r[0]}  {r[1]} {r[2]} {r[3]}  {r[4][:50]}\n    {' '.join(r[5].split())}")
+    elif a.op == "sql":
+        if not a.args:
+            sys.exit("usage: box me sql \"SELECT ...\" (read-only; tables in ~/me/AGENTS.md, examples in ~/me/queries.md)")
+        try:
+            cols, rows = sbme.sql(HOME, " ".join(a.args))
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"box me sql: {e}")
+        if a.json:
+            print(json.dumps([dict(zip(cols, r)) for r in rows]))
+        else:
+            print("\t".join(cols))
+            for r in rows:
+                print("\t".join("" if v is None else str(v) for v in r))
+
+
+def cmd_me_tick(a):
+    """The janitor's tick, as this person (already under nice/ionice): keep history forever, index new transcripts
+    every ~15 minutes and copy in what the other boxes indexed."""
+    import sbme
+    sys.stdin.read(1 << 16)
+    ran = False
+    if sbme.due(HOME):
+        sbme.keep_history(HOME)
+        sbme.ingest(HOME, me_box())
+        peers = projects_peers()
+        if peers:
+            import sbmulti
+            sbme.pull(HOME, peers, sbmulti.SSH_OPTS)
+        ran = True
+    print(json.dumps({"ok": True, "ran": ran}))
+
+
+def cmd_me_export(a):
+    """Another of this person's boxes pulls the sessions this box indexed (`box me pull`), as JSON lines."""
+    import sbme
+    if not os.path.exists(sbme.db_path(HOME)):
+        return
+    for line in sbme.export_since(HOME, a.since, me_box()):
+        print(line)
+
+
 def cmd_projects_here(a):
     """Another of this person's boxes asks for its chosen projects here (clone / fast-forward, never more)."""
     import sbprojects
@@ -3508,6 +3587,14 @@ def main():
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_projects)
     s.add_parser("_projects-sync").set_defaults(fn=cmd_projects_sync)  # the janitor tick, as this person
     s.add_parser("_projects-here").set_defaults(fn=cmd_projects_here)  # another of your boxes, over SSH
+    x = s.add_parser("me", help="your agent history on all your boxes, kept forever: stats, search WORDS, sql QUERY, "
+                     "ingest, pull (~/me/AGENTS.md)")
+    x.add_argument("op", nargs="?", default="stats", choices=["stats", "search", "sql", "ingest", "pull"])
+    x.add_argument("args", nargs="*"); x.add_argument("--limit", type=int, default=20)
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_me)
+    s.add_parser("_me-tick").set_defaults(fn=cmd_me_tick)  # the janitor tick, as this person
+    x = s.add_parser("_me-export"); x.add_argument("--since", type=float, default=0)
+    x.set_defaults(fn=cmd_me_export)  # another of your boxes, over SSH
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
     x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them, no sudo")

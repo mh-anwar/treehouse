@@ -593,7 +593,7 @@ def metrics_tail(seconds):
     buf, pos = b"", st.st_size
     try:
         with open(METRICS, "rb") as f:
-            while pos > 0 and st.st_size - pos < 16 << 20:
+            while pos > 0 and st.st_size - pos < 32 << 20:
                 step = min(1 << 16, pos)
                 pos -= step
                 f.seek(pos)
