@@ -255,8 +255,17 @@ class RootTakesTheNewRequests(unittest.TestCase):
         self.assertEqual(self.seen, [])
 
     def test_teammates_as_the_file_owner(self):
-        self.assertTrue(self.drop({"action": "t3-team", "op": "grant", "to": "bob"}, 1001)["ok"])
-        self.assertEqual(self.seen, [("team", "alice", "grant")])
+        real = admin.sb.friend_users
+        try:
+            admin.sb.friend_users = lambda: {"alice": {"uid": 1001}}
+            self.assertTrue(self.drop({"action": "t3-team", "op": "grant", "to": "bob"}, 1001)["ok"])
+            self.assertEqual(self.seen, [("team", "alice", "grant")])
+            admin.sb.friend_users = lambda: {}  # an admin without a friend account: no managed T3, a clear answer
+            res = self.drop({"action": "t3-team", "op": "list"}, 1001)
+            self.assertFalse(res["ok"])
+            self.assertIn("friend accounts", res["error"])
+        finally:
+            admin.sb.friend_users = real
 
 
 class OwnerTelegramSetup(unittest.TestCase):
