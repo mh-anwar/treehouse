@@ -701,7 +701,10 @@ def process_shared_drop(cfg):
             res = handle_telegram(cfg, boosters[owner], req)  # `box telegram`: the Account tab's Telegram row
         elif isinstance(req, dict) and req.get("action") == "t3-team" and owner in allowed:
             try:  # `box teammates`: the Account tab's "Let a teammate's agents work in your T3"
-                res = handle_team(allowed[owner], pwd.getpwnam(allowed[owner]), req)
+                res = (handle_team(allowed[owner], pwd.getpwnam(allowed[owner]), req)
+                       if allowed[owner] in sb.friend_users() else
+                       {"ok": False, "error": "teammates' agents work in friend accounts' T3. This account's T3 isn't "
+                                              "run by treehouse (the dashboard doesn't offer it here either)."})
             except (KeyError, OSError, subprocess.SubprocessError) as e:
                 res = {"ok": False, "error": f"that didn't work: {e}"}
         elif isinstance(req, dict) and owner in allowed:
