@@ -427,6 +427,10 @@ def cmd_boost(a):
 # ---------- running ----------
 
 def cmd_running(a):
+    if a.op == "stop":  # the Running card's Stop: only when the user asked for it
+        if not a.key:
+            sys.exit("box running stop KEY (the key from `box running`)")
+        return emit(portal_running_stop(a.key), a.json)
     items = sbrunning.running(ME.pw_uid, HOME)
     if a.json:
         print(json.dumps([{k: v for k, v in it.items() if k not in ("ids",)} for it in items], indent=2))
@@ -442,9 +446,10 @@ def cmd_running(a):
     for it in items:
         print(f"{sb.human(it['mem']):>7}  {sbrunning.KIND_LABEL.get(it['kind'], it['kind']):<10} "
               f"{sbrunning.ago(it.get('age')):>7} {sbrunning.cpu_avg(it):>5}%  {sb.printable(it['name'])}"
-              + (f"  ({sb.printable(it['detail'])[:70]})" if it.get("detail") else ""))
-    print("\nCPU = average since it started. The user can stop containers, servers and terminals on their page; "
-          "agents never stop them on their own.")
+              + (f"  ({sb.printable(it['detail'])[:70]})" if it.get("detail") else "")
+              + (f"  [stop key {it['key']}]" if it.get("key") and it.get("stop") else ""))
+    print("\nCPU = average since it started. The user can stop containers, servers and terminals on their page, or "
+          "ask you to: `box running stop KEY`. Agents never stop them on their own.")
 
 
 # ---------- serve ----------
@@ -2097,7 +2102,8 @@ PORTAL_LOGINS = {
 }
 LOGIN_SOCK = "sblogin"
 URL_RE = re.compile(r"https://[^\s\"'<>]+")
-DEVICE_CODE_RE = re.compile(r"(?:code:?\s*|^\s*)([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$", re.M)  # alone or after "code:"
+DEVICE_CODE_RE = re.compile(r"(?:[Cc]ode:?\s*|^\s*)([A-Z0-9]{4}-[A-Z0-9]{4,6})\s*$", re.M)  # alone, or after
+# "code:" / "Code:" (T3 Connect prints "Code: ABCD-EFGH")
 PASTE_RE = re.compile(r"[A-Za-z0-9#_.~+/=-]{4,600}")
 
 
@@ -3502,6 +3508,143 @@ def team_rules():
         return ""
 
 
+# ---------- the dashboard's settings, for agents (`box help settings` maps each card to its command) ----------
+# Everything a person can press on their page, their agent can do from here: the same code paths (root's drop for
+# what needs root, `box _portal`'s functions for what runs as this account), with --json for agents.
+
+def emit(res, as_json, text=None):
+    """Print a result for a person (text, or the message/error) or an agent (--json); exit 1 when it failed."""
+    if as_json:
+        print(json.dumps(res))
+    elif res.get("ok"):
+        print(text if text is not None else res.get("message") or "Done.")
+    else:
+        print(res.get("error") or "that didn't work", file=sys.stderr)
+    if not res.get("ok"):
+        sys.exit(1)
+
+
+def read_secret(prompt):
+    """One line from stdin (piped), or typed without echo: secrets never go on the command line."""
+    if sys.stdin.isatty():
+        import getpass
+        return getpass.getpass(prompt)
+    return sys.stdin.readline()
+
+
+TG_OPS = ("status", "link", "test", "notify", "unlink", "setup", "off")
+
+
+def cmd_telegram(a):
+    """Phone alerts (the Account tab's Telegram row) and, for the owner, the box's bot (Settings tab)."""
+    op = a.op or "status"
+    if op in ("setup", "off"):
+        if ME.pw_name not in sb.admin_users(CFG):
+            sys.exit("only the owner sets up the box's Telegram bot")
+        req = {"action": "telegram-setup", "op": "off"} if op == "off" else {
+            "action": "telegram-setup", "token": read_secret("Bot token from @BotFather: ").strip()[:200]}
+        res = admin_request(req, 60)
+        if op == "off" and res.get("ok"):
+            res.setdefault("message", "Telegram is off. People's links are kept for when it's back.")
+        return emit(res, a.json)
+    req = {"action": "telegram", "op": op}
+    if op == "notify":
+        if a.level not in ("all", "important", "off"):
+            sys.exit("box telegram notify all|important|off")
+        req["level"] = a.level
+    res = shared_request(req, 60)
+    if op == "status" and res.get("ok"):
+        if not res.get("ready"):
+            text = ("Telegram isn't set up on this box yet. "
+                    + ("Set it up: make a bot with @BotFather, then `box telegram setup` (token on stdin)."
+                       if ME.pw_name in sb.admin_users(CFG) else "The owner turns it on."))
+        elif res.get("linked"):
+            text = (f"Telegram connected ({res.get('handle') or 'linked'}) to @{res.get('bot')}, "
+                    f"notify: {res.get('notify') or 'all'}.")
+        else:
+            text = f"Telegram is available (@{res.get('bot')}) but not connected: `box telegram link`."
+        return emit(res, a.json, text)
+    if op == "link" and res.get("ok"):
+        return emit(res, a.json, f"Open this link on the phone with Telegram and press Start (it works once):\n"
+                                 f"{res['url']}\nThen `box telegram status` shows it connected.")
+    emit(res, a.json)
+
+
+LOGIN_KEYS = ("claude", "codex", "gh", "antigravity", "t3connect")
+
+
+def cmd_login(a):
+    """The dashboard's login buttons (Claude, ChatGPT, GitHub, Google for Antigravity, the T3 app), as commands.
+    Start prints a link (and for some a code to type there); for Claude/Antigravity the page then shows a code that
+    goes back in with --code (read from stdin). --check waits a few seconds for a finished login."""
+    if not a.key:
+        rows = {k: {"label": PORTAL_LOGINS[k][0], "ok": bool(portal_logged_in(k))} for k in LOGIN_KEYS
+                if shutil.which(PORTAL_LOGINS[k][1][0])}
+        if a.json:
+            print(json.dumps({"ok": True, "logins": rows}))
+        else:
+            for k, r in rows.items():
+                print(f"  {k:<12} {r['label']:<22} {'logged in' if r['ok'] else 'not yet: box login ' + k}")
+        return
+    if a.other_boxes:
+        if a.key not in PEER_LOGINS:
+            sys.exit(f"--other-boxes works for: {', '.join(PEER_LOGINS)} (Claude and GitHub are copied by themselves)")
+        res = portal_peer_login(a.key, check=a.check)
+        if a.json:
+            print(json.dumps(res))
+            return
+        for r in res.get("boxes") or []:
+            print(f"  {r['box']}: " + ("done" if r.get("done") else
+                                      f"open {r['url']}" + (f" and enter {r['code']}" if r.get("code") else "")
+                                      if r.get("url") else r.get("error") or "not yet"))
+        if not res.get("boxes"):
+            print("No other boxes answer over SSH yet (box boxes).")
+        return
+    if a.code:
+        res = portal_login_code(a.key, read_secret("Code from the sign-in page: "))
+    elif a.check:
+        res = portal_login_wait(a.key, 5)
+    else:
+        res = portal_login_start(a.key, console=a.console)
+    label = PORTAL_LOGINS[a.key][0]
+    if res.get("ok") and res.get("done"):
+        return emit(res, a.json, f"{label}: logged in.")
+    if res.get("ok") and res.get("url"):
+        text = (f"Open {res['url']}" + (f"\nand enter the code {res['code']}" if res.get("code") else "")
+                + (f"\nThen paste the code it shows: box login {a.key} --code (reads it from stdin)"
+                   if res.get("paste") else f"\nThen: box login {a.key} --check"))
+        return emit(res, a.json, text)
+    emit(res, a.json)
+
+
+def cmd_teammates(a):
+    """Let a teammate's agents work in your T3 (the Account tab's teammates card): ls, allow NAME, stop NAME."""
+    op = {"ls": "list", "allow": "grant", "stop": "revoke"}[a.op or "ls"]
+    req = {"action": "t3-team", "op": op}
+    if op != "list":
+        if not a.name:
+            sys.exit(f"box teammates {a.op} NAME")
+        req["to"] = a.name
+    if op == "grant":
+        req["access"] = a.access
+    res = shared_request(req, 240)
+    if op == "list" and res.get("ok") and not a.json:
+        grants = res.get("grants") or []
+        for g in grants:
+            print(f"  {g.get('to')}'s agents can work in your T3 (since {g.get('since') or '?'})")
+        if not grants:
+            print("No teammate's agents can work in your T3.")
+        print("Teammates: " + (", ".join(res.get("people") or []) or "none") + "\nAccess levels: "
+              + ", ".join(f"{k} ({v})" for k, v in (res.get("access") or {}).items()))
+        return
+    emit(res, a.json)
+
+
+def cmd_ssh_key(a):
+    """Add a public key to this account (the Account tab's "Add an SSH key yourself"); the key comes on stdin."""
+    emit(portal_add_key(sys.stdin.read(8192)), a.json, "SSH key added.")
+
+
 def cmd_team(a):
     import sbteam
     sys.exit(sbteam.main(a.rest, CFG, request=lambda req: shared_request(req, 60)) or 0)
@@ -3523,7 +3666,9 @@ def main():
     x.set_defaults(fn=cmd_heavy)
     x = s.add_parser("boost", help=argparse.SUPPRESS)  # gone (limits are dynamic); explains that
     x.add_argument("--why"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_boost)
-    x = s.add_parser("running", help="what runs for you: containers, databases, servers, agents, with RAM and age")
+    x = s.add_parser("running", help="what runs for you: containers, databases, servers, agents, with RAM and age; "
+                                     "stop KEY (only when the user asks)")
+    x.add_argument("op", nargs="?", choices=["stop"]); x.add_argument("key", nargs="?")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_running)
     x = s.add_parser("serve")
     x.add_argument("action", choices=["add", "ls", "logs", "restart", "stop", "start", "rm"])
@@ -3618,6 +3763,24 @@ def main():
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true")
     x.set_defaults(fn=lambda a: (a.action != "ls" and not a.name and sys.exit(f"box skills {a.action}: which skill?"))
                    or cmd_skills(a))
+    x = s.add_parser("telegram", help="phone alerts: status, link, test, notify LEVEL, unlink; (owner) setup, off")
+    x.add_argument("op", nargs="?", choices=TG_OPS); x.add_argument("level", nargs="?")
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_telegram)
+    x = s.add_parser("login", help="the dashboard's logins: claude, codex, gh, antigravity, t3connect (lists them "
+                                   "without one)")
+    x.add_argument("key", nargs="?", choices=LOGIN_KEYS)
+    x.add_argument("--code", action="store_true", help="send the code the sign-in page showed (read from stdin)")
+    x.add_argument("--check", action="store_true", help="has it finished?")
+    x.add_argument("--console", action="store_true", help="claude: an Anthropic Console (API billing) account")
+    x.add_argument("--other-boxes", action="store_true", help="codex/t3connect: log in on your other boxes too")
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_login)
+    x = s.add_parser("teammates", help="let a teammate's agents work in your T3: ls, allow NAME --access LEVEL, "
+                                       "stop NAME")
+    x.add_argument("op", nargs="?", choices=["ls", "allow", "stop"]); x.add_argument("name", nargs="?")
+    x.add_argument("--access", default="approval-required", choices=["read-only", "approval-required", "full-access"])
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_teammates)
+    x = s.add_parser("ssh-key", help="add NAME's public key to this account: box ssh-key add < key.pub")
+    x.add_argument("op", choices=["add"]); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_ssh_key)
     x = s.add_parser("help", help="details for agents: box help <topic>")
     x.add_argument("topic", nargs="?"); x.set_defaults(fn=cmd_help)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)

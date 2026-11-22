@@ -7,7 +7,12 @@ Browser logins can't open a browser here, so use device codes and relay only the
 3. When they say done: `gh auth status`, then `gh auth setup-git`. Code expired (~15 min)? Start again.
 4. If `git config --global user.name`/`user.email` are empty, fill them from `gh api user`
    (`<id>+<login>@users.noreply.github.com` as the email).
-Claude / Codex / Google (Antigravity) logins: send the user to their page {portal}, which does them in the browser.
+Claude / Codex / Google (Antigravity) / T3 app logins: do them yourself with `box login KEY` (KEY = claude, codex,
+antigravity, t3connect, gh; `box login` alone lists what's done). It prints a link, and for Codex/T3 a code to type
+there: give the user both. Claude and Antigravity then show a one-time code on the page: the user sends it to you,
+you run `printf %s CODE | box login KEY --code`. Otherwise `box login KEY --check` when they say done. ChatGPT and the
+T3 app are per box: `box login codex --other-boxes` gives a link per box. Claude with an API account: `--console`.
+Their page {portal} does the same in the browser if they'd rather click.
 Antigravity's Google sign-in is per box (never copied). T3 keeps its own: there the user turns on Antigravity
 (Settings > Providers > Antigravity) and signs in once more.
 Never ask for passwords or tokens in chat.
@@ -333,3 +338,22 @@ Where someone is: their own status plus a rough "active on the box" hint.
 - It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention).
 - Never copy their prompts off the box or into other people's places.
 
+@@ settings
+Everything on the user's dashboard ({portal}) has a command, so when they ask you for it, do it (add `--json` to read
+results). Never send them to the page for something listed here.
+- Logins (Claude, ChatGPT, GitHub, Google/Antigravity, T3 app): `box login` (see `box help logins`).
+- Telegram phone alerts: `box telegram status`; `box telegram link` prints a one-time t.me link, the user opens it
+  on their phone and presses Start; then `box telegram test`, `box telegram notify all|important|off`,
+  `box telegram unlink`. "Not set up on this box": the owner's agent runs `box telegram setup` first.
+- Messages and status: `box msg` (`box help msg`), `box where --set "..."`, `box where --private|--public`.
+- Servers and what's running: `box serve`, `box shared`, `box running`; `box running stop KEY` only when the user asks.
+- Projects on all your boxes: `box projects everywhere NAME on|off`. Archived projects: `box restore [NAME]`.
+- Teammates' agents in your T3: `box teammates ls`, `box teammates allow NAME --access read-only|approval-required|
+  full-access`, `box teammates stop NAME`.
+- SSH key for this account: `box ssh-key add < key.pub`. T3 in the browser or app: `box t3 pair`, `box t3 app-link`.
+- Usage and limits: `box status`, `box limits`, `box me stats`.
+Owner only (their Settings and admin tabs): Telegram bot `box telegram setup` (paste the @BotFather token on stdin,
+never as an argument; the user creates the bot in Telegram with /newbot and sends you the token through a private
+secret prompt if your app has one) and `box telegram off`; hackathon mode `box hackathon on --hours N [--users a,b]`
+/ `off`; update treehouse `box friends update`; invite `box invite --email E --note "who"`; friends' requests and
+accounts `box friends ...`; reboots `box reboot hold|resume`.
