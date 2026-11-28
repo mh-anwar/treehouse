@@ -47,6 +47,9 @@ class Sizes(unittest.TestCase):
         for n, want in cases.items():
             self.assertEqual(sb.size_text(n), want)
 
+    def test_web_keeps_number_and_unit_together(self):
+        self.assertEqual(w.size(9.6 * (1 << 30)), "9.6\u00a0GB")
+
     def test_web_never_uses_the_short_units(self):
         with open(os.path.join(LIB, "sharedbox-web")) as f:
             self.assertNotIn("sb.human", f.read())

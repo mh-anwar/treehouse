@@ -509,11 +509,12 @@ class Web(unittest.TestCase):
             cases = [  # (logins, t3, ts_id, app, main button, text)
                 ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this machine yet"),
                 ({"claude": False, "codex": False}, True, "n1", False, "Sign in with Claude", "Sign in with ChatGPT"),
-                ({"claude": True}, True, "n1", False, "Open T3", "Want the T3 app on your laptop?"),
-                ({"claude": True}, True, "", False, "Open T3", "Want the T3 app on your laptop?"),
+                ({"claude": False, "codex": False}, True, "n1", False, "Sign in with Claude", "You only need one"),
+                ({"claude": True}, True, "n1", False, "Open T3", "Advanced (optional)"),
+                ({"claude": True}, True, "", False, "Open T3", "Signed in with your AI account."),
                 ({"claude": True}, True, "n1", True, "Open T3", "Setting up another laptop?"),
                 # T3 Connect offered: a second, secondary "Use the T3 app" (signs in first, then shows how)
-                ({"claude": True, "t3connect": False}, True, "n1", False, "Open T3", "Already on Tailscale?"),
+                ({"claude": True, "t3connect": False}, True, "n1", False, "Open T3", "Set up the T3 app"),
                 ({"claude": True, "t3connect": True}, True, "n1", False, "Open T3", "Download T3"),
             ]
             for logins, t3, ts_id, app, main, text in cases:
@@ -522,7 +523,7 @@ class Web(unittest.TestCase):
                 self.assertEqual(mains, [main] if main else [], (logins, t3, ts_id, app))
                 self.assertIn(text, page)
                 self.assertNotIn("Ask the owner to add you to Tailscale", page)
-                if text.startswith("Want the T3 app"):  # the laptop app is a secondary link, not a second button
+                if text.startswith("Advanced"):  # the laptop app is tucked away, a link, not a second button
                     self.assertIn("Get setup instructions", page)
                 self.assertNotIn("Link my T3 account", page)  # T3 Connect stays hidden until it's tested
                 self.assertNotIn("→", page)
