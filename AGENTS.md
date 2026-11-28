@@ -36,6 +36,9 @@ Run only what the change needs:
   actually look at the screenshots that changed (dark and light, 1280 and 390 wide) before saying it's fixed.
 - Links, buttons, forms or flows changed: the full `tests/e2e_browser.py` (~8 min), in the background only,
   once before the deploy, not after every edit. Chromium: `~/.cache/ms-playwright/chromium-*/`, `--no-sandbox`.
+- Clickable demo with fake data (the owner can try UI before a deploy): `tests/demo_site.py` (plain HTTP, see its
+  docstring; it shares the fake box in `tests/fakebox.py` with e2e_browser). After changing friend-dashboard buttons,
+  run `tests/demo_walk.py` (~2 min, background) so the demo doesn't rot.
 - Say plainly what you did not check.
 
 ## Making boxes efficient

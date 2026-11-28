@@ -23,6 +23,9 @@ python3 -m unittest discover -s tests   # stdlib-only unit tests, no root or net
 python3 tests/e2e_gate.py .              # the real gate against fake logins and backends
 # the real gate + web pages in Chromium: every link, button and form, per persona (--quick: one level deep)
 uv run --no-project --with playwright python tests/e2e_browser.py . --shots /tmp/shots
+# a clickable demo of the dashboards with fake people and data (plain HTTP), and its browser walk
+python3 tests/demo_site.py --host 127.0.0.1 --port 8796     # then open http://127.0.0.1:8796/_demo
+uv run --no-project --with playwright python tests/demo_walk.py
 sudo ./install.sh            # dry run: read what it would do
 ```
 
