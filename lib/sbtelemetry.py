@@ -1577,9 +1577,14 @@ def detect_oom_climb(con, box, since):
 def detect_limit_hits(con, box, since):
     """Accounts that keep running into their memory limit (kills or memory.max hits on several days)."""
     out = []
+    first_raw = con.execute("SELECT min(ts) FROM slices WHERE box=? AND ts>=?", (box, since)).fetchone()[0]
     rows = _rows(con, "SELECT user, date(ts, 'unixepoch', 'localtime') AS day, sum(coalesce(mem_max_events, 0)) AS hits, "
                       "sum(coalesce(oom_kills, 0)) AS kills, max(mem_mb) AS peak FROM slices WHERE box=? AND ts>=? "
-                      "AND user != '' GROUP BY user, day", (box, since))
+                      "AND user != '' GROUP BY user, day UNION ALL "
+                      "SELECT user, date(ts, 'unixepoch', 'localtime'), sum(coalesce(mem_max_events, 0)), "
+                      "sum(coalesce(oom_kills, 0)), max(mem_mb_max) FROM slices_hourly WHERE box=? AND ts>=? AND ts<? "
+                      "AND user != '' GROUP BY user, 2",
+                 (box, since, box, since, (first_raw or int(time.time())) // 3600 * 3600))
     kills = _rows(con, f"SELECT user, date(ts, 'unixepoch', 'localtime') AS day, count(*) AS n FROM events WHERE box=? "
                        f"AND ts>=? AND user != '' AND kind IN ({','.join('?' * len(KILL_KINDS))}) GROUP BY user, day",
                   (box, since, *KILL_KINDS))
@@ -1731,6 +1736,19 @@ def detect_near_freeze(con, box, since):
             pre += f"; biggest users {top}" if top else ""
         out.append({"sev": "high" if g["kind"] == "boot" else "medium", "ts": g["ts"],
                     "text": f"{_when(g['ts'])}: {event_text(g)}{pre}"})
+    first_raw = S[0]["ts"] if S else None
+    for h in _rows(con, "SELECT * FROM samples_hourly WHERE box=? AND ts>=? AND ts<? ORDER BY ts",
+                   (box, since, (first_raw or int(time.time())) // 3600 * 3600)):
+        # older than the minute rows (or a fleet copy without them): hour-level peaks only
+        if (h.get("psi_mem_full_max") or 0) >= 10 or (h.get("psi_mem_max") or 0) >= 40 or (
+                h.get("psi_io_full_max") or 0) >= 30:
+            top = _rows(con, "SELECT user, slice, mem_mb_max FROM slices_hourly WHERE box=? AND ts=? "
+                             "ORDER BY coalesce(mem_mb_max, 0) DESC LIMIT 2", (box, h["ts"]))
+            who = ", ".join(f"{r['user'] or r['slice']} up to {_gb(r['mem_mb_max'])}" for r in top if r["mem_mb_max"])
+            out.append({"sev": "medium", "ts": h["ts"], "text": (
+                f"hour of {_when(h['ts'])} (hourly data): memory stall peaked {h.get('psi_mem_max') or 0:.0f}% "
+                f"(fully blocked {h.get('psi_mem_full_max') or 0:.0f}%), disk stall {h.get('psi_io_full_max') or 0:.0f}%"
+                + (f"; biggest users {who}" if who else ""))})
     return sorted(out, key=lambda o: o["ts"] or 0)
 
 

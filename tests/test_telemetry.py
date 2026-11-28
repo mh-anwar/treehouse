@@ -420,6 +420,18 @@ class Detectors(unittest.TestCase):
         self.assertIn("then box started (unclean", f[0]["text"])
         self.assertIn("no samples for 15 min", f[1]["text"])
 
+    def test_old_freezes_from_hourly_rows(self):
+        h = NOW // 3600 * 3600 - 10 * 86400
+        T.store(self.con, {"samples_hourly": [{"ts": h, "box": "b1", "n": 60, "psi_mem_max": 95.0},
+                                              {"ts": h + 3600, "box": "b1", "n": 60, "psi_mem_max": 5.0}],
+                           "slices_hourly": [{"ts": h, "box": "b1", "slice": "user-1.slice", "user": "sam",
+                                              "mem_mb_max": 27000, "mem_max_events": 2}],
+                           "samples": [sample(NOW - 600)]})
+        f = self.run_("near_freeze")
+        self.assertEqual(len(f), 1)
+        self.assertIn("(hourly data): memory stall peaked 95%", f[0]["text"])
+        self.assertIn("sam up to 26.4 GB", f[0]["text"])
+
     def test_summary_renders(self):
         S = [sample(NOW - 3600 + i * 60) for i in range(60)]
         S[30].update(psi_mem=50, psi_mem_full=20, mem_used_mb=15500)
