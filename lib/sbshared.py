@@ -181,8 +181,10 @@ def render_unit(cfg, name, argv, port):
         f"Environment=PORT={int(port)}", f'Environment="HOME={esc(d)}"',
         "Environment=PATH=/usr/local/bin:/usr/bin:/bin",
         "ExecStart=" + " ".join(sd_quote(a) for a in argv),
-        "Restart=on-failure", "RestartSec=5",
-        f"Slice={SLICE}", "OOMScoreAdjust=500",
+        # group servers are never stopped automatically: back after any stop (an out-of-memory one included), and
+        # systemd-oomd picks something else when memory runs out. Their slice's MemoryMax still caps them all.
+        "Restart=always", "RestartSec=5", "ManagedOOMPreference=omit",
+        f"Slice={SLICE}",
         "UMask=0002",
         # every member can edit the code, so the code gets nothing but its own folder
         "NoNewPrivileges=yes", "ProtectSystem=strict", f"ReadWritePaths={esc(d)}", "ProtectHome=yes",
@@ -363,6 +365,7 @@ def _handle(cfg, user, action, name, req):
             _group_acl(cfg, d)
         ensure_base(cfg)
         _write(upath, render_unit(cfg, name, [exe] + cmd[1:], port))
+        _write_dropin(u)
         _sctl("daemon-reload")
         _sctl("enable", u)
         ok, out = _sctl("restart", u)
@@ -402,6 +405,7 @@ def _handle(cfg, user, action, name, req):
     if os.path.exists(upath):
         os.unlink(upath)
         _sctl("daemon-reload")
+    shutil.rmtree(upath + ".d", ignore_errors=True)  # the keep-running drop-in
     _sctl("reset-failed", u)
     moved = None
     if _real_dir(d):
@@ -415,6 +419,21 @@ def _handle(cfg, user, action, name, req):
     save(reg)
     sb.log_event("shared_removed", user, server=name, moved_to=moved)
     return {"ok": True, "message": f"removed {name}" + (f"; its code was moved to {moved}" if moved else "")}
+
+
+KEEP_DROPIN = "[Service]\nRestart=always\nManagedOOMPreference=omit\nOOMScoreAdjust=0\n"
+
+
+def _write_dropin(u):
+    """/etc/systemd/system/U.d/50-keep-running.conf (True if it changed). Takes effect at daemon-reload; never
+    restarts the server."""
+    d = os.path.join(SYSTEMD_DIR, u + ".d")
+    try:
+        os.makedirs(d, mode=0o755, exist_ok=True)
+    except OSError:
+        return False
+    return _write(os.path.join(d, "50-keep-running.conf"),
+                  "# managed by treehouse: group servers are never stopped automatically\n" + KEEP_DROPIN)
 
 
 def sync(cfg, log=print):
@@ -437,6 +456,9 @@ def sync(cfg, log=print):
             want.add(a)
         except KeyError:
             pass
+    for name in registry():  # units written before group servers were always kept running
+        if KEEP_DROPIN and _write_dropin(unit(name)):
+            changed = True
     for n in sorted(want - members):
         if _run(["gpasswd", "-a", n, cfg["SHARED_GROUP"]]).returncode == 0:
             log(f"added {n} to {cfg['SHARED_GROUP']} (takes effect at their next login/T3 restart)")

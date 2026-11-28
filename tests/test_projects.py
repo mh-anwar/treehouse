@@ -335,8 +335,8 @@ class Card(unittest.TestCase):
             {"name": "<bad>", "available": True}]})
         self.assertIn("class='spin'", out)  # in progress: a spinner, never a check
         self.assertIn("left alone", out)
-        self.assertEqual(out.count("Stop syncing"), 2)
-        self.assertEqual(out.count("Keep on all boxes"), 1)
+        self.assertEqual(out.count("Stop copying (copies stay)"), 2)
+        self.assertEqual(out.count("Copy to all my machines"), 1)
         self.assertIn("1 project not on GitHub yet", out)
         self.assertNotIn("<bad>", out)
         self.assertIn("name=\"op\" value=\"off\"", out)

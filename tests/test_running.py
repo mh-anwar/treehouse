@@ -95,7 +95,8 @@ class Running(unittest.TestCase):
         self.assertEqual((it["blog"]["kind"], it["blog"]["stop"]), ("server", "server"))
         self.assertEqual(it["gascity"]["kind"], "database")         # a server running dolt
         self.assertEqual((it["Claude session"]["kind"], it["Claude session"]["stop"]), ("agent", None))
-        self.assertEqual((it["T3 Code"]["kind"], it["T3 Code"]["stop"]), ("t3", None))
+        # T3 Code: stoppable only from the owner's All running tab (the person's own card shows no Stop for it)
+        self.assertEqual((it["T3 Code"]["kind"], it["T3 Code"]["stop"]), ("t3", "t3"))
         self.assertEqual((it["tmux terminal"]["kind"], it["tmux terminal"]["stop"]), ("terminal", "unit"))
         self.assertEqual((it["SSH login"]["kind"], it["SSH login"]["stop"]), ("login", None))
         bg = it["Background"]
@@ -126,7 +127,8 @@ class Running(unittest.TestCase):
         items = r.running(self.UID, self.home)
         self.assertEqual(r.find(items, "c:uoft")["ids"].__len__(), 2)
         self.assertEqual(r.find(items, "u:sb-blog.service")["stop"], "server")
-        for bad in ("u:t3code.service", "u:session-7.scope", "c:nope", "u:../../etc", "-rf", "", None, 5,
+        self.assertEqual(r.find(items, "u:t3code.service")["stop"], "t3")
+        for bad in ("u:session-7.scope", "c:nope", "u:../../etc", "-rf", "", None, 5,
                     "u:t3code-claude-1234abcd.scope", "c:" + "x" * 200):
             self.assertIsNone(r.find(items, bad), bad)
 

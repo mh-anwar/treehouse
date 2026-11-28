@@ -4,8 +4,10 @@
   box status [--agent|--json]      usage, limits, box load, pending deletions
   box ports                        your port range (+ which are in use)
   box running [--json]             what runs for you (containers, databases, servers, agents), RAM and age
-  box serve add NAME [--port P] -- CMD...   long-running server (survives logout/reboot)
-  box serve ls | logs NAME | restart NAME | stop NAME | start NAME | rm NAME
+  box serve add NAME --about "what it does" --important|--safe-to-stop [--keep-running] [--hackathon-pause] -- CMD...
+                                   long-running server (survives logout/reboot); box help servers
+  box serve ls | describe NAME --about ... | keep NAME on|off | hackathon NAME pause|keep
+  box serve logs NAME | restart NAME | stop NAME | start NAME | rm NAME
   box shared ls | create NAME --desc TEXT | describe NAME TEXT | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
                                    servers the whole group owns (code in /srv/shared/NAME); add --json
   box clean [--dry-run]            clean unused caches and old tmp files now
@@ -27,6 +29,7 @@
 
 import argparse
 import fcntl
+import grp
 import json
 import os
 import pwd
@@ -200,12 +203,12 @@ def advice(g):
     cap = live.get("mem_max") or live.get("mem_high")
     if cap and used > 0.85 * cap:
         out.append(f"You are using {sb.human(used)} of the {sb.human(cap)} this account can have. If memory runs out, "
-                   "the box stops whatever uses the most: free what you don't need (`box running`) and tell the user.")
+                   "the machine stops whatever uses the most: free what you don't need (`box running`) and tell the user.")
     elif b.get("mem_avail") is not None and b["mem_avail"] < 0.1 * b["mem_total"]:
         out.append(f"The box is nearly out of memory ({sb.human(b['mem_avail'])} free). Avoid starting big jobs; "
                    "`box running` shows what this account runs.")
     for k in recent_oom_kills():
-        out.append(f"{fmt_ts(k['ts'])}: the box ran out of memory and stopped {k['what']} to keep everything "
+        out.append(f"{fmt_ts(k['ts'])}: the machine ran out of memory and stopped {k['what']} to keep everything "
                    "else running. Tell the user in a line; start it again if it's needed, with less memory.")
     big = g.get("running")
     if big:
@@ -262,7 +265,7 @@ def cmd_hackathon(a):
                       "[--users a,b]")
         return
     if ME.pw_name not in sb.admin_users(CFG):
-        sys.exit("only the owner (an admin account) can switch hackathon mode")
+        sys.exit("Only the owner can turn hackathon mode on or off.")
     req = {"action": "hackathon", "op": a.op}
     if a.op == "on":
         until = a.until
@@ -296,7 +299,7 @@ def cmd_reboot(a):
             print("No reboot scheduled.")
         return
     if ME.pw_name not in sb.admin_users(CFG):
-        sys.exit("only the owner (an admin account) can pause or resume automatic reboots")
+        sys.exit("Only the owner can pause or resume automatic restarts.")
     if op in ("off", "resume"):
         req = {"action": "reboot-hold", "op": "off"}
     else:
@@ -430,8 +433,8 @@ def cmd_running(a):
     if a.op == "stop":  # the Running card's Stop: only when the user asked for it
         if not a.key:
             sys.exit("box running stop KEY (the key from `box running`)")
-        return emit(portal_running_stop(a.key), a.json)
-    items = sbrunning.running(ME.pw_uid, HOME)
+        return emit(portal_running_stop(a.key, force=a.force), a.json)
+    items = sbrunning.with_meta(sbrunning.running(ME.pw_uid, HOME), HOME)
     if a.json:
         print(json.dumps([{k: v for k, v in it.items() if k not in ("ids",)} for it in items], indent=2))
         return
@@ -441,14 +444,18 @@ def cmd_running(a):
     lim = my_limits()
     total = sum(it["mem"] for it in items)
     print(f"{sb.human(total)} in use; {size_text(lim.get('MEMORY_LOW')) or '?'} guaranteed, "
-          f"up to {size_text(lim['MEMORY_MAX'])} while the box has it free\n")
+          f"up to {size_text(lim['MEMORY_MAX'])} while the machine has it free\n")
     print(f"{'RAM':>7}  {'KIND':<10} {'UP':>7} {'CPU':>6}  NAME")
     for it in items:
         print(f"{sb.human(it['mem']):>7}  {sbrunning.KIND_LABEL.get(it['kind'], it['kind']):<10} "
               f"{sbrunning.ago(it.get('age')):>7} {sbrunning.cpu_avg(it):>5}%  {sb.printable(it['name'])}"
-              + (f"  ({sb.printable(it['detail'])[:70]})" if it.get("detail") else "")
-              + (f"  [stop key {it['key']}]" if it.get("key") and it.get("stop") else ""))
-    print("\nCPU = average since it started. The user can stop containers, servers and terminals on their page, or "
+              + (f"  ({sb.printable(it['about'])[:90]})" if it.get("about") else
+                 f"  (no description yet, started with {sb.printable(it['exec'])[:60]}: box serve describe "
+                 f"{it['name']} --about ...)" if it.get("exec") else
+                 f"  ({sb.printable(it['detail'])[:70]})" if it.get("detail") else "")
+              + ("  [keep running]" if it.get("keep") else "")
+              + (f"  [stop key {it['key']}]" if it.get("key") and it.get("stop") and it["stop"] != "t3" else ""))
+    print("\nCPU = average since it started. Your user can stop containers, servers and terminals on their page, or "
           "ask you to: `box running stop KEY`. Agents never stop them on their own.")
 
 
@@ -494,36 +501,172 @@ def list_services():
     return out
 
 
+SERVE_USAGE = ('box serve add NAME --about "what it does, in one plain sentence" (--important | --safe-to-stop) '
+               '[--keep-running] [--hackathon-pause] [--project P] [--port P] [--url URL] -- COMMAND...')
+
+
+def serve_opts(argv, need_cmd=False):
+    """`box serve` options can come anywhere after NAME (argparse's REMAINDER would swallow them as the command):
+    everything before the first "--" is options, everything after it the command."""
+    if "--" in argv:
+        i = argv.index("--")
+        opts, cmd = argv[:i], argv[i + 1:]
+    elif need_cmd:
+        k = 0  # no "--": options first, the command from its first word that isn't an option or an option's value
+        vals = ("--about", "--project", "--port", "--url")
+        while k < len(argv) and argv[k].startswith("--"):
+            k += 2 if argv[k] in vals else 1
+        opts, cmd = argv[:k], argv[k:]
+    else:
+        opts, cmd = argv, []
+    ap = argparse.ArgumentParser(prog="box serve", add_help=False)
+    ap.add_argument("--about"); ap.add_argument("--project"); ap.add_argument("--url")
+    ap.add_argument("--port", type=int)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--important", action="store_true"); g.add_argument("--safe-to-stop", action="store_true")
+    k = ap.add_mutually_exclusive_group()
+    k.add_argument("--keep-running", action="store_true"); k.add_argument("--no-keep-running", action="store_true")
+    h = ap.add_mutually_exclusive_group()
+    h.add_argument("--hackathon-pause", action="store_true"); h.add_argument("--no-hackathon-pause", action="store_true")
+    o, extra = ap.parse_known_args(opts)
+    if extra:
+        sys.exit(f"box serve: unknown option {extra[0]}. Usage: {SERVE_USAGE}")
+    return o, cmd
+
+
+def serve_creator():
+    """Who made it: this account, plus the agent and T3 thread when the environment says (no secrets)."""
+    agent = os.environ.get("AI_AGENT", "")
+    agent = ("Claude Code" if agent.startswith("claude") or os.environ.get("CLAUDECODE") else
+             "Codex" if agent.startswith("codex") or os.environ.get("CODEX_SANDBOX") or os.environ.get("CODEX_HOME")
+             else "opencode" if agent.startswith("opencode") else
+             "Antigravity" if agent.startswith(("antigravity", "gemini")) else agent.split("_")[0][:40])
+    thread = os.environ.get("T3CODE_THREAD_ID", "")
+    return {"by": ME.pw_name, "agent": agent, "thread": thread if re.fullmatch(r"[A-Za-z0-9:_.-]{1,80}", thread) else ""}
+
+
+def default_project(wd):
+    """The project a server belongs to: the first folder under ~ it runs from, else ""."""
+    if wd.startswith(HOME + "/"):
+        return wd[len(HOME) + 1:].split("/")[0][:80]
+    return ""
+
+
+def meta_lines(meta):
+    """The X-Treehouse-* lines for a unit's [Unit] section (see sbrunning.META_KEYS)."""
+    out = []
+    for k, key in sbrunning.META_KEYS.items():
+        v = meta.get(key)
+        if key == "keep":
+            v = "yes" if v else ""
+        if v:
+            out.append(f"X-Treehouse-{k}={sd_escape(sbrunning.meta_value(v, 300))}")
+    return out
+
+
+def keep_lines(keep):
+    """[Service] lines that depend on keep-running: always restart it (even after an out-of-memory stop), and ask
+    systemd-oomd to pick something else when memory runs out (it honours that for the account's own services)."""
+    return ["Restart=always", "RestartSec=5", "ManagedOOMPreference=omit"] if keep else ["Restart=on-failure", "RestartSec=5"]
+
+
+def serve_unit_text(name, wd, port, cmd, meta):
+    body = ["[Unit]", f"Description={sd_escape(sbrunning.meta_value(meta.get('about') or 'box serve ' + name, 200))}",
+            *meta_lines(meta), "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
+            "[Service]", f"WorkingDirectory={sd_escape(wd)}",
+            f"Environment=PATH={sd_escape(os.environ.get('PATH', '/usr/bin:/bin'))}"]
+    if port is not None:
+        body.append(f"Environment=PORT={port}")
+    body += [f"ExecStart={sd_escape(shlex.join(cmd))}", *keep_lines(meta.get("keep")),
+             "", "[Install]", "WantedBy=default.target", ""]
+    return "\n".join(body)
+
+
+def rewrite_meta(name, meta):
+    """Change a server's description / settings in place: its unit file keeps everything else."""
+    path = os.path.join(UNIT_DIR, f"sb-{name}.service")
+    with open(path) as f:
+        lines = f.read().splitlines()
+    drop = ("X-Treehouse-", "Restart=", "RestartSec=", "ManagedOOMPreference=")
+    out = []
+    for ln in lines:
+        if ln.startswith(drop):
+            continue
+        if ln.startswith("Description="):
+            ln = f"Description={sd_escape(sbrunning.meta_value(meta.get('about') or 'box serve ' + name, 200))}"
+            out.append(ln)
+            out += meta_lines(meta)
+            continue
+        out.append(ln)
+        if ln.startswith("ExecStart="):
+            out += keep_lines(meta.get("keep"))
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+    sctl("daemon-reload")
+
+
+def serve_meta(name):
+    return sbrunning.server_meta(HOME, name)
+
+
+def server_line(s, meta, ip=""):
+    """One server for `box serve ls`: name, state, what it's for, settings."""
+    bits = [f"{s['name']:<20} {s['state']:<10}" + (f" port {meta['port']}" if meta.get("port") else "")]
+    bits.append("    " + (meta.get("about") or "No description yet. Started with: " + (meta.get("exec") or "?")[:120]
+                          + f"\n    Add one: box serve describe {s['name']} --about \"what it does\" --important|--safe-to-stop"))
+    flags = [x for x in ("keep running" if meta.get("keep") else "",
+                         "may pause during hackathons" if meta.get("hackathon") == "pause" else "",
+                         {"important": "important", "safe-to-stop": "safe to stop"}.get(meta.get("importance"), ""),
+                         f"project {meta['project']}" if meta.get("project") else "",
+                         f"made by {meta.get('by')}" + (f" ({meta['agent']})" if meta.get("agent") else "")
+                         if meta.get("by") else "") if x]
+    if flags:
+        bits.append("    " + " · ".join(flags))
+    url = meta.get("url") or (f"http://{ip}:{meta['port']}/" if ip and meta.get("port") else "")
+    if url:
+        bits.append("    " + url)
+    return "\n".join(bits)
+
+
 def cmd_serve(a):
     act = a.action
     if act == "ls":
         svcs = list_services()
         if not svcs:
-            print("no services. create one with: box serve add NAME --port P -- COMMAND...")
+            print(f"No servers yet. Start one with: {SERVE_USAGE}")
+        ip = sb.tailscale_ip4() or ""
+        if getattr(a, "json", False) or "--json" in (a.cmd or []):
+            print(json.dumps({"ok": True, "servers": [dict(s, **serve_meta(s["name"])) for s in svcs]}))
+            return
         for s in svcs:
-            port = ""
-            try:
-                with open(os.path.join(UNIT_DIR, f"sb-{s['name']}.service")) as f:
-                    for l in f:
-                        if l.startswith("Environment=PORT="):
-                            port = l.strip().split("=", 2)[2]
-            except OSError:
-                pass
-            print(f"{s['name']:<20} {s['state']:<10} port {port}")
+            print(server_line(s, serve_meta(s["name"]), ip))
         return
     if not a.name:
         sys.exit(f"usage: box serve {act} NAME")
     u = unit(a.name)
     if act == "add":
-        cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+        o, cmd = serve_opts(a.cmd or [], need_cmd=True)
+        if a.port is not None and o.port is None:
+            o.port = a.port
         if not cmd:
-            sys.exit("usage: box serve add NAME [--port P] -- COMMAND...")
+            sys.exit(f"usage: {SERVE_USAGE}")
+        missing = []
+        if not (o.about or "").strip():
+            missing.append('--about "one plain sentence: what it does and who uses it"')
+        if not (o.important or o.safe_to_stop or o.keep_running):
+            missing.append("--important (people rely on it) or --safe-to-stop (fine to stop when memory is short)")
+        if missing:
+            sys.exit("box serve add needs to know what this server is, so people looking at the machine can tell. "
+                     "Add " + " and ".join(missing) + f".\nExample: box serve add {a.name} --about \"Telegram bot for "
+                     f"the study group\" --important --keep-running -- {shlex.join(cmd)[:80]}\nFull form: {SERVE_USAGE}")
         exe = shutil.which(cmd[0])
         if not exe:
             sys.exit(f"command not found: {cmd[0]}")
         cmd[0] = exe
         r = ports()
-        port = a.port
+        port = o.port
         if r and port is None:
             port = next((p for p in range(r[0] + 1, r[1]) if not port_in_use(p)), None)  # first+last: T3
         if r and port in r:
@@ -532,27 +675,68 @@ def cmd_serve(a):
             print(f"warning: port {port} is outside your range {r[0]}-{r[1]}", file=sys.stderr)
         wd = os.getcwd()
         if wd.startswith(HOME + "/") and wd != HOME:
-            print(f"note: the project this runs from won't be archived while this service exists (even if stopped). "
+            print(f"note: the project this runs from won't be archived while this server exists (even if stopped). "
                   f"`box serve rm {a.name}` releases it.", file=sys.stderr)
+        meta = dict(serve_creator(), about=o.about.strip(), project=(o.project or default_project(wd)),
+                    created=time.strftime("%Y-%m-%d %H:%M"), url=o.url or "", keep=bool(o.keep_running),
+                    importance="important" if o.important or o.keep_running else "safe-to-stop",
+                    hackathon="pause" if o.hackathon_pause and not o.keep_running else "")
         os.makedirs(UNIT_DIR, exist_ok=True)
-        body = [
-            "[Unit]", f"Description=box serve {a.name}",
-            "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
-            "[Service]", f"WorkingDirectory={sd_escape(wd)}",
-            f"Environment=PATH={sd_escape(os.environ.get('PATH', '/usr/bin:/bin'))}",
-        ]
-        if port is not None:
-            body.append(f"Environment=PORT={port}")
-        body += [f"ExecStart={sd_escape(shlex.join(cmd))}", "Restart=on-failure", "RestartSec=5",
-                 "", "[Install]", "WantedBy=default.target", ""]
         with open(os.path.join(UNIT_DIR, u), "w") as f:
-            f.write("\n".join(body))
+            f.write(serve_unit_text(a.name, wd, port, cmd, meta))
         sctl("daemon-reload")
         r2 = sctl("enable", "--now", u)
         if r2.returncode == 0:
             print(f"started {a.name}" + (f" on port {port} (also in $PORT)" if port else "")
+                  + (". It's marked keep running: nothing stops it automatically" if meta["keep"] else "")
                   + f". logs: box serve logs {a.name}")
+        else:
+            print(f"Couldn't start {a.name}. See why: box serve logs {a.name}", file=sys.stderr)
         sys.exit(r2.returncode)
+    if act in ("describe", "keep", "hackathon"):
+        if not os.path.isfile(os.path.join(UNIT_DIR, u)):
+            sys.exit(f"No server called {a.name}. See yours: box serve ls")
+        meta = serve_meta(a.name)
+        if act == "keep":
+            v = (a.cmd or [""])[0]
+            if v not in ("on", "off"):
+                sys.exit(f"usage: box serve keep {a.name} on|off   (on: nothing stops it automatically)")
+            meta["keep"] = v == "on"
+            if meta["keep"]:
+                meta["importance"], meta["hackathon"] = "important", ""
+        elif act == "hackathon":
+            v = (a.cmd or [""])[0]
+            if v not in ("pause", "keep"):
+                sys.exit(f"usage: box serve hackathon {a.name} pause|keep   (pause: stopped while hackathon mode is on, "
+                         "started again when it ends)")
+            if v == "pause" and meta.get("keep"):
+                sys.exit(f"{a.name} is marked keep running, so hackathon mode never pauses it. Turn that off first: "
+                         f"box serve keep {a.name} off")
+            meta["hackathon"] = "pause" if v == "pause" else ""
+        else:
+            o, _ = serve_opts(a.cmd or [])
+            if o.about is not None:
+                meta["about"] = o.about.strip()
+            if o.project is not None:
+                meta["project"] = o.project.strip()
+            if o.url is not None:
+                meta["url"] = o.url.strip()
+            if o.important or o.safe_to_stop:
+                meta["importance"] = "important" if o.important else "safe-to-stop"
+            if o.keep_running or o.no_keep_running:
+                meta["keep"] = bool(o.keep_running)
+            if o.hackathon_pause or o.no_hackathon_pause:
+                meta["hackathon"] = "pause" if o.hackathon_pause and not meta.get("keep") else ""
+            if not meta.get("about"):
+                sys.exit(f'box serve describe {a.name} --about "what it does, in one plain sentence" '
+                         "[--important|--safe-to-stop] [--keep-running|--no-keep-running] [--hackathon-pause|"
+                         "--no-hackathon-pause] [--project P] [--url URL]")
+            if not meta.get("by"):
+                meta.update({k: v for k, v in serve_creator().items() if k != "by" or not meta.get("by")})
+        rewrite_meta(a.name, meta)
+        print(server_line({"name": a.name, "state": next((s["state"] for s in list_services() if s["name"] == a.name),
+                                                         "stopped")}, serve_meta(a.name), sb.tailscale_ip4() or ""))
+        return
     if act == "logs":
         os.execvp("journalctl", ["journalctl", "--user", "-u", u, "-n", "200", "--no-pager"]
                   + (["-f"] if a.follow else []))
@@ -566,6 +750,8 @@ def cmd_serve(a):
         print(f"removed {a.name}")
         return
     if act in PORTAL_SERVER_OPS:  # stop keeps it off across reboots; start/restart turn it back on for good
+        if act == "stop" and serve_meta(a.name).get("keep") and "--force" not in (a.cmd or []):
+            sys.exit(f"{a.name} is marked keep running. Stop it only if its owner asked: box serve stop {a.name} --force")
         r = serve_op(act, u)
         if r.returncode:
             sys.exit(f"box serve {act} {a.name}: " + (r.stderr or r.stdout or "failed").strip()[-300:])
@@ -650,18 +836,18 @@ def render_rules(notices=()):
     if android:
         extras.append(android.lstrip("\n"))
     if ME.pw_name in sb.admin_users(CFG) and sb.public_mode(CFG) == "cloudflare":
-        extras.append("- This is the box OWNER's account. Invite a friend: `box invite --email <their email> "
+        extras.append("- This is the OWNER's account. Invite a friend: `box invite --email <their email> "
                       "--note \"<who>\"` (no sudo), then give the owner the message it prints. It creates the account "
                       "and lets that email through Cloudflare, so the friend just signs in with it. "
                       "Manage friends and their requests with `box friends` (no sudo; `box help friends`).")
     elif ME.pw_name in sb.admin_users(CFG):
-        extras.append("- This is the box OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
+        extras.append("- This is the OWNER's account. To invite a friend, run `box invite --note \"<who>\"` "
                       "(no sudo needed) and give the owner the message it prints, or send it yourself if they "
                       "asked you to. `box invite --json` gives `username`, `link`, `expires`. "
                       "Manage friends and their requests with `box friends` (no sudo; `box help friends`).")
     if ME.pw_name in sb.admin_users(CFG):
         extras.append("- The box's own efficiency (kernel, memory, disk, network): `box tune` (read-only). Run it at setup, "
-                      "after updates, and when the box itself feels slow; `box help tune` for finding more and getting "
+                      "after updates, and when the machine itself feels slow; `box help tune` for finding more and getting "
                       "fixes into treehouse so every box gets them.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
@@ -697,13 +883,42 @@ def rule_fields(tl="", extras=(), nt=""):
                      "reboot waits up to 2 hours while an agent is mid-turn.") if reboot_days() else "",
         archive_days=CFG["ARCHIVE_DAYS"], brand=BRAND,
         tools=tl, extras="\n".join(extras), notices=nt, portal=portal_url(), shared_dir=CFG["SHARED_DIR"],
-        serve_public=(f"\n- Public link (behind the box's login, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
+        sudo_section=(HAS_SUDO.format(user=ME.pw_name, host=socket.gethostname()) if sudo_mode() == "yes" else NO_SUDO),
+        serve_public=(f"\n- Public link (behind this site's sign-in, only for this user): `{sb.public_url(CFG)}/p/<port>/` (any port of the range but the first)."
                       f" {BASE_PATH_NOTE}" if sb.public_url(CFG) else ""),
-        shared_public=(f"\n- Public link (behind the box's login, for every member): `{sb.public_url(CFG)}/s/NAME/`."
+        shared_public=(f"\n- Public link (behind this site's sign-in, for every member): `{sb.public_url(CFG)}/s/NAME/`."
                        f" {BASE_PATH_NOTE}" if sb.public_url(CFG) and sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS") else ""),
         connect=connect_text(),
         shared_ports="{}-{}".format(sb.cfg_int(CFG, "SHARED_PORT_BASE"),
                                     sb.cfg_int(CFG, "SHARED_PORT_BASE") + sb.cfg_int(CFG, "SHARED_PORT_COUNT") - 1))
+
+
+NO_SUDO = ("## No sudo, ever\n- Never run `sudo`/`apt`/`pacman` or ask anyone for root. Install into your home: "
+           "`npm i -g X`, `uv tool install X`,\n  `pipx install X`, `cargo install X`, `go install X@latest`. System "
+           "packages: `box request install PKG --why \"<why>\"`.")
+HAS_SUDO = ("## Installing software (this account has sudo)\n- `{user}` can use `sudo` without a password on {host}. "
+            "User tools still go in your home (`npm i -g X`,\n  `uv tool install X`, `pipx install X`, `cargo install X`, "
+            "`go install X@latest`); use `sudo` for system packages and machine setup the task\n  really needs. Never use "
+            "it to change other people's accounts, SSH, the firewall, networking or the kernel unless the user\n  asked, "
+            "and say what you ran.")
+
+
+def sudo_mode():
+    """"yes" when this account can run sudo without a password, else "no". Only asks sudo (`sudo -n true`, never a
+    prompt) when the account is in a sudo group, so accounts without it don't leave "not in sudoers" lines in the log."""
+    if os.geteuid() == 0:
+        return "yes"
+    try:
+        groups = {grp.getgrgid(g).gr_name for g in os.getgroups()}
+    except (KeyError, OSError):
+        groups = set()
+    if not groups & {"sudo", "wheel", "admin"} or not shutil.which("sudo"):
+        return "no"
+    try:
+        r = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return "no"
+    return "yes" if r.returncode == 0 else "no"
 
 
 def connect_text():
@@ -714,8 +929,8 @@ def connect_text():
                 + (f" (the owner turns it on with `sudo sharedbox-admin cloudflare ssh`; the site is {pub})" if pub
                    else " (it needs the Cloudflare login; until then they connect over Tailscale)") + ".")
     return (f"It's on: their laptop reaches this account with `ssh {ME.pw_name}@{ssh_host}` through "
-            f"`cloudflared access ssh`. The ready prompt for their agent is on {pub}/_box/me (\"Use the box from "
-            f"your own computer's agent\", a Copy button) and at {pub}/_box/connect.md (behind their login).")
+            f"`cloudflared access ssh`. The ready prompt for their agent is on {pub}/_box/me (Account tab, "
+            f"More options, Terminal access, a Copy button) and at {pub}/_box/connect.md (behind their login).")
 
 
 def help_topics():
@@ -736,8 +951,9 @@ def help_topics():
 def cmd_help(a):
     topics = help_topics()
     if not topics:
-        sys.exit("box help: the help file is missing on this box (HELP.md). Tell the owner; "
+        sys.exit("box help: the help file is missing on this machine (HELP.md). Tell the owner; "
                  "meanwhile `box rules` has the basics.")
+    a.topic = {"machines": "boxes", "machine": "boxes", "accounts": "logins", "server": "servers"}.get(a.topic, a.topic)
     if a.topic and a.topic in topics:
         print(topics[a.topic])
         return
@@ -754,9 +970,9 @@ def updates_text():
     """First sentence of the Reboots section in AGENTS.md: how this box gets its updates."""
     if sbdistro.current() == "arch":
         return ("System updates are installed by the owner, not automatically. When one needs a reboot "
-                "(usually a kernel update), the box usually")
+                "(usually a kernel update), the machine usually")
     return ("Security updates install automatically every night. When one needs a reboot (usually a kernel "
-            "update), the box")
+            "update), the machine")
 
 
 def sync_agent_files(notices=()):
@@ -920,7 +1136,7 @@ def cmd_tune(a):
         if a.op not in ("disable", "enable") or not a.unit:
             sys.exit("usage: box tune [--json]  |  box tune shell  |  box tune disable NAME  |  box tune enable NAME")
         if ME.pw_name not in sb.admin_users(CFG):
-            sys.exit("box tune: only the box owner's accounts can switch services. Suggest it to the owner.")
+            sys.exit("box tune: only the owner's accounts can switch services. Suggest it to the owner.")
         res = admin_request({"action": "tune-service", "op": a.op, "unit": a.unit}, 180)
         if not isinstance(res, dict) or not res.get("ok"):
             sys.exit(f"box tune: {(res or {}).get('error') or 'failed'}")
@@ -1024,7 +1240,7 @@ def t3_env():
     r = ports()
     host = sb.tailscale_ip4()
     if not r or not host:
-        sys.exit("box t3: needs a friend account and Tailscale running on the box")
+        sys.exit("box t3: needs a friend account and Tailscale running on the machine")
     return host, r[0], {"T3CODE_HOST": host, "T3CODE_PORT": str(r[1]),
                         "T3CODE_PROJECT_ROOT": HOME, "T3CODE_NO_BROWSER": "1"}
 
@@ -1180,7 +1396,7 @@ If it doesn't open the app: in the T3 app, Settings, Environments, Add environme
 
   {url}
 
-If that laptop can't reach the box, an agent there should follow `box t3 app-link --prompt` instead (it checks
+If that laptop can't reach the machine, an agent there should follow `box t3 app-link --prompt` instead (it checks
 Tailscale first).
 
 T3_APP_LINK={link}
@@ -1475,7 +1691,7 @@ def cmd_request(a):
     elif pkgs:
         print("request received, still working on it; check `box request status` in a minute.")
     else:
-        print("request sent to the box owner; you'll see the answer in `box status` / `box request status`. "
+        print("request sent to the owner; you'll see the answer in `box status` / `box request status`. "
               "Meanwhile, most tools install without sudo: "
               "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
 
@@ -1486,7 +1702,7 @@ def cmd_request(a):
 def cmd_invite(a):
     """Ask root for a one-time invite link. Only accounts in ADMIN_USERS get an answer."""
     if ME.pw_name not in sb.admin_users(CFG):
-        sys.exit("only the box owner's accounts (ADMIN_USERS) can invite people. "
+        sys.exit("only the owner's accounts (ADMIN_USERS) can invite people. "
                  "Ask the owner, or `box request \"invite <name>\"`.")
     rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
     req = {"action": "invite", "note": (a.note or "")[:120], "days": a.days, "tailscale": a.tailscale,
@@ -1507,7 +1723,7 @@ def cmd_invite(a):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        sys.exit(provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})"))
+        sys.exit(provisioner_trouble(f"the machine couldn't take this request ({e.strerror or e})"))
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
     # creating the account (and, in cloudflare mode, updating the Access allow list) takes a while
     wait = 30 if a.no_create and not a.email else 120
@@ -1520,7 +1736,7 @@ def cmd_invite(a):
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
     else:
-        sys.exit(provisioner_trouble(f"the box didn't answer within {wait} seconds"))
+        sys.exit(provisioner_trouble(f"the machine didn't answer within {wait} seconds"))
     if a.json:
         print(json.dumps(res))
         return
@@ -1574,7 +1790,7 @@ def cmd_friends(a):
         sys.exit(f"box friends: {msg}")
 
     if ME.pw_name not in sb.admin_users(CFG):
-        fail("only the box owner's accounts can manage friends. Ask the owner.")
+        fail("only the owner's accounts can manage friends. Ask the owner.")
     act, args = a.action or "list", list(a.args or [])
     need = {"remove": 1, "suspend": 1, "resume": 1, "email": 2}
     if act in need and len(args) != need[act]:
@@ -1609,7 +1825,7 @@ def cmd_friends(a):
         req["boxes"] = args[0]
     res = admin_request(req, wait)
     if not isinstance(res, dict):
-        fail("bad answer from the box")
+        fail("bad answer from the machine")
     if a.json:
         print(json.dumps(res))
         sys.exit(0 if res.get("ok") else 1)
@@ -1675,7 +1891,7 @@ def shared_request(req, wait=60):
     except OSError as e:
         if not wait:
             return {"ok": False}
-        return {"ok": False, "error": provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})")}
+        return {"ok": False, "error": provisioner_trouble(f"the machine couldn't take this request ({e.strerror or e})")}
     if not wait:  # fire and forget (e.g. "seen" receipts)
         return {"ok": True, "queued": True}
     reply = os.path.join(sb.SHARED_REPLIES, f"{rid}.json")
@@ -1687,7 +1903,7 @@ def shared_request(req, wait=60):
             return res if isinstance(res, dict) else {"ok": False, "error": "bad answer from the provisioner"}
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
-    return {"ok": False, "error": provisioner_trouble(f"the box didn't answer within {wait} seconds")}
+    return {"ok": False, "error": provisioner_trouble(f"the machine didn't answer within {wait} seconds")}
 
 
 def cmd_shared(a):
@@ -1720,7 +1936,7 @@ def cmd_shared(a):
                       f"{fmt_ts(x['updated']) if x.get('updated') else ''}")
         done({"ok": True, "servers": servers})
     if ME.pw_name not in sb.admin_users(CFG) and not is_friend():
-        done({"ok": False, "error": "only friends and the box owner's accounts can manage shared servers"})
+        done({"ok": False, "error": "only friends and the owner's accounts can manage shared servers"})
     if not a.name:
         done({"ok": False, "error": f"usage: box shared {a.action} NAME"})
     if not sbshared.NAME_RE.match(a.name):
@@ -1910,7 +2126,7 @@ def admin_request(req, wait):
             json.dump(req, f)
         os.rename(tmp, path)  # the path unit only reacts to *.json, so it never sees a half-written file
     except OSError as e:
-        sys.exit(provisioner_trouble(f"the box couldn't take this request ({e.strerror or e})"))
+        sys.exit(provisioner_trouble(f"the machine couldn't take this request ({e.strerror or e})"))
     reply = os.path.join(sb.ADMIN_REPLIES, f"{rid}.json")
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -1919,7 +2135,7 @@ def admin_request(req, wait):
                 return json.load(f)
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
-    sys.exit(provisioner_trouble(f"the box didn't answer within {wait} seconds"))
+    sys.exit(provisioner_trouble(f"the machine didn't answer within {wait} seconds"))
 
 
 # ---------- issues (agents log friction; the owner reads everyone's) ----------
@@ -2166,6 +2382,87 @@ def portal_logged_in(key, fresh=False):
     return False
 
 
+# ---------- which account each AI login is (the Account tab's per-machine table) ----------
+# The owner may sign in to different Claude / ChatGPT / Google accounts on each machine, so the page names the
+# account on each one. Read from the agents' own files; never a token, only the email they record.
+ACCOUNT_KEYS = ("claude", "codex", "antigravity")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}")
+# Claude's one-year token is copied between this person's machines (the newest wins). This marker keeps this
+# machine's Claude account its own: federation neither copies a token here nor takes this one elsewhere.
+CLAUDE_OWN = os.path.join(HOME, ".config", "treehouse", "claude-own-account")
+
+
+def _jwt_claims(tok):
+    import base64
+    try:
+        part = tok.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (IndexError, ValueError, TypeError):
+        return {}
+
+
+def login_account(key):
+    """The email (or GitHub login) a finished login belongs to, "" when the files don't say."""
+    try:
+        if key == "claude":
+            if not nonempty(os.path.join(HOME, ".claude", ".credentials.json")):
+                return ""  # the one-year token (`claude setup-token`) doesn't carry an email
+            with open(os.path.join(HOME, ".claude.json")) as f:
+                v = ((json.load(f) or {}).get("oauthAccount") or {}).get("emailAddress")
+        elif key == "codex":
+            with open(os.path.join(HOME, ".codex", "auth.json")) as f:
+                d = json.load(f) or {}
+            if not (d.get("tokens") or {}).get("id_token"):
+                return "an API key" if d.get("OPENAI_API_KEY") else ""
+            v = _jwt_claims(d["tokens"]["id_token"]).get("email")
+        elif key == "antigravity":
+            with open(AGY_TOKEN) as f:
+                v = (json.load(f) or {}).get("id_token_email")
+        elif key == "gh":
+            with open(os.path.join(HOME, ".config", "gh", "hosts.yml")) as f:
+                m = re.search(r"^\s+user:\s*([A-Za-z0-9-]{1,39})\s*$", f.read(), re.M)
+            return m.group(1) if m else ""
+        else:
+            return ""
+    except (OSError, ValueError, AttributeError, TypeError):
+        return ""
+    return v if isinstance(v, str) and EMAIL_RE.fullmatch(v) else ""
+
+
+def portal_logout(key):
+    """Sign this machine out of one AI account (the per-machine table's "Sign out"), so a different account can sign
+    in here. Claude: this machine also keeps its own account from now on (federation would copy the other
+    machines' sign-in straight back)."""
+    files = {"claude": [os.path.join(HOME, ".claude", ".credentials.json"), CLAUDE_TOKEN],
+             "codex": [os.path.join(HOME, ".codex", "auth.json")], "antigravity": [AGY_TOKEN]}[key]
+    for f in files:
+        try:
+            os.unlink(f)
+        except FileNotFoundError:
+            pass
+    if key == "claude":
+        claude_own(True)
+    if key == "antigravity":
+        try:
+            os.unlink(AGY_CHECK)
+        except FileNotFoundError:
+            pass
+    label = {"claude": "Claude", "codex": "ChatGPT", "antigravity": "Google (Antigravity)"}[key]
+    return {"ok": True, "message": f"Signed out of {label} on {me_box()}. You can sign in again with any account."}
+
+
+def claude_own(on):
+    if on:
+        os.makedirs(os.path.dirname(CLAUDE_OWN), mode=0o700, exist_ok=True)
+        with open(CLAUDE_OWN, "w") as f:
+            f.write(str(int(time.time())) + "\n")
+    else:
+        try:
+            os.unlink(CLAUDE_OWN)
+        except FileNotFoundError:
+            pass
+
+
 def user_env():
     return dict(os.environ, PATH=f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin",
                 XDG_RUNTIME_DIR=f"/run/user/{ME.pw_uid}")
@@ -2218,8 +2515,12 @@ def portal_status():
     out["ssh"] = bool(ssh_keys())
     # this person's other boxes and which logins are done there (from the last federation pass / approvals)
     st = sb.read_json(FED_STATE, {}) or {}
-    out["boxes"] = {p: {"ssh": bool(v.get("ssh")), "logins": dict(v.get("logins") or {})}
+    out["accounts"] = {k: login_account(k) for k in ACCOUNT_KEYS if (out["logins"].get(k) or {}).get("ok")}
+    out["claude_own"] = os.path.exists(CLAUDE_OWN)
+    out["boxes"] = {p: {"ssh": bool(v.get("ssh")), "logins": dict(v.get("logins") or {}),
+                        "accounts": dict(v.get("accounts") or {}), "claude_own": bool(v.get("claude_own"))}
                     for p, v in (st.get("peers") or {}).items() if isinstance(v, dict)}
+    out["boxes_checked"] = int(st.get("ts") or 0)
     out["box"] = st.get("self") or socket.gethostname().split(".")[0]
     if len(sb.boxes(CFG)) > 1:  # the Account tab's "Projects on all your boxes" (lib/sbprojects.py)
         try:
@@ -2235,7 +2536,7 @@ def portal_t3(pair, app=False, label=None, ttl="30m"):
         return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
     r, host = ports(), sb.tailscale_ip4()
     if not r or not host:
-        return {"ok": False, "error": "Tailscale isn't running on the box. Ask the owner."}
+        return {"ok": False, "error": "Tailscale isn't running on the machine. Ask the owner."}
     host, port, env = t3_env()
     t3_ensure(host, port, env, quiet=True)
     if not pair:
@@ -2569,12 +2870,21 @@ def portal_cap_lines(lines):
     return out[::-1]
 
 
+SERVER_META_OUT = ("about", "project", "by", "agent", "created", "importance", "url", "keep", "hackathon", "exec")
+
+
+def portal_server_meta(name):
+    m = serve_meta(name)
+    return {k: m[k] for k in SERVER_META_OUT if k in m}
+
+
 def portal_serve_ls():
     seen, servers = set(), []
     for s in list_services():
         if s["name"] != "t3" and portal_server_name(s["name"]):
             seen.add(s["name"])
-            servers.append({"name": s["name"], "state": s["state"], "port": portal_unit_port(s["name"])})
+            servers.append({"name": s["name"], "state": s["state"], "port": portal_unit_port(s["name"]),
+                            **portal_server_meta(s["name"])})
     try:  # a stopped, unloaded unit still has its file
         files = sorted(os.listdir(UNIT_DIR))
     except OSError:
@@ -2582,8 +2892,32 @@ def portal_serve_ls():
     for fn in files:
         n = fn[3:-8] if fn.startswith("sb-") and fn.endswith(".service") else ""
         if n and n != "t3" and n not in seen and portal_server_name(n):
-            servers.append({"name": n, "state": "stopped", "port": portal_unit_port(n)})
+            servers.append({"name": n, "state": "stopped", "port": portal_unit_port(n), **portal_server_meta(n)})
     return {"ok": True, "servers": sorted(servers, key=lambda s: s["name"])}
+
+
+def portal_serve_set(name, what, value):
+    """The dashboard's per-server switches: keep running (on|off), pause during hackathons (pause|keep)."""
+    name = portal_own_server(name)
+    if not name:
+        return {"ok": False, "error": "No such server. Refresh the page."}
+    meta = serve_meta(name)
+    if what == "keep" and value in ("on", "off"):
+        meta["keep"] = value == "on"
+        if meta["keep"]:
+            meta["importance"], meta["hackathon"] = "important", ""
+        msg = (f"{name} is marked keep running. Nothing on this machine stops it by itself, and it restarts if it "
+               "ever stops." if meta["keep"] else f"{name} is no longer marked keep running.")
+    elif what == "hackathon" and value in ("pause", "keep"):
+        if value == "pause" and meta.get("keep"):
+            return {"ok": False, "error": f"{name} is marked keep running, so hackathon mode never pauses it."}
+        meta["hackathon"] = "pause" if value == "pause" else ""
+        msg = (f"{name} will be stopped while hackathon mode is on and started again when it ends." if value == "pause"
+               else f"{name} keeps running during hackathons.")
+    else:
+        return {"ok": False, "error": "unknown action"}
+    rewrite_meta(name, meta)
+    return {"ok": True, "name": name, "message": msg}
 
 
 def serve_op(op, u):
@@ -2618,17 +2952,29 @@ def portal_serve_logs(name):
 
 def portal_running():
     """The dashboard's Running card: what runs for this account, no container ids."""
-    keep = ("key", "kind", "name", "detail", "mem", "age", "pids", "stop", "cpu_usec")
-    return [{k: it.get(k) for k in keep} for it in sbrunning.running(ME.pw_uid, HOME)]
+    keep = ("key", "kind", "name", "detail", "mem", "age", "pids", "stop", "cpu_usec", "about", "keep", "exec",
+            "importance")
+    return [{k: it.get(k) for k in keep if k in it} for it in sbrunning.with_meta(sbrunning.running(ME.pw_uid, HOME), HOME)]
 
 
-def portal_running_stop(key):
+def portal_running_stop(key, force=False):
     """Stop one item of the Running card. The key is matched against the live list again, so only this account's
     own containers and units can be named. Containers: `docker stop` (they stay stopped across reboots until started
-    again); `box serve` servers: disabled + stopped; other units (terminals, browsers, user services): stopped."""
-    it = sbrunning.find(sbrunning.running(ME.pw_uid, HOME), key)
+    again); `box serve` servers: disabled + stopped; T3 Code (only the owner's All running tab offers it): stopped,
+    it starts again when the person next opens T3; other units (terminals, browsers, user services): stopped.
+    A server marked keep running needs force (the page asks a second time)."""
+    it = sbrunning.find(sbrunning.with_meta(sbrunning.running(ME.pw_uid, HOME), HOME), key)
     if not it:
         return {"ok": False, "error": "That isn't running any more (or it can't be stopped from here). Refresh the page."}
+    if it.get("keep") and not force:
+        return {"ok": False, "error": f"{it['name']} is marked keep running, so it wasn't stopped. Confirm the stop "
+                                      "again if you really mean it."}
+    if it["stop"] == "t3":
+        r = sctl("stop", it.get("unit") or "sb-t3.service", capture=True)
+        if r.returncode != 0:
+            return {"ok": False, "error": "Couldn't stop T3 Code: " + (r.stderr or r.stdout or "").strip()[-300:]}
+        return {"ok": True, "message": "Stopped T3 Code. Open chats disconnected; it starts again the next time T3 is "
+                                       "opened."}
     env = dict(os.environ, XDG_RUNTIME_DIR=f"/run/user/{ME.pw_uid}",
                DOCKER_HOST=os.environ.get("DOCKER_HOST") or f"unix:///run/user/{ME.pw_uid}/docker.sock")
     if it["stop"] == "containers":
@@ -2825,13 +3171,15 @@ def cmd_portal(a):
             except Exception:  # noqa: BLE001 - the rest of the dashboard must still load
                 out["running"] = None
         elif a.action == "running-stop":
-            out = portal_running_stop(a.key)
+            out = portal_running_stop(a.key, force=a.arg == "force")
         elif a.action == "serve-ls":
             out = portal_serve_ls()
         elif a.action == "serve-ctl" and a.arg in PORTAL_SERVER_OPS:
             out = portal_serve_ctl(a.key, a.arg)
         elif a.action == "serve-logs":
             out = portal_serve_logs(a.key)
+        elif a.action == "serve-set" and a.arg and ":" in a.arg:  # keep:on|off, hackathon:pause|keep
+            out = portal_serve_set(a.key, *a.arg.split(":", 1))
         elif a.action == "shared-ls":
             out = portal_shared_ls()
         elif a.action == "shared-ctl" and a.arg in PORTAL_SERVER_OPS:
@@ -2841,7 +3189,11 @@ def cmd_portal(a):
         elif a.action in ("t3-start", "t3-pair"):
             out = portal_t3(a.action == "t3-pair", app=a.key == "app")
         elif a.action == "login-start" and a.key in PORTAL_LOGINS:
+            if a.key == "claude" and a.arg == "local":  # signed in for this machine only (the per-machine table)
+                claude_own(True)
             out = portal_login_start(a.key, console=a.arg == "console")
+        elif a.action == "logout" and a.key in ACCOUNT_KEYS:
+            out = portal_logout(a.key)
         elif a.action == "login-code" and a.key in PORTAL_LOGINS:
             out = portal_login_code(a.key, sys.stdin.read(4096))
         elif a.action == "add-key":
@@ -2857,10 +3209,19 @@ def cmd_portal(a):
             import sbprojects
             ok, msg = sbprojects.set_choice(HOME, a.key, a.arg == "on")
             out = {"ok": ok, "message" if ok else "error": msg}
-        elif a.action in ("peer-login", "peer-check") and a.key in PEER_LOGINS:
-            out = portal_peer_login(a.key, check=a.action == "peer-check")
+        elif a.action in ("peer-login", "peer-check") and a.key in PEER_LOGINS + ACCOUNT_KEYS:
+            box = a.arg if a.arg and sb.BOX_NAME_RE.fullmatch(a.arg) else None
+            if a.key not in PEER_LOGINS and not box:
+                out = {"ok": False, "error": "say which machine"}
+            else:
+                out = portal_peer_login(a.key, check=a.action == "peer-check", box=box)
+        elif a.action in ("peer-code", "peer-logout") and a.key in ACCOUNT_KEYS and a.arg \
+                and sb.BOX_NAME_RE.fullmatch(a.arg):
+            out = (portal_peer_code(a.key, a.arg, sys.stdin.read(4096)) if a.action == "peer-code"
+                   else portal_peer_logout(a.key, a.arg))
         elif a.action == "claude-token-info":  # federation: how new is this box's copy (never the token itself)
-            out = {"ok": True, "mtime": int(os.path.getmtime(CLAUDE_TOKEN)) if os.path.exists(CLAUDE_TOKEN) else 0}
+            out = {"ok": True, "mtime": int(os.path.getmtime(CLAUDE_TOKEN)) if os.path.exists(CLAUDE_TOKEN) else 0,
+                   "own": os.path.exists(CLAUDE_OWN)}
         elif a.action == "claude-token-put":  # federation: a newer token from another of this person's boxes
             try:
                 req = json.loads(sys.stdin.read(4096) or "{}")
@@ -2868,7 +3229,9 @@ def cmd_portal(a):
                 req = {}
             mt = int(req.get("mtime") or 0) if isinstance(req, dict) else 0
             have = int(os.path.getmtime(CLAUDE_TOKEN)) if os.path.exists(CLAUDE_TOKEN) else 0
-            if not isinstance(req, dict) or not CLAUDE_TOKEN_RE.fullmatch(str(req.get("token") or "")):
+            if os.path.exists(CLAUDE_OWN):  # this machine keeps its own Claude account
+                out = {"ok": True, "kept": True}
+            elif not isinstance(req, dict) or not CLAUDE_TOKEN_RE.fullmatch(str(req.get("token") or "")):
                 out = {"ok": False, "error": "bad token"}
             elif mt <= have or mt > time.time() + 600:
                 out = {"ok": True, "kept": True}
@@ -2891,7 +3254,7 @@ def cmd_portal(a):
         else:
             out = {"ok": False, "error": "unknown action"}
     except (OSError, subprocess.SubprocessError) as e:
-        out = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+        out = {"ok": False, "error": f"Something went wrong on this machine ({type(e).__name__}: {e})"[:300]}
     print(json.dumps(out))
 
 
@@ -3097,11 +3460,11 @@ def fed_link_peer(peer, ip, home, notes):
                 if r.returncode == 0:
                     notes.append(f"GitHub login copied to {peer}")
     # Claude: the one-year token (doesn't rotate). The newest copy wins: whichever box has a newer one pushes it.
-    mine = fed_read(CLAUDE_TOKEN).strip()
+    mine = "" if os.path.exists(CLAUDE_OWN) else fed_read(CLAUDE_TOKEN).strip()
     if mine:
         info = fed_remote_json(peer, "box _portal claude-token-info", timeout=60)
         mt = int(os.path.getmtime(CLAUDE_TOKEN))
-        if info.get("ok") and int(info.get("mtime") or 0) < mt:
+        if info.get("ok") and not info.get("own") and int(info.get("mtime") or 0) < mt:
             r = fed_remote_json(peer, "box _portal claude-token-put", json.dumps({"token": mine, "mtime": mt}),
                                 timeout=60)
             if r.get("ok"):
@@ -3139,7 +3502,11 @@ def fed_link_peer(peer, ip, home, notes):
     st = fed_remote_json(peer, "box _portal status", timeout=60)
     there = {k: v.get("ok") for k, v in (st.get("logins") or {}).items()}
     out["missing_logins"] = [k for k in ("claude", "codex") if portal_logged_in(k) and there.get(k) is False]
-    out["logins"] = {k: bool(v) for k, v in there.items() if k in PEER_LOGINS + ("claude", "gh")}
+    out["logins"] = {k: bool(v) for k, v in there.items() if k in PEER_LOGINS + ("claude", "gh", "antigravity")}
+    acc = st.get("accounts") if isinstance(st.get("accounts"), dict) else {}
+    out["accounts"] = {k: v for k, v in acc.items() if k in ACCOUNT_KEYS and isinstance(v, str)
+                       and (EMAIL_RE.fullmatch(v) or v == "an API key")}
+    out["claude_own"] = bool(st.get("claude_own"))
     return out
 
 
@@ -3164,12 +3531,20 @@ def fed_peer_note(peer, key, ok):
     sb.write_json(FED_STATE, st, mode=0o600)
 
 
-def portal_peer_login(key, check=False):
-    """Start (or check) a login on each of this person's other boxes. Each box answers with its own sign-in link
-    and code, or done. [{"box", "done", "url", "code", "error"}]"""
+def portal_peer_login(key, check=False, box=None):
+    """Start (or check) a login on each of this person's other boxes, or only on `box`. Each box answers with its
+    own sign-in link and code, or done. [{"box", "done", "url", "code", "paste", "error"}]
+    A Claude sign-in started for one machine makes that machine keep its own Claude account ("local")."""
+    peers = sorted(fed_peers())
+    if box:
+        if box not in peers:
+            return {"ok": False, "error": f"{box} isn't connected to this machine yet. Machines connect by themselves "
+                                          "within a few minutes; try again later."}
+        peers = [box]
     out = []
-    for peer in sorted(fed_peers()):
-        cmd = f"box _portal {'login-check' if check else 'login-start'} {shlex.quote(key)}"
+    for peer in peers:
+        local = " local" if key == "claude" and box and not check else ""
+        cmd = f"box _portal {'login-check' if check else 'login-start'} {shlex.quote(key)}{local}"
         r = fed_remote_json(peer, cmd, timeout=90)
         row = {"box": peer, "done": bool(r.get("done"))}
         if r.get("done"):
@@ -3180,6 +3555,29 @@ def portal_peer_login(key, check=False):
             row["error"] = str(r.get("error") or "no answer")[:200]
         out.append(row)
     return {"ok": True, "boxes": out}
+
+
+def portal_peer_code(key, box, code):
+    """The code a Claude / Google sign-in page showed, for a login started on another machine."""
+    if box not in fed_peers():
+        return {"ok": False, "error": f"{box} isn't connected to this machine yet."}
+    r = fed_remote_json(box, f"box _portal login-code {shlex.quote(key)}", (code or "").strip()[:1000], timeout=90)
+    if r.get("done") or (r.get("ok") and r.get("done") is not False and not r.get("error")):
+        fed_peer_note(box, key, True)
+        return {"ok": True, "done": True, "message": f"Signed in on {box}."}
+    return {"ok": False, "error": str(r.get("error") or f"{box} didn't confirm the sign-in. Try again.")[:300]}
+
+
+def portal_peer_logout(key, box):
+    if box not in fed_peers():
+        return {"ok": False, "error": f"{box} isn't connected to this machine yet."}
+    r = fed_remote_json(box, f"box _portal logout {shlex.quote(key)}", timeout=60)
+    if r.get("ok"):
+        fed_peer_note(box, key, False)
+        st = sb.read_json(FED_STATE, {}) or {}
+        ((st.get("peers") or {}).get(box) or {}).get("accounts", {}).pop(key, None)
+        sb.write_json(FED_STATE, st, mode=0o600)
+    return r if r.get("ok") else {"ok": False, "error": str(r.get("error") or f"{box} didn't answer.")[:300]}
 
 
 def cmd_fed_user(a):
@@ -3540,12 +3938,12 @@ def cmd_telegram(a):
     op = a.op or "status"
     if op in ("setup", "off"):
         if ME.pw_name not in sb.admin_users(CFG):
-            sys.exit("only the owner sets up the box's Telegram bot")
+            sys.exit("only the owner sets up the machine's Telegram bot")
         req = {"action": "telegram-setup", "op": "off"} if op == "off" else {
             "action": "telegram-setup", "token": read_secret("Bot token from @BotFather: ").strip()[:200]}
         res = admin_request(req, 60)
         if op == "off" and res.get("ok"):
-            res.setdefault("message", "Telegram is off. People's links are kept for when it's back.")
+            res.setdefault("message", "Telegram is off. Everyone's phone connections are kept and work again when it's back on.")
         return emit(res, a.json)
     req = {"action": "telegram", "op": op}
     if op == "notify":
@@ -3580,12 +3978,47 @@ def cmd_login(a):
     if not a.key:
         rows = {k: {"label": PORTAL_LOGINS[k][0], "ok": bool(portal_logged_in(k))} for k in LOGIN_KEYS
                 if shutil.which(PORTAL_LOGINS[k][1][0])}
+        for k, r in rows.items():
+            if r["ok"] and k in ACCOUNT_KEYS + ("gh",):
+                r["account"] = login_account(k)
         if a.json:
             print(json.dumps({"ok": True, "logins": rows}))
         else:
             for k, r in rows.items():
-                print(f"  {k:<12} {r['label']:<22} {'logged in' if r['ok'] else 'not yet: box login ' + k}")
+                print(f"  {k:<12} {r['label']:<22} " + (("logged in" + (f" as {r['account']}" if r.get("account") else ""))
+                                                         if r["ok"] else "not yet: box login " + k))
+            print("Other machines: box login KEY --on MACHINE (each machine can have its own account).")
         return
+    a.on, a.logout = getattr(a, "on", None), getattr(a, "logout", False)
+    if a.on or a.logout:
+        if a.key not in ACCOUNT_KEYS + (PEER_LOGINS if not a.logout else ()):
+            sys.exit(f"box login: --on / --logout work for: {', '.join(ACCOUNT_KEYS)}" + ("" if a.logout else ", t3connect"))
+        here = not a.on or a.on == me_box()
+        if a.logout:
+            res = portal_logout(a.key) if here else portal_peer_logout(a.key, a.on)
+            return emit(res, a.json)
+        if not here:
+            if a.code:
+                res = portal_peer_code(a.key, a.on, read_secret("Code from the sign-in page: "))
+                return emit(res, a.json)
+            res = portal_peer_login(a.key, check=a.check, box=a.on)
+            if not res.get("ok"):
+                return emit(res, a.json)
+            r = (res.get("boxes") or [{}])[0]
+            if a.json:
+                print(json.dumps(dict(r, ok=not r.get("error"))))
+                return
+            if r.get("done"):
+                print(f"{PORTAL_LOGINS[a.key][0]}: signed in on {a.on}.")
+            elif r.get("url"):
+                print(f"Open {r['url']}" + (f"\nand enter the code {r['code']}" if r.get("code") else "")
+                      + (f"\nThen paste the code it shows: box login {a.key} --on {a.on} --code (reads it from stdin)"
+                         if r.get("paste") else f"\nThen: box login {a.key} --on {a.on} --check"))
+            else:
+                sys.exit(r.get("error") or "not signed in there yet")
+            return
+        if a.key == "claude" and not a.check and not a.code:
+            claude_own(True)  # signed in for this machine only
     if a.other_boxes:
         if a.key not in PEER_LOGINS:
             sys.exit(f"--other-boxes works for: {', '.join(PEER_LOGINS)} (Claude and GitHub are copied by themselves)")
@@ -3669,9 +4102,12 @@ def main():
     x = s.add_parser("running", help="what runs for you: containers, databases, servers, agents, with RAM and age; "
                                      "stop KEY (only when the user asks)")
     x.add_argument("op", nargs="?", choices=["stop"]); x.add_argument("key", nargs="?")
+    x.add_argument("--force", action="store_true", help="stop: also a server marked keep running (only when its "
+                                                        "owner asked)")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_running)
     x = s.add_parser("serve")
-    x.add_argument("action", choices=["add", "ls", "logs", "restart", "stop", "start", "rm"])
+    x.add_argument("action", choices=["add", "ls", "logs", "restart", "stop", "start", "rm", "describe", "keep",
+                                      "hackathon"])
     x.add_argument("name", nargs="?"); x.add_argument("--port", type=int)
     x.add_argument("-f", "--follow", action="store_true")
     x.add_argument("cmd", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_serve)
@@ -3698,7 +4134,7 @@ def main():
     x.add_argument("--hours", type=float, help="or: hold for this many hours (default 24)")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_reboot)
-    x = s.add_parser("tune", help="how efficient the box itself is (kernel, memory, disk, network); read-only")
+    x = s.add_parser("tune", help="how efficient the machine itself is (kernel, memory, disk, network); read-only")
     x.add_argument("op", nargs="?", help="shell (speed up your shell start) | disable|enable NAME (owner only)")
     x.add_argument("unit", nargs="?")
     x.add_argument("--json", action="store_true")
@@ -3745,7 +4181,7 @@ def main():
     x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them, no sudo")
     x.add_argument("--note", help="who it's for, e.g. 'Sam from work'"); x.add_argument("--days", type=int)
     x.add_argument("--tailscale", action="store_true"); x.add_argument("--json", action="store_true")
-    x.add_argument("--email", help="the friend's email (required when the box uses Cloudflare Access)")
+    x.add_argument("--email", help="the friend's email (required when the machine uses Cloudflare Access)")
     x.add_argument("--username", help="the new account's name (default: picked for you)")
     x.add_argument("--no-create", action="store_true",
                    help="old style: an invite link and the friend picks a username on a signup form")
@@ -3772,7 +4208,11 @@ def main():
     x.add_argument("--code", action="store_true", help="send the code the sign-in page showed (read from stdin)")
     x.add_argument("--check", action="store_true", help="has it finished?")
     x.add_argument("--console", action="store_true", help="claude: an Anthropic Console (API billing) account")
-    x.add_argument("--other-boxes", action="store_true", help="codex/t3connect: log in on your other boxes too")
+    x.add_argument("--other-boxes", action="store_true", help="codex/t3connect: log in on your other machines too")
+    x.add_argument("--on", metavar="MACHINE", help="claude/codex/antigravity: sign in on that machine only (its own "
+                                                   "account; Claude then stops copying between machines there)")
+    x.add_argument("--logout", action="store_true", help="claude/codex/antigravity: sign out here (or --on MACHINE), "
+                                                         "to sign in with a different account")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_login)
     x = s.add_parser("teammates", help="let a teammate's agents work in your T3: ls, allow NAME --access LEVEL, "
                                        "stop NAME")

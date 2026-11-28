@@ -95,20 +95,20 @@ def cmd_sample(cfg, a):
     for name, rec in sb.friend_users().items():
         c = sb.read_cgroup(sb.slice_path(rec["uid"]))
         if c:
-            users[name] = [c["cpu_usec"], c["mem"]]
+            users[name] = [c["cpu_usec"], c["mem"] if c.get("mem_used") is None else c["mem_used"]]
     for name in sb.admin_users(cfg):
         try:
             c = sb.read_cgroup(sb.slice_path(pwd.getpwnam(name).pw_uid))
         except KeyError:
             c = None
         if c:
-            users[name] = [c["cpu_usec"], c["mem"]]
+            users[name] = [c["cpu_usec"], c["mem"] if c.get("mem_used") is None else c["mem_used"]]
     rec = {
         "ts": int(now), "cpu": cpu, "load1": box["loadavg"][0],
         "mem": round(100 * (1 - mi["MemAvailable"] / mi["MemTotal"]), 1),
         "swap": mi.get("SwapTotal", 0) - mi.get("SwapFree", 0),
         "disk_free": round(100 * box["disk_free"] / box["disk_total"], 2),
-        "disk_free_b": box["disk_free"],
+        "disk_free_b": box["disk_free"], "disk_total_b": box["disk_total"],
         "psi": [box["psi_cpu"], box["psi_mem"], box["psi_io"]],
         "temp": max_temp(), "users": users, "agents": agent_counts(),
     }

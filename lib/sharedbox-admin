@@ -976,12 +976,15 @@ def handle_owner_pair(cfg, rid, req):
 # AI / GitHub logins friends get (login, code, check, peer-login, peer-check: checked below exactly as for a friend).
 # Their SSH keys and T3 Code are their own business, set up on the box itself.
 REQUEST_PORTAL_ACTIONS = ("request-approve", "request-done", "request-decline")
-OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl",
+OWNER_PORTAL_ACTIONS = ("status", "serve-ls", "shared-ls", "serve-ctl", "serve-logs", "shared-ctl", "serve-set",
                         "shared-logs", "self-update", "invite", "boost", "running-stop",
-                        "running-all", "telegram", "telegram-setup",
+                        "running-all", "running-stop-any", "telegram", "telegram-setup",
                         "msg", "where", "restore", "projects") + REQUEST_PORTAL_ACTIONS
 OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as `box hackathon on|off`
 OWNER_PORTAL_ACTIONS += ("login", "code", "check", "peer-login", "peer-check")  # the owner's Account tab logins
+# the Account tab's per-machine AI accounts: sign in / sign out on one machine, and the code for a sign-in there
+OWNER_PORTAL_ACTIONS += ("peer-code", "logout", "peer-logout")
+ACCOUNT_KEYS = ("claude", "codex", "antigravity")  # logins each machine can have its own account for
 
 
 def handle_boost(cfg, name, req):
@@ -1006,11 +1009,36 @@ def running_all(cfg):
         except Exception as e:  # noqa: BLE001 - one account's odd files never hide everyone else
             print(f"running {name}: {e!r}", file=sys.stderr)
             items = []
-        keep = ("kind", "name", "detail", "mem", "age", "cpu_usec", "pids")
+        try:
+            sbrunning.with_meta(items, home, uid)
+        except Exception as e:  # noqa: BLE001
+            print(f"running meta {name}: {e!r}", file=sys.stderr)
+        keep = ("kind", "name", "detail", "mem", "age", "cpu_usec", "pids", "key", "stop", "about", "keep", "exec",
+                "importance", "project")
         accts.append({"user": name, "mem": sum(i["mem"] for i in items),
-                      "items": [{k: i.get(k) for k in keep} for i in items]})
+                      "items": [{k: i.get(k) for k in keep if k in i} for i in items]})
     return {"ok": True, "accounts": sorted(accts, key=lambda a: -a["mem"]),
             "limits": {k: v for k, v in sb.user_limits(cfg).items() if k.startswith("MEMORY")}}
+
+
+def running_stop_any(cfg, by, req):
+    """The owner stops something from the All running tab: run `box _portal running-stop KEY` as the account it
+    belongs to (that re-derives the key from the live list, so only a real item of theirs can be named). The page
+    has already asked; a keep-running server needs force (a second confirmation)."""
+    user, key = str(req.get("user") or ""), req.get("key")
+    accts = sb.limited_accounts(cfg)
+    if user not in accts or not isinstance(key, str) or not sbrunning.KEY_RE.match(key):
+        return {"ok": False, "error": "That isn't running any more. Refresh the page."}
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return {"ok": False, "error": "That account is gone."}
+    res = box_portal(pw, ["running-stop", key] + (["force"] if req.get("force") else []))
+    if res.get("ok"):
+        sb.log_event("running_stopped", user, by=by, key=key[:120])
+        if user != by:
+            res = dict(res, message=f"{user}: {res.get('message') or 'stopped.'}")
+    return res
 
 
 def start_update(cfg, by):
@@ -1097,12 +1125,14 @@ def handle_portal(cfg, rid, req):
         if req.get("action") == "telegram-setup":  # the owner's Settings tab: paste the @BotFather token, or off
             if req.get("op") == "off":
                 telegram_off(cfg, by=name)
-                return {"ok": True, "message": "Telegram is off. People's links are kept for when it's back."}
+                return {"ok": True, "message": "Telegram is off. Everyone's phone connections are kept and work again when it's back on."}
             return telegram_setup(cfg, req.get("token"), by=name)
         if req.get("action") == "self-update":
             return start_update(cfg, name)
         if req.get("action") == "running-all":
             return running_all(cfg)
+        if req.get("action") == "running-stop-any":  # All running's Stop: anyone's item, as that account
+            return running_stop_any(cfg, name, req)
         if req.get("action") == "hackathon":  # {"op": "on"|"off", "until": "YYYY-MM-DD HH:MM", "users": "a b"}
             return hackathon_set(cfg, {k: req.get(k) for k in ("op", "until", "users")}, name)
         if req.get("action") == "invite":  # the owner's dashboard: same as `box invite --email ... --note ...`
@@ -1145,10 +1175,20 @@ def handle_portal(cfg, rid, req):
         fields = ("op", "id", "text", "to", "title", "context", "level", "due", "status", "until", "clear", "private")
         payload = {k: req[k] for k in fields if k in req and isinstance(req[k], (str, bool, int))}
         return box_portal(pw, [action], input_text=json.dumps(payload))
-    if action in ("peer-login", "peer-check"):  # T3 app / ChatGPT on this person's other boxes: one link per box
-        if key not in ("t3connect", "codex"):
+    if action in ("peer-login", "peer-check", "peer-code", "peer-logout", "logout"):
+        # another of this person's machines (all of them, or `box`: one), or signing out here. `box _portal` checks
+        # the machine against its own list of connected machines again.
+        box = req.get("box")
+        box = box if isinstance(box, str) and sb.BOX_NAME_RE.fullmatch(box) else None
+        if action == "logout":
+            return box_portal(pw, ["logout", key]) if key in ACCOUNT_KEYS else {"ok": False, "error": "unknown login"}
+        one_box = action in ("peer-code", "peer-logout")  # these always name the machine
+        if (key not in ACCOUNT_KEYS if one_box else key not in ("t3connect",) + ACCOUNT_KEYS) \
+                or (one_box or key not in ("t3connect", "codex")) and not box:
             return {"ok": False, "error": "unknown login"}
-        return box_portal(pw, [action, key])
+        if action == "peer-code":
+            return box_portal(pw, [action, key, box], input_text=str(req.get("code", ""))[:1000])
+        return box_portal(pw, [action, key] + ([box] if box else []))
     if action == "team":  # the dashboard's "Let a teammate's agents work in your T3"
         return handle_team(name, pw, req)
     if action == "status":
@@ -1165,7 +1205,13 @@ def handle_portal(cfg, rid, req):
     if action == "running-stop":  # `box _portal` matches the key against this account's live list again
         if not isinstance(key, str) or not sbrunning.KEY_RE.match(key):
             return {"ok": False, "error": "That isn't running any more. Refresh the page."}
-        return box_portal(pw, ["running-stop", key])
+        return box_portal(pw, ["running-stop", key] + (["force"] if req.get("force") else []))
+    if action == "serve-set":  # a server's switches on the dashboard (box serve keep / box serve hackathon)
+        what, val = req.get("what"), req.get("value")
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", key) or key == "t3" \
+                or (what, val) not in (("keep", "on"), ("keep", "off"), ("hackathon", "pause"), ("hackathon", "keep")):
+            return {"ok": False, "error": "no such server"}
+        return box_portal(pw, ["serve-set", key, f"{what}:{val}"])
     if action in ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs"):
         # `box _portal` checks again (and only touches sb-* units the friend made); never pass a leading "-"
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", key) \
@@ -1891,7 +1937,7 @@ def friends_action(cfg, by, req):
         if act == "telegram-setup":  # `box telegram setup|off`: the Settings tab's Telegram bot
             if req.get("op") == "off":
                 telegram_off(cfg, by=by)
-                return {"ok": True, "message": "Telegram is off. People's links are kept for when it's back."}
+                return {"ok": True, "message": "Telegram is off. Everyone's phone connections are kept and work again when it's back on."}
             return telegram_setup(cfg, req.get("token"), by=by)
     except FriendError as e:
         return {"ok": False, "error": str(e)}

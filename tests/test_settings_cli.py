@@ -50,7 +50,8 @@ DASHBOARD = {
     "shared-logs": "shared", "msg": "msg", "where": "where", "telegram": "telegram", "telegram-setup": "telegram",
     "projects": "projects", "peer-login": "login", "peer-check": "login", "team": "teammates", "restore": "restore",
     "add-key": "ssh-key", "login": "login", "code": "login", "check": "login", "t3": "t3", "t3app": "t3",
-    "t3prompt": "t3",
+    "t3prompt": "t3", "peer-code": "login", "logout": "login", "peer-logout": "login",
+    "running-stop-any": "running", "serve-set": "serve",
 }
 
 

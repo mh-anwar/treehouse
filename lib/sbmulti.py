@@ -513,7 +513,8 @@ def cmd_boxes_setup(sb, cfg, user, home, box_bin):
 
 def add_parsers(s, sb, cfg, user, home, box_bin):
     """The argparse hook lib/box calls: `box boxes` and `box run`."""
-    x = s.add_parser("boxes", help="load on each of the owner's boxes and the best place for heavy work")
+    x = s.add_parser("boxes", aliases=["machines"],
+                     help="load on each of the owner's machines and the best place for heavy work (also: box machines)")
     x.add_argument("op", nargs="?", default="status", choices=["status", "setup", "login"])
     x.add_argument("key", nargs="?", help="login: claude | codex | gh")
     x.add_argument("--on", metavar="NAME", help="login: which box")

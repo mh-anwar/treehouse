@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 import time
 
+import sbrunning
+
 CONF_PATH = os.environ.get("SHAREDBOX_CONF", "/etc/sharedbox/sharedbox.conf")
 STATE_DIR = os.environ.get("SHAREDBOX_STATE", "/var/lib/sharedbox")
 SHARE_DIR = os.environ.get("SHAREDBOX_SHARE", "/usr/share/sharedbox")
@@ -297,7 +299,62 @@ def hackathon_reconcile(cfg):
     write_json(path, {"active": active, "ts": int(time.time()), "until": cfg.get("HACKATHON_UNTIL", "")},
                mode=0o644)
     log_event("hackathon_on" if active else "hackathon_off", None, until=cfg.get("HACKATHON_UNTIL", ""))
-    return "on" if active else "off"
+    try:
+        moved = hackathon_servers(cfg, active)
+    except Exception as e:  # noqa: BLE001 - pausing servers must never block the switch itself
+        moved = f"servers: {e!r}"
+    return ("on" if active else "off") + (f" ({moved})" if moved else "")
+
+
+HACKATHON_PAUSED = "hackathon-paused.json"  # in STATE_DIR: {"paused": {user: ["sb-NAME.service"]}, "ts"}
+
+
+def hackathon_servers(cfg, active):
+    """Root, at a hackathon mode transition: on -> stop every `box serve` server whose owner allowed it
+    (`box serve hackathon NAME pause`; never one marked keep running), off -> start exactly those again.
+    Only `stop`, not `disable`: a reboot brings them back like any server. Returns a short summary or ""."""
+    if os.geteuid() != 0:
+        return ""
+    path = os.path.join(STATE_DIR, HACKATHON_PAUSED)
+    st = read_json(path, {}) or {}
+
+    def sctl(user, *args):
+        return subprocess.run(["systemctl", "--user", f"--machine={user}@.host", *args], capture_output=True,
+                              text=True, timeout=60)
+    n = 0
+    if active:
+        paused = dict(st.get("paused") or {})
+        for user, (uid, _rec) in sorted(limited_accounts(cfg).items()):
+            try:
+                home = pwd.getpwnam(user).pw_dir
+                files = os.listdir(os.path.join(home, ".config", "systemd", "user"))
+            except (KeyError, OSError):
+                continue
+            for fn in sorted(files):
+                if not re.fullmatch(r"sb-[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.service", fn) or fn in (
+                        "sb-t3.service", "sb-t3-proxy.service"):
+                    continue
+                m = sbrunning.server_meta(home, fn[3:-8], uid)
+                if m.get("hackathon") != "pause" or m.get("keep"):
+                    continue
+                if sctl(user, "is-active", fn).stdout.strip() != "active":
+                    continue
+                if sctl(user, "stop", fn).returncode == 0:
+                    paused.setdefault(user, [])
+                    if fn not in paused[user]:
+                        paused[user].append(fn)
+                    log_event("hackathon_paused", user, server=fn[3:-8])
+                    n += 1
+        write_json(path, {"paused": paused, "ts": int(time.time())}, mode=0o644)
+        return f"paused {n} server{'s' if n != 1 else ''}" if n else ""
+    for user, units in sorted((st.get("paused") or {}).items()):
+        for fn in units if isinstance(units, list) else []:
+            if isinstance(fn, str) and re.fullmatch(r"sb-[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.service", fn):
+                if sctl(user, "start", fn).returncode == 0:
+                    log_event("hackathon_resumed", user, server=fn[3:-8])
+                    n += 1
+    write_json(path, {"paused": {}, "ts": int(time.time())}, mode=0o644)
+    return f"started {n} paused server{'s' if n != 1 else ''} again" if n else ""
 
 
 def brand(cfg):
@@ -583,6 +640,7 @@ def read_cgroup(path):
             return None
 
     cpu_max = (_read(os.path.join(path, "cpu.max")) or "max").split()
+    split = sbrunning.mem_split(path)
     quota = None
     if cpu_max and cpu_max[0] != "max":
         quota = int(cpu_max[0]) / int(cpu_max[1])
@@ -590,8 +648,9 @@ def read_cgroup(path):
         "t": time.monotonic(),
         "cpu_usec": stat.get("usage_usec", 0),
         "throttled_usec": stat.get("throttled_usec", 0),
-        "mem": num("memory.current") or 0,
-        "mem_used": _mem_used(path),
+        "mem": num("memory.current") or 0,  # includes reclaimable cache: show mem_used to people
+        "mem_used": split[0] if split else None,
+        "mem_cache": split[1] if split else None,
         "mem_high": num("memory.high"),
         "mem_max": num("memory.max"),
         "swap": num("memory.swap.current") or 0,
@@ -599,15 +658,6 @@ def read_cgroup(path):
         "pids_max": num("pids.max"),
         "cpu_quota_cores": quota,
     }
-
-
-def _mem_used(path):
-    """Memory programs actually hold (anon + shmem), not file cache the kernel drops on its own; None if unknown."""
-    try:
-        st = dict(line.split() for line in (_read(os.path.join(path, "memory.stat")) or "").splitlines())
-        return int(st["anon"]) + int(st.get("shmem", 0))
-    except (KeyError, ValueError):
-        return None
 
 
 def read_psi(kind):
