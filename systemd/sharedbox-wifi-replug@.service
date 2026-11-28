@@ -1,0 +1,9 @@
+[Unit]
+Description=sharedbox: restart netplan's Wi-Fi supplicant when %I comes back (only while netplan runs the Wi-Fi)
+After=sys-subsystem-net-devices-%i.device
+ConditionPathExists=!/etc/sharedbox/wifi/wpa_supplicant.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-netguard replug %I
+SyslogIdentifier=sharedbox-netguard

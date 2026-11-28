@@ -274,6 +274,22 @@ running at boot, journald/log volume, per-account limits (`box status`), caching
 A frozen box restarts by itself: `box tune` shows the hardware watchdog (systemd pings it; a hang resets the
 board after a minute), kernel panic/lockup -> reboot settings, earlyoom (stops the biggest heavy job before RAM runs
 out, never agents) and why the box last restarted. If it says the box restarted by itself, tell the user.
+The network heals itself too (`box help network`).
+
+@@ network
+Machines are often out of reach, so the network comes back by itself; nobody needs to be at the keyboard.
+- Any USB Wi-Fi dongle works: treehouse's Wi-Fi config matches every Wi-Fi interface (not one dongle's wlx<MAC> name),
+  and a dongle that is unplugged and plugged back in, or replaced, connects again within seconds.
+- With a cable and a dongle both in, traffic takes the cable (route metric 100 vs 600); pull the cable and the Wi-Fi
+  takes over by itself.
+- net-guard checks every minute (links, address, default route, gateway, Tailscale). While the network stays down it
+  re-applies the config after 2 min, restarts the network service and Tailscale (and re-plugs a wedged dongle in
+  software) after 5 min, and reboots only after 20 min with no working link, at most once every 6 hours and never
+  during a package install. The owner can change the minutes (NET_GUARD_* in sharedbox.conf).
+- `box tune` shows the links, whether Wi-Fi works with any dongle, and net-guard's state and last action;
+  `sharedbox-netguard status` the details; `box telemetry` lists what net-guard did (net_guard events).
+- You can't change the network (no sudo, and a mistake cuts the box off). If `box tune` says net-guard rebooted the
+  box or the network keeps dropping, tell the user what it says.
 
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
@@ -433,7 +449,8 @@ Tables (unix-time `ts`; minute rows kept 14 days, `*_hourly` roll-ups and `event
   oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
   unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
   samples for value seconds: the box stalled), container_start, container_stop (value = peak MB), hung_task,
-  disk_error.
+  disk_error, net_guard (network self-recovery: unit = reconfigure, restart, usb_reset, reboot, reboot_blocked,
+  recovered, wifi_fix, wifi_setup[_failed]; value = seconds the network had been down; detail = why and each link).
 - Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
   oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
   swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
