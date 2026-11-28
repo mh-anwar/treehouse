@@ -507,7 +507,7 @@ class Web(unittest.TestCase):
         w.SELF_IP = "100.64.0.5"
         try:
             cases = [  # (logins, t3, ts_id, app, main button, text)
-                ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this box yet"),
+                ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this machine yet"),
                 ({"claude": False, "codex": False}, True, "n1", False, "Log in with Claude", "Log in with ChatGPT"),
                 ({"claude": True}, True, "n1", False, "Open T3 in this browser", "Want the T3 app on your laptop?"),
                 ({"claude": True}, True, "", False, "Open T3 in this browser", "Want the T3 app on your laptop?"),
@@ -523,7 +523,7 @@ class Web(unittest.TestCase):
                 self.assertIn(text, page)
                 self.assertNotIn("Ask the owner to add you to Tailscale", page)
                 if text.startswith("Want the T3 app"):  # the laptop app is a secondary link, not a second button
-                    self.assertIn("Make a setup prompt", page)
+                    self.assertIn("Get setup instructions", page)
                 self.assertNotIn("Link my T3 account", page)  # T3 Connect stays hidden until it's tested
                 self.assertNotIn("→", page)
                 self.assertNotIn(f"@{w.HOST}<", page)
@@ -700,7 +700,10 @@ class Boxes(unittest.TestCase):
         r = self.get("/api/box", ip="100.64.0.2")
         self.assertEqual(r["code"], 200)
         self.assertEqual(set(json.loads(r["body"])), {"v", "name", "version", "ncpu", "load1", "level", "mem",
-                                                      "disk_free", "dashboard", "t3"})  # nothing per user
+                                                      "disk_free", "dashboard", "t3", "cpu", "mem_used_b",
+                                                      "mem_total_b", "disk_free_b", "disk_total_b", "people"})
+        # per user only the names of who's active now (the Machines tab's "Active now"), never their usage
+        self.assertIsInstance(json.loads(r["body"])["people"], list)
         self.assertEqual(self.get("/api/box", ip="::ffff:100.64.0.2")["code"], 200)
         self.assertEqual(self.get("/api/box", ip="100.64.0.3")["code"], 403)  # a friend's laptop on the tailnet
         self.set_boxes("here=100.64.0.1")  # taken out of BOXES: refused from the next poll on, no restart
@@ -742,25 +745,32 @@ class Boxes(unittest.TestCase):
         self.set_boxes("here=100.64.0.1 dead=100.64.0.2 good=100.64.0.3 old=100.64.0.4")
         t0 = time.time()
         w.peers_tick()
-        page = w.boxes_section()
+        page = w.machines_section(owner=True)
         self.assertLess(time.time() - t0, 0.3, "rendering waited for a peer")
-        self.assertIn("checking", page)
+        self.assertIn("Checking", page)
         while any(p["busy"] for p in w.PEERS.values()) and time.time() - t0 < 5:
             time.sleep(0.05)
         self.assertLess(time.time() - t0, 2, "the dead box's fetch didn't time out")
         w.peers_tick()  # the next poll: nothing piles up, the dead box is asked again
-        page = w.boxes_section()
-        rows = {m.group(1): m.group(0) for m in re.finditer(r"<tr><td><b>([a-z]+)</b>.*?</tr>", page)}
-        self.assertEqual(list(rows), ["here", "dead", "good", "old"])
-        self.assertIn("this box", rows["here"])
-        self.assertIn("offline", rows["dead"])
-        self.assertIn("not reachable", rows["dead"])
-        self.assertIn("online", rows["good"])
-        self.assertIn("0.50", rows["good"])
-        self.assertIn('href="http://100.64.0.3:3773"', rows["good"])
+        page = w.machines_section(owner=True)
+        cards = {m.group(1): m.group(0) for m in re.finditer(r'<div class="mach card"><div class="mh"><h3>([a-z]+)</h3>'
+                                                              r'.*?(?=<div class="mach card">|<p class=\'sub\'>Memory)', page, re.S)}
+        self.assertEqual(list(cards), ["here", "dead", "good", "old"])
+        self.assertIn("this page comes from it", cards["here"])
+        self.assertIn("Offline", cards["dead"])
+        self.assertIn("It doesn&#x27;t answer", cards["dead"])
+        self.assertIn("Online", cards["good"])
+        self.assertIn("0.5 <small>for 8 cores", cards["good"])
+        self.assertIn('href="http://100.64.0.3:3773"', cards["good"])
+        self.assertNotIn("javascript:", page)
+        self.assertIn("older treehouse", cards["old"])
+        # a friend sees only the machines they have an account on, and no links into the owner's T3
+        friend = w.machines_section(owner=False, allowed={"good"})
+        self.assertIn("<h3>good</h3>", friend)
+        self.assertNotIn("<h3>dead</h3>", friend)
+        self.assertNotIn("3773", friend)
         self.assertNotIn("javascript", page)
         self.assertNotIn("sam", page)
-        self.assertIn("needs a treehouse update", rows["old"])
 
     def test_old_tailnet_page_is_owner_only(self):
         self.assertEqual(self.get("/api/state", who=self.FRIEND)["code"], 403)
@@ -917,25 +927,29 @@ class YourBoxes(unittest.TestCase):
     def btn(self, action, label, key="", **kw):
         return f"<button data-a='{action}' data-k='{key}'>{label}</button>"
 
-    def test_row_lists_boxes_and_offers_what_is_missing(self):
-        st = {"box": "sietchtabr", "boxes": {
-            "minastirith": {"ssh": True, "logins": {"claude": True, "t3connect": False, "codex": True}},
+    def test_table_names_the_account_on_each_machine(self):
+        st = {"box": "sietchtabr", "accounts": {"claude": "me@x.io"}, "boxes_checked": 1, "boxes": {
+            "minastirith": {"ssh": True, "logins": {"claude": True, "codex": False, "antigravity": True},
+                            "accounts": {"claude": "work@y.io", "antigravity": "g@z.io"}, "claude_own": True},
             "krishbox": {"ssh": False, "logins": {}}}}
-        logins = {"t3connect": {"ok": True}, "codex": {"ok": True}, "claude": {"ok": True}}
-        label, desc, acts = self.web.boxes_row(st, logins, self.btn)
-        self.assertEqual(label, "Your boxes")
-        self.assertIn("<b>sietchtabr</b> (here)", desc)
-        self.assertIn("minastirith <span class='sub'>(needs the T3 app)</span>", desc)
-        self.assertIn("krishbox <span class='sub'>(not connected yet)</span>", desc)
-        self.assertIn("data-a='peer-login' data-k='t3connect'", acts)
-        self.assertNotIn("data-k='codex'", acts)  # ChatGPT is already on minastirith
+        logins = {"claude": {"ok": True}, "codex": {"ok": False}, "antigravity": {"ok": False}}
+        page = self.web.ai_accounts_section(st, logins, self.btn, "tok", "/_box")
+        rows = {m.group(1): m.group(0) for m in re.finditer(r"<tr><th scope='row'>([a-z]+).*?</tr>", page, re.S)}
+        self.assertEqual(list(rows), ["sietchtabr", "krishbox", "minastirith"])  # this one first, then by name
+        self.assertIn("me@x.io", rows["sietchtabr"])
+        self.assertIn("work@y.io", rows["minastirith"])  # a different Claude account on that machine
+        self.assertIn("This machine's own account", rows["minastirith"])
+        self.assertIn("data-a='login' data-k='codex'", rows["sietchtabr"])       # sign in here
+        self.assertIn("data-a='peer-login' data-k='codex'", rows["minastirith"])  # sign in there
+        self.assertIn("data-a='peer-logout' data-k='claude'", rows["minastirith"])
+        self.assertIn("Not connected yet", rows["krishbox"])
+        self.assertIn("<th>ChatGPT</th>", page)
 
-    def test_no_row_without_other_boxes_and_nothing_to_offer_when_not_set_up_here(self):
-        self.assertIsNone(self.web.boxes_row({"boxes": {}}, {}, self.btn))
-        _, desc, acts = self.web.boxes_row({"boxes": {"b2": {"ssh": True, "logins": {}}}},
-                                           {"t3connect": {"ok": False}}, self.btn)
-        self.assertEqual(acts, "")
-        self.assertIn("(all set)", desc)
+    def test_single_machine_and_nothing_installed(self):
+        self.assertEqual(self.web.ai_accounts_section({"boxes": {}}, {"gh": {"ok": True}}, self.btn, "t", ""), "")
+        page = self.web.ai_accounts_section({"box": "solo", "boxes": {}}, {"codex": {"ok": True}}, self.btn, "t", "")
+        self.assertIn("solo", page)
+        self.assertNotIn("Shared across your machines", page)
 
     def test_peer_card(self):
         res = {"ok": True, "key": "t3connect", "boxes": [
@@ -945,9 +959,9 @@ class YourBoxes(unittest.TestCase):
             {"box": "old", "done": False, "error": "no answer"},
             {"box": "evil", "url": "javascript:alert(1)"}]}
         page = self.web.peer_card(res, "tok", "/_box")
-        self.assertIn("Set up the T3 app on your other boxes", page)
+        self.assertIn("Set up the T3 app on your other machines", page)
         self.assertIn("href='https://accounts.t3.codes/device?user_code=WXYZ-1234'", page)
-        self.assertIn("Approve minastirith", page)
+        self.assertIn("Open the sign-in page for minastirith", page)
         self.assertIn("WXYZ-1234", page)
         self.assertIn("no answer", page)
         self.assertNotIn("javascript:", page)

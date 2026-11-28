@@ -131,6 +131,17 @@ done
 do_ sh -c "printf 'tcp_bbr\\n' > /etc/modules-load.d/sharedbox-bbr.conf"
 do_ sh -c "modprobe tcp_bbr 2>/dev/null; for f in /etc/sysctl.d/60-sharedbox-*.conf; do sysctl -q -p \"\$f\"; done" \
     || warn "some box tuning settings didn't apply (see /etc/sysctl.d/60-sharedbox-*.conf); the rest did"
+# wired internet on any port (etc/netplan-wired.yaml): DHCP for every en* port, never pinned to a MAC address.
+# Wi-Fi files are left alone. Applied with `netplan generate` + `networkctl reload`, never `netplan apply` (that can
+# drop the Wi-Fi link, the only link on some boxes). `box tune` reports a wired port with no DHCP config.
+if command -v netplan >/dev/null 2>&1 && [[ -d /etc/netplan ]]; then
+    if ! cmp -s "$SRC/etc/netplan-wired.yaml" /etc/netplan/90-treehouse-wired.yaml; then
+        do_ install -m 600 "$SRC/etc/netplan-wired.yaml" /etc/netplan/90-treehouse-wired.yaml
+        do_ sh -c 'netplan generate && { ! command -v networkctl >/dev/null 2>&1 || \
+            ! systemctl is-active --quiet systemd-networkd || networkctl reload; }' \
+            || warn "netplan didn't take the wired-port config (/etc/netplan/90-treehouse-wired.yaml); see \`box tune\`"
+    fi
+fi
 if [[ ! -e $ETC/sharedbox.conf ]]; then
     do_ install -m 644 "$SRC/etc/sharedbox.conf" "$ETC/sharedbox.conf"
     if [[ -n $ADMINS ]]; then do_ sed -i "s/^ADMIN_USERS=.*/ADMIN_USERS=$ADMINS/" "$ETC/sharedbox.conf"; fi

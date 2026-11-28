@@ -19,6 +19,7 @@ etc/sysctl-*.conf or a step in `apply`), so `check` and the install agree.
 import argparse
 import glob
 import json
+import re
 import os
 import subprocess
 import sys
@@ -201,6 +202,51 @@ def check_network():
     return out
 
 
+def wired_ports():
+    """Physical wired ports (en*, backed by a device)."""
+    try:
+        return sorted(n for n in os.listdir("/sys/class/net") if n.startswith("en")
+                      and os.path.exists(f"/sys/class/net/{n}/device"))
+    except OSError:
+        return []
+
+
+def wired_config(port):
+    """(has a DHCP or static config, what manages it) for one wired port: systemd-networkd's .network file for it,
+    else NetworkManager's view."""
+    try:
+        r = subprocess.run(["networkctl", "status", "--no-pager", port], capture_output=True, text=True, timeout=10)
+        m = re.search(r"Network File:\s*(\S+)", r.stdout)
+        if m and m.group(1) not in ("n/a", "-"):
+            text = read(m.group(1))
+            if not text:  # 0640 root:systemd-network: as a user, go by what networkd reports for the port
+                return ("(configured)" in r.stdout or "DHCPv4" in r.stdout or "DHCPv6" in r.stdout), m.group(1)
+            ok = bool(re.search(r"^\s*(DHCP=(yes|ipv4|ipv6|true)|Address=)", text, re.M | re.I))
+            return ok, m.group(1)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        r = subprocess.run(["nmcli", "-t", "-g", "GENERAL.STATE", "device", "show", port], capture_output=True,
+                           text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip() and "unmanaged" not in r.stdout:
+            return True, "NetworkManager"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return False, "no config"
+
+
+def check_wired():
+    out = []
+    for port in wired_ports():
+        ok, how = wired_config(port)
+        out.append(finding(f"wired port {port} gets an address by itself", ok, how if ok else "no DHCP config",
+                           "DHCP (/etc/netplan/90-treehouse-wired.yaml)",
+                           "plugging a cable in should just work on any port; a config pinned to another machine's "
+                           "MAC address leaves the port dead. Updating treehouse installs the wired-port config",
+                           "treehouse"))
+    return out
+
+
 def check_account():
     """This account's own setup (the agent may fix these itself; they're the user's files, kept with a backup)."""
     if os.geteuid() == 0:
@@ -311,7 +357,7 @@ def read_json_file(path):
         return {}
 
 
-CHECKS = [check_sysctls, check_memory, check_nofreeze, check_disk, check_cpu, check_services, check_network,
+CHECKS = [check_sysctls, check_memory, check_nofreeze, check_disk, check_cpu, check_services, check_network, check_wired,
           check_account]
 
 

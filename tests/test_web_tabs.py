@@ -31,7 +31,7 @@ w = load_web()
 
 class Tabs(unittest.TestCase):
     def test_resolve_tab(self):
-        for t in ("home", "messages", "servers", "account"):
+        for t in ("home", "messages", "servers", "machines", "account"):
             self.assertEqual(w.resolve_tab(t), t)
             self.assertEqual(w.resolve_tab(t, owner=True), t)
         for t in ("", "nope", "people", "requests", "settings", "admin", "<x>"):
@@ -39,7 +39,8 @@ class Tabs(unittest.TestCase):
         self.assertEqual(w.resolve_tab("settings", owner=True), "settings")
         self.assertEqual(w.resolve_tab("admin", owner=True, nreq=2), "requests")  # old ?tab=admin / #admin links
         self.assertEqual(w.resolve_tab("admin", owner=True, nreq=0), "people")
-        self.assertEqual(w.resolve_tab("boxes", owner=True, boxes=False), "home")
+        self.assertEqual(w.resolve_tab("boxes", owner=True), "machines")  # the old owner-only Boxes tab
+        self.assertEqual(w.resolve_tab("boxes"), "machines")  # everyone has Machines now
 
     def test_tab_bar(self):
         bar = w.tab_bar("/_box", w.page_tabs(), "servers", {"messages": (3, "")})
@@ -240,16 +241,15 @@ class Antigravity(unittest.TestCase):
 
     def test_rows(self):
         btn = w.portal_btn("tok", "/_box")
-        row = w.antigravity_row({"antigravity": {"ok": False}}, btn)
-        self.assertIn("Log in with Google", row[2])
-        self.assertIn("each of your boxes", row[1])
-        self.assertIn("T3 keeps its own sign-in", w.antigravity_row({"antigravity": {"ok": True}}, btn)[1])
-        self.assertIsNone(w.antigravity_row({}, btn))
-        rows = w.owner_login_rows({"claude": {"ok": True}, "codex": {"ok": False}, "gh": {"ok": False}}, btn)
-        self.assertEqual([r[0] for r in rows], ["Claude", "ChatGPT", "GitHub"])
-        self.assertEqual(rows[0][2], "")
-        self.assertIn("Log in with ChatGPT", rows[1][2])
-        self.assertIn("Connect GitHub", rows[2][2])
+        page = w.ai_accounts_section({"box": "here", "boxes": {}}, {"antigravity": {"ok": False}}, btn, "tok", "/_box")
+        self.assertIn("Google (Antigravity)", page)
+        self.assertIn("Sign in to Google (Antigravity) on here", page)
+        self.assertIn("T3 keeps its own sign-in", page)
+        rows = w.owner_login_rows({"accounts": {"gh": "octo"}}, {"claude": {"ok": True}, "gh": {"ok": True}}, btn)
+        self.assertEqual([r[0] for r in rows], ["GitHub"])  # Claude/ChatGPT/Google: the per-machine table
+        self.assertIn("as octo", rows[0][1])
+        rows = w.owner_login_rows({}, {"gh": {"ok": False}}, btn)
+        self.assertIn("Connect GitHub", rows[0][2])
 
     def test_owner_logins_allowed_on_both_sides(self):
         self.assertEqual(w.place_of({"_view": "code", "key": "antigravity"}, owner=True), ("account", "account"))

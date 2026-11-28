@@ -56,6 +56,88 @@ def _int(path):
         return None
 
 
+def mem_split(path):
+    """(in use, reclaimable cache) bytes for one cgroup, from memory.stat; None if it can't be read.
+    In use = what programs really hold: anonymous memory + shmem (tmpfs/shared memory can't just be dropped) +
+    kernel memory that isn't a cache (kernel - slab_reclaimable). Cache = file pages - shmem + slab_reclaimable:
+    page cache and dentry/inode caches the kernel frees by itself when anyone needs the memory. memory.current
+    counts both, so a slice whose programs exited long ago can look like it "uses" gigabytes (system.slice on a
+    box that ran a few big apt/docker jobs: anon 190M, kernel 390M, file 4.6G)."""
+    st = {}
+    for line in (_read(os.path.join(path, "memory.stat")) or "").splitlines():
+        k, _, v = line.partition(" ")
+        try:
+            st[k] = int(v)
+        except ValueError:
+            pass
+    return split_stat(st)
+
+
+def split_stat(st):
+    """mem_split from an already-parsed memory.stat ({key: bytes}); None without "anon". lib/sbtelemetry.py uses
+    this too, so telemetry and the dashboard count memory the same way."""
+    if "anon" not in st:
+        return None
+    shmem, slab_r = st.get("shmem", 0), st.get("slab_reclaimable", 0)
+    if "kernel" in st:
+        kernel = max(0, st["kernel"] - slab_r)
+    else:  # kernels before 5.18 have no "kernel" line: add up the parts that aren't caches
+        kernel = sum(st.get(k, 0) for k in ("kernel_stack", "pagetables", "percpu", "sock", "slab_unreclaimable",
+                                            "vmalloc"))
+    return st["anon"] + shmem + kernel, max(0, st.get("file", 0) - shmem) + slab_r
+
+
+def mem_used(path):
+    """Memory in use (see mem_split), falling back to memory.current when memory.stat can't be read."""
+    m = mem_split(path)
+    return m[0] if m else (_int(os.path.join(path, "memory.current")) or 0)
+
+
+# ---------- what a `box serve` server is for (its unit file's X-Treehouse-* lines; systemd ignores X- keys) ----------
+# Written by `box serve add/describe/keep/hackathon`, read by `box serve ls`, the dashboard, the owner's All running
+# tab, the janitor (never stops a keep-running server) and hackathon mode (pauses only servers that allow it).
+META_KEYS = {"About": "about", "Project": "project", "By": "by", "Agent": "agent", "Thread": "thread",
+             "Created": "created", "Importance": "importance", "Url": "url", "KeepRunning": "keep",
+             "Hackathon": "hackathon"}
+
+
+def meta_value(s, n=200):
+    """One line, no control characters, safe for a unit file (systemd's % and $ specifiers are doubled on write)."""
+    return clean(s, n)
+
+
+def parse_unit_meta(text):
+    """{about, project, by, agent, thread, created, importance, url, keep, hackathon, exec, port, workdir} from a
+    `box serve` unit file's text. keep: bool. hackathon: "pause" (may be stopped while hackathon mode is on) or ""."""
+    out = {}
+    for line in (text or "").splitlines():
+        k, _, v = line.partition("=")
+        v = v.strip().replace("%%", "%").replace("$$", "$")
+        if k.startswith("X-Treehouse-") and k[12:] in META_KEYS:
+            out[META_KEYS[k[12:]]] = clean(v, 300)
+        elif k == "ExecStart":
+            out["exec"] = clean(v, 300)
+        elif k == "WorkingDirectory":
+            out["workdir"] = clean(v, 300)
+        elif k == "Environment" and v.startswith("PORT="):
+            out["port"] = clean(v[5:], 8)
+    out["keep"] = out.get("keep", "").lower() in ("yes", "1", "true")
+    out["hackathon"] = "pause" if out.get("hackathon", "") == "pause" and not out["keep"] else ""
+    if out.get("importance") not in ("important", "safe-to-stop"):
+        out["importance"] = "important" if out["keep"] else ""
+    return out
+
+
+def server_meta(home, name, uid=None):
+    """parse_unit_meta of ~/.config/systemd/user/sb-NAME.service; {} when unreadable. With uid (root reading someone
+    else's home) every step must be owned by that account (see _read_owned)."""
+    if not NAME_RE.match(name or ""):
+        return {}
+    parts = [".config", "systemd", "user", f"sb-{name}.service"]
+    text = _read_owned(home, parts, uid) if uid is not None else _read(os.path.join(home or "", *parts))
+    return parse_unit_meta(text) if text else {}
+
+
 def _boot_time():
     for line in (_read("/proc/stat") or "").splitlines():
         if line.startswith("btime "):
@@ -121,7 +203,7 @@ def _cg_stats(path, procs, boot):
         comm, st, rss = p
         names[comm] = names.get(comm, 0) + rss
         start = st if start is None else min(start, st)
-    return {"mem": _int(os.path.join(path, "memory.current")) or 0, "cpu_usec": usage,
+    return {"mem": mem_used(path), "cpu_usec": usage,
             "since": int(start) if start else None, "pids": len(procs),
             "procs": [n for n, _ in sorted(names.items(), key=lambda kv: -kv[1])][:4]}
 
@@ -189,7 +271,9 @@ T3_SCOPE_RE = re.compile(r"^t3code-([a-z0-9]+(?:-[a-z]+)*)-[0-9a-f]{6,}\.scope$"
 def _unit_kind(unit, procs):
     """(kind, display name, how to stop it or None)."""
     joined = " ".join(procs)
-    if unit in ("t3code.service", "sb-t3.service", "sb-t3.socket"):
+    if unit in ("t3code.service", "sb-t3.service"):  # stoppable only from the owner's All running tab
+        return "t3", "T3 Code", "t3"
+    if unit == "sb-t3.socket":
         return "t3", "T3 Code", None
     t3 = T3_SCOPE_RE.match(unit)  # what T3 Code starts: agents (claude, codex, opencode, acp, muse, pi, ...),
     if t3:                        # its built-in terminals and preview browsers
@@ -287,6 +371,18 @@ def running(uid, home=None, now=None):
     for it in items:
         it["age"] = int(now - it["since"]) if it.get("since") else None
     items.sort(key=lambda x: (x["kind"] == "background", -x["mem"]))
+    return items
+
+
+def with_meta(items, home, uid=None):
+    """Add what each `box serve` server is for (about, keep, importance, exec) from its unit file."""
+    for it in items:
+        unit = it.get("unit") or ""
+        if unit.startswith("sb-") and unit.endswith(".service") and unit not in ("sb-t3.service", "sb-t3-proxy.service"):
+            m = server_meta(home, unit[3:-8], uid)
+            for k in ("about", "keep", "importance", "exec", "project", "by", "agent"):
+                if m.get(k):
+                    it[k] = m[k]
     return items
 
 

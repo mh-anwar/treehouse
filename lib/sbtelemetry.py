@@ -41,6 +41,8 @@ import subprocess
 import sys
 import time
 
+import sbrunning
+
 HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 MB = 1 << 20
@@ -624,18 +626,16 @@ class Collector:
                 if not dt or cur.get(k) is None or o.get(k) is None or cur[k] < o[k]:
                     return None
                 return cur[k] - o[k]
-            if "kernel" in ms:
-                kernel = ms["kernel"]
-            else:
-                kernel = sum(ms.get(k, 0) for k in ("slab_unreclaimable", "kernel_stack", "pagetables", "percpu",
-                                                    "sock"))
-            real = ms.get("anon", 0) + ms.get("shmem", 0) + kernel if ms else None
+            # in use vs reclaimable cache: the same split the dashboard shows (lib/sbrunning.py split_stat); kernel
+            # slab the kernel frees by itself (dentry/inode caches) counts as cache, not use
+            split = sbrunning.split_stat({k: int(v) for k, v in ms.items() if isinstance(v, (int, float))}) if ms else None
+            real = split[0] if split else None
             dcpu = d("cpu")
             rows.append({
                 "ts": now, "slice": name, "user": user,
                 "cpu_pct": rnd(dcpu / (dt * 1e4)) if dcpu is not None else None,
                 "mem_mb": real // MB if real is not None else None,
-                "cache_mb": max(0, ms.get("file", 0) - ms.get("shmem", 0)) // MB if ms else None,
+                "cache_mb": split[1] // MB if split else None,
                 "swap_mb": int(num(_read(os.path.join(path, "memory.swap.current")), 0)) // MB,
                 "pids": int(num(_read(os.path.join(path, "pids.current")), 0)),
                 "psi_mem": rnd(d("ps") / (dt * 1e4), 2) if d("ps") is not None else None,

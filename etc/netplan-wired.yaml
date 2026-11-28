@@ -1,0 +1,13 @@
+# managed by treehouse: every wired port gets an address by itself (DHCP, IPv4 and IPv6), on whatever port the
+# cable is in. Matched by name (en*), never by MAC address: an installer config pinned to another machine's MAC
+# left a box's ethernet port dead. optional: boot never waits for a cable. A config that names the port itself
+# (eno1, enp3s0: a static address, say) still wins: systemd-networkd uses the first matching .network file, which
+# netplan names after the definition's ID, and "treehouse-wired" sorts after those.
+network:
+  version: 2
+  ethernets:
+    treehouse-wired:
+      match: {name: "en*"}
+      dhcp4: true
+      dhcp6: true
+      optional: true
