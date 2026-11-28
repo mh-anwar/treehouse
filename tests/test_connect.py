@@ -374,7 +374,9 @@ class Web(unittest.TestCase):
         code, res = self.post_key(self.pubkey + "\n")
         self.assertEqual(code, 200, res)
         self.assertEqual((res["ok"], res["user"], res["ssh_host"]), (True, "sam", "treehouse-ssh.example.com"))
-        self.assertIn("Host treehouse\n  HostName treehouse-ssh.example.com\n  User sam\n", res["ssh_config"])
+        self.assertRegex(res["ssh_config"], r"Host treehouse( tb-[a-z0-9-]+)?\n  HostName treehouse-ssh.example.com\n"
+                                            r"  User sam\n")
+        self.assertIn(sbconnect.BEGIN, res["ssh_config"])
         self.assertIn("ProxyCommand cloudflared access ssh --hostname %h", res["ssh_config"])
         # through the spool to root's add-key, carrying the Access token root re-verifies
         self.assertEqual(self.calls, [("add-key", "jwt-of-friend@example.com", {"sshkey": self.pubkey})])
@@ -439,6 +441,22 @@ class Web(unittest.TestCase):
         self.assertIn("ports", res)
         self.assertEqual(self.request("GET", "/_box/api/whoami", email="stranger@example.com")["code"], 403)
         self.assertEqual(self.request("GET", "/_box/api/whoami", (("Origin", "https://evil.example"),))["code"], 403)
+
+    def test_connect_md_lists_every_box(self):
+        w = self.web
+        orig = (w.sb.load_config, w.box_ip)
+        w.sb.load_config = lambda *a, **k: dict(orig[0](*a, **k), BOXES="here=100.64.1.1 there=100.64.1.2")
+        w.box_ip = lambda: "100.64.1.1"
+        try:
+            body = self.request("GET", "/_box/connect.md")["body"]
+            code, res = self.post_key(self.pubkey) if self.pubkey else (None, None)
+        finally:
+            w.sb.load_config, w.box_ip = orig
+        self.assertIn("Host treehouse tb-here\n", body)
+        self.assertIn("Host tb-there\n  HostName 100.64.1.2\n  User sam\n", body)
+        self.assertIn("   - Host: `tb-here`\n   - Host: `tb-there`\n", body)
+        if res:
+            self.assertIn("Host tb-there\n", res["ssh_config"])
 
     def test_connect_md(self):
         r = self.request("GET", "/_box/connect.md")
@@ -897,6 +915,67 @@ class ConnectText(unittest.TestCase):
                      "Remote-SSH", "box rules", "box serve", "box shared", "no sudo"):
             self.assertIn(must, t)
         self.assertNotIn("{", t.replace("{{", "").replace('@{"X-Treehouse', "").replace('{"ok"', ""))
+
+    BOXES = {"alpha": "100.64.0.1", "beta": "100.64.0.2", "gamma": "100.64.0.3"}
+
+    def test_fleet_aliases(self):
+        self.assertEqual(sbconnect.fleet(self.BOXES, "beta"),
+                         [("tb-beta", "beta", None), ("tb-alpha", "alpha", "100.64.0.1"),
+                          ("tb-gamma", "gamma", "100.64.0.3")])
+        # the entry box is always there, even with no BOXES (one box: the T3 app still sees tb-<box>)
+        self.assertEqual(sbconnect.fleet({}, "Solo"), [("tb-solo", "solo", None)])
+        self.assertEqual(sbconnect.fleet(None, ""), [])
+        # nothing odd reaches ~/.ssh/config
+        bad = {"ok": "100.64.0.9", "x\nProxyCommand evil": "100.64.0.8", "y": "100.64.0.7\n  ProxyCommand x",
+               "UPPER": "100.64.0.6"}
+        self.assertEqual(sbconnect.fleet(bad, "here"), [("tb-here", "here", None), ("tb-ok", "ok", "100.64.0.9"),
+                                                        ("tb-upper", "upper", "100.64.0.6")])
+
+    def test_fleet_config_block(self):
+        b = sbconnect.ssh_config_block("sam", "treehouse-ssh.example.com", boxes=self.BOXES, entry="alpha")
+        self.assertTrue(b.startswith(sbconnect.BEGIN + "\n") and b.endswith(sbconnect.END + "\n"))
+        self.assertIn("Host treehouse tb-alpha\n  HostName treehouse-ssh.example.com\n  User sam\n"
+                      "  IdentityFile ~/.ssh/treehouse\n  IdentitiesOnly yes\n"
+                      "  ProxyCommand cloudflared access ssh --hostname %h\n", b)
+        for name, ip in (("beta", "100.64.0.2"), ("gamma", "100.64.0.3")):
+            self.assertIn(f"Host tb-{name}\n  HostName {ip}\n  User sam\n  IdentityFile ~/.ssh/treehouse\n"
+                          f"  IdentitiesOnly yes\n  ProxyJump treehouse\n", b)
+        self.assertNotIn("Host tb-alpha\n", b)  # the entry box is an alias of treehouse, not a jump to itself
+        self.assertIn("Host treehouse tb-*\n  ControlMaster auto\n  ControlPath ~/.ssh/cm-%C\n"
+                      "  ControlPersist 8h\n  ServerAliveInterval 30\n" + sbconnect.END, b)
+        self.assertEqual(b.count("ProxyCommand"), 1)
+        # the shared settings come last, so the per-host ProxyCommand/ProxyJump are what ssh picks first
+        self.assertGreater(b.index("Host treehouse tb-*"), b.index("Host tb-gamma"))
+        w = sbconnect.ssh_config_block("sam", "h.example.com", '"C:\\cf.exe"', boxes=self.BOXES, entry="alpha",
+                                       windows=True)
+        self.assertNotIn("ControlMaster", w)  # Windows' OpenSSH has no ControlMaster
+        self.assertIn('ProxyCommand "C:\\cf.exe" access ssh --hostname %h', w)
+        self.assertIn("Host treehouse tb-*\n  ServerAliveInterval 30\n", w)
+        # one box, no BOXES: treehouse keeps working and the shared settings still apply
+        one = sbconnect.ssh_config_block("sam", "h.example.com")
+        self.assertIn("Host treehouse\n  HostName h.example.com\n", one)
+        self.assertNotIn("ProxyJump", one)
+
+    def test_fleet_prompt(self):
+        t = sbconnect.connect_text("sam", SITE, "treehouse-ssh.example.com", boxes=self.BOXES, entry="alpha")
+        for must in (sbconnect.BEGIN, sbconnect.END, "replace that whole block",
+                     "older hand-added `Host treehouse` section", "config.bak",
+                     "command -v cloudflared",  # the T3 app starts ssh without the shell's PATH
+                     "skip to step 5",          # a rerun refreshes the aliases
+                     "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new tb-alpha true",
+                     "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new tb-beta true",
+                     "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new tb-gamma true",
+                     "Settings, then Environments", "Add environment, choose SSH",
+                     "   - Host: `tb-alpha`\n   - Host: `tb-beta`\n   - Host: `tb-gamma`\n",
+                     "turn on Load balancing", "no Tailscale needed", "When the owner adds a box",
+                     f"curl -sS {SITE}/_box/connect.md -H \"cf-access-token: $(cloudflared access token -app={SITE})\"",
+                     "Host tb-beta\n  HostName 100.64.0.2\n", "T3 Connect"):
+            self.assertIn(must, t)
+        self.assertNotIn("needs Tailscale", t)
+        self.assertNotIn("it needs Tailscale here", t)
+        self.assertEqual(t.count("ControlMaster auto"), 1)  # in the macOS/Linux block only
+        stripped = (t.replace('@{"X-Treehouse', "").replace('{"ok"', "").replace('@{"cf-access-token"', ""))
+        self.assertNotIn("{", stripped)  # no unfilled f-string placeholders
 
     def test_off(self):
         t = sbconnect.connect_text("sam", SITE, "")

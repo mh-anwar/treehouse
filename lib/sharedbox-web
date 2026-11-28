@@ -3351,6 +3351,19 @@ def live_ssh_host():
     return sb.ssh_host(sb.load_config())
 
 
+def fleet_boxes():
+    """(BOXES as {name: ip}, this box's name in it) for the laptop's SSH aliases (sbconnect.fleet). This box is
+    found by its Tailscale IP, so a hostname that differs from its BOXES name still works; no BOXES: just HOST."""
+    cur = sb.boxes(sb.load_config())
+    me = box_ip()
+    return cur, next((n for n, ip in cur.items() if ip == me), HOST.lower())
+
+
+def connect_text_for(name, ssh_host):
+    boxes, entry = fleet_boxes()
+    return sbconnect.connect_text(name, PUBLIC, ssh_host, boxes=boxes, entry=entry)
+
+
 def connect_section(name):
     """More options > Terminal access: a prompt for the agent on their own computer (Claude Code, Codex, ...),
     copied with one button. The same text is at /_box/connect.md."""
@@ -3358,8 +3371,9 @@ def connect_section(name):
     ssh_host = live_ssh_host()
     if not ssh_host:
         return ""  # not switched on for this box yet: show nothing rather than a dead end
-    text = sbconnect.connect_text(name, PUBLIC, ssh_host)
-    return f"""<p>Reach the box from your laptop's terminal. Paste this into an agent there.</p>
+    text = connect_text_for(name, ssh_host)
+    return f"""<p>Reach every box from your laptop: its terminal, VS Code, and the T3 Code desktop app (no Tailscale
+needed). Paste this into Claude Code or Codex there; it sets everything up and tells you the few clicks left.</p>
 <div class="line"><button type="button" class="sm secondary" id="connect-copy" data-copy="connect-prompt">Copy terminal prompt</button></div>
 <textarea id="connect-prompt" readonly hidden>{e(text)}</textarea>
 <p class="sub">Same text: <a href="/_box/connect.md">{e(PUBLIC)}/_box/connect.md</a></p>"""
@@ -3419,8 +3433,10 @@ def agent_add_key(who, body):
     if not res.get("ok"):
         return (403 if res.get("relogin") else 400), {"ok": False, "error": res.get("error") or "couldn't add the key"}
     ssh_host = live_ssh_host()
+    boxes, entry = fleet_boxes()
     out = {"ok": True, "user": who["name"], "ssh_host": ssh_host,
-           "ssh_config": sbconnect.ssh_config_block(who["name"], ssh_host) if ssh_host else ""}
+           "ssh_config": sbconnect.ssh_config_block(who["name"], ssh_host, boxes=boxes, entry=entry)
+           if ssh_host else ""}
     if not ssh_host:
         out["note"] = ("key added, but SSH through Cloudflare isn't on yet: ask the owner to run "
                        "sudo sharedbox-admin cloudflare ssh")
@@ -3546,7 +3562,7 @@ class GateHandler(Handler):
         if path == "/_box/connect.md":
             if err:
                 return self.send(err[0], err[1] + "\n", "text/plain; charset=utf-8")
-            return self.send(200, sbconnect.connect_text(who["name"], PUBLIC, live_ssh_host()),
+            return self.send(200, connect_text_for(who["name"], live_ssh_host()),
                              "text/plain; charset=utf-8")
         if err:
             return self.send_json(err[0], {"ok": False, "error": err[1]})

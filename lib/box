@@ -799,8 +799,9 @@ def connect_text():
                 + (f" (the owner turns it on with `sudo sharedbox-admin cloudflare ssh`; the site is {pub})" if pub
                    else " (it needs the Cloudflare login; until then they connect over Tailscale)") + ".")
     return (f"It's on: their laptop reaches this account with `ssh {ME.pw_name}@{ssh_host}` through "
-            f"`cloudflared access ssh`. The ready prompt for their agent is on {pub}/_box/me (\"Use the box from "
-            f"your own computer's agent\", a Copy button) and at {pub}/_box/connect.md (behind their login).")
+            f"`cloudflared access ssh`, and every box in BOXES as `tb-<box>` (ProxyJump through this one)."
+            f" The ready prompt for their agent is on {pub}/_box/me (Terminal access, "
+            f"\"Copy terminal prompt\") and at {pub}/_box/connect.md (behind their login).")
 
 
 def clean_when():
