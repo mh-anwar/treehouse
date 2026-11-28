@@ -111,6 +111,9 @@ DEFAULTS = {
     "ARCHIVE_DAYS": "14",
     # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
     "TUNE_SWAP": "auto",
+    # hardware watchdog armed through systemd / earlyoom installed and configured (sharedbox-tune apply); 0 = off
+    "TUNE_WATCHDOG": "auto",
+    "TUNE_EARLYOOM": "auto",
     # SOLO=1: a lean server for one person. No signups/invites (checked where each is used)
     "SOLO": "0",
     "OVER_BUDGET_GRACE_HOURS": "24",

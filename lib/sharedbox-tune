@@ -2,8 +2,9 @@
 """sharedbox-tune: make the box itself efficient (kernel, memory, disk, network), and say what's left.
 
   sharedbox-tune check [--json]   read-only report; any user (agents run it as `box tune`)
-  sharedbox-tune apply            root: the runtime settings a sysctl file can't hold (zswap). Run by
-                                  install.sh and at every boot (sharedbox-tune.service)
+  sharedbox-tune apply [--install] root: the runtime settings a sysctl file can't hold (swap, zswap, the
+                                  hardware watchdog, earlyoom's config). Run by install.sh (with --install: may
+                                  also install the earlyoom package) and at every boot (sharedbox-tune.service)
 
 Two kinds of findings:
   "treehouse"  every box should have it: the repo ships it (etc/sysctl-*.conf, `apply` below) and an update
@@ -215,7 +216,103 @@ def check_account():
                     "`box tune shell` fixes slow nvm loading; for anything else see `box help lean`", "account")]
 
 
-CHECKS = [check_sysctls, check_memory, check_disk, check_cpu, check_services, check_network, check_account]
+# ---------- no-freeze: a frozen box restarts by itself (owners often can't reach the power button) ----------
+
+WATCHDOG_SYS = "/sys/class/watchdog/watchdog0"
+LAST_BOOT = "/var/lib/sharedbox/health/last-boot.json"   # written by sharedbox-health (root: reads the journal)
+UNCLEAN_BOOTS = {"watchdog": "the hardware watchdog restarted it (the box had frozen)",
+                 "panic": "the kernel crashed (panic) and restarted it",
+                 "unclean": "it stopped without shutting down: a freeze the watchdog caught, a power cut or the "
+                            "reset button"}
+
+
+def virt():
+    """'' on real hardware, else what systemd-detect-virt names (kvm, lxc, docker, ...)."""
+    try:
+        r = subprocess.run(["systemd-detect-virt"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    out = r.stdout.strip()
+    return "" if r.returncode or out == "none" else out
+
+
+def systemd_runtime_watchdog():
+    """Seconds PID 1 pings the hardware watchdog at (0 = off)."""
+    try:
+        out = subprocess.run(["systemctl", "show", "-p", "RuntimeWatchdogUSec", "--value"], capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    return usec_seconds(out)
+
+
+def usec_seconds(v):
+    """systemd prints RuntimeWatchdogUSec as '0', '1min', '30s', '1min 30s' or 'infinity'."""
+    v = (v or "").strip()
+    if not v or v == "0":
+        return 0
+    if v == "infinity":
+        return 1
+    total, units = 0, {"us": 1e-6, "ms": 1e-3, "s": 1, "min": 60, "h": 3600}
+    for part in v.split():
+        num = part.rstrip("abcdefghijklmnopqrstuvwxyz")
+        try:
+            total += float(num) * units.get(part[len(num):] or "s", 1)
+        except ValueError:
+            return 0
+    return int(total)
+
+
+WATCHDOG_DAEMONS = ("watchdog.service", "wd_keepalive.service")
+
+
+def check_nofreeze():
+    out = []
+    ident = read(f"{WATCHDOG_SYS}/identity")
+    daemon = next((u for u in WATCHDOG_DAEMONS if systemd_active(u)), "")
+    secs = systemd_runtime_watchdog()
+    v = virt()
+    if daemon:
+        out.append(finding("hardware watchdog (restarts a frozen box)", True, f"{ident or '?'}, run by {daemon}",
+                           "armed", "", "treehouse"))
+    elif not ident:
+        out.append(finding("hardware watchdog (restarts a frozen box)", bool(v), f"none ({v})" if v else "none",
+                           "armed", "" if v else
+                           "no watchdog device: this board has none treehouse knows (Intel boards: iTCO_wdt), or "
+                           "the install predates it: update treehouse", "treehouse"))
+    else:
+        out.append(finding("hardware watchdog (restarts a frozen box)", secs > 0,
+                           f"{ident}, " + (f"pinged by systemd every {secs}s" if secs else "not armed"),
+                           "armed by systemd (RuntimeWatchdogSec=60s)",
+                           "if the whole system hangs, even the kernel, the board itself resets it after a minute",
+                           "treehouse"))
+    eo = tune_setting("TUNE_EARLYOOM", "auto")
+    off = eo in ("0", "no", "off")
+    on = systemd_active("earlyoom.service")
+    out.append(finding("earlyoom (stops the biggest job before memory runs out)", on or off,
+                       "running" if on else ("off (TUNE_EARLYOOM=0)" if off else "not running"), "running",
+                       "when RAM runs out the kernel can thrash for many minutes before its own OOM killer acts; "
+                       "earlyoom stops a heavy build first, never agents, ssh or T3 (/etc/default/earlyoom)",
+                       "treehouse"))
+    lb = read_json_file(LAST_BOOT)
+    if lb.get("reason") in UNCLEAN_BOOTS:
+        out.append(finding("last restart", False, f"{lb.get('when', '?')}: {lb['reason']}", "a clean shutdown",
+                           UNCLEAN_BOOTS[lb["reason"]] + ". Once is fine; if it repeats, look at temperatures, the "
+                           "disk (SMART) and the RAM; the weekly health email has the last log lines", "owner"))
+    return out
+
+
+def read_json_file(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+CHECKS = [check_sysctls, check_memory, check_nofreeze, check_disk, check_cpu, check_services, check_network,
+          check_account]
 
 
 def run_checks():
@@ -273,13 +370,17 @@ def apply_zswap():
 SWAPFILE = "/swap.treehouse"
 
 
-def tune_swap_setting():
+def tune_setting(key, default="auto"):
     try:
         sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", HERE))
         import sbcommon as sb
-        return str(sb.load_config().get("TUNE_SWAP", "auto")).strip().lower()
+        return str(sb.load_config().get(key, default)).strip().lower()
     except Exception:
-        return "auto"
+        return default
+
+
+def tune_swap_setting():
+    return tune_setting("TUNE_SWAP")
 
 
 def apply_swap():
@@ -321,14 +422,226 @@ def apply_swap():
     return f"swap: made {SWAPFILE} ({size >> 30} GB)"
 
 
+# The hardware watchdog. Intel boards (iTCO_wdt: every Haswell-era OptiPlex/EliteDesk/ProDesk) have one, but
+# Ubuntu blacklists the driver, and systemd-modules-load honours that blacklist, hence the `install` override.
+# systemd (PID 1) then pings it; if even PID 1 or the kernel hangs, the board resets the machine.
+WD_MODULE = "iTCO_wdt"
+WD_MODULES_LOAD = "/etc/modules-load.d/sharedbox-watchdog.conf"
+WD_MODPROBE = "/etc/modprobe.d/zz-sharedbox-watchdog.conf"
+WD_SYSTEMD = "/etc/systemd/system.conf.d/60-sharedbox-watchdog.conf"
+WD_RUNTIME, WD_REBOOT = 60, 300   # seconds: a hang resets after 1 min; a stuck shutdown after 5
+MANAGED = "# managed by treehouse (sharedbox-tune apply)"
+WD_FILES = {
+    WD_MODULES_LOAD: f"{MANAGED}: load the hardware watchdog at boot\n{WD_MODULE}\n",
+    WD_MODPROBE: f"{MANAGED}: Ubuntu blacklists the watchdog driver; systemd-modules-load honours blacklists\n"
+                 f"install {WD_MODULE} /sbin/modprobe --ignore-install {WD_MODULE}\n",
+    WD_SYSTEMD: f"{MANAGED}: systemd pings the hardware watchdog; a frozen box resets itself\n"
+                f"[Manager]\nRuntimeWatchdogSec={WD_RUNTIME}s\nRebootWatchdogSec={WD_REBOOT // 60}min\n",
+}
+# The same settings, put in by hand on some boxes before treehouse shipped them: removed once ours are in place,
+# and only when they hold exactly these lines (comments aside), so nothing an owner wrote is lost.
+HAND_MADE = {
+    "/etc/modules-load.d/watchdog.conf": ["iTCO_wdt"],
+    "/etc/modprobe.d/zz-watchdog-allow.conf": ["install iTCO_wdt /sbin/modprobe --ignore-install iTCO_wdt"],
+    "/etc/systemd/system.conf.d/watchdog.conf": ["[Manager]", "RuntimeWatchdogSec=60s", "RebootWatchdogSec=5min"],
+    "/etc/sysctl.d/90-no-freeze.conf": ["kernel.panic = 10", "kernel.panic_on_oops = 1", "kernel.softlockup_panic = 1",
+                                        "kernel.hardlockup_panic = 1"],
+}
+
+
+def content_lines(text):
+    """Non-comment lines, `a=b` spacing normalised to `a = b` for sysctl files."""
+    out = []
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith(("#", ";")):
+            continue
+        if "=" in ln and not ln.startswith("install "):
+            k, v = ln.split("=", 1)
+            ln = f"{k.strip()} = {v.strip()}" if "." in k else f"{k.strip()}={v.strip()}"
+        out.append(ln)
+    return out
+
+
+def write_if_changed(path, body, mode=0o644):
+    if read(path, None) == body.strip():
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".sbtmp"
+    with open(tmp, "w") as f:
+        f.write(body)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    return True
+
+
+def remove_hand_made(paths=None):
+    gone = []
+    for path, want in (paths or HAND_MADE).items():
+        text = read(path, None)
+        if text is not None and content_lines(text) == content_lines("\n".join(want)):
+            try:
+                os.unlink(path)
+                gone.append(path)
+            except OSError:
+                pass
+    return gone
+
+
+def watchdog_users():
+    """PIDs other than systemd (PID 1) holding a watchdog device open: another daemon owns it."""
+    pids = []
+    for fd_dir in glob.glob("/proc/[0-9]*/fd"):
+        pid = int(fd_dir.split("/")[2])
+        if pid == 1:
+            continue
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(f"{fd_dir}/{fd}").startswith("/dev/watchdog"):
+                    pids.append(pid)
+                    break
+            except OSError:
+                continue
+    return pids
+
+
+def wait_for(path, secs=5.0):
+    import time
+    end = time.monotonic() + secs
+    while not os.path.exists(path):
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def set_systemd_watchdog():
+    """Arm it live (no reboot). systemd 249+ takes the setting over D-Bus; older ones re-read system.conf.d on
+    daemon-reexec, which keeps every service running."""
+    ok = True
+    for prop, secs in (("RuntimeWatchdogUSec", WD_RUNTIME), ("RebootWatchdogUSec", WD_REBOOT)):
+        r = subprocess.run(["busctl", "set-property", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                            "org.freedesktop.systemd1.Manager", prop, "t", str(secs * 10**6)],
+                           capture_output=True, text=True)
+        ok = ok and r.returncode == 0
+    if not ok:
+        subprocess.run(["systemctl", "daemon-reexec"], check=False)
+    return systemd_runtime_watchdog()
+
+
+def apply_watchdog():
+    if tune_setting("TUNE_WATCHDOG") in ("0", "no", "off"):
+        return "watchdog: off (TUNE_WATCHDOG=0)"
+    v = virt()
+    if v and subprocess.run(["systemd-detect-virt", "--container", "-q"]).returncode == 0:
+        return f"watchdog: inside a container ({v}), skipped"
+    daemon = next((u for u in WATCHDOG_DAEMONS if systemd_active(u)), "") or \
+        ("another program" if watchdog_users() else "")
+    if daemon:
+        return f"watchdog: {daemon} already runs it; left alone"
+    loaded = ""
+    if not os.path.exists(WATCHDOG_SYS):
+        r = subprocess.run(["modprobe", "--ignore-install", WD_MODULE], capture_output=True, text=True)
+        if r.returncode != 0 or not wait_for(WATCHDOG_SYS):
+            for f in (WD_MODULES_LOAD, WD_MODPROBE):   # no such hardware: don't fail a module load every boot
+                if os.path.exists(f):
+                    os.unlink(f)
+            return "watchdog: none on this machine" + (f" ({v})" if v else "") + ", skipped"
+        loaded = f" (loaded {WD_MODULE})"
+    ident = read(f"{WATCHDOG_SYS}/identity")
+    changed = []
+    files = dict(WD_FILES)
+    if "iTCO" not in ident:   # some other driver is already loaded at boot: only the systemd part is ours
+        files = {WD_SYSTEMD: WD_FILES[WD_SYSTEMD]}
+    for path, body in files.items():
+        if write_if_changed(path, body):
+            changed.append(path)
+    gone = remove_hand_made()
+    secs = systemd_runtime_watchdog()
+    if secs != WD_RUNTIME:
+        secs = set_systemd_watchdog()
+    return (f"watchdog: {ident or '?'}{loaded}, " + (f"armed (systemd pings it every {secs}s)" if secs else
+                                                     "NOT armed: systemd didn't take RuntimeWatchdogSec")
+            + (f"; wrote {', '.join(changed)}" if changed else "")
+            + (f"; replaced hand-made {', '.join(gone)}" if gone else ""))
+
+
+# earlyoom: stops the biggest heavy job (builds, tests, python) a few seconds before RAM runs out, never agents,
+# ssh, T3 or system services. The kernel's own OOM killer acts only after minutes of thrashing, and systemd-oomd
+# goes by memory pressure over 30 s; earlyoom is the fast last line. Same settings on every box.
+EARLYOOM_CONF = "/etc/default/earlyoom"
+EARLYOOM_ARGS = ("-m 8,4 -s 100,100 -r 600 -n "
+                 "--prefer ^(python|python3|pytest|cargo|rustc|cc1plus|ld|dolt|java|node-worker)$ "
+                 "--avoid ^(sshd|sshd-session|systemd|systemd-.*|tailscaled|t3|node|node-MainThread|claude|dockerd|"
+                 "containerd|containerd-shim.*|earlyoom|bash|tmux.*|gc|deid|codex|claude.exe|opencode)$")
+EARLYOOM_BODY = (f"{MANAGED}. Change TUNE_EARLYOOM in /etc/sharedbox/sharedbox.conf, or remove this line to keep\n"
+                 "# your own settings here (treehouse then leaves the file alone).\n"
+                 "# -m 8,4: stop a job at 8% RAM left (kill at 4%); -s 100,100: go by RAM only (swap here is mostly "
+                 "zswap);\n# --prefer: heavy jobs go first; --avoid: never agents, ssh, T3, docker or systemd.\n"
+                 f'EARLYOOM_ARGS="{EARLYOOM_ARGS}"\n')
+EARLYOOM_PACKAGE_DEFAULTS = ("", "-r 3600", "-r 60")
+
+
+def earlyoom_args(text):
+    val = None
+    for ln in (text or "").splitlines():
+        ln = ln.strip()
+        if ln.startswith("EARLYOOM_ARGS="):
+            val = ln.split("=", 1)[1].strip().strip('"').strip("'")
+    return val
+
+
+def earlyoom_conf_ours(text):
+    """May treehouse (re)write this file? Missing, the package's default, ours, or the same settings by hand."""
+    if text is None or text.startswith(MANAGED):
+        return True
+    args = earlyoom_args(text)
+    return args is None or args in EARLYOOM_PACKAGE_DEFAULTS or args == EARLYOOM_ARGS
+
+
+def apply_earlyoom(install=False):
+    import shutil
+    if tune_setting("TUNE_EARLYOOM") in ("0", "no", "off"):
+        return "earlyoom: off (TUNE_EARLYOOM=0)"
+    if not shutil.which("earlyoom"):
+        if not install:
+            return "earlyoom: not installed (the next treehouse update installs it)"
+        try:
+            sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", HERE))
+            import sbdistro
+            sbdistro.install(["earlyoom"])
+        except Exception as e:  # noqa: BLE001 - unknown distro, no network: say so, the rest still applies
+            return f"earlyoom: couldn't install it: {e}"
+        if not shutil.which("earlyoom"):
+            return "earlyoom: couldn't install it (see the package manager's output above)"
+    text = read(EARLYOOM_CONF, None)
+    changed = False
+    if earlyoom_conf_ours(text):
+        changed = write_if_changed(EARLYOOM_CONF, EARLYOOM_BODY)
+        note = "treehouse settings"
+    else:
+        note = f"the owner's own settings in {EARLYOOM_CONF} (kept)"
+    subprocess.run(["systemctl", "enable", "--now", "earlyoom.service"], capture_output=True)
+    if changed:
+        subprocess.run(["systemctl", "restart", "earlyoom.service"], capture_output=True)
+    return f"earlyoom: {'running' if systemd_active('earlyoom.service') else 'NOT running'}, {note}" \
+        + (" (updated)" if changed else "")
+
+
 def cmd_apply(a):
     if os.geteuid() != 0:
         sys.exit("sharedbox-tune apply: needs root (install.sh and sharedbox-tune.service run it)")
-    for step in (apply_swap, apply_zswap):  # swap first: zswap only does anything with swap
+    steps = (apply_swap, apply_zswap, apply_watchdog,   # swap first: zswap only does anything with swap
+             lambda: apply_earlyoom(install=a.install))
+    for step in steps:
         try:
             print(step())
-        except OSError as e:
-            print(f"{step.__name__}: {e}", file=sys.stderr)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"{getattr(step, '__name__', 'step')}: {e}", file=sys.stderr)
 
 
 def main():
@@ -338,7 +651,9 @@ def main():
     x = s.add_parser("check")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_check)
-    s.add_parser("apply").set_defaults(fn=cmd_apply)
+    x = s.add_parser("apply")
+    x.add_argument("--install", action="store_true", help="may install packages (earlyoom); install.sh passes it")
+    x.set_defaults(fn=cmd_apply)
     a = p.parse_args()
     a.fn(a)
 

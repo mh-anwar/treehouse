@@ -300,8 +300,10 @@ do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path shar
 # until another box is trusted (sharedbox-admin fed-trust; docs/multibox.md)
 do_ "$LIB/sharedbox-admin" fed-init
 do_ systemctl enable --now sharedbox-fed.timer
-do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too:
-do_ "$LIB/sharedbox-tune" apply || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
+do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too (--install: may add earlyoom).
+# Also the no-freeze step: hardware watchdog armed via systemd, earlyoom; kernel panic/lockup -> reboot is in
+# etc/sysctl-nofreeze.conf above. Nothing restarts but earlyoom itself; never reboots.
+do_ "$LIB/sharedbox-tune" apply --install || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
 do_ systemctl restart sharedbox-janitor.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
 # Telegram bot: only once the owner has given it a token (dashboard Settings, or sharedbox-admin telegram setup)
