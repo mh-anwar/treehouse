@@ -326,16 +326,24 @@ Where someone is: their own status plus a rough "active on the box" hint.
 
 @@ me
 `~/me` is the user's own folder about themselves: their agent history and efficiency, private to them (0700).
-- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every box they have, kept forever. Tables:
-  `sessions` (box, agent, model, cwd, title, started/ended unix time, wall_s, active_s, prompts, tool_calls, tool_s,
-  errors, interrupts, out_tokens), `messages` (sid, ts, role, text; full-text index `messages_fts`), `tool_calls`
-  (sid, ts, name, input (2,000 chars), output (500), dur_s, is_error). Raw transcripts stay where the agents wrote them.
-- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`), `box me sql "SELECT
-  ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md` (slowest sessions, where tool time went,
-  sleep/poll loops, failing commands, usage per day).
+- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every box they have, plus T3 threads of other
+  providers (OpenCode, Antigravity), kept forever. Tables: `sessions` (box, agent, model, cwd, title, started/ended
+  unix time, wall_s, active_s, prompts, tool_calls, tool_s, errors, interrupts, out_tokens), `messages` (sid, seq, ts,
+  role user|assistant|thinking, text; full-text index `messages_fts`; thinking = the model's reasoning: Claude's
+  thinking in full, Codex's reasoning summaries), `tool_calls` (sid, seq, ts, name, input (2,000 chars), output
+  (500), dur_s, is_error), `tool_blobs` (sid, seq, in_len, out_len, input_z, output_z: the full input and output up
+  to 256 KB, compressed; `unz(output_z)` in `box me sql` reads them), `t3_threads` (thread_id, provider, native_id =
+  the agent's session id, title, link).
+- `~/me/raw/`: xz copies of the raw transcripts (`xzcat ~/me/raw/claude/projects/DIR/ID.jsonl.xz`), refreshed when
+  they change and kept even after the agent deletes its own.
+- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`; `--thinking` to
+  include reasoning), `box me sql "SELECT ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md`
+  (slowest sessions, where tool time went, sleep/poll loops, failing commands, reasoning, full tool output, usage).
 - Kept fresh automatically every ~15 minutes, at the lowest priority, on every box; the user's home box copies in
   what their other boxes indexed. Now: `box me ingest`, `box me pull`.
-- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention).
+- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention) and
+  turns on Codex's readable reasoning summaries (`model_reasoning_summary = "detailed"` in ~/.codex/config.toml,
+  only when the user hasn't set it).
 - Never copy their prompts off the box or into other people's places.
 
 @@ settings

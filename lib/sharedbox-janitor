@@ -296,9 +296,10 @@ def cmd_tick(cfg, a):
 
 def me_history(cfg, users):
     """~/me (lib/sbme.py): for every active account, `box _me-tick` AS THAT ACCOUNT at the lowest priority. It
-    decides itself whether a pass is due (every ~15 min): keeps agent transcripts forever, indexes new ones into
-    ~/me/agents.db and copies in what the account's other boxes indexed. A few seconds per account when nothing
-    changed."""
+    decides itself whether a pass is due (every ~15 min): keeps agent transcripts forever (and Codex reasoning
+    readable), xz-compresses changed raw transcripts into ~/me/raw, indexes them into ~/me/agents.db (a long first backfill
+    stops after ~9 min and continues next tick) and copies in what the account's other boxes indexed. A few seconds
+    per account when nothing changed."""
     import sbme
     names = set(users) | set(sb.admin_users(cfg))
     owner = sb.owner_account(cfg)

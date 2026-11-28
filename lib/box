@@ -3347,7 +3347,8 @@ def cmd_me(a):
         sbme.keep_history(HOME)
         out = sbme.ingest(HOME, me_box(), verbose=not a.json)
         print(json.dumps(out) if a.json else
-              f"indexed {out['parsed']} new or changed sessions ({out['skipped']} unchanged) in {out['seconds']}s")
+              f"indexed {out['parsed']} new or changed sessions ({out['skipped']} unchanged), archived "
+              f"{out['raw']['copied']} raw transcripts, {out['t3']['threads']} T3 threads, in {out['seconds']}s")
     elif a.op == "pull":
         import sbmulti
         out = sbme.pull(HOME, projects_peers(), sbmulti.SSH_OPTS)
@@ -3358,14 +3359,16 @@ def cmd_me(a):
             print(json.dumps(out) if a.json else "no ~/me/agents.db yet: run `box me ingest`")
         else:
             print(f"{out['path']}: {out['size_mb']} MB, {out['sessions']} sessions, {out['messages']} messages, "
-                  f"{out['tool_calls']} tool calls, {out['first']} .. {out['last']}")
+                  f"{out['thinking']} reasoning, {out['tool_calls']} tool calls ({out['full_tool_io']} with full "
+                  f"input/output), {out['first']} .. {out['last']}; raw transcripts: {out['raw_mb']} MB")
             for k, v in out["by_box_agent"].items():
                 print(f"  {k}: {v}")
     elif a.op == "search":
         if not a.args:
-            sys.exit("usage: box me search WORDS (SQLite FTS5 syntax: machina AND rules, \"exact phrase\", gast*)")
+            sys.exit("usage: box me search WORDS [--thinking] (SQLite FTS5 syntax: machina AND rules, "
+                     "\"exact phrase\", gast*)")
         try:
-            rows = sbme.search(HOME, " ".join(a.args), a.limit)
+            rows = sbme.search(HOME, " ".join(a.args), a.limit, thinking=a.thinking)
         except Exception as e:  # noqa: BLE001 - bad FTS syntax: say so
             sys.exit(f"box me search: {e}")
         if a.json:
@@ -3387,6 +3390,9 @@ def cmd_me(a):
                 print("\t".join("" if v is None else str(v) for v in r))
 
 
+ME_TICK_BUDGET = 540   # s; the janitor gives a pass 900: a long first backfill stops here and continues next tick
+
+
 def cmd_me_tick(a):
     """The janitor's tick, as this person (already under nice/ionice): keep history forever, index new transcripts
     every ~15 minutes and copy in what the other boxes indexed."""
@@ -3395,7 +3401,7 @@ def cmd_me_tick(a):
     ran = False
     if sbme.due(HOME):
         sbme.keep_history(HOME)
-        sbme.ingest(HOME, me_box())
+        sbme.ingest(HOME, me_box(), budget=ME_TICK_BUDGET)
         peers = projects_peers()
         if peers:
             import sbmulti
@@ -3736,6 +3742,7 @@ def main():
                      "ingest, pull (~/me/AGENTS.md)")
     x.add_argument("op", nargs="?", default="stats", choices=["stats", "search", "sql", "ingest", "pull"])
     x.add_argument("args", nargs="*"); x.add_argument("--limit", type=int, default=20)
+    x.add_argument("--thinking", action="store_true", help="search: include the agents' reasoning")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_me)
     s.add_parser("_me-tick").set_defaults(fn=cmd_me_tick)  # the janitor tick, as this person
     x = s.add_parser("_me-export"); x.add_argument("--since", type=float, default=0)
