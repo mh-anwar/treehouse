@@ -80,6 +80,8 @@ shallow 5 s / 18 MB.
 - `box serve add <name> [--port P] -- <command…>`, run inside the project dir. Survives logout and reboots,
   restarts on crash. The port is in `$PORT` (your range: {ports}). Listen on `0.0.0.0`.
 - Manage: `box serve ls`, `box serve logs <name>`, `box serve restart|stop|start|rm <name>`.
+- Never from a temporary folder (a T3 worktree under ~/.t3/worktrees, /tmp): it gets deleted and the service then
+  fails for good. `box serve add` runs it from ~ instead, or refuses when the code itself lives there.
 - The user also sees and controls these on their page {portal}.
 - Their T3 Code isn't one of these (it starts when they open it). Ports {t3_ports} are its.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
@@ -227,6 +229,9 @@ How to look further, agent-first:
 Places worth a look: zswap/swap/hugepages, inotify and open-file limits, disk trim and free space, I/O scheduler,
 TCP congestion control and buffers, Tailscale direct vs relayed peers, the Cloudflare tunnel protocol, what's
 running at boot, journald/log volume, per-account limits (`box status`), caching in front of web apps.
+A frozen box restarts by itself: `box tune` shows the hardware watchdog (systemd pings it; a hang resets the
+board after a minute), kernel panic/lockup -> reboot settings, earlyoom (stops the biggest heavy job before RAM runs
+out, never agents) and why the box last restarted. If it says the box restarted by itself, tell the user.
 
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
