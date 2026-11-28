@@ -49,7 +49,9 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
@@ -958,6 +960,19 @@ def handle_owner_pair(cfg, rid, req):
     pw = owner_t3_user(cfg)
     if not pw:
         return {"ok": False, "error": "OWNER_T3_USER doesn't exist"}
+    # T3 may be asleep (`box _t3-tick`): a request to its port wakes it (sb-t3.socket); `t3 pair` needs it running
+    host = cfg.get("GATE_BACKEND_HOST") or "tailscale"
+    host = sb.tailscale_ip4() if host == "tailscale" else host
+    deadline = time.time() + 45
+    while host and time.time() < deadline:
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                    f"http://{host}:{int(cfg['OWNER_T3_PORT'])}/api/auth/session", timeout=10):
+                break
+        except urllib.error.HTTPError:
+            break  # it answered
+        except (OSError, ValueError):
+            time.sleep(1)
     # the owner's own T3 runtime (newest), else the system one
     bins = sorted(glob.glob(os.path.join(pw.pw_dir, ".t3/runtime/versions/*/t3")), key=os.path.getmtime)
     t3 = bins[-1] if bins else "/usr/local/bin/t3"
