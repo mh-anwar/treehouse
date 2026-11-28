@@ -30,8 +30,9 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
   T3 refuse nightlies) once nothing has run in it for T3_RESTART_QUIET_MIN, puts it to sleep after
   T3_IDLE_STOP_HOURS with no client and no work (never in hackathon mode or with scheduled tasks on; the socket
   wakes it), and starts it for scheduled tasks. It also ends expired `box boost`s and refreshes agent rules.
-- Owner rule: nothing may make agents slower. Equal limits for everyone (owner included), no CPU caps, no naps,
-  no build throttling; unpushed work is never archived or deleted.
+- Owner rule: nothing may make agents slower. Equal limits for everyone (owner included), no CPU caps, no naps of
+  anything in use (T3's idle sleep only fires with no client and no work), no build throttling; unpushed work is
+  never archived or deleted.
 
 ## Checking a change
 Run only what the change needs:
