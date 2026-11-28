@@ -51,7 +51,9 @@ DASHBOARD = {
     "projects": "projects", "peer-login": "login", "peer-check": "login", "team": "teammates", "restore": "restore",
     "add-key": "ssh-key", "login": "login", "code": "login", "check": "login", "t3": "t3", "t3app": "t3",
     "t3prompt": "t3", "peer-code": "login", "logout": "login", "peer-logout": "login",
-    "running-stop-any": "running", "serve-set": "serve",
+    "running-stop-any": "running", "serve-set": "serve", "serve-describe": "serve", "shared-describe": "shared",
+    "running-ok": "running", "project-keep": "projects", "issues": "issue", "friend-suspend": "friends",
+    "friend-resume": "friends", "friend-remove": "friends", "invite-revoke": "friends",
 }
 
 

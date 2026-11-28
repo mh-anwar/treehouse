@@ -495,6 +495,8 @@ def cmd_run(cfg, a):
                 "disk": used, "budget": budget, "over": over, "over_deadline": deadline,
                 "projects": len(rep["projects"]),
                 "pending_deletions": [p["name"] for p in rep["projects"] if p.get("delete_on")],
+                # the same with the day each moves to the archive, for the dashboard's "Keep it" (newer pages)
+                "pending": [{"name": p["name"], "on": p["delete_on"]} for p in rep["projects"] if p.get("delete_on")],
                 "archives": rep.get("archives", []),
                 "services": rep.get("services", []), "freed": rep["freed"],
             }

@@ -326,6 +326,26 @@ def hackathon_reconcile(cfg):
 HACKATHON_PAUSED = "hackathon-paused.json"  # in STATE_DIR: {"paused": {user: ["sb-NAME.service"]}, "ts"}
 
 
+def hackathon_candidates(cfg):
+    """Root: [{"user", "name", "about"}] of the `box serve` servers hackathon mode would pause (their owner allowed it,
+    not keep running), for the owner's Settings tab, before they turn it on."""
+    out = []
+    for user, (uid, _rec) in sorted(limited_accounts(cfg).items()):
+        try:
+            home = pwd.getpwnam(user).pw_dir
+            files = os.listdir(os.path.join(home, ".config", "systemd", "user"))
+        except (KeyError, OSError):
+            continue
+        for fn in sorted(files):
+            if not re.fullmatch(r"sb-[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.service", fn) or fn in (
+                    "sb-t3.service", "sb-t3-proxy.service"):
+                continue
+            m = sbrunning.server_meta(home, fn[3:-8], uid)
+            if m.get("hackathon") == "pause" and not m.get("keep"):
+                out.append({"user": user, "name": fn[3:-8], "about": printable(str(m.get("about") or ""))[:160]})
+    return out[:100]
+
+
 def hackathon_servers(cfg, active):
     """Root, at a hackathon mode transition: on -> stop every `box serve` server whose owner allowed it
     (`box serve hackathon NAME pause`; never one marked keep running), off -> start exactly those again.

@@ -215,8 +215,9 @@ class StopAnything(unittest.TestCase):
                  {"key": "u:sb-bot.service", "kind": "server", "name": "bot", "stop": "server", "mem": 1, "keep": True,
                   "about": "Study group bot"}]
         theirs = "".join(web.run_rows(items, btn, "mk30", "owner"))
-        self.assertIn("This is mk30&#x27;s T3. Their open chats will disconnect", theirs.replace("\\u2019", "'"))
-        self.assertIn("marked keep running by mk30", theirs)
+        self.assertIn("This is mk30&#x27;s T3. Their open chats disconnect", theirs.replace("\\u2019", "'"))
+        self.assertIn("mk30 marked it keep running", theirs)
+        self.assertNotIn("confirm(", theirs)  # said in the page, never a browser pop-up
         self.assertIn("name='force' value='1'", theirs)
         self.assertIn("running-stop-any", theirs)
         self.assertIn("Study group bot", theirs)

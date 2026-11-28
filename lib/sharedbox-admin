@@ -984,6 +984,11 @@ OWNER_PORTAL_ACTIONS += ("hackathon",)  # the dashboard's Settings tab: same as 
 OWNER_PORTAL_ACTIONS += ("login", "code", "check", "peer-login", "peer-check")  # the owner's Account tab logins
 # the Account tab's per-machine AI accounts: sign in / sign out on one machine, and the code for a sign-in there
 OWNER_PORTAL_ACTIONS += ("peer-code", "logout", "peer-logout")
+# the buttons that finish a job on its own tab: server descriptions, "still need it?", "keep this project", problem
+# reports on/off (as the owner's own account, like a friend), and the Friends tab's pause/resume/remove/revoke
+OWNER_PORTAL_ACTIONS += ("serve-describe", "shared-describe", "running-ok", "project-keep", "issues")
+OWNER_FRIEND_ACTIONS = ("friend-suspend", "friend-resume", "friend-remove", "invite-revoke", "hackathon-preview")
+OWNER_PORTAL_ACTIONS += OWNER_FRIEND_ACTIONS
 ACCOUNT_KEYS = ("claude", "codex", "antigravity")  # logins each machine can have its own account for
 
 
@@ -1142,6 +1147,8 @@ def handle_portal(cfg, rid, req):
             except InviteError as e:
                 return {"ok": False, "error": str(e)}
             return {"ok": True, "invite_message": res.get("message", ""), "invite_user": res.get("username") or ""}
+        if req.get("action") in OWNER_FRIEND_ACTIONS:  # the Friends and Settings tabs' buttons
+            return owner_friend_act(cfg, name, req)
         if req.get("action") in REQUEST_PORTAL_ACTIONS:  # the dashboard's buttons on a friend's `box request`
             try:
                 return request_act(cfg, str(req.get("key") or "")[:200], req["action"][8:], by=name)
@@ -1206,6 +1213,26 @@ def handle_portal(cfg, rid, req):
         if not isinstance(key, str) or not sbrunning.KEY_RE.match(key):
             return {"ok": False, "error": "That isn't running any more. Refresh the page."}
         return box_portal(pw, ["running-stop", key] + (["force"] if req.get("force") else []))
+    if action in ("serve-describe", "shared-describe"):  # "Add a description" on a server card
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", key) or key == "t3":
+            return {"ok": False, "error": "no such server"}
+        about = " ".join(str(req.get("about") or "").split())[:300]
+        if action == "shared-describe":
+            return box_portal(pw, [action, key], input_text=about)
+        imp = req.get("importance") if req.get("importance") in ("important", "safe-to-stop") else ""
+        return box_portal(pw, [action, key], input_text=json.dumps({"about": about, "importance": imp}))
+    if action == "running-ok":  # "Still need it?" -> Keep it
+        if not isinstance(key, str) or not sbrunning.KEY_RE.match(key):
+            return {"ok": False, "error": "That isn't running any more. Refresh the page."}
+        return box_portal(pw, ["running-ok", key])
+    if action == "project-keep":  # "Soon moved to the archive" -> Keep it
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}", key):
+            return {"ok": False, "error": "no such project"}
+        return box_portal(pw, ["project-keep", key])
+    if action == "issues":  # problem reports on or off for this account
+        if req.get("op") not in ("on", "off"):
+            return {"ok": False, "error": "unknown action"}
+        return box_portal(pw, ["issues", req["op"]])
     if action == "serve-set":  # a server's switches on the dashboard (box serve keep / box serve hackathon)
         what, val = req.get("what"), req.get("value")
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}", key) or key == "t3" \
@@ -1231,6 +1258,39 @@ def handle_portal(cfg, rid, req):
         return box_portal(pw, ["login-code", key], input_text=str(req.get("code", ""))[:1000])
     if action == "check":
         return box_portal(pw, ["login-check", key])
+    return {"ok": False, "error": "unknown action"}
+
+
+def owner_friend_act(cfg, by, req):
+    """The owner's dashboard: pause (suspend), resume or remove a friend (removing keeps a tarball of their home
+    first), revoke an unused invite link, and list the servers hackathon mode would pause. Answers are finished
+    sentences the page shows as they are."""
+    action, key = req.get("action"), str(req.get("key") or "")
+    try:
+        if action == "friend-suspend":
+            friend_suspend(cfg, key, by=by)
+            return {"ok": True, "message": f"{key} is paused: they can't sign in, and their servers and agents are "
+                                           "stopped. Their files are kept. Resume them any time."}
+        if action == "friend-resume":
+            friend_resume(cfg, key, by=by)
+            return {"ok": True, "message": f"{key} can sign in again. Their servers start again when they next "
+                                           "use them."}
+        if action == "friend-remove":
+            res = friend_remove(cfg, key, archive=True, by=by)
+            return {"ok": True, "message": f"{key}'s account is removed." + (
+                " A copy of their files is kept on this machine; your agent can find it for you."
+                if res.get("archive") else "")}
+    except FriendError as e:
+        return {"ok": False, "error": str(e)}
+    if action == "invite-revoke":
+        if not re.fullmatch(r"[0-9a-f]{12,128}", key):
+            return {"ok": False, "error": "That invite isn't there any more. Refresh the page."}
+        n = gate_delete("invites", lambda h, r: h == key)
+        sb.log_event("invite_revoked", by)
+        return ({"ok": True, "message": "Invite cancelled. Its link no longer works."} if n else
+                {"ok": False, "error": "That invite isn't there any more. Refresh the page."})
+    if action == "hackathon-preview":
+        return {"ok": True, "servers": sb.hackathon_candidates(cfg)}
     return {"ok": False, "error": "unknown action"}
 
 
@@ -1671,7 +1731,8 @@ REQUESTS_JSON = os.path.join(sb.STATE_DIR, "requests.json")  # 0640 root:sharedb
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 FRIENDS_ACTIONS = ("friends-list", "friends-remove", "friends-suspend", "friends-resume", "friends-email",
                    "friends-access", "friends-requests", "friends-request", "friends-issues",
-                   "friends-update", "tune-service", "hackathon", "reboot-hold", "friends-boxes", "telegram-setup")
+                   "friends-update", "tune-service", "hackathon", "reboot-hold", "friends-boxes", "telegram-setup",
+                   "friends-invites", "friends-invite-cancel")
 
 
 def friend_record(cfg, name):
@@ -1917,6 +1978,19 @@ def friends_action(cfg, by, req):
             return access_add(cfg, str(req.get("email") or "")[:300], name, by=by)
         if act == "friends-access":
             return access_list(cfg)
+        if act == "friends-invites":  # unused invite links (id = the start of the record's hash)
+            now = time.time()
+            return {"ok": True, "invites": [{"id": h[:16], "email": r.get("email") or "", "expires": r.get("expires")}
+                                            for h, r in sb.gate_records("invites") if float(r.get("expires") or 0) > now]}
+        if act == "friends-invite-cancel":
+            pre = str(req.get("id") or "").lower()
+            if not re.fullmatch(r"[0-9a-f]{12,128}", pre):
+                return {"ok": False, "error": "that isn't an invite id (see: box friends invites)"}
+            n = gate_delete("invites", lambda h, r: h.startswith(pre))
+            if n:
+                sb.log_event("invite_revoked", by)
+            return ({"ok": True, "message": "Invite cancelled. Its link no longer works."} if n else
+                    {"ok": False, "error": "no open invite with that id (see: box friends invites)"})
         if act == "friends-requests":
             return {"ok": True, "requests": requests_list(bool(req.get("all")))}
         if act == "friends-request":
