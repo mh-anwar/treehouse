@@ -266,7 +266,81 @@ def hackathon_line(cfg=None):
             f"{cfg.get('REQUEST_OPEN_USERS') or 'the owner'} (`box help hackathon`)")
 
 
+def hackathon_check(fix=False, as_json=False, repo="", quiet=False):
+    """`box hackathon check`: every machine in BOXES ready for this person (lib/sbhackathon.py). Returns the rows."""
+    import sbhackathon
+    import sbprojects
+    boxes = sb.boxes(CFG)
+    me = machine_name()
+    if me not in boxes:
+        boxes = {me: sb.tailscale_ip4() or "", **boxes}
+    dests = projects_peers()
+    chosen = [n for n in sbprojects.load_choice(HOME)]
+    repos = [repo] if repo else chosen
+    lib = os.path.dirname(os.path.abspath(sbhackathon.__file__))
+    box_bin = os.path.abspath(sys.argv[0])
+
+    def envs():
+        """T3's linked environments here, or None when T3 can't say (not installed, or the CLI failed)."""
+        if not shutil.which("t3", path=user_env()["PATH"]):
+            return None
+        try:
+            r = subprocess.run(["t3", "environment", "list", "--json"], env=user_env(), capture_output=True, text=True,
+                               timeout=60, stdin=subprocess.DEVNULL)
+            v = json.loads(r.stdout) if r.returncode == 0 else None
+            return v if isinstance(v, list) else None
+        except (ValueError, OSError, subprocess.TimeoutExpired):
+            return None
+
+    def run():
+        res = sbhackathon.gather(boxes, me, repos, dests, lib)
+        return sbhackathon.assess(res, me, boxes, repos, envs(), chosen=chosen, named_repo=repo)
+    rows, done = run(), []
+    if fix:
+        for where, argv in sbhackathon.fixes(rows):
+            label = sbhackathon.fix_label(where, argv, me)
+            if where in ("here", me):
+                cmd = [box_bin, *argv[1:]] if argv[0] == "box" else argv
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=1200,
+                                       stdin=subprocess.DEVNULL)
+                    ok, tail = r.returncode == 0, (r.stdout + r.stderr).strip().splitlines()[-1:] or [""]
+                except (OSError, subprocess.TimeoutExpired) as ex:
+                    ok, tail = False, [type(ex).__name__]
+            else:
+                try:
+                    r = fed_ssh(dests[where], shlex.join(argv), timeout=1200)
+                    ok, tail = r.returncode == 0, (r.stdout + r.stderr).strip().splitlines()[-1:] or [""]
+                except (OSError, subprocess.TimeoutExpired, KeyError) as ex:
+                    ok, tail = False, [type(ex).__name__]
+            done.append({"step": label, "ok": ok, "note": tail[0][:200]})
+        if done:
+            rows = run()
+    line = sbhackathon.summary_line(rows, repos)
+    if as_json:
+        print(json.dumps({"ok": all(r["ok"] for r in rows), "summary": line, "machines": rows, "repos": repos,
+                          "fixed": done}))
+    elif quiet:
+        print(line)
+    else:
+        for d in done:
+            print(f"fix: {d['step']}: {'done' if d['ok'] else 'failed'}" + (f" ({d['note']})" if d["note"] and not d["ok"] else ""))
+        print(sbhackathon.render(rows, repos))
+    return rows
+
+
+def cmd_swarm(a):
+    """`box swarm ARGS...`: hand over to the hackathon swarm harness when this machine has it."""
+    exe = shutil.which("swarm") or next((p for p in [os.path.join(HOME, ".hk", "bin", "swarm")] if os.access(p, os.X_OK)), None)
+    if not exe:
+        sys.exit("The swarm harness isn't installed on this machine.")
+    os.execv(exe, [exe, *a.rest])
+
+
 def cmd_hackathon(a):
+    if a.op == "check":
+        rows = hackathon_check(a.fix, a.json, a.repo or "")
+        sys.exit(0 if all(r["ok"] for r in rows) else 1)
     if a.op in (None, "status"):
         line = hackathon_line()
         print(line or "Hackathon mode is off. The owner turns it on: box hackathon on --until \"YYYY-MM-DD HH:MM\" "
@@ -287,6 +361,12 @@ def cmd_hackathon(a):
         sys.exit(res.get("error", "that didn't work"))
     print(f"Hackathon mode on until {res['until']} (open package requests: {res['users']})" if res.get("active")
           else "Hackathon mode is off.")
+    if a.op == "on" and res.get("active"):  # readiness of every machine; never fails the turn-on
+        try:
+            hackathon_check(quiet=True)
+            print("Agents fix what they can with: box hackathon check --fix")
+        except Exception as ex:  # noqa: BLE001
+            print(f"(the readiness check didn't run: {str(ex)[:150]})")
 
 
 def cmd_reboot(a):
@@ -5148,10 +5228,13 @@ def build_parser():
     x = s.add_parser("restore", help="put an archived project back in ~ (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules", help="the rules your agents are given here (box help has the details)").set_defaults(fn=cmd_rules)
-    x = s.add_parser("hackathon", help="develop freely until a set time: open installs")
-    x.add_argument("op", nargs="?", choices=["status", "on", "off"])
+    x = s.add_parser("hackathon", help="develop freely until a set time: open installs; check [--fix]: every machine ready")
+    x.add_argument("op", nargs="?", choices=["status", "on", "off", "check"])
     x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
     x.add_argument("--hours", type=float, help="or: end this many hours from now")
+    x.add_argument("--fix", action="store_true", help="check: also fix what's safe and automatic")
+    x.add_argument("--json", action="store_true", help="check: as JSON")
+    x.add_argument("--repo", help="check: this project instead of the ones kept on all machines")
     x.add_argument("--users", help="friends who get open package requests too (the owner always does)")
     x.set_defaults(fn=cmd_hackathon)
     x = s.add_parser("reboot", help="show the next reboot, or (owner) hold automatic reboots temporarily")
@@ -5189,6 +5272,8 @@ def build_parser():
     x = s.add_parser("issues", help="what this account's agents noted with box issue")
     x.add_argument("--days", type=int, default=14)
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_issues)
+    x = s.add_parser("swarm", add_help=False, help="the hackathon swarm harness, when installed (box help hackathon)")
+    x.add_argument("rest", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_swarm)
     x = s.add_parser("team", add_help=False, help="team mode: a shared board, tasks and hand-offs for a team's agents (box team -h)")
     x.add_argument("rest", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_team)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
@@ -5286,6 +5371,8 @@ def build_parser():
 
 
 def main():
+    if sys.argv[1:2] == ["swarm"]:  # pass every argument through untouched (options included)
+        return cmd_swarm(argparse.Namespace(rest=sys.argv[2:]))
     if sys.argv[1:2] == ["team"]:  # argparse's REMAINDER drops leading options (--team, -h): hand over raw argv
         return cmd_team(argparse.Namespace(rest=sys.argv[2:]))
     p = build_parser()
