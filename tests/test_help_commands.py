@@ -131,7 +131,12 @@ class CommandLine(unittest.TestCase):
         self.assertIn("box status", t["commands"])
         self.assertNotIn("_portal", t["commands"])
         self.assertNotIn("box heavy", t["commands"])
-        self.assertNotRegex(t["boxes"], r"i3|Dell|16 GB|Wi-Fi")  # no hard-coded hardware: it comes from BOXES
+        self.assertNotRegex(t["machines"], r"i3|Dell|16 GB|Wi-Fi")  # no hard-coded hardware: it comes from BOXES
+
+    def test_every_topic_has_a_line(self):
+        t = box.help_topics()
+        if t:
+            self.assertEqual(sorted(k for k in t if k not in box.TOPIC_LINES), [])
 
     def test_usage_shows_main_commands_only(self):
         out = box.build_parser().format_help()
