@@ -105,7 +105,7 @@ command -v setfacl >/dev/null || warn "setfacl not found (package acl): files fr
 # ---------- files ----------
 say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
-for f in sbcommon.py sbclean.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py sbmsg.py sbwhere.py sbtelegram.py sbprojects.py sbme.py sbtelemetry.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
+for f in sbcommon.py sbclean.py sbweekly.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py sbmsg.py sbwhere.py sbtelegram.py sbprojects.py sbme.py sbtelemetry.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-update \
          sharedbox-gate sharedbox-tune; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
@@ -300,8 +300,10 @@ do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path shar
 # until another box is trusted (sharedbox-admin fed-trust; docs/multibox.md)
 do_ "$LIB/sharedbox-admin" fed-init
 do_ systemctl enable --now sharedbox-fed.timer
-do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too:
-do_ "$LIB/sharedbox-tune" apply || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
+do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too (--install: may add earlyoom).
+# Also the no-freeze step: hardware watchdog armed via systemd, earlyoom; kernel panic/lockup -> reboot is in
+# etc/sysctl-nofreeze.conf above. Nothing restarts but earlyoom itself; never reboots.
+do_ "$LIB/sharedbox-tune" apply --install || warn "box tuning (sharedbox-tune apply) didn't fully apply; see \`box tune\`"
 do_ systemctl restart sharedbox-janitor.timer sharedbox-tools-update.timer   # pick up schedule changes
 do_ systemctl restart sharedbox-provision.path   # pick up new watch paths (it only watches; nothing is interrupted)
 # Telegram bot: only once the owner has given it a token (dashboard Settings, or sharedbox-admin telegram setup)
@@ -346,6 +348,10 @@ REPORT_AT=$(conf_get HEALTH_REPORT_TIME); REPORT_AT=${REPORT_AT:-Mon 09:00}
 say "health: metrics every 5 min, urgent check hourly, weekly report $REPORT_AT"
 do_ sh -c "printf '[Unit]\\nDescription=sharedbox health: weekly report ($REPORT_AT)\\n\\n[Timer]\\nOnCalendar=${REPORT_AT% *} *-*-* ${REPORT_AT#* }\\nPersistent=true\\nRandomizedDelaySec=5min\\n\\n[Install]\\nWantedBy=timers.target\\n' > /etc/systemd/system/sharedbox-health-report.timer"
 do_ systemctl daemon-reload
+# A report or alert without email set up goes to the owner's inbox (or the log) and exits 0, so a box without
+# MAIL_TO no longer ends up with a failed unit: clear one left from before, and turn the weekly timer back on where it
+# was switched off by hand because of that failure (enable --now is what re-enables it on every install/update).
+do_ systemctl reset-failed sharedbox-health-report.service sharedbox-health-check.service 2>/dev/null || true
 do_ systemctl enable --now sharedbox-health-sample.timer sharedbox-health-check.timer sharedbox-health-report.timer
 do_ systemctl restart sharedbox-health-report.timer
 if ! command -v smartctl >/dev/null; then

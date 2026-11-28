@@ -30,8 +30,22 @@ Never ask for passwords or tokens in chat.
   caches and build outputs (`node_modules`, `target/`, `.venv`, …) go right away, then archives, then the oldest
   idle fully-pushed projects. Unpushed work is never deleted.
 - `/tmp` files older than {tmp_ttl} days are deleted.
+- Once a week caches that rebuild themselves are cleared too (`box help clean`).
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
+
+@@ clean
+A safe cleanup runs {clean_when}, in every account, while no agent of that account is mid-turn (a busy
+account is retried a few hours later). It only clears what rebuilds itself:
+- uv cache (`uv cache prune`; cleared when over the box's cap), npm `_cacache`, Go build cache, sccache, pip and
+  node-gyp caches, Chrome caches and headless Chrome leftovers older than a day, `pnpm store prune`
+- old Playwright builds (the newest of each browser stays)
+- your Docker daemon (only if it's running): build cache unused for 7 days and untagged (dangling) images
+Never touched: Docker volumes, tagged images and containers, `~/keep`, anything in a git repo, `~/.claude`,
+`~/.codex`, `~/.t3`. A cache whose tool is running right now (npm, go, pip, chrome, ...) waits for next week.
+- `box clean --dry-run` shows what it would free in your account now; `box clean` does it. Run it when the user
+  asks for space back or you're near the disk budget, never in the middle of someone's install or build.
+- Docker sizes in a dry run are estimates (build cache: an upper bound, Docker can't filter its estimate by age).
 
 @@ memory
 - Every account is guaranteed {mem_low} of RAM and may use up to {mem_max} while nobody else needs it. Nothing to
@@ -80,6 +94,8 @@ shallow 5 s / 18 MB.
 - `box serve add <name> [--port P] -- <command…>`, run inside the project dir. Survives logout and reboots,
   restarts on crash. The port is in `$PORT` (your range: {ports}). Listen on `0.0.0.0`.
 - Manage: `box serve ls`, `box serve logs <name>`, `box serve restart|stop|start|rm <name>`.
+- Never from a temporary folder (a T3 worktree under ~/.t3/worktrees, /tmp): it gets deleted and the service then
+  fails for good. `box serve add` runs it from ~ instead, or refuses when the code itself lives there.
 - The user also sees and controls these on their page {portal}.
 - Their T3 Code isn't one of these (it starts when they open it). Ports {t3_ports} are its.
 - While the service exists its project is protected from the janitor; `box serve rm` removes that protection.
@@ -227,6 +243,9 @@ How to look further, agent-first:
 Places worth a look: zswap/swap/hugepages, inotify and open-file limits, disk trim and free space, I/O scheduler,
 TCP congestion control and buffers, Tailscale direct vs relayed peers, the Cloudflare tunnel protocol, what's
 running at boot, journald/log volume, per-account limits (`box status`), caching in front of web apps.
+A frozen box restarts by itself: `box tune` shows the hardware watchdog (systemd pings it; a hang resets the
+board after a minute), kernel panic/lockup -> reboot settings, earlyoom (stops the biggest heavy job before RAM runs
+out, never agents) and why the box last restarted. If it says the box restarted by itself, tell the user.
 
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
@@ -236,7 +255,8 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
 - Published ports must be in your range ({ports}); bind them on `0.0.0.0` like any server. Ports under 1024 don't work.
 - Images live in `~/.local/share/docker` and count toward your disk budget. Prune (`docker image prune`) only when
   the user asks or you're over budget. Never `docker system prune` (it deletes stopped databases' containers) and never
-  anything with `--volumes` (it deletes their data).
+  anything with `--volumes` (it deletes their data). The weekly cleanup already clears old build cache and untagged
+  images (`box help clean`).
 - Never stop a database yourself because a task seems done; the user decides that.
 - Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
 - `docker compose` works the same way.
@@ -326,16 +346,24 @@ Where someone is: their own status plus a rough "active on the box" hint.
 
 @@ me
 `~/me` is the user's own folder about themselves: their agent history and efficiency, private to them (0700).
-- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every box they have, kept forever. Tables:
-  `sessions` (box, agent, model, cwd, title, started/ended unix time, wall_s, active_s, prompts, tool_calls, tool_s,
-  errors, interrupts, out_tokens), `messages` (sid, ts, role, text; full-text index `messages_fts`), `tool_calls`
-  (sid, ts, name, input (2,000 chars), output (500), dur_s, is_error). Raw transcripts stay where the agents wrote them.
-- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`), `box me sql "SELECT
-  ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md` (slowest sessions, where tool time went,
-  sleep/poll loops, failing commands, usage per day).
+- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every box they have, plus T3 threads of other
+  providers (OpenCode, Antigravity), kept forever. Tables: `sessions` (box, agent, model, cwd, title, started/ended
+  unix time, wall_s, active_s, prompts, tool_calls, tool_s, errors, interrupts, out_tokens), `messages` (sid, seq, ts,
+  role user|assistant|thinking, text; full-text index `messages_fts`; thinking = the model's reasoning: Claude's
+  thinking in full, Codex's reasoning summaries), `tool_calls` (sid, seq, ts, name, input (2,000 chars), output
+  (500), dur_s, is_error), `tool_blobs` (sid, seq, in_len, out_len, input_z, output_z: the full input and output up
+  to 256 KB, compressed; `unz(output_z)` in `box me sql` reads them), `t3_threads` (thread_id, provider, native_id =
+  the agent's session id, title, link).
+- `~/me/raw/`: xz copies of the raw transcripts (`xzcat ~/me/raw/claude/projects/DIR/ID.jsonl.xz`), refreshed when
+  they change and kept even after the agent deletes its own.
+- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`; `--thinking` to
+  include reasoning), `box me sql "SELECT ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md`
+  (slowest sessions, where tool time went, sleep/poll loops, failing commands, reasoning, full tool output, usage).
 - Kept fresh automatically every ~15 minutes, at the lowest priority, on every box; the user's home box copies in
   what their other boxes indexed. Now: `box me ingest`, `box me pull`.
-- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention).
+- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention) and
+  turns on Codex's readable reasoning summaries (`model_reasoning_summary = "detailed"` in ~/.codex/config.toml,
+  only when the user hasn't set it).
 - Never copy their prompts off the box or into other people's places.
 
 @@ telemetry
