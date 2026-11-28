@@ -405,6 +405,11 @@ background:var(--panel);padding:0 4px;border-radius:3px;line-height:1.3}.plot .y
 .mach .mw{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);font-size:14px}.mach .mf{margin-top:8px}
 @media(max-width:620px){.mach .ms{grid-template-columns:repeat(2,minmax(0,1fr))}}
 table.acct th[scope=row]{font-size:14px;color:var(--fg);font-weight:600;white-space:nowrap}table.acct td{min-width:150px;overflow-wrap:anywhere}
+@media(max-width:560px){.tw:has(table.fr){margin:0;overflow:visible}table.fr{min-width:0!important}table.fr thead{display:none}
+table.fr tr{display:block;border-bottom:1px solid var(--line);padding:10px 0}table.fr tr:last-child{border:0}
+table.fr td{display:grid;grid-template-columns:96px 1fr;gap:8px;padding:4px 0;border:0;white-space:normal}
+table.fr td::before{content:attr(data-label);color:var(--mut);font-size:13px}table.fr td.fa{display:block;padding-top:8px}
+table.fr td.fa::before{content:none}table.fr td:first-child{display:block;font-size:15px}table.fr td:first-child::before{content:none}}
 @media(max-width:560px){.tw:has(table.acct){margin:0;overflow:visible}table.acct{min-width:0!important}table.acct thead{display:none}
 table.acct tr{display:block;border-bottom:1px solid var(--line);padding:10px 0}table.acct tr:last-child{border:0}
 table.acct th[scope=row]{display:block;padding:0 0 4px;border:0}table.acct td{display:grid;grid-template-columns:96px 1fr;gap:8px;
@@ -481,11 +486,13 @@ ol.steps3>li.done::before{content:"";border-color:var(--okb)}ol.steps3>li.done .
 ol.steps3>li b{color:var(--fg)}ol.steps3>li:last-child{padding-bottom:0}ol.steps3 .line.btns{margin-top:4px}
 details.adv{margin-top:16px;border-top:1px solid var(--line);padding-top:8px}details.adv>p{max-width:82ch}
 .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:12px;margin-bottom:12px}.mgrid>.card{margin:0}
+.mgrid .mach .ms{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:560px){.mgrid{grid-template-columns:1fr}
 .tabs{flex-wrap:wrap;overflow:visible;border-bottom:0;gap:6px;margin:4px 0 16px!important;padding:0!important}
 .tabs a{min-height:36px;border:1px solid var(--line2);border-radius:999px;padding:0 12px!important;margin:0;background:var(--panel)}
-.tabs a.on{border-color:var(--acc);color:var(--fg)}.tabs .tsep{flex-basis:100%;height:0;width:auto;margin:0;background:none}
-.run .nm>b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run .nm .pill{margin-left:0;margin-right:6px}}
+.tabs a.on{border-color:var(--acc);color:var(--fg)}.tabs .tsep{flex-basis:100%;height:auto;width:auto;margin:6px 0 0;background:none}
+.tabs .tsep::before{content:"Only you see these";font-size:12px;color:var(--mut)}
+.run .nm>b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}.run .nm .pill{margin-left:0;margin-right:6px}}
 dl.gloss{margin:4px 0 0}dl.gloss dt{font-weight:600;font-size:14px;margin-top:12px}dl.gloss dd{margin:2px 0 0;font-size:14px;color:var(--mut)}
 .needs .d b{font-weight:600}.adm{margin:0 0 16px}details.blk{margin-top:28px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
@@ -973,7 +980,7 @@ def machine_line(base=""):
     return " · ".join(bits) + (f' · <a href="{base}/me?tab=machines">All machines</a>' if base is not None else "")
 
 
-def activity_section(name, owner=False, rng="24h"):
+def activity_section(name, owner=False, rng="24h", where=None):
     """Collapsed: who's around, your own activity, what happened on the machine."""
     e = html.escape
     now = time.time()
@@ -995,11 +1002,11 @@ def activity_section(name, owner=False, rng="24h"):
 
     def doing(cn, seen):
         if cn >= 0.05:
-            return "working now"
-        return f"active {ago_text(seen)}" if seen else "away"
+            return "programs busy now"
+        return f"programs busy {ago_text(seen)}" if seen else "nothing running"
     out = []
     if people:
-        out.append("<h3>People on this machine</h3><ul class='people'>" + "".join(
+        out.append("<h3>Processor use, last 24 hours</h3><ul class='people'>" + "".join(
             f'<li><span class="dot {"ok" if cn >= 0.05 else ""}"></span><span class="n">'
             f'<b>{e(n)}</b>{" <span class=mut>(you)</span>" if n == name else ""}</span>{spark(cb, t0, t1, 2 * gap)}'
             f'<span class="c">{doing(cn, seen)}</span></li>' for cn, n, cb, seen in people) + "</ul>")
@@ -1011,8 +1018,10 @@ def activity_section(name, owner=False, rng="24h"):
         out.append("<h3>Recently on this machine</h3><ul class='ev'>" + "".join(feed) + "</ul>")
     if not out:
         return ""
-    return (f"<details class='sec' id='activity'><summary>Activity<span class='sub'>"
-            f"{working} {'person' if working == 1 else 'people'} working now</span></summary>"
+    here = [p for p in (where or {}).get("people") or [] if isinstance(p, dict) and p.get("active_now")]
+    now = (f"{len(here)} active now" if where and where.get("ok") else
+           f"{working} {'person' if working == 1 else 'people'} with busy programs")
+    return (f"<details class='sec' id='activity'><summary>Activity<span class='sub'>{now}</span></summary>"
             + "".join(out) + "</details>")
 
 
@@ -1114,6 +1123,8 @@ def run_rows(items, btn=None, user=None, viewer=None):
             sub_txt = e(sb.printable(str(it.get("detail") or ""))[:120])
         if old:
             sub_txt = f"{e(label)} · " + sub_txt
+        if not about and it.get("exec") and kind == "server" and (user is None or user == viewer):
+            sub_txt += " · <a href='/_box/me?tab=servers#servers'>Add one</a>"
         cpu = sbrunning.cpu_avg({"age": age, "cpu_usec": it.get("cpu_usec") or 0}) if age else 0
         act = ""
         stop = it.get("stop")
@@ -1325,7 +1336,7 @@ def servers_section(st, shared, btn, base="", own_public=True, slot=None):
         out.append('<div class="srv">' + "".join(
             f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
             f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span>'
-            + (' <span class="pill ok">Protected</span>' if s.get("keep") else "") + '</div>'
+            + '</div>'
             + facts(s) + f'<div class="sub">{link(s.get("port"), public=own_public)}</div>{acts("serve", s)}'
             '</div>'
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
@@ -1336,7 +1347,7 @@ def servers_section(st, shared, btn, base="", own_public=True, slot=None):
     if shared.get("unavailable"):
         return "".join(out) + end
     out.append("</section></div><div class='blk' id='shared' data-card='shared'><h2>Group servers <span class='sub' "
-               "style='font-weight:400'>shared by everyone here, always kept running</span></h2>"
+               "style='font-weight:400'>shared by everyone here; anyone can start or stop them</span></h2>"
                "<section class='sec'>" + slot("shared"))
     if not shared.get("ok"):
         out.append(f"<p class='mut'>Couldn't load the group's servers: {e(str(shared.get('error') or 'no answer'))}</p>")
@@ -1379,7 +1390,7 @@ def logs_card(res, btn, base=""):
     bad = re.compile(r"\b(error|exception|traceback|failed|fatal|panic|refused|denied)\b", re.I)
     shown = "\n".join(f"<span class='le'>{e(x)}</span>" if bad.search(x) else e(x) for x in lines) or "(no log lines yet)"
     nerr = sum(1 for x in lines if bad.search(x))
-    when = time.strftime("%H:%M %Z")
+    when = time.strftime("%a %b %-d, %H:%M %Z")
     agent = (f"Logs of my {'group server' if kind == 'shared' else 'server'} {name} on {here_name()}, last "
              f"{len(lines)} lines at {when}. Find what's wrong and fix it:\n\n" + "\n".join(lines[-80:]))
     return f"""<div class="logbox" id="logs"><h3>Logs: {e(name)}{" (group server)" if kind == "shared" else ""}</h3>
@@ -1387,7 +1398,7 @@ def logs_card(res, btn, base=""):
 <pre class="logs" id="logpre" tabindex="0" aria-label="Log lines">{shown}</pre>
 <textarea id="logcopy" hidden readonly>{e(agent)}</textarea>
 <div class="lacts">{btn(kind + "-logs", "Refresh", name, primary=False, small=True)}
-<button type="button" class="sm secondary" data-copy="logcopy">Copy for your agent</button>
+<button type="button" class="sm secondary" data-copy="logcopy">Copy these lines for your agent</button>
 <a href="{base}/me?tab=servers#{card}" data-close style="font-size:13px">Close</a></div></div>
 <script>(function(){{var p=document.getElementById("logpre");if(p)p.scrollTop=p.scrollHeight}})();</script>"""
 
@@ -1554,7 +1565,8 @@ def features_page(owner=False):
         "<div class='fhero'><h2>Get the T3 app</h2><p class='fp'>The easiest way to chat with your AI agents.</p>"
         + ("<p><a class='btn' href='https://t3.codes' target='_blank' rel='noopener'>Download the T3 app</a></p>"
            "<p class='fm'>Then link it to this machine from your Account tab (T3 app, Show me how).</p>" if owner else
-           "<p><a class='btn' href='/_box/me#start'>Set up the T3 app</a></p><p class='fm'>Your agent sets it up for you.</p>")
+           "<p><a class='btn' href='/_box/me#start'>Set up the T3 app</a></p><p class='fm'>On Home, under Advanced. "
+           "The AI agent on your laptop can do the setup for you.</p>")
         + "<p class='fm'>On your phone, the T3 app works the same way (it's called T3 Code in the App Store and Google Play). Or use "
         "<a href='/_box/app'>T3 in the browser</a>.</p></div>",
         "<h3 class='fg'>Agents</h3><div class='flist'>",
@@ -1651,8 +1663,8 @@ def requests_section(btn=None, slot=None):
                     + btn("request-done", "Mark handled", rid, small=True, primary=False) + " "
                     + ask(btn, "request-decline", "Decline", e(decline_q), rid, go="Decline it"))
         note = ("" if r.get("kind") == "install" else
-                f"<div class='sub'>Do what it asks (or ask your own agent to), then press Mark handled. "
-                f"{e(str(r.get('user')))}'s agent is told.</div>")
+                f"<div class='sub'>If you agree, do what it asks, then press Mark handled. Or Decline it. "
+                f"{e(str(r.get('user')))}'s agent is told either way.</div>")
         trs.append(f"<tr><td><b>{e(str(r.get('user') or '?'))}</b></td><td>{what}{why}{note}</td>"
                    f"<td class='num'>{e(ago_text(r.get('ts', 0)))}</td>"
                    f"<td><span class='pill {'warn' if r.get('state') == 'waiting' else ''}'>"
@@ -1934,10 +1946,10 @@ def machines_section(owner=False, allowed=None, names=None):
             disk = meter("Disk", None if d.get("disk_free") is None else 100 - d["disk_free"],
                          f"{d.get('disk_free') or 0:.0f}% free")
         if d.get("load1") is not None and ncpu:
-            load = (f'<div class="m"><h4>Waiting programs</h4><div class="mv">{d["load1"]:.1f} <small>of {ncpu}</small></div>'
-                    f'<div class="sub">Under {ncpu} means nothing waits for the processor.</div></div>')
+            load = (f'<div class="m"><h4>Load</h4><div class="mv">{d["load1"]:.1f} <small>of {ncpu} cores</small></div>'
+                    f'<div class="sub">Above {ncpu}, programs start waiting for the processor.</div></div>')
         else:
-            load = '<div class="m"><h4>Waiting programs</h4><div class="mv mut">–</div></div>'
+            load = '<div class="m"><h4>Load</h4><div class="mv mut">–</div></div>'
         ppl = d.get("people")
         if ppl is None:
             who = "<span class='mut'>Not known (that machine needs a treehouse update)</span>" if st["state"] == "online" else "<span class='mut'>–</span>"
@@ -1966,7 +1978,7 @@ def machines_section(owner=False, allowed=None, names=None):
             f"itself. The state word is {LEVEL_SCALE}.</p></div>")
 
 
-def box_section(n_events=30, btn=None, slot=None):
+def box_section(n_events=30, btn=None, slot=None, where=None):
     """Friends, invites, Cloudflare seats. Only ever rendered for the owner; read from world-readable state files
     (and the gate's invite records, which this process may read). The invite's result shows in its card (slot)."""
     e = html.escape
@@ -1984,7 +1996,7 @@ def box_section(n_events=30, btn=None, slot=None):
     week = sum(1 for n in users if last_active(rows, n, step))
     paused = len(users) - active
     tiles = [("Friends", f"{len(users)}", f"{week} used it this week" + (f", {paused} paused" if paused else "")),
-             ("Open invites", f"{open_inv}" if can_read else "?", "unused, not expired" if can_read else
+             ("Unused invite links", f"{open_inv}" if can_read else "?", "not expired yet" if can_read else
               "can't read the invite records")]
     if CF:
         limit = sb.cfg_int(CFG, "CF_SEAT_LIMIT")
@@ -2007,7 +2019,11 @@ def box_section(n_events=30, btn=None, slot=None):
             u = usage.get(name) or {}
             stt = str(r.get("status") or "active")
             seen = last_active(rows, name, step)
-            if seen and now - seen < 3 * max(step, 60):
+            wp = next((p for p in (where or {}).get("people") or [] if isinstance(p, dict) and p.get("user") == name), None)
+            if wp and wp.get("activity") and wp["activity"] != "private":  # Who's here's own words, same everywhere
+                on = (f'<span class="dot {"ok" if wp.get("active_now") else ""}"></span>'
+                      f'{e(str(wp["activity"]))}')
+            elif seen and now - seen < 3 * max(step, 60):
                 on = '<span class="dot ok"></span>active now'
             elif seen:
                 on = f'<span class="dot"></span>{e(ago_text(seen))}'
@@ -2034,17 +2050,19 @@ def box_section(n_events=30, btn=None, slot=None):
                              go=f"Pause {name}"))
                         + " " + ask(btn, "friend-remove", "Remove", gone, name, go=f"Remove {name}"))
             trs.append(f'<tr><td><b>{e(name)}</b>{over}'
-                       f'</td><td class="mut">{e(str(r.get("email") or "–"))}</td><td class="num">{e(joined)}</td>'
-                       f'<td><span class="pill {"ok" if stt == "active" else "bad"}">{"Active" if stt == "active" else "Paused" if stt == "suspended" else e(stt)}</span></td>'
-                       f'<td class="num">{disk}</td><td>{svc_html}</td>'
-                       f'<td class="num">{on}</td>' + (f'<td class="fa">{acts}</td>' if btn else "") + '</tr>')
+                       f'</td><td class="mut" data-label="Email">{e(str(r.get("email") or "–"))}</td>'
+                       f'<td class="num" data-label="Joined">{e(joined)}</td>'
+                       f'<td data-label="Account"><span class="pill {"ok" if stt == "active" else "bad"}">{"Active" if stt == "active" else "Paused" if stt == "suspended" else e(stt)}</span></td>'
+                       f'<td class="num" data-label="Disk used">{disk}</td><td data-label="Servers">{svc_html}</td>'
+                       f'<td class="num" data-label="Last active">{on}</td>' + (f'<td class="fa">{acts}</td>' if btn else "") + '</tr>')
         out.append('<section class="sec"><div class="tw"><table class="fr"><thead><tr><th>Username</th><th>Email</th>'
                    '<th>Joined</th><th>Account</th><th>Disk used</th><th>Servers</th><th>Last active</th>'
                    + ('<th></th>' if btn else '') + '</tr></thead><tbody>' + "".join(trs) + "</tbody></table></div></section>")
     else:
         out.append("<p class='mut'>Nobody has joined yet.</p>")
+    first = sorted(users)[0] if users else "sam"
     out.append('<p class="sub">Pause locks someone out and stops their programs but keeps everything; Resume lets '
-               'them back. To change someone\'s email, ask your agent ("change frodo\'s email to ...").</p></div>')
+               f'them back. To change someone\'s email, ask your agent ("change {e(first)}\'s email to ...").</p></div>')
     if btn:
         out.append("<div class='blk' id='invite' data-card='invite'><h2>Invite someone</h2><section class='sec'>"
                    + (slot or NO_SLOT)("invite")
@@ -2106,7 +2124,8 @@ def events_section(n_events=40):
             break
     out = []
     out.append("<section class='sec'><ul class='ev'>" + ("".join(
-        f"<li><span class='mut'>{e(ago_text(ev.get('ts', 0)))}</span> · {event_text(ev)}"
+        f"<li><span class='mut'>{e(ago_text(ev.get('ts', 0)))}</span> · "
+        f"{event_text(ev).replace('<b>The owner</b>', '<b>You</b>').replace('<b>the owner</b>', '<b>you</b>')}"
         + (f" <span class='pill'>×{cnt}</span>" if cnt > 1 else "")
         + (" <span class='pill warn attn'>Needs attention</span>" if ev.get("kind") in EVENT_ATTENTION
            and time.time() - float(ev.get("ts") or 0) < 2 * 86400 else "")
@@ -2148,7 +2167,7 @@ def hackathon_section(btn, slot=None, pause=None):
     form = btn("hackathon", "Turn on hackathon mode" if not until else "Save changes", primary=not until, small=True,
                attrs=" class='hk'",
                extra="<input type='hidden' name='op' value='on'>"
-                     "<label for='hk-until'>Ends at (your local time; at most 7 days from now)</label><div class='when'>"
+                     "<label for='hk-until'>Ends at (required; your local time, at most 7 days from now)</label><div class='when'>"
                      f"<input type='datetime-local' id='hk-until' name='until' value='{cur}' required></div>"
                      "<label>Auto-approve installs from (yours always are)</label>"
                      f"<div class='grid'>{boxes}</div><p class='sub' style='margin:4px 0 0'>Risk: a package from the "
@@ -2358,7 +2377,8 @@ def needs_items(base, msg, st, name, nreq=0, btn=None):
                               "<input type='hidden' name='force' value='1'>" if force else "",
                               go="Stop anyway" if force else "Stop it"))
             out.append((f"<b>{e(sb.printable(str(it.get('name') or '?'))[:60])}</b> has been running for "
-                        f"{e(sbrunning.ago(age))} and uses {e(size(int(it.get('mem') or 0)))} of memory. Still need it?",
+                        f"{e(sbrunning.ago(age))} and uses {e(size(int(it.get('mem') or 0)))} of memory. Still need it? Stopping keeps "
+                        "its data.",
                         acts))
             if len(out) >= 6:
                 break
@@ -2428,14 +2448,16 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card="", pre=
                      f"<b>{e(who.get('login', ''))}</b>.</p>"]
             if CFG.get("OWNER_T3_PORT", "").strip().isdigit():
                 start.append('<div class="line btns"><a class="btn" href="/_box/app">Open T3</a>'
-                             + owner_app_details(st) + '</div>')
+                             + owner_app_details(st) + '</div>' + ("<p class='sub'>Open T3 opens it in this browser. The "
+                                                                  "T3 app is the same thing on your phone or laptop.</p>"
+                                                                  if owner_app_details(st) else ""))
             parts.append("<section class='start' id='start' data-card='start'>" + slot("start") + "".join(start)
                          + "</section>")
             parts.append(hackathon_banner(name))
             parts.append(needs_section(needs_items(base, msg, st, name, nreq, btn), slot))
             parts.append(people_section(where, name, tok, base, slot))
             try:
-                parts.append(activity_section(name, owner=True))
+                parts.append(activity_section(name, owner=True, where=where))
             except Exception as ex:  # noqa: BLE001
                 print(f"activity: {ex!r}", file=sys.stderr, flush=True)
             parts.append(glossary_section())
@@ -2468,7 +2490,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card="", pre=
         else:
             parts.append("<p class='sub adm'>Only you, the owner, see this tab.</p>")
             if tab == "people":
-                parts.append(box_section(btn=btn, slot=slot))
+                parts.append(box_section(btn=btn, slot=slot, where=where))
             elif tab == "requests":
                 parts.append(requests_section(btn, slot))
             elif tab == "running":
@@ -2509,9 +2531,10 @@ def owner_login_rows(st, logins, btn):
              btn("login", "Connect GitHub", "gh", primary=False, small=True))]
 
 
-def owner_link(base, title, label="Message the owner"):
+def owner_link(base, title, label=None):
     """A link that opens Messages with a message to the owner already started (who, and what it's about)."""
     pw = sb.owner_account(CFG)
+    label = label or ("Message the owner" + (f" ({pw.pw_name})" if pw else ""))
     q = urllib.parse.urlencode({"tab": "messages", "to": pw.pw_name if pw else "", "title": title[:60]})
     return f"<a href='{base}/me?{html.escape(q)}#messages'>{html.escape(label)}</a>"
 
@@ -2641,6 +2664,8 @@ CHECK = ("<svg class='ck' viewBox='0 0 12 12' width='12' height='12' aria-hidden
 def prompt_body(res):
     e = html.escape
     return f"""<h3>Your setup prompt</h3>
+<p class="sub">This is for the AI agent on your laptop, not for you to follow. Copy it, paste it into that agent, and
+answer its questions.</p>
 <textarea id="app-prompt" readonly rows="7" class="prompt">{e(res['app_prompt'])}</textarea>
 <div class="line"><button type="button" data-copy="app-prompt">Copy prompt</button></div>
 <p>Paste it into Claude Code, Codex or any agent on your laptop. It contains a one-time key to your T3, so it works
@@ -2790,7 +2815,7 @@ def people_section(where, me, tok, base, slot=None):
                     f"{e(act if act != 'private' else 'hidden')}</span></li>")
     form = (f"<form method='post' action='{base}/me' class='status'>{hidden(tok, action='where', op='set')}"
             "<div class='fld'><label for='st-what'>What are you up to?</label><input id='st-what' name='status' required "
-            f"maxlength='80' placeholder='{e(mine.get('status') or 'In class, asleep, at the hackathon…')}'></div>"
+            "maxlength='80' placeholder='For example: in class, asleep, at the hackathon'></div>"
             "<div class='fld'><label for='st-until'>Until <span class='sub'>(optional)</span></label><input id='st-until' "
             "name='until' maxlength='40' placeholder='3pm, tomorrow 9am'></div>"
             "<button class='sm'>Show my status</button></form>")
@@ -2875,7 +2900,8 @@ def telegram_setup_section(tg, tok, base, slot=None):
         body = (f"<p style='margin-top:0'><span class='dot ok'></span><b>On</b> as "
                 f"<a href='https://t.me/{e(tg.get('bot') or '')}' target='_blank' rel='noopener'>@{e(tg.get('bot') or '')}</a>. "
                 "Each person connects their own phone from their Account tab (Phone alerts).</p>"
-                f"<p class='sub'>To use a different bot, paste its token below.</p>"
+                "<p class='sub'>To use a different bot, paste its token below (<a href='https://core.telegram.org/"
+                "bots/tutorial#obtain-your-bot-token' target='_blank' rel='noopener'>how to get one</a>).</p>"
                 + ask(portal_btn(tok, base), "telegram-setup", "Turn off Telegram",
                       "Nobody on this machine gets phone alerts until it's on again. Everyone's phone connections "
                       "are kept and work again when you turn it back on.", "",
@@ -2965,9 +2991,9 @@ def team_section(team, names, tok, base, slot=None):
     nm = (lambda u: names.get(u) or u)
     access = team.get("access") or {}
     grants = [g for g in team.get("grants") or [] if isinstance(g, dict) and g.get("to")]
-    out = ["<div class='blk' id='team' data-card='team'><h2>Teammates' agents</h2><section class='sec'>",
+    out = ["<div class='blk' id='team' data-card='team'><h2>Friends' agents in your T3</h2><section class='sec'>",
            (slot or NO_SLOT)("team")]
-    out.append("<p class='sub' style='margin-top:0'>Let a teammate's AI agents work in your T3: open "
+    out.append("<p class='sub' style='margin-top:0'>Let a friend's AI agents work in your T3: open "
                "your projects, read code, run things. Handy at a hackathon when their agent needs to fix something "
                "in your app. You can remove their access any time.</p>")
     if grants:
@@ -2984,7 +3010,7 @@ def team_section(team, names, tok, base, slot=None):
              "full-access": "their agents edit files and run commands in your T3 without asking"}
     until = time.strftime("%b %-d", time.localtime(time.time() + 30 * 86400))
     out.append(f"<form method='post' action='{base}/me' class='team'>{hidden(tok, action='team', op='grant')}"
-               f"<div class='two'><div><label for='tm-to'>Teammate</label><select id='tm-to' name='to'>{opts}</select></div>"
+               f"<div class='two'><div><label for='tm-to'>Friend</label><select id='tm-to' name='to'>{opts}</select></div>"
                f"<div><label for='tm-acc'>What their agents may do</label><select id='tm-acc' name='access'>{lv}</select>"
                "</div></div><ul class='hkl sub' style='margin:8px 0 0'>" + "".join(
                    f"<li><b>{e(access[k])}</b>: {e(v)}.</li>" for k, v in means.items() if k in access)
@@ -3051,8 +3077,8 @@ def ai_accounts_section(st, logins, btn, tok, base, slot=None):
     checked = st.get("boxes_checked") or 0
     foot = ["Each machine keeps its own sign-ins, so you can use a different account on each one."]
     if multi and "claude" in keys:
-        foot.append("A Claude sign-in is copied to your machines that don't have their own; signing in or out of "
-                    "Claude on one machine here makes that machine keep its own account.")
+        foot.append("A Claude sign-in is shared with your other machines unless a machine has its own. Signing in "
+                    "or out of Claude on one machine here gives that machine its own sign-in.")
     if "antigravity" in keys:
         foot.append("Gemini runs through Antigravity, Google's coding agent. To use it inside T3, turn on Antigravity in "
                     "T3's Settings, Providers, and sign in there "
@@ -3214,9 +3240,9 @@ def projects_section(st, tok, base, slot=None):
                                                for b, err in bad)
                    + " " + owner_link(base, "A machine doesn't copy my projects") + "</p>")
     if any(r.get("everywhere") for r in avail):
-        out.append("<p class='sub'>Last copied: " + " · ".join(
+        out.append("<p class='sub'>Last synced: " + " · ".join(
             f"{e(b)} {e(ago_text(v['last_sync']) if v.get('last_sync') else 'not yet')}" for b, v in sorted(boxes.items()))
-            + ". Copies update every 30 minutes, and within 10 minutes of a change.</p>")
+            + ". Copies sync every 30 minutes, and within 10 minutes of a change.</p>")
     return "".join(out) + "</section></div>"
 
 
@@ -3323,7 +3349,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Get started'}</h2>"
                       "<p class='sub'>Three steps, about two minutes.</p><ol class='steps3'>"
                       "<li class='now'><b>Sign in with one AI account.</b> You only need one. It's your own Claude, "
-                      "ChatGPT or Google subscription, and that company bills you for it, not treehouse."
+                      "ChatGPT or Google subscription, and that company bills you for it, not treehouse. No "
+                      "subscription yet? A paid plan such as Claude Pro or ChatGPT Plus works."
                       f"<div class='line btns'>{btn('login', verbs[first], first)}{others}</div>"
                       + ("<p class='sub'>Google Gemini works through Antigravity, Google's coding agent.</p>"
                          if "antigravity" in ai else "") + "</li>"
@@ -3342,7 +3369,9 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                        f"{app_help(more)}</details>")
             else:
                 app = ""
-            main = f"<div class='line btns'>{open_t3('Open T3')}{app}</div>" + busy
+            main = (f"<div class='line btns'>{open_t3('Open T3')}{app}</div>" + busy
+                    + ("<p class='sub'>Open T3 opens it in this browser. The T3 app is the same thing on your phone "
+                       "or laptop.</p>" if app else ""))
             if state == "S2":
                 sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><ol class='steps3'>"
                           f"<li class='done'>{CHECK}<b>Signed in with your AI account.</b> <span class='sub'>Change "
@@ -3390,7 +3419,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             parts += [start_card, hackathon_banner(name), needs_section(needs_items(base, msg, st, name, btn=btn), slot),
                       people_section(where, name, tok, base, slot)]
             try:
-                parts.append(activity_section(name))
+                parts.append(activity_section(name, where=where))
             except Exception as ex:  # noqa: BLE001
                 print(f"activity: {ex!r}", file=sys.stderr, flush=True)
             parts.append(glossary_section())
@@ -3437,7 +3466,8 @@ def account_tab(who, name, rec, st, logins, tg, team, where, tok, base, btn, slo
     if "t3connect" in logins:
         row("T3 app", '<span class="dot ok"></span>Connected. Open the T3 app on your phone or laptop and sign in to '
             'T3 there.' if logins["t3connect"]["ok"] else
-            '<span class="dot"></span>Not set up. The T3 app lets you talk to your agent from your phone or laptop.',
+            '<span class="dot"></span>Not set up (optional). The T3 app lets you talk to your agent from your phone or '
+            'laptop; Open T3 in the browser works without it.',
             (f"<a class='btn secondary sm' href='{base}/me?tab=home#app'>Show me how</a> " + t3_app_elsewhere(st, logins, btn))
             if logins["t3connect"]["ok"] else btn("login", "Set up the T3 app", "t3connect", primary=False, small=True))
     trow = telegram_row(tg, tok, base)
@@ -4042,14 +4072,14 @@ def landing(email=None):
     e = html.escape
     owner = email and email in sb.owner_emails(CFG)
     return page(here_name(), f"""<div class="box"><h2>{e(here_name())}</h2>
-<p>This is a private coding machine shared between friends.</p>
+<p>This is a private {e(BRAND)} machine: a computer friends share, where AI agents build things for them.</p>
 <p>You're signed in as <b>{e(email or '?')}</b>{"" if owner else ", but there's no account for that email here"}.</p>
 {"<p>You're the owner, but this machine couldn't find your own account on it. Ask your agent on the machine "
  "to check which account the owner's login should open.</p>" if owner else
  f"<p>To get in, ask the person who runs this machine to invite <b>{e(email or 'your email')}</b>. They get a "
  "message to send you with a link; open it while signed in with this email and you're in.</p>"}
-<p class="mut">Wrong email? <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the one your friend
-invited.</p></div>""", gate=True, member=False)
+<p class="mut">Wrong email? Sign out, then sign in with the email your friend invited.</p>
+<p><a class="btn secondary" href="/cdn-cgi/access/logout">Sign in with a different email</a></p></div>""", gate=True, member=False)
 
 
 def invite_page(tok, err=None, form=None, email=None):
@@ -4062,8 +4092,9 @@ def invite_page(tok, err=None, form=None, email=None):
     if str(inv.get("email") or "").lower() != (email or ""):
         return page("invite", f"""<div class="box"><h2>This invite is for a different email</h2>
 <p>You're signed in as <b>{e(email or '?')}</b>, but this invite was made for another address.
-<a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the email your friend invited, or ask them for an
-invite for this one.</p></div>""", gate=True, member=False)
+Sign out and sign in with the email your friend invited, or ask the friend who invited you for an invite for
+this one.</p><p><a class="btn secondary" href="/cdn-cgi/access/logout">Sign in with a different email</a></p></div>""",
+                gate=True, member=False)
     ftok = token_for("gate", "invite:" + sb.token_hash(tok))
     email_field = f"<p class='mut'>Signed in as <b>{e(email)}</b>. That's your login from now on.</p>"
     return page("join", f"""<div class="box"><h2>Join {e(BRAND)} on {e(here_name())}</h2>

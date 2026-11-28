@@ -309,8 +309,8 @@ on; `box hackathon` shows the state. While on:
 It ends by itself at its end time. Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2`
 (or `--hours N`), `box hackathon off`.
 
-@@ boxes
-The owner's machines (`box help machines`; this one is {host}). {machines}
+@@ machines
+The owner's machines (this one is {host}). {machines}
 Each machine has its own memory, disk and files. Before moving work, look at them: `box boxes` shows each one's
 cores, load, free memory and whether you can sign in there. Move a job to another machine only when all hold:
 1. {host} is contended: load is above about three quarters of its cores, or you're near your own limits.

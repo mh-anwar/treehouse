@@ -961,7 +961,7 @@ def machine_name():
 
 
 def machines_text():
-    """`box help boxes`: the owner's other machines, from BOXES (never hard-coded hosts or hardware)."""
+    """`box help machines`: the owner's other machines, from BOXES (never hard-coded hosts or hardware)."""
     others = [(n, ip) for n, ip in sb.boxes(CFG).items() if n != machine_name()]
     if not others:
         return "Right now it's the only one."
@@ -1067,12 +1067,44 @@ def help_topics():
     return out
 
 
+TOPIC_LINES = {  # `box help`: one line per topic (a test checks every topic has one)
+    "logins": "signing the user in to Claude, ChatGPT, Gemini, GitHub and the T3 app",
+    "files": "where projects live, when they're archived, handing files to the user",
+    "clean": "the weekly cleanup of caches that rebuild themselves",
+    "memory": "memory limits, what happens when it runs out, what's running",
+    "git": "faster clones and CI",
+    "reboots": "nightly restarts: what comes back, what doesn't",
+    "servers": "keeping a server running: describe it, protect it, logs",
+    "shared": "group servers the whole group owns",
+    "browsers": "headless Chrome and Playwright without root",
+    "skills": "extra abilities for agents, installed on request",
+    "updates": "how the coding agents stay up to date",
+    "connect": "the user's laptop agent and the T3 app",
+    "requests": "asking the owner for a program or a change; problem reports",
+    "friends": "(owner) friends, invites, requests, the machine list",
+    "lean": "finding and fixing wasted memory and CPU",
+    "tune": "how efficient the machine itself is",
+    "docker": "rootless Docker for your account",
+    "hackathon": "hackathon mode: what changes while it's on",
+    "machines": "the owner's other machines, and when to move work there",
+    "projects": "the same project on all the user's machines",
+    "msg": "messages between people and their agents",
+    "where": "where someone is, and your own status",
+    "me": "the user's own agent history (~/me)",
+    "telemetry": "what the machine did minute by minute",
+    "settings": "everything on the dashboard, as commands",
+    "words": "the words treehouse uses with people",
+    "commands": "every box command, one line each",
+}
+
+
 MAIN_COMMANDS = (  # `box -h` and `box help commands` lead with these
     ("status", "usage, limits and what needs attention"), ("running", "what runs for you, with memory and age"),
     ("serve", "keep a server of yours running (box help servers)"), ("shared", "the group's servers"),
     ("login", "sign in to Claude, ChatGPT, Gemini, GitHub, the T3 app"), ("t3", "your T3: start it, pair a browser"),
     ("msg", "messages between people (box help msg)"), ("where", "where someone is"),
     ("request", "ask the owner for a program or a change"), ("restore", "bring back an archived project"),
+    ("issue", "note what about the machine slowed you down, for the owner"),
     ("projects", "projects on all your machines"), ("help", "box help <topic>: details, read on demand"))
 
 
@@ -1105,7 +1137,7 @@ def cmd_help(a):
     if not topics:
         sys.exit("box help: the help file is missing on this machine (HELP.md). Tell the owner; "
                  "meanwhile `box rules` has the basics.")
-    a.topic = {"machines": "boxes", "machine": "boxes", "accounts": "logins", "server": "servers",
+    a.topic = {"boxes": "machines", "machine": "machines", "accounts": "logins", "server": "servers",
                "glossary": "words", "command": "commands"}.get(a.topic, a.topic)
     if a.topic and a.topic in topics:
         print(topics[a.topic])
@@ -1116,7 +1148,10 @@ def cmd_help(a):
     out = sys.stderr if a.topic else sys.stdout
     if a.topic:
         print(f"box help: there's no topic called {a.topic!r}.", file=out)
-    print("box help <topic>: details agents read on demand.\ntopics: " + ", ".join(topics) + ", all", file=out)
+    print("box help <topic>: details agents read on demand. Topics:", file=out)
+    for k in topics:
+        print(f"  {k:<10} {TOPIC_LINES.get(k, '')}".rstrip(), file=out)
+    print("  all        every topic at once", file=out)
     print("\nevery command: box help commands", file=out)
     if a.topic:
         sys.exit(2)
@@ -4566,7 +4601,8 @@ def cmd_team(a):
 def build_parser():
     p = argparse.ArgumentParser(prog="box", description=__doc__, usage="box <command> [options]",
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
-                                epilog="Every command: box help commands. Details on a topic: box help <topic>.")
+                                epilog="Owner: box friends, box invite, box hackathon (box help friends).\n"
+                                       "Every command: box help commands. Details on a topic: box help <topic>.")
     s = p.add_subparsers(dest="sub", metavar="<command>", title="main commands")
     x = s.add_parser("limits", help="owner: the disk budget your agents see (`box limits disk 50`)")
     x.add_argument("what", nargs="?", choices=["disk"], default="disk"); x.add_argument("value", nargs="?")
