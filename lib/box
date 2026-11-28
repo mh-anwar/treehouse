@@ -1411,7 +1411,8 @@ def t3_write_units(host, env):
     t3 = ["[Unit]", "Description=T3 Code (box t3; " + T3_SOCKET + " starts it)",
           "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
           "[Service]", "WorkingDirectory=%h",
-          "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"]
+          "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+          "Environment=T3CODE_TELEMETRY_ENABLED=false"]  # owner's choice: T3 sends no usage telemetry
     t3 += [f"Environment={k}={sd_escape(v)}" for k, v in env.items()]
     t3 += ["ExecStart=/usr/local/bin/t3 serve",
            f"ExecStartPost=/bin/bash -c '{sd_escape(ready)}'",  # started = answering (first start downloads T3)
