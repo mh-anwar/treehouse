@@ -440,7 +440,9 @@ ul.pres li{display:grid;grid-template-columns:minmax(120px,1fr) 2fr minmax(max-c
 ul.pres li:first-child{padding-top:0}ul.pres .ac{color:var(--mut);font-size:13px;white-space:nowrap;display:flex;align-items:center;justify-self:end}
 @media(max-width:560px){ul.pres li{grid-template-columns:1fr auto}ul.pres .st{grid-column:1/-1;order:3}}
 .mystatus{margin-top:16px}form.status{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-form.status input{flex:2 1 220px;width:auto;margin:0}form.status input+input{flex:1 1 160px}form.status button{margin:0}
+form.status{align-items:flex-end}form.status .fld{flex:2 1 220px;min-width:0}form.status .fld+.fld{flex:1 1 160px}
+form.status label{margin:0 0 4px;font-size:13px;font-weight:500}form.status input{width:100%;margin:0}form.status button{margin:0}
+form.team .two{gap:0 12px}form.team button{margin-top:12px}
 .tgrow{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}.tgrow>div:first-child{flex:1 1 260px}
 .qr{flex:none;text-align:center}.qrbox{display:inline-block;padding:8px;background:#fff;border-radius:8px;line-height:0}
 .qrbox svg{width:180px;height:180px}.qr .sub{max-width:200px;margin:6px auto 0}
@@ -461,6 +463,15 @@ form.status select{flex:1 1 160px;width:auto;margin:0}
 .out:empty{display:none}.out>.note{margin:0 0 16px;background:var(--inset)}.start .out>.note{margin:0 0 12px}
 .out>.card,.out>.logbox{border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;padding:0 0 16px;margin:0 0 16px}
 .logbox h3{margin:0 0 8px}.logbox pre.logs{margin:0}.logbox .lacts{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin:10px 0 0}
+td.fa{white-space:nowrap}td.fa>details.cf+details.cf{margin-left:6px}
+details.cf{display:inline-block}summary.linkbtn{color:var(--acc);text-decoration:underline;text-underline-offset:2px;cursor:pointer;font-size:inherit}details.cf>summary{list-style:none;margin:0}details.cf>summary::-webkit-details-marker{display:none}
+details.cf[open]{display:block;flex-basis:100%;order:9}details.cf[open]>summary{display:none}
+.cfb{white-space:normal;min-width:240px;border:1px solid var(--line2);border-radius:var(--r);padding:12px 14px;background:var(--inset);max-width:620px}
+.cfb>p{margin:0 0 10px;font-size:14px}.cfb .cfa{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.cfb .cfa form{margin:0}
+.cfb label{margin:0 0 4px;font-size:13px}.cfb label+input,.cfb label+select{margin-bottom:10px}
+.cfb a.cfx{font-size:13px}ul.sw{list-style:none;padding:0;margin:4px 0 0;font-size:13px;color:var(--mut)}ul.sw li{margin:2px 0}
+ul.sw b{color:var(--fg);font-weight:500}ul.sw form{display:inline}.act .sub{white-space:normal}
+ul.hkl{margin:0 0 8px;padding-left:20px;font-size:14px}ul.hkl li{margin:2px 0}pre.logs .le{color:var(--bad);font-weight:600}.attn{margin-left:6px}
 dl.gloss{margin:4px 0 0}dl.gloss dt{font-weight:600;font-size:14px;margin-top:12px}dl.gloss dd{margin:2px 0 0;font-size:14px;color:var(--mut)}
 .needs .d b{font-weight:600}.adm{margin:0 0 16px}details.blk{margin-top:28px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
@@ -529,7 +540,7 @@ def dashboard():
 <p class="sub" id="foot"></p><script>{DASH_JS}</script>""")
 
 
-def join_page(ip, who, msg=None, err=None, form=None, rng="24h", tab="", result=None, card=""):
+def join_page(ip, who, msg=None, err=None, form=None, rng="24h", tab="", result=None, card="", pre=None):
     e = html.escape
     if not who:
         return page("join", f"""<div class="box"><h2>Can't identify you</h2>
@@ -537,7 +548,7 @@ def join_page(ip, who, msg=None, err=None, form=None, rng="24h", tab="", result=
 invite, then open <b>http://{html.escape(box_ip())}:{html.escape(str(CFG['WEB_PORT']))}/join</b>.</p></div>""")
     name, rec = existing_account(who["id"])
     if name:
-        return portal_page(ip, who, name, rec, result, rng=rng, tab=tab, card=card)
+        return portal_page(ip, who, name, rec, result, rng=rng, tab=tab, card=card, pre=pre)
     if CFG["JOIN_MODE"] != "open":
         return page("join", "<div class='box'><h2>Signups are closed</h2><p>Ask the owner.</p></div>")
     if msg:
@@ -994,22 +1005,52 @@ RUN_SHOWN = 8           # rows before "N more"
 RUN_OLD = 86400         # up this long with RUN_OLD_MEM or more: flagged, it may be forgotten
 RUN_OLD_MEM = 200 << 20
 RUN_STOP_TEXT = {
-    "containers": "Stop {name}? It stays off, even after the machine restarts, until someone starts it again.",
-    "server": "Stop {name}? It stays off, even after the machine restarts, until it's started again under Servers.",
-    "unit": "Stop {name}? Anything running inside it ends now.",
-    "t3": "Stop T3? Open chats disconnect and an agent that's working right now stops. T3 starts again the next "
+    "containers": "{name}{parts} stops. Apps that use it stop working until it's started again. Its data is kept, and "
+                  "it stays off, even after the machine restarts, until someone starts it.",
+    "server": "{name} stops and its link stops working. Its files are kept, and it stays off, even after the machine "
+              "restarts, until it's started again under Servers.",
+    "unit": "{name} stops, and anything running inside it ends now. Unsaved work in it is lost.",
+    "t3": "T3 stops. Open chats disconnect and an agent that's working right now stops. T3 starts again the next "
           "time it's opened.",
 }
 # the same, when the owner stops someone else's from the All running tab: say whose it is first
 RUN_STOP_OTHER = {
-    "containers": "This is {user}'s {what} {name}. Stopping it ends it for {user}, and it stays off (even after the "
-                  "machine restarts) until they start it again.",
-    "server": "This is {user}'s server {name}. Stopping it takes it offline for everyone using it, and it stays off "
+    "containers": "This is {user}'s {what} {name}{parts}. It stops for {user} and anyone using it, apps that use it "
+                  "stop working, its data is kept, and it stays off (even after the machine restarts) until {user} "
+                  "starts it again.",
+    "server": "This is {user}'s server {name}. Its link stops working for everyone using it, and it stays off "
               "(even after the machine restarts) until {user} starts it again.",
-    "unit": "This is {user}'s {what} {name}. Anything running inside it ends now.",
-    "t3": "This is {user}'s T3. Their open chats will disconnect and any agent working for them right now stops. "
+    "unit": "This is {user}'s {what} {name}. Anything running inside it ends now, and unsaved work in it is lost.",
+    "t3": "This is {user}'s T3. Their open chats disconnect and any agent working for them right now stops. "
           "It starts again the next time they open T3.",
 }
+
+
+def ask(btn, action, label, consequence, key="", extra="", go=None, danger=True, link=False):
+    """A button that says what it will do before it does it: pressing it shows the consequence in place, with a
+    second button that does it and a Cancel. No browser pop-up, and it works without JavaScript. consequence: HTML."""
+    e = html.escape
+    cls = "linkbtn" if link else f"btn sm {'danger' if danger else 'secondary'}"
+    return (f"<details class='cf'><summary class='{cls}'>{e(label)}</summary>"
+            f"<div class='cfb'><p>{consequence}</p><div class='cfa'>"
+            + btn(action, go or label, key, extra=extra, small=True, danger=danger, primary=not danger)
+            + "<a href='#' class='cfx' data-cancel>Cancel</a></div></div></details>")
+
+
+def stop_text(it, user=None, viewer=None):
+    """(what happens, needs force) for one Running item's Stop, said in full before it runs."""
+    kind = str(it.get("kind") or "")
+    label = sbrunning.KIND_LABEL.get(kind, kind.title())
+    nm = sb.printable(str(it.get("name") or "?"))[:60]
+    m = re.search(r"(\d+) containers", str(it.get("detail") or ""))
+    parts = f" (all {m.group(1)} of its containers)" if m else ""
+    mine = user is None or user == viewer
+    msg = (RUN_STOP_TEXT if mine else RUN_STOP_OTHER)[it.get("stop")].format(
+        name=nm, user=user, what=(label or "item").lower(), parts=parts)
+    if it.get("keep"):
+        msg += (" It's protected from automatic stops" + ("" if mine else f" ({user} marked it keep running)")
+                + ", so stop it only if " + ("you're sure." if mine else f"{user} agreed."))
+    return msg, bool(it.get("keep"))
 
 
 def oom_notes(name, days=2):
@@ -1046,7 +1087,7 @@ def run_rows(items, btn=None, user=None, viewer=None):
         pills = (f'<span class="pill warn">running {e(sbrunning.ago(age))}</span>' if old else
                  f'<span class="pill">{e(label)}</span>')
         if it.get("keep"):
-            pills += '<span class="pill ok" title="Nothing on this machine stops it by itself">Keep running</span>'
+            pills += '<span class="pill ok">Protected from automatic stops</span>'
         about = sb.printable(str(it.get("about") or ""))[:160]
         if about:
             sub_txt = e(about)
@@ -1064,21 +1105,16 @@ def run_rows(items, btn=None, user=None, viewer=None):
         can = btn and stop in RUN_STOP_TEXT and sbrunning.KEY_RE.match(str(it.get("key") or "")) \
             and (stop != "t3" or user is not None)
         if can:
-            mine = user is None or user == viewer
-            what = label.lower() if label else "item"
-            msg = (RUN_STOP_TEXT[stop] if mine else RUN_STOP_OTHER[stop]).format(name=nm[:60], user=user, what=what)
-            conf = [msg]
-            extra = ""
-            if it.get("keep"):
-                conf.append(f"{nm[:60]} is marked keep running" + ("" if mine else f" by {user}")
-                            + ", so nothing on the machine ever stops it by itself. Stop it anyway?")
-                extra = "<input type='hidden' name='force' value='1'>"
+            msg, force = stop_text(it, user, viewer)
+            extra = "<input type='hidden' name='force' value='1'>" if force else ""
             if user is not None:
                 extra += f"<input type='hidden' name='user' value='{e(user)}'>"
-            js = " && ".join(f"confirm({e(json.dumps(c))})" for c in conf)
-            act = btn("running-stop-any" if user is not None else "running-stop",
-                      "Stop" if not it.get("keep") else "Stop anyway", str(it["key"]), primary=False, small=True,
-                      danger=bool(it.get("keep")), extra=extra, attrs=f" onsubmit=\"return {js}\"")
+            act = ask(btn, "running-stop-any" if user is not None else "running-stop", "Stop", e(msg),
+                      str(it["key"]), extra, go="Stop anyway" if force else f"Stop {nm[:40]}")
+        elif btn and kind == "agent":
+            act = "<span class='sub'>Ends when you close its chat in T3</span>"
+        elif btn and stop == "t3":
+            act = "<span class='sub'>Runs while you use T3</span>"
         rows.append(f'<li class="{"bg" if kind == "background" else ""}"><div class="nm"><b>'
                     f'{e(nm)}</b>{pills if kind != "background" else ""}'
                     f'<div class="sub">{sub_txt}</div></div>'
@@ -1121,8 +1157,8 @@ def running_section(name, rec, st, btn, slot=None):
     if rest:
         out.append(f"<details class='run-more'><summary>Show {len(rest)} more</summary><ul class='run'>"
                    + "".join(run_rows(rest, btn)) + "</ul></details>")
-    out.append("<p class='sub' style='margin:14px 0 0'>Agent sessions end when their chat ends; T3 stops on its "
-               "own. Your agent can list and stop these for you too.</p></section></div>")
+    out.append("<p class='sub' style='margin:14px 0 0'>Your agent can list and stop these for you too.</p>"
+               "</section></div>")
     return "".join(out)
 
 
@@ -1143,8 +1179,7 @@ def running_all_section(ip, who, btn=None, viewer=None, slot=None):
            f"({'1 account' if len(accts) == 1 else f'{len(accts)} accounts'})"
            + (f"; the whole machine has {e(size(whole.get('mem_used_b') or 0))} of {e(size(whole['mem_total_b']))} in "
               "use, the rest is the system itself" if whole.get("mem_total_b") else "") + ". "
-           "Before you stop something of someone else's, the page says whose it is and what will happen. Things marked "
-           "keep running ask twice.</p>"]
+           "Every Stop says whose it is and what will happen before it does anything.</p>"]
     for a in accts:
         user = sb.printable(str(a.get("user")))[:40]
         items = [i for i in a.get("items") or [] if isinstance(i, dict) and i.get("kind") != "background"]
@@ -1158,7 +1193,8 @@ def running_all_section(ip, who, btn=None, viewer=None, slot=None):
         if len(items) > RUN_SHOWN:
             out.append(f"<details class='run-more'><summary>Show {len(items) - RUN_SHOWN} more</summary><ul class='run'>"
                        + "".join(run_rows(items[RUN_SHOWN:], btn, user, viewer)) + "</ul></details>")
-    out.append("<p class='sub' style='margin:14px 0 0'>Agent sessions have no Stop button: they end when their chat ends.</p>")
+    out.append("<p class='sub' style='margin:14px 0 0'>Agent sessions have no Stop button: they end when their chat "
+               "ends, and stopping one here would lose the work it hasn't saved.</p>")
     out.append("</section></div>")
     return "".join(out)
 
@@ -1172,53 +1208,75 @@ def servers_section(st, shared, btn, base="", own_public=True, slot=None):
 
     def acts(kind, s, group=False, more=""):
         n, running = s["name"], s.get("state") == "running"
-        conf = (f' onsubmit="return confirm({e(json.dumps("Stop " + n + " for everyone in the group?"))})"' if group else
-                f' onsubmit="return confirm({e(json.dumps(n + " is marked keep running. Stop it anyway? It stays off until you start it again."))})"'
-                if s.get("keep") else "")
         b = []
-        for op, label in (("restart", "Restart"), ("stop", "Stop")) if running else (("start", "Start"),):
-            b.append(btn(f"{kind}-ctl", label, n, f'<input type="hidden" name="op" value="{op}">',
-                         primary=op == "start", small=True, attrs=conf if op == "stop" else ""))
-        b.append(btn(f"{kind}-logs", "Show recent output", n, primary=False, small=True))
+        if running:
+            b.append(btn(f"{kind}-ctl", "Restart", n, '<input type="hidden" name="op" value="restart">',
+                         primary=False, small=True))
+            what = (f"{e(n)} stops for everyone in the group: its link stops working until someone starts it again."
+                    if group else f"{e(n)} stops and its link stops working until you start it again. It stays off, "
+                    "even after the machine restarts.")
+            if s.get("keep") and not group:
+                what += " It's protected from automatic stops, so stop it only if you're sure."
+            b.append(ask(btn, f"{kind}-ctl", "Stop", what, n, '<input type="hidden" name="op" value="stop">',
+                         go=f"Stop {n}"))
+        else:
+            b.append(btn(f"{kind}-ctl", "Start", n, '<input type="hidden" name="op" value="start">', small=True))
+        b.append(btn(f"{kind}-logs", "View logs", n, primary=False, small=True))
         return '<div class="acts">' + "".join(b) + more + "</div>"
 
     def switches(s):
-        """Keep running / pause during hackathons, as buttons that say what they'll do."""
+        """Keep running / pause during hackathons: what it is now, then what the link next to it changes it to."""
         n = s["name"]
         keep = bool(s.get("keep"))
-        b = [btn("serve-set", "Allow automatic stops" if keep else "Keep it running", n,
-                 "<input type='hidden' name='what' value='keep'>"
-                 f"<input type='hidden' name='value' value='{'off' if keep else 'on'}'>", primary=False, small=True)]
+
+        def flip(what, value, label):
+            return btn("serve-set", label, n, f"<input type='hidden' name='what' value='{what}'>"
+                       f"<input type='hidden' name='value' value='{value}'>", link=True)
+        rows = [("<b>Protected from automatic stops</b>: nothing on this machine stops it by itself, and it restarts "
+                 "if it stops. " + flip("keep", "off", "Turn off")) if keep else
+                ("<b>Not protected</b>: if memory runs out, the machine may stop it. " + flip("keep", "on", "Protect it"))]
         if not keep:
             pause = s.get("hackathon") == "pause"
-            b.append(btn("serve-set", "Keep it on during hackathons" if pause else "Pause it during hackathons", n,
-                         "<input type='hidden' name='what' value='hackathon'>"
-                         f"<input type='hidden' name='value' value='{'keep' if pause else 'pause'}'>",
-                         primary=False, small=True))
-        return "".join(b)
+            rows.append(("<b>Paused during hackathons</b> to free memory, then started again. "
+                         + flip("hackathon", "keep", "Keep it running instead")) if pause else
+                        ("<b>Keeps running during hackathons.</b> "
+                         + flip("hackathon", "pause", "Pause it during hackathons")))
+        return "<ul class='sw'>" + "".join(f"<li>{r}</li>" for r in rows) + "</ul>"
+
+    def describe(kind, s):
+        """No description yet: say so, and a field to add one right here."""
+        n = s["name"]
+        imp = ("" if kind == "shared" else
+               "<label>If memory runs short</label><select name='importance'>"
+               "<option value='important'>People rely on it: stop it last</option>"
+               "<option value='safe-to-stop'>Safe to stop</option></select>")
+        form = (f"<form method='post' action='{base}/me'>{hidden(tok_of(btn), action=kind + '-describe', key=n)}"
+                f"<label for='d-{kind}-{e(n)}'>What does {e(n)} do, and who uses it?</label>"
+                f"<input id='d-{kind}-{e(n)}' name='about' required minlength='12' maxlength='300' "
+                "placeholder='Telegram bot for the study group'>" + imp + "<div class='cfa'><button class='sm'>Save</button>"
+                "<a href='#' class='cfx' data-cancel>Cancel</a></div></form>")
+        return ("<div class='sub warnline' style='margin:0'>No description yet" + (
+            f'. Started with <code>{e(sb.printable(str(s["exec"]))[:120])}</code>' if s.get("exec") else "")
+            + ".</div><details class='cf'><summary class='btn sm secondary' style='margin-top:6px'>Add a description"
+            f"</summary><div class='cfb'>{form}</div></details>")
 
     def facts(s):
         """What the server is for, whose it is, and its settings, in plain words."""
         about = sb.printable(str(s.get("about") or ""))[:300]
-        out = (f'<div class="desc">{e(about)}</div>' if about else
-               '<div class="sub warnline" style="margin:0">No description yet' + (
-                   f'. Started with <code>{e(sb.printable(str(s["exec"]))[:120])}</code>' if s.get("exec") else "")
-               + '. Ask your agent to describe what it does.</div>')
+        out = f'<div class="desc">{e(about)}</div>' if about else describe("serve", s)
         bits = []
-        if s.get("keep"):
-            bits.append("<b>Keep running</b>: nothing on this machine stops it by itself, and it restarts if it ever stops")
-        else:
-            bits.append({"important": "Important: people rely on it", "safe-to-stop": "Safe to stop if memory runs short"}
-                        .get(str(s.get("importance") or ""), "Not marked important or safe to stop yet"))
-            if s.get("hackathon") == "pause":
-                bits.append("Paused while hackathon mode is on")
+        if not s.get("keep"):
+            imp = {"important": "Important: people rely on it", "safe-to-stop": "Safe to stop if memory runs short"}.get(
+                str(s.get("importance") or ""))
+            if imp:
+                bits.append(imp)
         if s.get("project"):
             bits.append(f"Project {e(sb.printable(str(s['project']))[:60])}")
         if s.get("by"):
             bits.append("Made by " + e(sb.printable(str(s["by"]))[:40])
                         + (f" with {e(sb.printable(str(s['agent']))[:30])}" if s.get("agent") else "")
                         + (f", {e(sb.printable(str(s['created']))[:16])}" if s.get("created") else ""))
-        return out + f'<div class="sub">{" · ".join(bits)}</div>'
+        return out + (f'<div class="sub">{" · ".join(bits)}</div>' if bits else "") + switches(s)
 
 
     def state(s):
@@ -1252,8 +1310,8 @@ def servers_section(st, shared, btn, base="", own_public=True, slot=None):
         out.append('<div class="srv">' + "".join(
             f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
             f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span>'
-            + (' <span class="pill ok">Keep running</span>' if s.get("keep") else "") + '</div>'
-            + facts(s) + f'<div class="sub">{link(s.get("port"), public=own_public)}</div>{acts("serve", s, more=switches(s))}'
+            + (' <span class="pill ok">Protected</span>' if s.get("keep") else "") + '</div>'
+            + facts(s) + f'<div class="sub">{link(s.get("port"), public=own_public)}</div>{acts("serve", s)}'
             '</div>'
             for s in mine if isinstance(s, dict) and SERVER_RE.fullmatch(str(s.get("name", "")))) + "</div>")
         out.append("<p class='sub' style='margin:12px 0 0'>" + ("Only you can open these links, after signing in like on "
@@ -1282,12 +1340,11 @@ def servers_section(st, shared, btn, base="", own_public=True, slot=None):
     out.append('<div class="srv">' + "".join(
         f'<div class="item"><div><b>{e(s["name"])}</b> <span class="sub">· {state(s)}'
         f'{" · port " + e(str(s["port"])) if s.get("port") else ""}</span></div>'
-        + (f'<div class="desc">{e(sb.printable(str(s["desc"]))[:300])}</div>' if s.get("desc") else
-           '<div class="sub warnline" style="margin:0">No description yet. Ask your agent to add one.</div>')
+        + (f'<div class="desc">{e(sb.printable(str(s["desc"]))[:300])}</div>' if s.get("desc") else describe("shared", s))
         + f'<div class="sub">{link(s.get("port"), "/s/" + s["name"], sb.cfg_bool(CFG, "SHARED_PUBLIC_LINKS"))}</div>'
         f'<div class="sub">made by {who_when(s.get("created_by"), s.get("created"))}'
         + (f'<br>last changed by {who_when(s.get("updated_by"), s.get("updated"))}' if s.get("updated_by") else "")
-        + f'</div><div class="sub">Its code is in the group\'s folder <code>/srv/shared/{e(s["name"])}</code>; ask your agent to change it.'
+        + f'</div><div class="sub">Its code is in the group\'s folder <code>{e(CFG.get("SHARED_DIR") or "/srv/shared")}/{e(s["name"])}</code>; your agent can change it.'
         f'</div>{acts("shared", s, group=True)}</div>' for s in group) + "</div>")
     out.append("<p class='sub' style='margin:12px 0 0'>Everyone in the group can start, stop and restart these. "
                + ("Their links open for anyone with an account here, after signing in."
@@ -1303,11 +1360,19 @@ def logs_card(res, btn, base=""):
     kind = "shared" if str(res.get("_view", "")).startswith("shared") else "serve"
     name = str(res.get("name") or res.get("key") or "")
     lines = [sb.printable(str(x).replace("\t", "    ")) for x in (res.get("lines") or [])][-200:]
-    text = "\n".join(lines) or "(no log lines yet)"
     card = "shared" if kind == "shared" else "servers"
-    return f"""<div class="logbox" id="logs"><h3>Recent output: {e(name)}{" (group server)" if kind == "shared" else ""}</h3>
-<pre class="logs" id="logpre" tabindex="0" aria-label="Log lines">{e(text)}</pre>
+    bad = re.compile(r"\b(error|exception|traceback|failed|fatal|panic|refused|denied)\b", re.I)
+    shown = "\n".join(f"<span class='le'>{e(x)}</span>" if bad.search(x) else e(x) for x in lines) or "(no log lines yet)"
+    nerr = sum(1 for x in lines if bad.search(x))
+    when = time.strftime("%H:%M %Z")
+    agent = (f"Logs of my {'group server' if kind == 'shared' else 'server'} {name} on {here_name()}, last "
+             f"{len(lines)} lines at {when}. Find what's wrong and fix it:\n\n" + "\n".join(lines[-80:]))
+    return f"""<div class="logbox" id="logs"><h3>Logs: {e(name)}{" (group server)" if kind == "shared" else ""}</h3>
+<p class="sub" style="margin:0 0 8px">Last {len(lines)} lines, fetched {e(when)}{f". {plural(nerr, 'line')} look like errors (in red)" if nerr else ""}.</p>
+<pre class="logs" id="logpre" tabindex="0" aria-label="Log lines">{shown}</pre>
+<textarea id="logcopy" hidden readonly>{e(agent)}</textarea>
 <div class="lacts">{btn(kind + "-logs", "Refresh", name, primary=False, small=True)}
+<button type="button" class="sm secondary" data-copy="logcopy">Copy for your agent</button>
 <a href="{base}/me?tab=servers#{card}" data-close style="font-size:13px">Close</a></div></div>
 <script>(function(){{var p=document.getElementById("logpre");if(p)p.scrollTop=p.scrollHeight}})();</script>"""
 
@@ -1332,7 +1397,12 @@ def portal_btn(tok, base):
         return f"""<form method="post" action="{base}/me" style="display:inline"{attrs}>
 <input type="hidden" name="token" value="{tok}"><input type="hidden" name="action" value="{e(action)}">
 <input type="hidden" name="key" value="{e(key)}">{extra}<button{f' class="{cls}"' if cls else ''}>{e(label)}</button></form>"""
+    btn.tok = tok
     return btn
+
+
+def tok_of(btn):
+    return getattr(btn, "tok", "")
 
 
 # ---------- the owner's page: their own account's dashboard, plus the whole box (owner only) ----------
@@ -1342,7 +1412,9 @@ OWNER_ACTIONS = ("serve-ctl", "serve-logs", "shared-ctl", "shared-logs", "runnin
                  "request-approve", "request-done", "request-decline", "self-update", "invite", "boost", "hackathon",
                  "msg", "where", "telegram", "telegram-setup", "restore", "projects",
                  "login", "code", "check", "peer-login", "peer-check",  # the owner's own AI / GitHub logins
-                 "peer-code", "logout", "peer-logout")  # per-machine AI accounts (Account tab)
+                 "peer-code", "logout", "peer-logout",  # per-machine AI accounts (Account tab)
+                 "serve-describe", "shared-describe", "running-ok", "project-keep", "issues",  # finish a job in place
+                 "friend-suspend", "friend-resume", "friend-remove", "invite-revoke")  # the Friends tab
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
 
 
@@ -1474,9 +1546,15 @@ def features_page(owner=False):
         row("Your agents", "AI coding agents ready to use: Claude Code, Codex and opencode.",
             "They know how this machine works: group servers, restarts, limits and where files go."
             + (" Your laptop's Claude Code or Codex can work on this machine too." if live_ssh_host() else "")),
-        row("Skills", "Shared add-ons for agents (like council and full-send) you can turn on."),
-        row("Problem reports", "Agents report what slowed them down.",
-            "Once a week an agent goes through the reports and fixes what it can."),
+        row("Skills", "Extra abilities for your agent that you can turn on by asking it.",
+            "For example <b>council</b> asks several AI models the same question and weighs their answers, and "
+            "<b>full-send</b> lets your agent take a task all the way to a finished, merged change while you're "
+            "away. Ask your agent "
+            "\"which skills are there?\"."),
+        row("Problem reports", "Agents note what about the machine slowed them down.",
+            "A one-line note for the owner: what happened, how the agent got around it, what it cost. Never your code, "
+            "files or chats. Once a week an agent goes through the notes and fixes what it can. Turn it off for your "
+            "account on the Account tab."),
         "</div><h3 class='fg'>Servers</h3><div class='flist'>",
         row("Your servers", "Apps and bots that keep running around the clock.",
             "They restart if they crash, each gets a private link, and you can start, stop or mark them keep running."),
@@ -1549,14 +1627,17 @@ def requests_section(btn=None, slot=None):
         why = f"<div class='sub'>{e(str(r['reason']))}</div>" if r.get("reason") else ""
         acts = ""
         if btn and r.get("state") in ("waiting", "new", "queued"):
-            decline_q = f"Decline this request from {r.get('user')}? Their agent is told."
-            acts = ((btn("request-approve", "Approve", rid, small=True) + " " if r.get("kind") == "install" else "")
-                    + btn("request-done", "Mark handled", rid, small=True, primary=r.get("kind") != "install") + " "
-                    + btn("request-decline", "Decline", rid, small=True, danger=True,
-                          attrs=f' onsubmit="return confirm({e(json.dumps(decline_q))})"'))
+            decline_q = f"The request closes as declined, and {r.get('user')}'s agent is told you said no."
+            pk = e(" ".join(map(str, r.get("packages") or [])))
+            acts = ((ask(btn, "request-approve", "Approve", f"Installs <b>{pk}</b> for everyone on this machine, from "
+                         "the system's official package source, with the rights of the machine's administrator. "
+                         f"Everyone can use it afterwards; {e(str(r.get('user')))}'s agent is told.", rid,
+                         go=f"Install {pk}", danger=False) + " " if r.get("kind") == "install" else "")
+                    + btn("request-done", "Mark handled", rid, small=True, primary=False) + " "
+                    + ask(btn, "request-decline", "Decline", e(decline_q), rid, go="Decline it"))
         note = ("" if r.get("kind") == "install" else
-                f"<div class='sub'>To handle it, tell your agent <b>handle the request from {e(str(r.get('user')))}"
-                "</b>, then press Mark handled.</div>")
+                f"<div class='sub'>Do what it asks (or ask your own agent to), then press Mark handled. "
+                f"{e(str(r.get('user')))}'s agent is told.</div>")
         trs.append(f"<tr><td><b>{e(str(r.get('user') or '?'))}</b></td><td>{what}{why}{note}</td>"
                    f"<td class='num'>{e(ago_text(r.get('ts', 0)))}</td>"
                    f"<td><span class='pill {'warn' if r.get('state') == 'waiting' else ''}'>"
@@ -1564,8 +1645,8 @@ def requests_section(btn=None, slot=None):
                    f"<td style='white-space:nowrap'>{acts}</td></tr>")
     out.append('<div class="tw"><table style="min-width:620px"><thead><tr><th>Who</th><th>Asked for</th><th>When</th>'
                '<th>State</th><th></th></tr></thead><tbody>' + "".join(trs) + "</tbody></table></div>")
-    out.append("<p class='sub' style='margin:16px 0 0'>Approve installs the package now. Mark handled closes a request "
-               "you dealt with yourself. Decline closes it and says no. Their agent is told either way.</p></section></div>")
+    out.append("<p class='sub' style='margin:16px 0 0'>Mark handled closes a request you dealt with yourself. Their "
+               "agent is told either way.</p></section></div>")
     return "".join(out)
 
 
@@ -1579,11 +1660,12 @@ def update_section(btn, slot=None):
     elif state == "failed":
         line = f"<span style='color:var(--bad)'>The last update failed:</span> {e(str(st.get('error') or '?'))}"
     elif state == "done":
-        line = (f"Up to date as of {e(ago_text(st.get('finished', 0)))}: <code>{e(str(st.get('commit') or ''))}</code> "
-                f"{e(str(st.get('subject') or ''))}")
+        line = (f"Version <code>{e(str(st.get('commit') or '?')[:12])}</code>, installed "
+                f"{e(ago_text(st.get('finished', 0)))}.")
     else:
-        line = ("Installs the newest treehouse on this machine and refreshes everyone's agent rules. Nobody's servers, "
-                "agents or T3 stop.")
+        line = "Installs the newest treehouse on this machine and refreshes everyone's agent rules."
+    line += (" Installing restarts the dashboard and treehouse's own services for about a minute; nobody's servers, "
+             "agents or T3 stop.")
     if not (CFG.get("UPDATE_SOURCE") or "").strip():
         return ""
     return ("<div class='blk' id='update' data-card='update'><h2>Update treehouse</h2><section class='sec'>"
@@ -1874,7 +1956,7 @@ def box_section(n_events=30, btn=None, slot=None):
     (and the gate's invite records, which this process may read). The invite's result shows in its card (slot)."""
     e = html.escape
     now = time.time()
-    out = ['<div class="blk" id="friends"><h2>Friends</h2>']
+    out = ['<div class="blk" id="friends" data-card="friends"><h2>Friends</h2>', (slot or NO_SLOT)("friends")]
     users = sb.registry().get("users") or {}
     usage = (sb.read_json(sb.USAGE, {}) or {}).get("users") or {}
     rows = metrics_tail(RANGES["7d"])
@@ -1927,18 +2009,27 @@ def box_section(n_events=30, btn=None, slot=None):
             except (TypeError, ValueError):
                 joined = "?"
             over = ' <span class="pill bad">over disk budget</span>' if u.get("over") else ""
+            acts = ""
+            if btn:
+                gone = (f"{e(name)}'s account and home folder are deleted and they can't sign in any more. A copy of "
+                        "their files is kept on this machine first. This can't be undone here.")
+                acts = ((btn("friend-resume", "Resume", name, small=True, primary=False) if stt == "suspended" else
+                         ask(btn, "friend-suspend", "Pause", f"{e(name)} can't sign in until you resume them. Their "
+                             "servers, databases and agents stop now; their files and settings are kept.", name,
+                             go=f"Pause {name}"))
+                        + " " + ask(btn, "friend-remove", "Remove", gone, name, go=f"Remove {name}"))
             trs.append(f'<tr><td><b>{e(name)}</b>{over}'
                        f'</td><td class="mut">{e(str(r.get("email") or "–"))}</td><td class="num">{e(joined)}</td>'
                        f'<td><span class="pill {"ok" if stt == "active" else "bad"}">{"Active" if stt == "active" else "Paused" if stt == "suspended" else e(stt)}</span></td>'
                        f'<td class="num">{disk}</td><td>{svc_html}</td>'
-                       f'<td class="num">{on}</td></tr>')
-        out.append('<section class="sec"><div class="tw"><table><thead><tr><th>Username</th><th>Email</th><th>Joined</th>'
-                   '<th>Account</th><th>Disk used</th><th>Servers</th><th>Last active</th></tr></thead><tbody>'
-                   + "".join(trs) + "</tbody></table></div></section>")
+                       f'<td class="num">{on}</td>' + (f'<td class="fa">{acts}</td>' if btn else "") + '</tr>')
+        out.append('<section class="sec"><div class="tw"><table class="fr"><thead><tr><th>Username</th><th>Email</th>'
+                   '<th>Joined</th><th>Account</th><th>Disk used</th><th>Servers</th><th>Last active</th>'
+                   + ('<th></th>' if btn else '') + '</tr></thead><tbody>' + "".join(trs) + "</tbody></table></div></section>")
     else:
         out.append("<p class='mut'>Nobody has joined yet.</p>")
-    out.append('<p class="sub">To remove or pause someone\'s account, or change their email, ask your agent '
-               '(for example "suspend frodo").</p></div>')
+    out.append('<p class="sub">Pause locks someone out and stops their programs but keeps everything; Resume lets '
+               'them back. To change someone\'s email, ask your agent ("change frodo\'s email to ...").</p></div>')
     if btn:
         out.append("<div class='blk' id='invite' data-card='invite'><h2>Invite someone</h2><section class='sec'>"
                    + (slot or NO_SLOT)("invite")
@@ -1946,8 +2037,42 @@ def box_section(n_events=30, btn=None, slot=None):
                          extra="<input type='email' name='email' placeholder='their email' required>"
                                "<input name='note' placeholder='name (optional)' maxlength='120' class='short'>")
                    + "<p class='sub' style='margin-bottom:0'>Their account is made right away and they sign in with that "
-                   "email. You get a message to send them; nothing is emailed for you.</p></section></div>")
+                   "email. You get a message to send them; nothing is emailed for you.</p>" + open_invites(btn)
+                   + "</section></div>")
     return "".join(out)
+
+
+def open_invites(btn):
+    """Unused invite links (made with `box invite --no-create`), each with a Cancel that says what happens."""
+    e = html.escape
+    now = time.time()
+    inv = sorted(((h, r) for h, r in sb.gate_records("invites") if float(r.get("expires", 0) or 0) > now
+                  and re.fullmatch(r"[0-9a-f]{12,128}", h)), key=lambda x: -float(x[1].get("expires") or 0))
+    if not inv:
+        return ""
+    return ("<h3 style='margin:20px 0 4px'>Invite links not used yet</h3><ul class='rows'>" + "".join(
+        f"<li><span class='d'><b>{e(str(r.get('email') or 'anyone with the link'))}</b> <span class='sub'>works until "
+        f"{e(time.strftime('%b %-d, %H:%M %Z', time.localtime(float(r.get('expires')))))}</span></span><span class='a'>"
+        + ask(btn, "invite-revoke", "Cancel invite", f"The link stops working right away, so {e(str(r.get('email') or 'nobody'))} "
+              "can't use it to join. You can invite them again later.", h, go="Cancel this invite") + "</span></li>"
+        for h, r in inv[:20]) + "</ul>")
+
+
+# where each kind of event's thing lives on the dashboard, and which ones need the owner to look
+EVENT_PLACE = {"user_created": "people#friends", "user_removed": "people#friends", "user_suspended": "people#friends",
+               "user_resumed": "people#friends", "invite_created": "people#invite", "invite_used": "people#friends",
+               "invite_revoked": "people#invite", "cf_access": "people#friends", "tools_updated": "settings#update",
+               "tools_added": "requests", "tools_removed": "requests", "skill_shared": "home",
+               "shared_created": "servers#shared", "shared_described": "servers#shared", "shared_set": "servers#shared",
+               "shared_start": "servers#shared", "shared_stop": "servers#shared", "shared_restart": "servers#shared",
+               "shared_removed": "servers#shared", "oom_kill": "running", "running_stopped": "running",
+               "over_budget": "people#friends", "deleted": "people#friends", "disk_pressure": "machines",
+               "hackathon_set": "settings#hackathon", "hackathon_on": "settings#hackathon",
+               "hackathon_off": "settings#hackathon", "hackathon_paused": "running", "hackathon_resumed": "running",
+               "telegram_linked": "settings#telegram-setup", "telegram_off": "settings#telegram-setup",
+               "balance": "machines", "janitor_error": "machines", "boxes_set": "machines"}
+EVENT_ATTENTION = {"oom_kill", "over_budget", "disk_pressure", "janitor_error", "admin_drop_refused",
+                   "shared_drop_refused"}
 
 
 def events_section(n_events=40):
@@ -1967,42 +2092,59 @@ def events_section(n_events=40):
     out = []
     out.append("<section class='sec'><ul class='ev'>" + ("".join(
         f"<li><span class='mut'>{e(ago_text(ev.get('ts', 0)))}</span> · {event_text(ev)}"
-        + (f" <span class='pill'>×{cnt}</span>" if cnt > 1 else "") + "</li>" for _, ev, cnt in folded)
+        + (f" <span class='pill'>×{cnt}</span>" if cnt > 1 else "")
+        + (" <span class='pill warn attn'>Needs attention</span>" if ev.get("kind") in EVENT_ATTENTION
+           and time.time() - float(ev.get("ts") or 0) < 2 * 86400 else "")
+        + (f" · <a href='/_box/me?tab={EVENT_PLACE[ev.get('kind')]}'>Open</a>"
+           if ev.get("kind") in EVENT_PLACE else "") + "</li>" for _, ev, cnt in folded)
         or "<li class='mut'>nothing yet</li>") + "</ul></section>")
     return "".join(out)
 
 
-def hackathon_section(btn, slot=None):
-    """Owner settings: hackathon mode (sharedbox-admin hackathon_set: op on|off, until "YYYY-MM-DD HH:MM", users)."""
+def hackathon_section(btn, slot=None, pause=None):
+    """Owner settings: hackathon mode (sharedbox-admin hackathon_set: op on|off, until "YYYY-MM-DD HH:MM", users).
+    pause: [{"user", "name", "about"}] the servers it would pause (root's hackathon-preview), or None if unknown."""
     e = html.escape
     cfg = sb.load_config()  # live: `box hackathon` and this form change it while we run
     until = sb.hackathon_until(cfg)
     chosen = set(u for u in re.split(r"[\s,]+", cfg.get("HACKATHON_USERS") or "") if u)
     friends = sorted(sb.friend_users())
     if until:
-        state = (f'<span class="dot ok"></span><b>On</b> until {e(time.strftime("%a %b %d, %H:%M", time.localtime(until)))}'
-                 + (f' · for {e(", ".join(sorted(chosen)))} and you' if chosen else " · for you"))
+        state = (f'<span class="dot ok"></span><b>On</b> until {e(time.strftime("%a %b %-d, %H:%M %Z", time.localtime(until)))}'
+                 + (f' · installs auto-approved for {e(", ".join(sorted(chosen)))} and you' if chosen else
+                    " · installs auto-approved for you"))
     else:
         state = '<span class="dot"></span><b>Off</b>'
-    default = time.strftime("%Y-%m-%dT%H:%M", time.localtime(until or time.time() + 12 * 3600))
+    cur = time.strftime("%Y-%m-%dT%H:%M", time.localtime(until)) if until else ""
     boxes = "".join(f"<label><input type='checkbox' name='hu_{e(n)}' value='1'{' checked' if n in chosen else ''}>"
                     f"{e(n)}</label>" for n in friends) or "<span class='mut'>No friends yet.</span>"
+    if pause is None:
+        paused = "<li>Servers whose owners allowed it are paused to free memory, and started again when it ends.</li>"
+    elif pause:
+        paused = ("<li>These servers pause to free memory (their owners allowed it) and start again when it ends: "
+                  + ", ".join(f"<b>{e(p.get('name', '?'))}</b> ({e(p.get('user', '?'))})" for p in pause[:20]) + ".</li>")
+    else:
+        paused = "<li>No server pauses: nobody has allowed it for theirs.</li>"
+    changes = ("<ul class='hkl'><li>Installs from the people you tick below (and you) are approved straight away, "
+               "without the usual safety list, size limit or daily limit. Packages that change the machine's own security "
+               "(administrator rights, remote login, firewall, kernel) are still refused.</li>"
+               "<li>The nightly security restart is skipped.</li>" + paused
+               + "<li>Servers marked protected, group servers and everything else keep running.</li></ul>")
     form = btn("hackathon", "Turn on hackathon mode" if not until else "Save changes", primary=not until, small=True,
                attrs=" class='hk'",
                extra="<input type='hidden' name='op' value='on'>"
-                     "<label>Ends</label><div class='when'>"
-                     f"<input type='datetime-local' name='until' value='{default}' aria-label='Ends at'>"
-                     "<span class='sub'>or in</span><input type='number' name='hours' min='1' max='168' "
-                     "placeholder='hours' style='width:90px' aria-label='Hours from now'><span class='sub'>hours</span></div>"
-                     "<label>Whose install requests skip the safety list (yours always do)</label>"
-                     f"<div class='grid'>{boxes}</div>")
+                     "<label for='hk-until'>Ends at (your local time; at most 7 days from now)</label><div class='when'>"
+                     f"<input type='datetime-local' id='hk-until' name='until' value='{cur}' required></div>"
+                     "<label>Auto-approve installs from (yours always are)</label>"
+                     f"<div class='grid'>{boxes}</div><p class='sub' style='margin:4px 0 0'>Risk: a package from the "
+                     "official source runs with the machine administrator's rights while it installs. Tick only "
+                     "people you trust with that.</p>")
     off = btn("hackathon", "Turn off hackathon mode now", primary=False, small=True,
               extra="<input type='hidden' name='op' value='off'>") if until else ""
     return ("<div class='blk' id='hackathon' data-card='hackathon'><h2>Hackathon mode</h2><section class='sec'>"
             + (slot or NO_SLOT)("hackathon") + f"<p style='margin-top:0'>{state}</p>"
-            "<p class='sub'>For a build day. While it's on: installs that the people you pick ask for skip the usual "
-            "safety list, scheduled restarts are skipped, and servers whose owners allowed it are paused to free memory "
-            "(servers marked keep running never are). It ends by itself at the time you set (at most 7 days).</p>"
+            "<p class='sub' style='margin-bottom:4px'>For a build day. While it's on:</p>" + changes
+            + "<p class='sub'>It ends by itself at the time you set.</p>"
             f"{form}<div style='margin-top:10px'>{off}</div></section></div>")
 
 
@@ -2035,6 +2177,9 @@ VIEW_PLACE = {"running-ctl": ("servers", "running"), "serve-ctl": ("servers", "s
               "ai-account": ("account", "accounts"), "team": ("account", "team"),
               "restore": ("account", "archive"), "projects": ("account", "projects"), "boost": ("account", "dash"), "add-key": ("account", "more"),
               "invite": ("people", "invite"), "hackathon": ("settings", "hackathon"),
+              "serve-describe": ("servers", "servers"), "shared-describe": ("servers", "shared"),
+              "running-ok": ("home", "needs"), "project-keep": ("home", "needs"), "issues": ("account", "account"),
+              "friend": ("people", "friends"), "invite-revoke": ("people", "invite"),
               "telegram-setup": ("settings", "telegram-setup"), "request-update": ("settings", "update")}
 CARD_RE = re.compile(r"[a-z][a-z-]{0,30}")
 
@@ -2142,41 +2287,72 @@ def tab_bar(base, tabs, cur, counts=None, owner=False):
             + "".join(out) + "</nav>")
 
 
-def needs_items(base, msg, st, name, nreq=0):
+def link_btn(href, label):
+    return f"<a class='btn secondary sm' href='{href}'>{html.escape(label)}</a>"
+
+
+def archive_date(p):
+    """"on Dec 3" for a {"name", "on"} pending-archive entry (the janitor's usage.json), "" if it has no date."""
+    try:
+        return "on " + time.strftime("%b %-d", time.localtime(float(p.get("on"))))
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def pending_archive(name):
+    """[{"name", "on"}] of this person's projects due to move to the archive: newer janitors write the date
+    ("pending"), older ones only the names."""
+    u = (((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {})
+    rows = [p for p in u.get("pending") or [] if isinstance(p, dict) and PROJECT_RE.fullmatch(str(p.get("name") or ""))]
+    return rows or [{"name": str(p)} for p in u.get("pending_deletions") or [] if PROJECT_RE.fullmatch(str(p))]
+
+
+def needs_items(base, msg, st, name, nreq=0, btn=None):
     """Home's "Needs you": new messages, open requests (owner), servers that crashed, what the box stopped when
-    memory ran out, big things left running for days, projects about to be archived. Each links to its tab."""
+    memory ran out, big things left running for days (Keep it / Stop it right here), projects about to be archived
+    (Keep it). Each is (what, the buttons that answer it)."""
     e = html.escape
     out = []
     new = [m for m in (msg.get("messages") or []) if isinstance(m, dict) and m.get("id") and not m.get("read")] \
         if msg.get("ok") else []
     if new:
         out.append((f"<b>{plural(len(new), 'new message')}</b><div class='sub'>{e(str(new[0].get('title') or ''))[:120]}</div>",
-                    f"{base}/me?tab=messages", "Read"))
+                    link_btn(f"{base}/me?tab=messages", "Read")))
     if nreq:
-        out.append((f"<b>{plural(nreq, 'request')}</b> from friends waiting for you", f"{base}/me?tab=requests",
-                    "Open requests"))
+        out.append((f"<b>{plural(nreq, 'request')}</b> from friends waiting for you",
+                    link_btn(f"{base}/me?tab=requests", "Open requests")))
     failed = [str(s.get("name")) for s in st.get("servers") or [] if isinstance(s, dict) and s.get("state") == "failed"
               and SERVER_RE.fullmatch(str(s.get("name", "")))]
     if failed:
-        out.append((f"<b>{e(', '.join(failed[:5]))}</b> stopped because of an error", f"{base}/me?tab=servers#servers",
-                    "Open Servers"))
+        out.append((f"<b>{e(', '.join(failed[:5]))}</b> stopped because of an error",
+                    link_btn(f"{base}/me?tab=servers#servers", "Open Servers")))
     for k in oom_notes(name)[-2:]:
         out.append((f"This machine ran out of memory and stopped <b>{e(sb.printable(str(k.get('what') or 'something'))[:80])}</b>",
-                    f"{base}/me?tab=servers#running", "See what's running"))
+                    link_btn(f"{base}/me?tab=servers#running", "See what's running")))
+    ok_keys = set(st.get("running_ok") or ())
     for it in [i for i in st.get("running") or [] if isinstance(i, dict)][:RUN_SHOWN]:
         age = it.get("age") if isinstance(it.get("age"), (int, float)) else None
+        key = str(it.get("key") or "")
         if age is not None and age >= RUN_OLD and int(it.get("mem") or 0) >= RUN_OLD_MEM \
-                and it.get("kind") in ("database", "container", "terminal", "app"):
+                and it.get("kind") in ("database", "container", "terminal", "app") and key not in ok_keys:
+            acts = link_btn(f"{base}/me?tab=servers#running", "See what's running")
+            if btn and sbrunning.KEY_RE.match(key) and it.get("stop") in RUN_STOP_TEXT:
+                msg_, force = stop_text(it)
+                acts = (btn("running-ok", "Keep it", key, small=True, primary=False)
+                        + ask(btn, "running-stop", "Stop it", e(msg_), key,
+                              "<input type='hidden' name='force' value='1'>" if force else "",
+                              go="Stop anyway" if force else "Stop it"))
             out.append((f"<b>{e(sb.printable(str(it.get('name') or '?'))[:60])}</b> has been running for "
                         f"{e(sbrunning.ago(age))} and uses {e(size(int(it.get('mem') or 0)))} of memory. Still need it?",
-                        f"{base}/me?tab=servers#running", "See what's running"))
+                        acts))
             if len(out) >= 6:
                 break
-    pend = [str(p) for p in ((((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {})
-                             .get("pending_deletions") or [])][:5]
-    if pend:
-        out.append((f"Unused for a while, soon moved to the archive: <b>{e(', '.join(pend))}</b>",
-                    f"{base}/me?tab=account#archive", "See why"))
+    for p in pending_archive(name)[:5]:
+        when = archive_date(p)
+        acts = (btn("project-keep", "Keep it", p["name"], small=True, primary=False) if btn else "") \
+            + link_btn(f"{base}/me?tab=account#archive", "Why?")
+        out.append((f"<b>{e(p['name'])}</b> hasn't been opened for {e(CFG['PROJECT_TTL_DAYS'])} days and moves to the "
+                    f"archive{' ' + e(when) if when else ' soon'}. You can bring it back later.", acts))
     return out
 
 
@@ -2188,12 +2364,14 @@ def glossary_section():
             + "</dl></details>")
 
 
-def needs_section(items):
-    if not items:
+def needs_section(items, slot=None):
+    if not items and not (slot and slot.card == "needs" and slot.body):
         return ""
-    return ("<div class='blk' id='needs'><h2>Needs you</h2><section class='sec needs'><ul class='rows'>" + "".join(
-        f"<li><span class='d'>{d}</span><span class='a'><a class='btn secondary sm' href='{href}'>{html.escape(label)}"
-        "</a></span></li>" for d, href, label in items) + "</ul></section></div>")
+    return ("<div class='blk' id='needs' data-card='needs'><h2>Needs you</h2><section class='sec needs'>"
+            + (slot or NO_SLOT)("needs") + ("<ul class='rows'>" + "".join(
+                f"<li><span class='d'>{d}</span><span class='a'>{a}</span></li>" for d, a in items) + "</ul>"
+                if items else "<p class='mut' style='margin:0'>Nothing else needs you right now.</p>")
+            + "</section></div>")
 
 
 def tab_body(tab, parts, slot, fallback=""):
@@ -2209,7 +2387,7 @@ def unread_count(msg):
         if msg.get("ok") else 0
 
 
-def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
+def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card="", pre=None):
     """The owner's /_box/me: their own account (Home, Messages, Servers, Account) and the whole box (admin tabs)
     in one tab bar."""
     e = html.escape
@@ -2239,7 +2417,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
             parts.append("<section class='start' id='start' data-card='start'>" + slot("start") + "".join(start)
                          + "</section>")
             parts.append(hackathon_banner(name))
-            parts.append(needs_section(needs_items(base, msg, st, name, nreq)))
+            parts.append(needs_section(needs_items(base, msg, st, name, nreq, btn), slot))
             parts.append(people_section(where, name, tok, base, slot))
             try:
                 parts.append(activity_section(name, owner=True))
@@ -2248,7 +2426,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
             parts.append(glossary_section())
         elif tab == "messages":
             parts.append(inbox_section(msg, where, tok, base, bool(tg.get("linked")), slot,
-                                       compose_open=view == "msg" and not (result or {}).get("ok")))
+                                       compose_open=view == "msg" and not (result or {}).get("ok"), pre=pre))
         elif tab == "servers":
             parts.append(servers_section(st, shared, btn, base, own_public=False, slot=slot))
             parts.append(running_section(name, rec, st, btn, slot))
@@ -2280,7 +2458,8 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
             elif tab == "running":
                 parts.append(running_all_section(ip, who, btn, name, slot))
             elif tab == "settings":
-                parts.append(hackathon_section(btn, slot))
+                prev = portal_call(ip, who, "hackathon-preview")
+                parts.append(hackathon_section(btn, slot, prev.get("servers") if prev.get("ok") else None))
                 parts.append(telegram_setup_section(tg, tok, base, slot))
                 parts.append(update_section(btn, slot))
             else:
@@ -2314,6 +2493,13 @@ def owner_login_rows(st, logins, btn):
              btn("login", "Connect GitHub", "gh", primary=False, small=True))]
 
 
+def owner_link(base, title, label="Message the owner"):
+    """A link that opens Messages with a message to the owner already started (who, and what it's about)."""
+    pw = sb.owner_account(CFG)
+    q = urllib.parse.urlencode({"tab": "messages", "to": pw.pw_name if pw else "", "title": title[:60]})
+    return f"<a href='{base}/me?{html.escape(q)}#messages'>{html.escape(label)}</a>"
+
+
 PROMPT_FAIL = "Couldn't make your prompt. Try again in a minute. If it still fails, tell the owner."
 
 START_JS = r"""
@@ -2328,7 +2514,8 @@ var b=ev.target.closest("[data-copy]");
 if(b){const src=document.getElementById(b.getAttribute("data-copy"));if(!src)return;
 const label=b.dataset.label||(b.dataset.label=b.textContent);b.textContent="Copied";
 setTimeout(function(){b.textContent=label},2000);copyText(src.value).catch(function(){});return}
-var x=ev.target.closest("[data-close]"),o=x&&x.closest("[data-out]");if(o){ev.preventDefault();o.innerHTML=""}});
+var x=ev.target.closest("[data-close]"),o=x&&x.closest("[data-out]");if(o){ev.preventDefault();o.innerHTML="";return}
+var cx=ev.target.closest("[data-cancel]"),cd=cx&&cx.closest("details");if(cd){ev.preventDefault();cd.open=false}});
 function each(l,f){Array.prototype.forEach.call(l,f)}
 function scripts(el){each(el.querySelectorAll("script"),function(s){var n=document.createElement("script");
 n.textContent=s.textContent;s.replaceWith(n)})}
@@ -2481,7 +2668,7 @@ def hidden(tok, **kw):
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(v))}">' for k, v in kw.items())
 
 
-def inbox_section(msg, where, tok, base, tg_linked=False, slot=None, compose_open=False):
+def inbox_section(msg, where, tok, base, tg_linked=False, slot=None, compose_open=False, pre=None):
     """Messages for this person, most urgent first, with Done / Reply / Clear, and a "Message someone" form.
     compose_open: the form stays open after a send that failed."""
     e = html.escape
@@ -2516,26 +2703,29 @@ def inbox_section(msg, where, tok, base, tg_linked=False, slot=None, compose_ope
                 f"<div class='item{'' if m.get('read') else ' unread'}'><div class='mh'><b>{e(m.get('title') or '')}</b>"
                 f"{pills}</div><div class='sub'>{' · '.join(meta)}</div>{ctx}<div class='acts'>"
                 f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='msg', op='done', id=m['id'])}"
-                "<button class='sm'>Mark done</button></form>"
+                f"<button class='sm'>Done (tells {e(nm(m.get('from')))})</button></form>"
                 f"<details class='rp'><summary class='btn secondary sm'>Reply</summary>"
                 f"<form method='post' action='{base}/me'>{hidden(tok, action='msg', op='reply', id=m['id'])}"
                 f"<textarea name='text' required maxlength='4000' aria-label='Your reply' placeholder='Your reply to "
                 f"{e(nm(m.get('from')))}'></textarea><button class='sm'>Send</button></form></details>"
                 f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='msg', op='archive', id=m['id'])}"
-                f"<button class='linkbtn' aria-label='Remove {mid} from my list'>Remove from my list</button></form></div></div>")
+                f"<button class='linkbtn' aria-label='Hide message {mid}'>Hide</button></form></div></div>")
         out.append("<div class='srv msgs'>" + "".join(items) + "</div>")
         if len(msgs) > 10:
             out.append(f"<p class='sub'>And {len(msgs) - 10} more. Ask your agent: \"go through my messages\".</p>")
     people = [u for u in msg.get("people") or [] if u != msg.get("you")]
     sent = [m for m in msg.get("sent") or [] if isinstance(m, dict)]
+    pre = pre or {}
     if people:
-        opts = "".join(f"<option value='{e(u)}'>{e(nm(u))}</option>" for u in people)
+        opts = "".join(f"<option value='{e(u)}'{' selected' if u == pre.get('to') else ''}>{e(nm(u))}</option>"
+                       for u in people)
+        compose_open = compose_open or pre.get("to") in people
         out.append(
-            f"<details class='compose'{' open' if compose_open else ''}>"
+            f"<details class='compose' id='compose'{' open' if compose_open else ''}>"
             "<summary class='btn secondary sm'>Write a message</summary>"
             f"<form method='post' action='{base}/me'>{hidden(tok, action='msg', op='send')}"
             f"<label>To</label><select name='to' required>{opts}</select>"
-            "<label>What's it about</label><input name='title' required maxlength='60' "
+            f"<label>What's it about</label><input name='title' required maxlength='60' value='{e(pre.get('title') or '')}' "
             "placeholder='Fix the login page'>"
             "<label>Details <span class='sub'>(what's going on, what you need)</span></label>"
             "<textarea name='context' required maxlength='4000' placeholder='Their AI agent may read this too, so say "
@@ -2549,7 +2739,8 @@ def inbox_section(msg, where, tok, base, tg_linked=False, slot=None, compose_ope
         def answer(m):
             if m.get("answer"):
                 return e(str(m["answer"]))
-            return f"opened {e(ago_text(m['seen']))}" if m.get("seen") else "not opened yet"
+            return (f"read by {e(nm(m.get('to')))} {e(ago_text(m['seen']))}" if m.get("seen") else
+                    f"{e(nm(m.get('to')))} hasn't read it yet")
         out.append("<h3 style='margin:20px 0 6px'>You sent</h3><ul class='ev'>" + "".join(
             f"<li><b>{e(m.get('title') or '')}</b> <span class='sub'>to {e(nm(m.get('to')))} · {answer(m)}</span></li>"
             for m in sent) + "</ul>")
@@ -2575,23 +2766,25 @@ def people_section(where, me, tok, base, slot=None):
                     + f"</span><span class='st'>{status}</span><span class='ac'><span class='dot {dot}'></span>"
                     f"{e(act if act != 'private' else 'hidden')}</span></li>")
     form = (f"<form method='post' action='{base}/me' class='status'>{hidden(tok, action='where', op='set')}"
-            "<input name='status' required maxlength='80' aria-label='Your status' "
-            f"placeholder='{e(mine.get('status') or 'In class, asleep, at the hackathon…')}'>"
-            "<input name='until' maxlength='40' aria-label='Until (optional)' placeholder='Until when? (3pm, tomorrow 9am)'>"
+            "<div class='fld'><label for='st-what'>What are you up to?</label><input id='st-what' name='status' required "
+            f"maxlength='80' placeholder='{e(mine.get('status') or 'In class, asleep, at the hackathon…')}'></div>"
+            "<div class='fld'><label for='st-until'>Until <span class='sub'>(optional)</span></label><input id='st-until' "
+            "name='until' maxlength='40' placeholder='3pm, tomorrow 9am'></div>"
             "<button class='sm'>Show my status</button></form>")
     clear = (f"<form method='post' action='{base}/me' style='display:inline'>{hidden(tok, action='where', op='set', clear='1')}"
              "<button class='linkbtn'>Clear my status</button></form>") if mine.get("status") else ""
     private = mine.get("activity") == "private"
     priv = (f"<form method='post' action='{base}/me' style='display:inline'>"
             f"{hidden(tok, action='where', op='private', private='' if private else '1')}"
-            f"<button class='linkbtn'>{'Show when I was last active' if private else 'Hide when I was last active'}"
-            "</button></form>")
-    privacy = ("Others don't see when you were last active. " if private else
-               f"Others see when you last used this machine (<b>{e(mine.get('activity') or 'new here')}</b>), never what "
-               "you're doing. ") + priv
+            f"<button class='linkbtn'>{'Turn on' if private else 'Turn off'}</button></form>")
+    privacy = ("<b>Show when I was last active</b>: off. Others don't see when you last used this machine. "
+               if private else
+               f"<b>Show when I was last active</b>: on. Others see when you last used this machine "
+               f"(<b>{e(mine.get('activity') or 'new here')}</b>), never what you're doing. ") + priv
     return ("<div class='blk' id='people' data-card='people'><div class='dash-h'><h2>Who's here</h2></div>"
             + "<section class='sec'>" + (slot or NO_SLOT)("people") + "<ul class='pres'>" + "".join(rows) + "</ul>"
-            + f"<div class='mystatus'>{form}<div class='sub' style='margin:8px 0 0'>Your agent can set this for you too "
+            + f"<div class='mystatus'>{form}<div class='sub' style='margin:8px 0 0'>Everyone with an account on this "
+              "machine sees your status, here and through their agents. Your agent can set it for you too "
               f"(\"tell people I'm in class till 3\"). {clear}</div><div class='sub' style='margin:4px 0 0'>{privacy}</div></div>"
             + "</section></div>")
 
@@ -2620,8 +2813,10 @@ def telegram_row(tg, tok, base, owner=False):
                 form("test", "Send a test alert") + " "
                 + form("notify", "Send me every message" if quiet else "Send me only urgent ones",
                        extra={"level": "all" if quiet else "important"})
-                + " " + form("unlink", "Disconnect Telegram", danger=True,
-                             conf=" onsubmit=\"return confirm('Stop phone alerts on Telegram?')\""))
+                + " " + ask(portal_btn(tok, base), "telegram", "Disconnect Telegram",
+                            "Your phone stops getting alerts. Your messages still show on this page, and you can "
+                            "connect again any time.", "", "<input type='hidden' name='op' value='unlink'>",
+                            go="Disconnect"))
     return ("Phone alerts", "<span class='dot'></span>Off for you. The machine's Telegram bot is ready: connect your "
             "phone to get your messages there.",
             form("link", "Connect Telegram", primary=True))
@@ -2658,16 +2853,19 @@ def telegram_setup_section(tg, tok, base, slot=None):
                 f"<a href='https://t.me/{e(tg.get('bot') or '')}' target='_blank' rel='noopener'>@{e(tg.get('bot') or '')}</a>. "
                 "Each person connects their own phone from their Account tab (Phone alerts).</p>"
                 f"<p class='sub'>To use a different bot, paste its token below.</p>"
-                f"<form method='post' action='{base}/me' style='display:inline' onsubmit=\"return confirm("
-                f"'Turn off Telegram for everyone?')\">{hidden(tok, action='telegram-setup', op='off')}"
-                "<button class='sm danger'>Turn off Telegram</button></form>")
+                + ask(portal_btn(tok, base), "telegram-setup", "Turn off Telegram",
+                      "Nobody on this machine gets phone alerts until it's on again. Everyone's phone connections "
+                      "are kept and work again when you turn it back on.", "",
+                      "<input type='hidden' name='op' value='off'>", go="Turn it off for everyone"))
     else:
         body = ("<p style='margin-top:0'><span class='dot'></span><b>Off</b>. With it on, people get their messages on "
                 "their phone, and can set their status or ask where someone is by texting the bot.</p><ol class='steps'>"
                 "<li>In Telegram, open <a href='https://t.me/BotFather' target='_blank' rel='noopener'>BotFather</a> "
                 "(Telegram's tool for making bots) and send it <code>/newbot</code>. Give it a name, like “Our treehouse”.</li>"
                 "<li>It answers with a long code called a token (it looks like <code>123456789:AAH…</code>). "
-                "Paste it here. Or ask your agent to do this: <code>box telegram setup</code>.</li></ol>")
+                "Paste it here. Or ask your agent to do this: <code>box telegram setup</code>.</li></ol>"
+                "<p class='sub'>Step by step with pictures: <a href='https://core.telegram.org/bots/tutorial#obtain-your-bot-token' "
+                "target='_blank' rel='noopener'>Telegram's guide to getting a bot token</a>.</p>")
     return ("<div class='blk' id='telegram-setup' data-card='telegram-setup'><h2>Telegram bot <span class='sub' "
             "style='font-weight:400'>for everyone on this machine</span></h2><section class='sec'>"
             + (slot or NO_SLOT)("telegram-setup") + body
@@ -2725,6 +2923,17 @@ def owner_app_row(st, logins, btn, base):
     return ("T3 app", '<span class="dot"></span>Not set up. The T3 app lets you use T3 from your phone or laptop.', how)
 
 
+def issues_row(st, btn):
+    """(label, description, action) for "Problem reports": what's sent, to whom, and a switch."""
+    on = bool(st.get("issues_on"))
+    what = ("When something about the machine slows your agent down, it writes a one-line note (what happened, "
+            "how it got around it, what it cost) for the owner, who fixes what they can. Never your code, files or "
+            "chats.")
+    return ("Problem reports", ('<span class="dot ok"></span>On. ' if on else '<span class="dot"></span>Off. ') + what,
+            btn("issues", "Turn off" if on else "Turn on", "", f"<input type='hidden' name='op' value='{'off' if on else 'on'}'>",
+                primary=False, small=True))
+
+
 def team_section(team, names, tok, base, slot=None):
     """Teammates' agents in your T3: who can, a Stop button each, and a form to let someone in."""
     e = html.escape
@@ -2747,12 +2956,18 @@ def team_section(team, names, tok, base, slot=None):
     opts = "".join(f"<option value='{e(u)}'>{e(nm(u))}</option>" for u in team["people"])
     lv = "".join(f"<option value='{e(k)}'{' selected' if k == 'approval-required' else ''}>{e(v)}</option>"
                  for k, v in access.items())
-    out.append(f"<form method='post' action='{base}/me' class='status'>{hidden(tok, action='team', op='grant')}"
-               f"<select name='to' aria-label='Teammate'>{opts}</select>"
-               f"<select name='access' aria-label='What their agents may do'>{lv}</select>"
-               "<button class='sm'>Give access</button></form>"
-               "<p class='sub' style='margin:8px 0 0'>Access lasts about a month. If it stops working, press Give access again.</p>"
-               "</section></div>")
+    means = {"read-only": "their agents can open your projects and read code, but change nothing",
+             "approval-required": "their agents ask you in T3 before they edit a file or run a command",
+             "full-access": "their agents edit files and run commands in your T3 without asking"}
+    until = time.strftime("%b %-d", time.localtime(time.time() + 30 * 86400))
+    out.append(f"<form method='post' action='{base}/me' class='team'>{hidden(tok, action='team', op='grant')}"
+               f"<div class='two'><div><label for='tm-to'>Teammate</label><select id='tm-to' name='to'>{opts}</select></div>"
+               f"<div><label for='tm-acc'>What their agents may do</label><select id='tm-acc' name='access'>{lv}</select>"
+               "</div></div><ul class='hkl sub' style='margin:8px 0 0'>" + "".join(
+                   f"<li><b>{e(access[k])}</b>: {e(v)}.</li>" for k, v in means.items() if k in access)
+               + f"</ul><button class='sm'>Give access</button></form>"
+               f"<p class='sub' style='margin:8px 0 0'>Access given today ends around {e(until)}. If it stops working, "
+               "press Give access again.</p></section></div>")
     return "".join(out)
 
 
@@ -2773,9 +2988,6 @@ def ai_accounts_section(st, logins, btn, tok, base, slot=None):
     peers = {b: v for b, v in (st.get("boxes") or {}).items() if isinstance(v, dict)}
     multi = bool(peers)
 
-    def confirm(k, b):
-        return (f" onsubmit=\"return confirm('Sign out of {ACCOUNT_LABEL[k]} on {e(b)}? Agents there stop using that "
-                f"account until you sign in again.')\"")
 
     def cell(k, b, is_here, ok, who, own):
         m = re.fullmatch(r"<td( class='mut')?>(.*)</td>", _cell(k, b, is_here, ok, who, own), re.S)
@@ -2792,8 +3004,9 @@ def ai_accounts_section(st, logins, btn, tok, base, slot=None):
             if k == "claude" and multi:
                 note = ("<div class='sub'>This machine's own account</div>" if own else
                         "<div class='sub'>Shared across your machines</div>")
-            out_btn = btn("logout" if is_here else "peer-logout", f"Sign out of {label} on {b}", k, extra=box_f,
-                          link=True, attrs=confirm(k, b))
+            out_btn = ask(btn, "logout" if is_here else "peer-logout", f"Sign out of {label} on {b}",
+                          f"Agents on {e(b)} stop using this {e(label)} account until you sign in again, maybe with a "
+                          "different one.", k, box_f, go="Sign out", link=True)
             return f"<td><span class='dot ok'></span>{name}{note}<div class='sub'>{out_btn}</div></td>"
         verb = btn("login" if is_here else "peer-login", "Sign in", k, extra=box_f, primary=False, small=True,
                    attrs=f" aria-label='Sign in to {label} on {e(b)}'")
@@ -2950,17 +3163,19 @@ def projects_section(st, tok, base, slot=None):
         if r.get("everywhere"):
             d = "".join(box_line(b, v) for b, v in sorted((r.get("boxes") or {}).items()) if isinstance(v, dict)) \
                 or "<span class='sub'>On. Copies start within 10 minutes.</span>"
-            act = f"<form method='post' action='{base}/me'>{hidden(tok, action='projects', key=n, op='off')}" \
-                  "<button class='secondary sm'>Stop copying (copies stay)</button></form>"
+            act = ask(portal_btn(tok, base), "projects", "Stop syncing",
+                      f"{e(n)} stops syncing to {e(where)}. The copies already there are kept, but they no longer "
+                      "update when you push.", n, '<input type="hidden" name="op" value="off">',
+                      go=f"Stop syncing {n}")
         else:
             d = "<span class='sub'>Only on this machine</span>"
             act = f"<form method='post' action='{base}/me'>{hidden(tok, action='projects', key=n, op='on')}" \
-                  "<button class='secondary sm'>Copy to all my machines</button></form>"
+                  "<button class='secondary sm'>Sync to all my machines</button></form>"
         items.append(f"<li><span class='k mono'>{e(n)}</span><span class='d'>{d}</span><span class='a'>{act}</span></li>")
     out = [head, slot("projects"),
-           f"<p class='sub' style='margin-top:0'>Copy a project to {e(where)} so you can work on it there too. Each copy "
+           f"<p class='sub' style='margin-top:0'>Sync a project to {e(where)} so you can work on it there too. Each copy "
            "shows up in T3 on that machine and keeps up with what you push to GitHub. A copy with unsaved changes of its "
-           "own is never overwritten. Stopping keeps the copies.</p>"]
+           "own is never overwritten.</p>"]
     if items:
         out.append("<ul class='rows prj'>" + "".join(items) + "</ul>")
     elif not other:
@@ -2974,7 +3189,7 @@ def projects_section(st, tok, base, slot=None):
     if bad and any(r.get("everywhere") for r in avail):
         out.append("<p class='sub'>" + " ".join(f"<span class='dot warn'></span><b>{e(b)}</b>: {e(err[:200])}"
                                                for b, err in bad)
-                   + f" <a href='{base}/me?tab=messages'>Tell the owner</a></p>")
+                   + " " + owner_link(base, "A machine doesn't copy my projects") + "</p>")
     if any(r.get("everywhere") for r in avail):
         out.append("<p class='sub'>Last copied: " + " · ".join(
             f"{e(b)} {e(ago_text(v['last_sync']) if v.get('last_sync') else 'not yet')}" for b, v in sorted(boxes.items()))
@@ -2987,15 +3202,18 @@ def archive_notice(name, tok, base, slot=None):
     e = html.escape
     u = ((sb.read_json(sb.USAGE, {}) or {}).get("users") or {}).get(name) or {}
     now = time.time()
-    pend = [str(p) for p in (u.get("pending_deletions") or [])][:10]
+    pend = pending_archive(name)[:10]
     arch = [str(a.get("name")) for a in (u.get("archives") or []) if isinstance(a, dict)
             and float(a.get("until") or 0) > now and ARCHIVE_RE.fullmatch(str(a.get("name") or ""))][:10]
     out = []
     if pend:
-        out.append(f"<p>Soon moved to the archive: <b>{e(', '.join(pend))}</b>. A project nobody has opened for "
-                   f"{e(CFG['PROJECT_TTL_DAYS'])} days moves to the archive, and only once all its work is saved on "
-                   "GitHub (or another git server). Nothing is lost: you can bring it back for "
-                   f"{e(CFG['ARCHIVE_DAYS'])} days.</p>")
+        out.append(f"<p>A project nobody has opened for {e(CFG['PROJECT_TTL_DAYS'])} days moves to the archive, and only "
+                   "once all its work is saved on GitHub (or another git server). Nothing is lost: you can bring it "
+                   f"back for {e(CFG['ARCHIVE_DAYS'])} days. Keep it if you still use it.</p><ul class='rows'>" + "".join(
+                       f"<li><span class='k mono'>{e(p['name'])}</span><span class='d'>Moves to the archive "
+                       f"{e(archive_date(p) or 'soon')}</span><span class='a'><form method='post' action='{base}/me'>"
+                       f"{hidden(tok, action='project-keep', key=p['name'])}<button class='sm secondary'>Keep it"
+                       "</button></form></span></li>" for p in pend) + "</ul>")
     if arch:
         out.append("<div class='p'>In the archive (you can bring these back for " + e(CFG["ARCHIVE_DAYS"]) + " days): " + ", ".join(
             f"<b>{e(a)}</b> <form method='post' action='{base}/me' style='display:inline'>"
@@ -3011,13 +3229,13 @@ def archive_notice(name, tok, base, slot=None):
 ARCHIVE_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/ -]{0,120}")
 
 
-def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="", card=""):
+def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="", card="", pre=None):
     """The friend's home page, in tabs: Home (the start card: log in to an AI, then open T3; what needs you;
     who's here), Messages, Servers (yours, the group's, what's running) and Account (logins, phone alerts,
     teammates, projects, usage, more options). Brand-new people see only the start card. No terminal anywhere.
     `card`: the card a button's result shows in (see result_place)."""
     if who.get("owner"):
-        return owner_page(ip, who, name, rec, result, rng, tab, card)
+        return owner_page(ip, who, name, rec, result, rng, tab, card, pre)
     e = html.escape
     tok = token_for(ip, who["id"])
     gate = bool(who.get("cf_jwt"))
@@ -3067,12 +3285,14 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             sc.append(f"<div class='out' data-out>{portal_result(result, btn, base)}</div>")
         if state == "S0":
             sc.append("<h2>T3 isn't set up on this machine yet</h2>"
-                      "<p>T3 is the app where you chat with your AI agent. Tell the owner it's missing; everything else "
+                      "<p>T3 is the app where you chat with your AI agent. " + owner_link(base, "T3 isn't set up for me")
+                      + " so they can add it; everything else "
                       "on this page still works.</p>")
         elif state == "S1":
             sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Sign in with your AI account'}</h2>")
             if not ai:
-                sc.append("<p>No AI coding agents are installed on this machine yet. Tell the owner.</p>")
+                sc.append("<p>No AI coding agents are installed on this machine yet. "
+                          + owner_link(base, "No AI agents are installed") + " so they can install them.</p>")
             else:
                 sc.append("<p>Your AI agents here work with your own Claude or ChatGPT subscription. Sign in once and "
                           "they're ready.</p>")
@@ -3127,7 +3347,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     parts = []
     try:
         if tab == "home":
-            parts += [start_card, hackathon_banner(name), needs_section(needs_items(base, msg, st, name)),
+            parts += [start_card, hackathon_banner(name), needs_section(needs_items(base, msg, st, name, btn=btn), slot),
                       people_section(where, name, tok, base, slot)]
             try:
                 parts.append(activity_section(name))
@@ -3136,7 +3356,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             parts.append(glossary_section())
         elif tab == "messages":
             parts.append(inbox_section(msg, where, tok, base, bool(tg.get("linked")), slot,
-                                       compose_open=view == "msg" and not (result or {}).get("ok")))
+                                       compose_open=view == "msg" and not (result or {}).get("ok"), pre=pre))
         elif tab == "servers":
             parts.append(servers_section(st, shared, btn, base, slot=slot))
             # what's using memory right now, with Stop buttons (lib/sbrunning.py): right under the servers it includes
@@ -3183,6 +3403,8 @@ def account_tab(who, name, rec, st, logins, tg, team, where, tok, base, btn, slo
     trow = telegram_row(tg, tok, base)
     if trow:
         row(*trow)
+    if "issues_on" in st:
+        row(*issues_row(st, btn))
     parts = [ai_accounts_section(st, logins, btn, tok, base, slot)]
     if acct:
         parts.append("<div class='blk' id='account' data-card='account'><h2>Connections</h2><section class='sec'>"
@@ -3243,6 +3465,13 @@ def public_pair(res):
                 url=PUBLIC + "/")
 
 
+def compose_pre(q):
+    """?to=NAME&title=TEXT on /me: the Messages tab opens a new message to NAME about TEXT (owner_link)."""
+    to = (q.get("to") or [""])[0]
+    return {"to": to if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", to) else "",
+            "title": sb.printable((q.get("title") or [""])[0])[:60]}
+
+
 def plural(n, word):
     return f"{n} {word}{'' if n == 1 else 's'}"
 
@@ -3290,7 +3519,8 @@ def portal_result(res, btn, base=""):
     if view == "projects":  # "Keep on all boxes" only queues the first copy: in progress, not a check mark
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]), "busy" if res.get("_busy") else "ok")
     if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team", "ai-account",
-                "serve-set", "running-any"):
+                "serve-set", "running-any", "serve-describe", "shared-describe", "running-ok", "project-keep",
+                "issues", "friend", "invite-revoke"):
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     if view.endswith("-ctl") or view.startswith("request-"):
         msg = res.get("message") or f"{res.get('key', '')}: done"
@@ -3446,7 +3676,7 @@ class Handler(BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             result, card = flash_get((q.get("r") or [""])[0], who["id"]) if who else (None, "")
             self.send(200, join_page(ip, who, rng=(q.get("range") or ["24h"])[0], tab=(q.get("tab") or [""])[0],
-                                     result=result, card=card))
+                                     result=result, card=card, pre=compose_pre(q)))
         elif path == "/healthz":
             self.send(200, "ok", "text/plain")
         else:
@@ -3562,6 +3792,9 @@ class Handler(BaseHTTPRequestHandler):
                     kw["until"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + h * 3600))
                 else:  # <input type=datetime-local> sends 2026-11-15T18:00
                     kw["until"] = form.get("until", "").strip().replace("T", " ")[:16]
+                    if not kw["until"]:
+                        return self.after_post(ip, who, name, rec, {"ok": False, "error": "Pick when hackathon mode "
+                                                                    "ends.", "_view": "hackathon"})
                 kw["users"] = " ".join(n for n in sorted(sb.friend_users()) if form.get(f"hu_{n}") == "1")
             elif op != "off":
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "hackathon"})
@@ -3593,6 +3826,37 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, "running-stop-any", key=key, user=user,
                               **({"force": True} if form.get("force") else {}))
             return self.after_post(ip, who, name, rec, dict(res, _view="running-any", key=key))
+        if action in ("serve-describe", "shared-describe"):  # "Add a description" on a server card
+            about = " ".join(form.get("about", "").split())[:300]
+            if not SERVER_RE.fullmatch(key) or key == "t3":
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown server", "_view": action})
+            kw = {"key": key, "about": about}
+            if action == "serve-describe" and form.get("importance") in ("important", "safe-to-stop"):
+                kw["importance"] = form["importance"]
+            res = portal_call(ip, who, action, **kw)
+            return self.after_post(ip, who, name, rec, dict(res, _view=action, key=key))
+        if action in ("running-ok", "project-keep"):  # Home's "Still need it?" and "Soon archived": Keep it
+            ok = sbrunning.KEY_RE.match(key) if action == "running-ok" else PROJECT_RE.fullmatch(key)
+            if not ok:
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "That isn't there any more. "
+                                                            "Refresh the page.", "_view": action})
+            res = portal_call(ip, who, action, key=key)
+            return self.after_post(ip, who, name, rec, dict(res, _view=action))
+        if action == "issues":  # problem reports on or off
+            op = form.get("op", "")
+            if op not in ("on", "off"):
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "issues"})
+            res = portal_call(ip, who, "issues", op=op)
+            return self.after_post(ip, who, name, rec, dict(res, _view="issues"))
+        if who.get("owner") and action in ("friend-suspend", "friend-resume", "friend-remove", "invite-revoke"):
+            ok = re.fullmatch(r"[0-9a-f]{12,128}", key) if action == "invite-revoke" else \
+                re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", key)
+            view = "invite-revoke" if action == "invite-revoke" else "friend"
+            if not ok:
+                return self.after_post(ip, who, name, rec, {"ok": False, "error": "That isn't there any more. "
+                                                            "Refresh the page.", "_view": view})
+            res = portal_call(ip, who, action, key=key)
+            return self.after_post(ip, who, name, rec, dict(res, _view=view))
         if action == "serve-set":  # a server's switches: keep running on|off, pause during hackathons pause|keep
             what, val = form.get("what", ""), form.get("value", "")
             if not SERVER_RE.fullmatch(key) or key == "t3" or (what, val) not in (
@@ -3742,7 +4006,8 @@ def landing(email=None):
 <p>You're signed in as <b>{e(email or '?')}</b>{"" if owner else ", but there's no account for that email here"}.</p>
 {"<p>You're the owner, but this machine couldn't find your own account on it. Ask your agent on the machine "
  "to check which account the owner's login should open.</p>" if owner else
- "<p>To get in, <b>ask your friend for an invite link</b> for this email address.</p>"}
+ f"<p>To get in, ask the person who runs this machine to invite <b>{e(email or 'your email')}</b>. They get a "
+ "message to send you with a link; open it while signed in with this email and you're in.</p>"}
 <p class="mut">Wrong email? <a href="/cdn-cgi/access/logout">Sign out</a> and sign in with the one your friend
 invited.</p></div>""", gate=True, member=False)
 
@@ -3813,7 +4078,8 @@ def agent_identity(handler):
     if email in sb.owner_emails(CFG):
         return None, (403, f"{email} is the owner's login and has no friend account here. SSH in as yourself "
                            "the usual way, or link an account: sudo sharedbox-admin access add EMAIL --user NAME")
-    return None, (403, f"no account on this machine for {email or 'this login'}; ask your friend for an invite")
+    return None, (403, f"no account on this machine for {email or 'this login'}; ask the person who runs it to "
+                       "invite this email")
 
 
 def agent_origin_ok(headers, strict=True):
@@ -3959,7 +4225,7 @@ class GateHandler(Handler):
             result, card = flash_get((q.get("r") or [""])[0], who["id"])  # a button's outcome, after post/redirect/get
             return self.send(200, portal_page("gate", who, who["name"], who["rec"], result, welcome="welcome" in q,
                                               rng=(q.get("range") or ["24h"])[0], tab=(q.get("tab") or [""])[0],
-                                              card=card))
+                                              card=card, pre=compose_pre(q)))
         if kind == "landing" and who and who.get("owner"):
             return self.redirect("/_box/me")  # the owner always has a page: their dashboard
         if kind == "landing" and arg not in ("/", "/_box/me", "/_box/", "/_box"):

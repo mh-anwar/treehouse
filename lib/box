@@ -464,6 +464,10 @@ def cmd_boost(a):
 # ---------- running ----------
 
 def cmd_running(a):
+    if a.op == "keep":  # Home's "Still need it?" -> Keep it: don't flag it for a week
+        if not a.key:
+            sys.exit("box running keep KEY (the key from `box running`)")
+        return emit(portal_running_ok(a.key), a.json)
     if a.op == "stop":  # the Running card's Stop: only when the user asked for it
         if not a.key:
             sys.exit("box running stop KEY (the key from `box running`)")
@@ -1911,6 +1915,9 @@ def cmd_friends(a):
         fail("only the owner's accounts can manage friends. Ask the owner.")
     act, args = a.action or "list", list(a.args or [])
     need = {"remove": 1, "suspend": 1, "resume": 1, "email": 2}
+    if act == "invites":  # unused invite links; `box friends invites cancel ID` stops one working
+        if args and (args[0] != "cancel" or len(args) != 2):
+            fail("usage: box friends invites [cancel ID]")
     if act in need and len(args) != need[act]:
         fail(FRIENDS_USAGE)
     if act == "requests" and args and (args[0] not in ("approve", "done", "decline") or len(args) != 2):
@@ -1941,6 +1948,8 @@ def cmd_friends(a):
         req["days"] = a.days
     elif act == "boxes":
         req["boxes"] = args[0]
+    elif act == "invites" and args:
+        req = {"action": "friends-invite-cancel", "id": args[1]}
     res = admin_request(req, wait)
     if not isinstance(res, dict):
         fail("bad answer from the machine")
@@ -1970,8 +1979,17 @@ def cmd_friends(a):
     elif act == "access":
         for r in res.get("emails") or []:
             print(f"{P(r['email']):<40} {P(r['who'])}")
-        print(f"\n{res.get('used')} of {res.get('limit')} seats in use (CF_SEAT_LIMIT). "
+        print(f"\n{res.get('used')} of {res.get('limit')} sign-in seats in use. "
               "Link one to a friend: box friends email NAME EMAIL")
+    elif act == "invites" and not args:
+        inv = res.get("invites") or []
+        if not inv:
+            print("No unused invite links.")
+        for r in inv:
+            print(f"{P(r['id'])}  {P(r.get('email') or 'anyone with the link'):<32} works until "
+                  f"{fmt_ts(r['expires']) if r.get('expires') else '?'}")
+        if inv:
+            print("\nCancel one: box friends invites cancel ID")
     elif act == "requests" and not args:
         reqs = res.get("requests") or []
         if not reqs:
@@ -2295,10 +2313,31 @@ def which_agent():
 ISSUES_PER_DAY = 25
 
 
+ISSUES_OFF = os.path.join(HOME, ".sharedbox", "issues-off")  # this account turned problem reports off
+
+
+def issues_on():
+    return not os.path.exists(ISSUES_OFF)
+
+
+def set_issues(on):
+    """Problem reports on or off for this account (the dashboard's Account tab, `box issue on|off`)."""
+    if on:
+        try:
+            os.unlink(ISSUES_OFF)
+        except FileNotFoundError:
+            pass
+        return "Problem reports are on. Your agents note what slowed them down; the owner reads the notes."
+    os.makedirs(os.path.dirname(ISSUES_OFF), mode=0o700, exist_ok=True)
+    with open(ISSUES_OFF, "w") as f:
+        f.write("off\n")
+    return "Problem reports are off. Your agents won't note anything for the owner."
+
+
 def log_issue(text, kind="other", auto=False, dedupe_s=600):
     """Append one issue; skip exact repeats from the last `dedupe_s` seconds. True if written."""
     text = " ".join(text.split())[:2000]
-    if not text:
+    if not text or not issues_on():
         return False
     now = time.time()
     mine = read_my_issues()
@@ -2392,11 +2431,17 @@ def auto_issues():
 
 def cmd_issue(a):
     text = " ".join(a.text).strip()
+    if text in ("on", "off"):
+        print(set_issues(text == "on"))
+        return
+    if not issues_on():
+        print("Problem reports are off for this account; nothing logged. Keep working around it.")
+        return
     if not text:
         sys.exit('usage: box issue [--kind slow|broken|missing|limit|confusing|other] "what happened, '
                  'what you tried, what it cost"')
     if log_issue(text, a.kind, dedupe_s=600):
-        print(f"logged to {ISSUES_FILE}. The box owner reviews these. Keep working around it.")
+        print(f"Logged to {ISSUES_FILE}. The owner reviews these. Keep working around it.")
     else:
         print("already logged in the last 10 minutes; not repeated.")
 
@@ -2640,6 +2685,8 @@ def portal_status():
                     for p, v in (st.get("peers") or {}).items() if isinstance(v, dict)}
     out["boxes_checked"] = int(st.get("ts") or 0)
     out["box"] = st.get("self") or socket.gethostname().split(".")[0]
+    out["running_ok"] = running_ok_keys()
+    out["issues_on"] = issues_on()
     if len(sb.boxes(CFG)) > 1:  # the Account tab's "Projects on all your boxes" (lib/sbprojects.py)
         try:
             import sbprojects
@@ -3038,6 +3085,73 @@ def portal_serve_set(name, what, value):
     return {"ok": True, "name": name, "message": msg}
 
 
+def portal_serve_describe(name, req):
+    """What a server is for, from the dashboard: the same check and record as `box serve describe`."""
+    import sbshared
+    name = portal_own_server(name)
+    if not name:
+        return {"ok": False, "error": "No such server. Refresh the page."}
+    about, err = sbshared.check_desc(req.get("about"))
+    if err:
+        return {"ok": False, "error": err[:1].upper() + err[1:] + "."}
+    meta = serve_meta(name)
+    meta["about"] = about
+    if req.get("importance") in ("important", "safe-to-stop") and not meta.get("keep"):
+        meta["importance"] = req["importance"]
+    rewrite_meta(name, meta)
+    return {"ok": True, "name": name, "message": f"Saved. {name}: {about}"}
+
+
+def portal_shared_describe(name, text):
+    name = portal_server_name(name)
+    if not name:
+        return {"ok": False, "error": "no such server"}
+    text = " ".join(str(text or "").split())
+    if not text or text.startswith("-"):
+        return {"ok": False, "error": "Write one plain sentence saying what it does and who it's for."}
+    out = portal_shared(["describe", name, text], {"ok": False, "error": "group servers aren't set up on this machine yet"})
+    if out.get("ok"):
+        out["message"] = f"Saved. Everyone now sees what {name} is for."
+    return dict(out, name=name)
+
+
+RUNNING_OK = os.path.join(HOME, ".sharedbox", "running-ok.json")  # {key: ts}: "still need it?" answered "keep it"
+RUNNING_OK_DAYS = 7
+
+
+def running_ok_keys():
+    now = time.time()
+    return sorted(k for k, ts in (sb.read_json(RUNNING_OK, {}) or {}).items()
+                  if isinstance(ts, (int, float)) and now - ts < RUNNING_OK_DAYS * 86400)
+
+
+def portal_running_ok(key):
+    if not sbrunning.KEY_RE.match(str(key)):
+        return {"ok": False, "error": "That isn't running any more. Refresh the page."}
+    cur = {k: ts for k, ts in (sb.read_json(RUNNING_OK, {}) or {}).items()
+           if isinstance(ts, (int, float)) and time.time() - ts < RUNNING_OK_DAYS * 86400}
+    cur[str(key)] = int(time.time())
+    os.makedirs(os.path.dirname(RUNNING_OK), mode=0o700, exist_ok=True)
+    sb.write_json(RUNNING_OK, cur, mode=0o600)
+    return {"ok": True, "message": f"Kept. It keeps running, and Home won't ask about it again for {RUNNING_OK_DAYS} days."}
+
+
+def portal_project_keep(name):
+    """Mark a project as used today, so the archive clock starts again (the janitor looks at the newest file in it)."""
+    name = str(name or "").strip().strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}", name):
+        return {"ok": False, "error": "no such project"}
+    path = os.path.join(HOME, name)
+    if not os.path.isdir(path) or os.path.islink(path):
+        return {"ok": False, "error": f"~/{name} isn't there any more. Refresh the page."}
+    mark = os.path.join(path, ".git" if os.path.isdir(os.path.join(path, ".git")) else "", ".treehouse-kept")
+    with open(mark, "w") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M\n"))
+    os.utime(path)
+    return {"ok": True, "message": f"Kept {name}. It stays in your home folder for at least another "
+                                   f"{CFG['PROJECT_TTL_DAYS']} days."}
+
+
 def serve_op(op, u):
     """stop = stays off across reboots too; start/restart = on, and back after a reboot (like group servers)."""
     if op == "restart":
@@ -3298,6 +3412,20 @@ def cmd_portal(a):
             out = portal_serve_logs(a.key)
         elif a.action == "serve-set" and a.arg and ":" in a.arg:  # keep:on|off, hackathon:pause|keep
             out = portal_serve_set(a.key, *a.arg.split(":", 1))
+        elif a.action == "serve-describe":  # the dashboard's "Add a description" (JSON on stdin: about, importance)
+            try:
+                req = json.loads(sys.stdin.read(4096) or "{}")
+            except ValueError:
+                req = None
+            out = portal_serve_describe(a.key, req) if isinstance(req, dict) else {"ok": False, "error": "bad request"}
+        elif a.action == "shared-describe":  # a group server's description (the text on stdin)
+            out = portal_shared_describe(a.key, sys.stdin.read(4096))
+        elif a.action == "running-ok" and a.key:  # "Still need it?" -> Keep it: don't ask again for a week
+            out = portal_running_ok(a.key)
+        elif a.action == "project-keep" and a.key:  # "Soon moved to the archive" -> Keep it
+            out = portal_project_keep(a.key)
+        elif a.action == "issues" and a.key in ("on", "off"):  # problem reports on or off
+            out = {"ok": True, "message": set_issues(a.key == "on"), "issues_on": a.key == "on"}
         elif a.action == "shared-ls":
             out = portal_shared_ls()
         elif a.action == "shared-ctl" and a.arg in PORTAL_SERVER_OPS:
@@ -3794,6 +3922,10 @@ def projects_ago(ts):
 
 def cmd_projects(a):
     import sbprojects
+    if a.op == "keep":  # "moves to the archive soon" -> Keep it
+        if not a.name:
+            sys.exit("usage: box projects keep NAME")
+        return emit(portal_project_keep(a.name), a.json)
     peers = projects_peers()
     if a.op == "everywhere":
         if not a.name or a.state not in ("on", "off"):
@@ -4365,7 +4497,7 @@ def main():
     x.add_argument("--why"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_boost)
     x = s.add_parser("running", help="what runs for you: containers, databases, servers, agents, with RAM and age; "
                                      "stop KEY (only when the user asks)")
-    x.add_argument("op", nargs="?", choices=["stop"]); x.add_argument("key", nargs="?")
+    x.add_argument("op", nargs="?", choices=["stop", "keep"]); x.add_argument("key", nargs="?")
     x.add_argument("--force", action="store_true", help="stop: also a server marked keep running (only when its "
                                                         "owner asked)")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_running)
@@ -4429,7 +4561,7 @@ def main():
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     x = s.add_parser("_fed-user"); x.add_argument("action"); x.set_defaults(fn=cmd_fed_user)
     x = s.add_parser("projects", help="projects kept on all your boxes: ls, everywhere NAME on|off, sync (--json)")
-    x.add_argument("op", nargs="?", default="ls", choices=["ls", "everywhere", "sync"])
+    x.add_argument("op", nargs="?", default="ls", choices=["ls", "everywhere", "sync", "keep"])
     x.add_argument("name", nargs="?"); x.add_argument("state", nargs="?")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_projects)
     s.add_parser("_projects-sync").set_defaults(fn=cmd_projects_sync)  # the janitor tick, as this person
@@ -4465,7 +4597,7 @@ def main():
     x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues")
     x.add_argument("action", nargs="?", default="list",
                    choices=["list", "remove", "suspend", "resume", "email", "access", "requests", "issues",
-                            "update", "boxes"])
+                            "update", "boxes", "invites"])
     x.add_argument("args", nargs="*"); x.add_argument("--archive", action="store_true")
     x.add_argument("--days", type=int, default=7); x.add_argument("--json", action="store_true")
     x.add_argument("--all", action="store_true"); x.add_argument("--why", help="decline: the reason they see")
