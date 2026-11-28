@@ -997,6 +997,7 @@ def submit(page, sig):
                     continue
                 inp.fill({"sshkey": SSH_KEY, "code": "sk-paste-code-123", "username": "carol",
                           "email": "sam@example.com", "note": "Sam", "hours": "2",
+                          "about": "Telegram bot for the study group",
                           "until": time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() + 7200))}.get(n, "x"))
             press(page, f.locator("button").first)
             return True
