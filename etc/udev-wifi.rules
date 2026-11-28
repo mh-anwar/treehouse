@@ -1,0 +1,6 @@
+# managed by treehouse (installed as /etc/udev/rules.d/99-sharedbox-wifi.rules): every Wi-Fi interface, whatever its
+# name (a USB dongle is wlx<MAC>), gets a supplicant whenever it appears: at boot, when plugged in again, after a
+# driver or USB reset. sharedbox-wifi@ runs treehouse's config (/etc/sharedbox/wifi); sharedbox-wifi-replug@ only acts
+# while netplan still runs the Wi-Fi (its own supplicant unit isn't started again on a replug). 99-: after
+# 80-net-setup-link.rules has named the interface, so $name is the final name. Not only "add": the rename is a "move".
+SUBSYSTEM=="net", ACTION!="remove", ENV{DEVTYPE}=="wlan", TAG+="systemd", ENV{SYSTEMD_WANTS}+="sharedbox-wifi@$name.service sharedbox-wifi-replug@$name.service"
