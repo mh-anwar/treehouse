@@ -1741,6 +1741,11 @@ def box_summary():
          "people": active_people(rows),
          "dashboard": PUBLIC + "/_box/me" if PUBLIC else f"http://{ip}:{CFG['WEB_PORT']}/",
          "t3": "" if not t3.isdigit() else PUBLIC + "/_box/app" if PUBLIC else f"http://{ip}:{t3}"}
+    # every account's T3 Code version and state (the janitor tick's t3.json): the owner's Machines card shows drift
+    t3s = sb.read_json(sb.T3_STATE, {}) or {}
+    d["t3_target"] = str(t3s.get("target") or sb.t3_box_version())
+    d["t3_accounts"] = {n: {"v": str(r.get("version") or ""), "s": str(r.get("state") or "")}
+                        for n, r in (t3s.get("accounts") or {}).items() if isinstance(r, dict)}
     _box_cache[:] = [now, d]
     return d
 
@@ -1788,6 +1793,14 @@ def clean_summary(d):
     for k in ("dashboard", "t3"):
         u = d.get(k)
         out[k] = safe_url(u) if isinstance(u, str) and len(u) <= 300 else ""
+    tv = d.get("t3_target")
+    out["t3_target"] = tv if isinstance(tv, str) and sb.T3_VERSION_RE.fullmatch(tv) else ""
+    acc = d.get("t3_accounts")
+    out["t3_accounts"] = {n: {"v": r.get("v") if sb.T3_VERSION_RE.fullmatch(str(r.get("v") or "")) else "",
+                              "s": r.get("s") if r.get("s") in ("running", "asleep", "off", "legacy") else ""}
+                          for n, r in list(acc.items())[:60]
+                          if isinstance(n, str) and re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", n) and isinstance(r, dict)} \
+        if isinstance(acc, dict) else {}
     return out
 
 
@@ -1893,6 +1906,30 @@ def machines_tab(owner, allowed, where, base):
         return "<p class='err'>Couldn't load the machines. Reload the page in a minute.</p>"
 
 
+def t3_versions_line(d, names):
+    """The owner's Machines card: which T3 Code version each account on that machine runs, against the box's own."""
+    e = html.escape
+    target, acc = d.get("t3_target") or "", d.get("t3_accounts") or {}
+    if not target and not acc:
+        return ""
+    asleep = sum(1 for r in acc.values() if r.get("s") == "asleep")
+    behind = sorted((n, r) for n, r in acc.items() if r.get("v") and r.get("v") != target)
+    head = f"T3 <code>{e(target or '?')}</code>"
+    if not acc:
+        tail = "."
+    elif not behind:
+        tail = " on every account."
+    else:
+        tail = (", except " + ", ".join(f"{e(names.get(n) or n)} <code>{e(r['v'])}</code>"
+                                        + (" (T3's own service)" if r.get("s") == "legacy" else "")
+                                        for n, r in behind[:8])
+                + (f" and {len(behind) - 8} more" if len(behind) > 8 else "")
+                + ". Each moves over the next time nothing runs in it for a while.")
+    sleep = (f" {asleep} of {len(acc)} asleep (they wake when opened)." if asleep > 1 else
+             f" 1 of {len(acc)} asleep (it wakes when opened)." if asleep else "")
+    return f"<div class='mf sub'>{head}{tail}{sleep}</div>"
+
+
 OFFLINE_WHY = {"not reachable": "It doesn't answer. It may be turned off, asleep or off the network.",
                "needs a treehouse update": "It runs an older treehouse that can't share its numbers yet.",
                "doesn't list this machine in BOXES yet": "It doesn't list this machine as one of yours yet.",
@@ -1963,6 +2000,7 @@ def machines_section(owner=False, allowed=None, names=None):
                                (("dashboard", "Open its dashboard"), ("t3", "Open its T3")) if d.get(k) and not here)
             ver = f"treehouse version <code>{e(d['version'])}</code>" if d.get("version") else ""
             extra = "<div class='mf sub'>" + " · ".join(x for x in (ver, f"address {e(ip)}" if ip else "", links) if x) + "</div>"
+            extra += t3_versions_line(d, names)
         body = (f'<div class="ms">{cpu}{mem}{disk}{load}</div>'
                 f'<div class="mw"><span class="sub">Using it now:</span> {who}</div>') if st["state"] == "online" else ""
         cards.append(f'<div class="mach card"><div class="mh"><h3>{e(name)}</h3><div class="mst">{state}</div></div>'
@@ -3370,6 +3408,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
             else:
                 app = ""
             main = (f"<div class='line btns'>{open_t3('Open T3')}{app}</div>" + busy
+                    + ("<p class='sub'>T3 is asleep. It wakes when you open it.</p>"
+                       if t3 and t3.get("running") is False else "")
                     + ("<p class='sub'>Open T3 opens it in this browser. The T3 app is the same thing on your phone "
                        "or laptop.</p>" if app else ""))
             if state == "S2":

@@ -133,6 +133,12 @@ def write(rel, obj):
         f.write(obj if isinstance(obj, str) else json.dumps(obj))
 
 
+# every account's T3 Code on this box (the janitor tick's t3.json): one on the box's version, one asleep
+write("t3.json", {"ts": NOW - 120, "target": "0.1.13", "channel": "stable", "accounts": {
+    "alice": {"state": "running", "version": "0.1.13", "clients": 1, "idle_min": 0, "busy": []},
+    "dave": {"state": "asleep", "version": "0.1.13", "clients": 0, "idle_min": 0, "busy": []}}})
+
+
 def save_registry(reg):
     write("users.json", reg)
 
@@ -226,7 +232,8 @@ ACCOUNTS = {  # what `box _portal status` would say for each account
             "servers": [], "ssh": False},
     "carol": {"logins": {"claude": False, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False},
     "dave": {"logins": {"claude": False, "codex": True, "gh": True, "t3connect": False}, "servers": [], "ssh": False,
-             "boxes": {"minastirith": {"ssh": True, "logins": {"codex": False}}}},  # ChatGPT here, not there yet
+             "boxes": {"minastirith": {"ssh": True, "logins": {"codex": False}}},  # ChatGPT here, not there yet
+             "t3_asleep": True},  # his T3 went to sleep (no client, no work): the start card says it wakes on open
     "erin": {"logins": {"claude": True, "codex": False, "gh": False, "t3connect": False}, "servers": [], "ssh": False,
              "no_t3": True},  # T3 Code isn't installed for her: the start card says so
     ME: {"logins": {"claude": True, "codex": False, "gh": True, "t3connect": False, "antigravity": False},
@@ -571,7 +578,7 @@ def _fake_root(req):
     key = req.get("key")
     if action == "status":
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
-                "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": True, "sleeping": False,
+                "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": not acct.get("t3_asleep"), "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
                 "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "box": "treebox",
                 "running_ok": sorted(RUNNING_OK.get(name, ())), "issues_on": ISSUES_ON.get(name, True),
@@ -732,7 +739,10 @@ class PeerBox(BaseHTTPRequestHandler):  # another treehouse box answering /api/b
         data = json.dumps({"v": 1, "name": "minastirith", "version": "abc1234", "ncpu": 8, "load1": 1.25,
                            "level": "calm", "mem": 42.0, "disk_free": 81.0, "dashboard": "http://100.64.0.6:8090/",
                            "t3": "", "cpu": 23.0, "mem_used_b": 13 * 2**30, "mem_total_b": 31 * 2**30,
-                           "disk_free_b": 370 * 2**30, "disk_total_b": 456 * 2**30, "people": ["alice", "dave"]}).encode()
+                           "disk_free_b": 370 * 2**30, "disk_total_b": 456 * 2**30, "people": ["alice", "dave"],
+                           "t3_target": "0.1.13", "t3_accounts": {"alice": {"v": "0.1.12", "s": "running"},
+                                                                 "dave": {"v": "0.1.13", "s": "asleep"},
+                                                                 "radagast": {"v": "0.1.9", "s": "legacy"}}}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

@@ -461,8 +461,9 @@ class Collector:
     ({table: [row dicts]}, new state). Paths are parameters so tests can point it at a fake tree."""
 
     def __init__(self, box, state=None, proc="/proc", sys_dir="/sys", cgroup="/sys/fs/cgroup", journal=True,
-                 home_of=None):
+                 home_of=None, box_events=None):
         self.box = box
+        self.box_events = box_events  # the box's own event log (events.jsonl): T3 sleeps and restarts come from it
         self.old = state or {}
         self.proc, self.sys, self.cg = proc, sys_dir, cgroup
         self.journal = journal
@@ -504,6 +505,8 @@ class Collector:
                                   "detail": "", "value": now - old["ts"]})
         if self.journal:
             out["events"] += self._journal(old, new)
+        if self.box_events:
+            out["events"] += self._box_events(old, new)
         s["collect_ms"] = int((time.monotonic() - t0) * 1000)
         out["samples"] = [s]
         for t in out:
@@ -831,6 +834,41 @@ class Collector:
         new["journal"] = j
         return events
 
+    BOX_EVENT_KINDS = ("t3_asleep", "t3_restarted", "t3_restart_failed", "t3_moved", "t3_move_failed")
+
+    def _box_events(self, old, new):
+        """New lines of events.jsonl since the last sample (by inode + offset) whose kind is in BOX_EVENT_KINDS:
+        T3 Code going to sleep or restarting onto the box's version (detail = version, value = idle minutes)."""
+        pos = dict(old.get("box_events") or {})
+        try:
+            st = os.stat(self.box_events)
+        except OSError:
+            new["box_events"] = pos
+            return []
+        off = pos.get("off", 0) if pos.get("ino") == st.st_ino and pos.get("off", 0) <= st.st_size else \
+            (st.st_size if not pos else 0)  # first run: start at the end, no backfill of old lines
+        out = []
+        try:
+            with open(self.box_events, "rb") as f:
+                f.seek(off)
+                data = f.read(1 << 20)
+        except OSError:
+            data = b""
+        end = data.rfind(b"\n") + 1
+        for line in data[:end].splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("kind") in self.BOX_EVENT_KINDS:
+                val = e.get("idle_min")
+                out.append({"ts": float(e.get("ts") or 0), "kind": e["kind"], "user": str(e.get("user") or ""),
+                            "unit": "sb-t3.service" if str(e["kind"]).startswith("t3_") else "",
+                            "detail": str(e.get("version") or e.get("why") or "")[:200],
+                            "value": val if isinstance(val, (int, float)) and not isinstance(val, bool) else None})
+        new["box_events"] = {"ino": st.st_ino, "off": off + end}
+        return out
+
     def _boot_event(self, now, old):
         """The machine (re)started since the last sample: when, and how the previous boot ended."""
         up = num((_read(self._p("uptime")) or "0").split()[0], 0)
@@ -1102,7 +1140,7 @@ def run_root(cfg, sb, now=None, verbose=False):
         except Exception:  # noqa: BLE001
             box = socket.gethostname().split(".")[0].lower()
         state["box_ts"] = now
-    data, new = Collector(box, state).collect(now)
+    data, new = Collector(box, state, box_events=getattr(sb, "EVENTS", None)).collect(now)
     new["box"], new["box_ts"] = box, state.get("box_ts", now)
     owner = sb.owner_account(cfg)
     owner_gid = private_gid(owner.pw_name) if owner else None

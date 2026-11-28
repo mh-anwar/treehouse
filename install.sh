@@ -275,7 +275,7 @@ if [[ $TOOLS == 1 ]]; then
 fi
 # Retired per-user agent pins (`box updates manual`): request records and notices move from $STATE/agent-pins to
 # $STATE/user-state, and every agent launcher is rewritten to follow <pkg>/current. Idempotent; also runs with
-# --no-tools (the nightly sharedbox-tools update does the same).
+# --no-tools (the nightly sharedbox-tools update does the same). Also /etc/t3code/policy.json (T3_CHANNEL).
 do_ env SHAREDBOX_LIB="$LIB" python3 -I -c '
 import importlib.machinery, importlib.util, os, sys
 sys.path.insert(0, os.environ["SHAREDBOX_LIB"])
@@ -288,6 +288,7 @@ for name, _ in m.agent_specs(cfg):
     cur = m.current_version(name)
     for binary in (m.agent_bins(name, m.version_dir(name, cur)) if cur else []):
         m.write_shim(cfg, name, binary)
+m.t3_policy(cfg, False)
 ' || warn "could not rewrite the agent launchers; the next sharedbox-tools update does it"
 
 # ---------- systemd ----------

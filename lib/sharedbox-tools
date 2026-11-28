@@ -200,6 +200,8 @@ def agent_specs(cfg):
             log(f"{name} is now {sb.AGENT_RENAMED[name]} (renamed on npm); using that. "
                 f"Update TOOLS_NPM in {sb.CONF_PATH} to drop this note.")
             name, wanted = sb.AGENT_RENAMED[name], ""
+        if name == "t3" and not wanted:  # T3_CHANNEL: stable = npm's `latest`, nightly = its `nightly` tag
+            wanted = "nightly" if sb.t3_channel(cfg) == "nightly" else "latest"
         if NPM_SPEC.fullmatch(name) and name not in MANIFEST:
             out.append((name, wanted or "latest"))
     return out + [(name, "latest") for name in MANIFEST]
@@ -766,6 +768,19 @@ def write_status(last_update=None):
     return v
 
 
+def t3_policy(cfg, dry):
+    """/etc/t3code/policy.json: every T3 on the box stays on T3_CHANNEL (see sbcommon.t3_policy)."""
+    if dry:
+        log(f"would write {sb.T3_POLICY} (T3 channel: {sb.t3_channel(cfg)})")
+        return
+    try:
+        done = sb.write_t3_policy(cfg)
+    except OSError as e:
+        done = f"couldn't write {sb.T3_POLICY}: {e}"
+    if done:
+        log(done)
+
+
 # ---------- commands ----------
 
 def cmd_install(cfg, a):
@@ -777,6 +792,7 @@ def cmd_install(cfg, a):
     log(f"coding agents (npm + vendor manifests, versioned under {sb.AGENTS_DIR})")
     errors = []
     sync_agents(cfg, dry, errors)
+    t3_policy(cfg, dry)
     npm_install(npm_extras_pinned(), dry, scripts=False)
     if cfg.get("TOOLS_UV", "1") == "1" and (dry or not shutil.which("uv")):
         log("uv")
@@ -798,6 +814,7 @@ def cmd_update(cfg, a):
     started = int(time.time())
     log("coding agents")
     sync_agents(cfg, False, errors)
+    t3_policy(cfg, False)
     steps = [("npm extras", lambda: npm_install(npm_extras_pinned(), False, scripts=False))]  # stay pinned
     if shutil.which("uv") and os.path.dirname(shutil.which("uv")) == "/usr/local/bin":
         steps.append(("uv", lambda: uv_install(False)))
