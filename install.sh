@@ -129,7 +129,7 @@ for f in "$SRC"/etc/sysctl-*.conf; do
     n=$(basename "$f" .conf); do_ install -m 644 "$f" "/etc/sysctl.d/60-sharedbox-${n#sysctl-}.conf"
 done
 do_ sh -c "printf 'tcp_bbr\\n' > /etc/modules-load.d/sharedbox-bbr.conf"
-# T3 Code telemetry off for every account (owner's choice). environment.d reaches every user manager started from
+# T3 Code telemetry off for every account: a shared box doesn't send users' usage out. environment.d reaches every user manager started from
 # now on (the owner's own t3code.service too); running managers get it now, for their next T3 start. Restarts nothing.
 do_ install -d -m 755 /etc/environment.d
 do_ sh -c "printf 'T3CODE_TELEMETRY_ENABLED=false\\n' > /etc/environment.d/60-sharedbox-t3.conf"
