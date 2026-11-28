@@ -77,7 +77,7 @@ def concrete(span):
 
 class EveryDocumentedCommandParses(unittest.TestCase):
     def test_subcommands_exist(self):
-        cmds = set(box.parser_commands()) | {"team"}
+        cmds = set(box.parser_commands()) | {"team", "swarm"}
         bad = sorted({(rel, s) for rel, s in spans() if s.split()[1] not in cmds and not s.startswith("box <")})
         self.assertEqual(bad, [], "help names a `box` command that doesn't exist")
 
@@ -86,7 +86,7 @@ class EveryDocumentedCommandParses(unittest.TestCase):
         bad = []
         for rel, span in spans():
             argv = concrete(span)
-            if not argv or argv[0] in ("team", "<topic>", "<command>") or len(span.split()) == 2:
+            if not argv or argv[0] in ("team", "swarm", "<topic>", "<command>") or len(span.split()) == 2:
                 continue  # `box serve` on its own names the command (test_subcommands_exist checks it)
             for _ in range(4):  # a placeholder where a choice goes: try the parser's first choice instead
                 err = io.StringIO()

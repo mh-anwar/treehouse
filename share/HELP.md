@@ -346,6 +346,15 @@ on; `box hackathon` shows the state. While on:
   again when it ends. Servers marked keep running, group servers and everything else keep running.
 It ends by itself at its end time. Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2`
 (or `--hours N`), `box hackathon off`.
+At hackathon start, agents run `box hackathon check --fix` as their own user (the owner's agents and each friend's).
+It checks every machine: reachable over SSH, T3 running and linked here, Claude/Codex/Antigravity signed in, the
+projects kept on all machines there and in T3 (`--repo NAME` for one project), SSH from each machine to the others.
+`--fix` does the safe automatic steps (choose the `--repo` project for all machines, `box boxes setup`, start T3,
+`box projects sync`); anything that needs the user prints the one command to run next, e.g.
+`box login codex --on MACHINE` (each machine keeps its own AI accounts; sign-ins are never copied). `--json` for
+agents. `box hackathon on` runs the check once and prints its summary.
+- To start a swarm for an idea, the agent runs `box swarm start "<idea>" --who <name>`; teammates' agents run
+  `box swarm join --who <name>` as themselves (`box swarm --help`; only on machines that have the swarm harness).
 
 @@ machines
 The owner's machines (this one is {host}). {machines}
