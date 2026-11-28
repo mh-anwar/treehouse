@@ -106,6 +106,12 @@ DEFAULTS = {
     # a project (git repo directly in ~) untouched this long AND fully pushed to a remote is archived
     "PROJECT_TTL_DAYS": "20",
     "CACHE_TTL_DAYS": "30",
+    # weekly safe cleanup (lib/sbweekly.py; the janitor runs it on this day, `box clean` on demand)
+    "WEEKLY_CLEAN": "1",
+    "WEEKLY_CLEAN_DAY": "Sun",
+    "UV_CACHE_CLEAN_GB": "10",
+    "JOURNAL_KEEP_DAYS": "40",
+    "JOURNAL_MAX_SIZE": "5G",
     "TMP_TTL_DAYS": "2",
     "WARN_DAYS": "3",
     # an expired project is moved to ~/.sharedbox/archive/ (restorable: `box restore NAME`) and deleted this
@@ -113,6 +119,9 @@ DEFAULTS = {
     "ARCHIVE_DAYS": "14",
     # no swap at all: sharedbox-tune makes /swap.treehouse (min(8 GB, max(2 GB, RAM/2))) when the disk has room
     "TUNE_SWAP": "auto",
+    # hardware watchdog armed through systemd / earlyoom installed and configured (sharedbox-tune apply); 0 = off
+    "TUNE_WATCHDOG": "auto",
+    "TUNE_EARLYOOM": "auto",
     # SOLO=1: a lean server for one person. No signups/invites (checked where each is used)
     "SOLO": "0",
     "OVER_BUDGET_GRACE_HOURS": "24",
@@ -169,6 +178,14 @@ DEFAULTS = {
     "SMTP_USER": "",
     "SMTP_PASSWORD_FILE": "/etc/sharedbox/smtp-password",
     "HEALTH_REPORT_TIME": "Mon 09:00",
+    # box telemetry (lib/sbtelemetry.py, sampled every minute by sharedbox-health): 0 turns it off. Minute rows
+    # are kept TELEMETRY_RAW_DAYS, hourly roll-ups and events TELEMETRY_KEEP_DAYS; the file is capped at
+    # TELEMETRY_MAX_MB (each account's own copy at TELEMETRY_USER_MAX_MB), oldest minute days going first
+    "TELEMETRY": "1",
+    "TELEMETRY_RAW_DAYS": "14",
+    "TELEMETRY_KEEP_DAYS": "400",
+    "TELEMETRY_MAX_MB": "1024",
+    "TELEMETRY_USER_MAX_MB": "128",
     # public front door (sharedbox-gate behind Cloudflare Tunnel + Access); empty PUBLIC_URL = off
     "PUBLIC_URL": "",
     "GATE_PORT": "8091",

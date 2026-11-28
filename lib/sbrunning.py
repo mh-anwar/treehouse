@@ -70,6 +70,12 @@ def mem_split(path):
             st[k] = int(v)
         except ValueError:
             pass
+    return split_stat(st)
+
+
+def split_stat(st):
+    """mem_split from an already-parsed memory.stat ({key: bytes}); None without "anon". lib/sbtelemetry.py uses
+    this too, so telemetry and the dashboard count memory the same way."""
     if "anon" not in st:
         return None
     shmem, slab_r = st.get("shmem", 0), st.get("slab_reclaimable", 0)

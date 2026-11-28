@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I
 """sharedbox-health: box health + security reporting by email (root).
 
-  sharedbox-health sample                 record a metrics sample (timer, every minute)
+  sharedbox-health sample                 record a metrics sample (timer, every minute) + box telemetry
+  sharedbox-health telemetry              just the telemetry sample (by hand; prints row counts)
   sharedbox-health report [--send]        weekly report; prints it unless --send
   sharedbox-health check  [--send]        urgent problems only; emails if anything is new (timer, hourly)
   sharedbox-health audit  [--quick]       run the security self-audit and print findings
@@ -119,6 +120,10 @@ def cmd_sample(cfg, a):
         except Exception as e:  # noqa: BLE001 - a roll-up must never stop sampling
             print(f"hourly roll-up: {e!r}", file=sys.stderr)
     sb.write_json(SAMPLE_STATE, {"total": total, "idle": idle, "hour": hour}, mode=0o600)
+    try:   # `box tune` shows why the box last restarted (read once per boot)
+        last_boot_info()
+    except Exception as e:  # noqa: BLE001 - never stops sampling
+        print(f"last boot: {e!r}", file=sys.stderr)
     with open(METRICS, "a") as f:
         f.write(json.dumps(rec, separators=(",", ":")) + "\n")
     if os.path.getsize(METRICS) > 24 << 20 or now % 86400 < 60:   # trim about once a day
@@ -128,6 +133,21 @@ def cmd_sample(cfg, a):
             for r in keep:
                 f.write(json.dumps(r, separators=(",", ":")) + "\n")
         os.replace(tmp, METRICS)
+    telemetry(cfg)
+
+
+def telemetry(cfg, verbose=False):
+    """Box telemetry (lib/sbtelemetry.py): the detailed minute sample into telemetry.db and each account's file;
+    roll-ups and retention once an hour. Its trouble never stops the health sample."""
+    try:
+        import sbtelemetry
+        sbtelemetry.run_root(cfg, sb, verbose=verbose)
+    except Exception as e:  # noqa: BLE001
+        print(f"telemetry: {e!r}", file=sys.stderr)
+
+
+def cmd_telemetry(cfg, a):
+    telemetry(cfg, verbose=True)
 
 
 AGENT_RE = re.compile(r"^(claude|codex|opencode|gemini|antigravity|aider|cursor-agent)", re.I)
@@ -192,6 +212,122 @@ def journal(args, since):
                timeout=120)
 
 
+# ---------------------------------------------------------------- restarts and stopped services
+
+LAST_BOOT = os.path.join(HDIR, "last-boot.json")   # world-readable: `box tune` reports the reason
+WDIOF_CARDRESET = 0x20   # watchdog bootstatus bit: the last reset came from the watchdog
+PSTORE_DIRS = ("/var/lib/systemd/pstore", "/sys/fs/pstore")
+
+
+def boot_reason(bootstatus, prev_last, pstore_new):
+    """How the previous boot ended: 'watchdog' | 'panic' | 'unclean' | 'clean' | 'unknown'.
+    prev_last: the previous boot's last journal entry (dict from `journalctl -o json`) or None."""
+    try:
+        if int(bootstatus or 0) & WDIOF_CARDRESET:
+            return "watchdog"
+    except ValueError:
+        pass
+    if pstore_new:
+        return "panic"
+    if not prev_last:
+        return "unknown"
+    msg = str(prev_last.get("MESSAGE") or "")
+    ident = str(prev_last.get("SYSLOG_IDENTIFIER") or "")
+    if msg == "Journal stopped" or ident == "systemd-shutdown" or msg.startswith(("Received SIGTERM from PID 1",
+                                                                                 "systemd-journald stopped")):
+        return "clean"
+    return "unclean"
+
+
+def last_boot_info():
+    """Once per boot: why the box last restarted (watchdog bootstatus, a panic dump, or how the previous boot's
+    journal ends). Cached in LAST_BOOT by boot id."""
+    with open("/proc/sys/kernel/random/boot_id") as f:
+        bid = f.read().strip()
+    st = sb.read_json(LAST_BOOT, {}) or {}
+    if st.get("boot_id") == bid:
+        return st
+    up = float(open("/proc/uptime").read().split()[0])
+    boot_ts = time.time() - up
+    try:
+        prev = json.loads(run(["journalctl", "-b", "-1", "-n", "1", "-o", "json", "--no-pager"]).strip() or "null")
+    except json.JSONDecodeError:
+        prev = None
+    prev_end = int(prev["__REALTIME_TIMESTAMP"]) / 1e6 if prev and prev.get("__REALTIME_TIMESTAMP") else 0
+    pstore = []
+    for d in PSTORE_DIRS:
+        for fn in glob.glob(os.path.join(d, "**", "*"), recursive=True):
+            try:
+                if os.path.isfile(fn) and os.path.getmtime(fn) >= (prev_end or boot_ts) - 600:
+                    pstore.append(fn)
+            except OSError:
+                pass
+    bs = ""
+    try:
+        with open("/sys/class/watchdog/watchdog0/bootstatus") as f:
+            bs = f.read().strip()
+    except OSError:
+        pass
+    reason = boot_reason(bs, prev, pstore)
+    st = {"boot_id": bid, "boot_ts": int(boot_ts), "when": time.strftime("%Y-%m-%d %H:%M", time.localtime(boot_ts)),
+          "reason": reason, "prev_end": int(prev_end)}
+    sb.write_json(LAST_BOOT, st, mode=0o644)
+    return st
+
+
+def prev_boot_tail(n=6):
+    """The previous boot's last log lines (root-only: they go in the owner's email, not the world-readable file)."""
+    return [l[:220] for l in run(["journalctl", "-b", "-1", "-n", str(n), "-o", "short-iso", "--no-pager", "-q"])
+            .splitlines() if l.strip()]
+
+
+def unit_value(text, key):
+    for ln in text.splitlines():
+        if ln.startswith(key + "="):
+            return ln.split("=", 1)[1].strip()
+    return ""
+
+
+def stopped_box_services():
+    """`box serve` units (sb-*.service in each account's ~/.config/systemd/user) that systemd gave up on, or that
+    can never start because their folder is gone (exit 200/CHDIR: a deleted worktree or /tmp folder).
+    [{user, name, why, since}]"""
+    out = []
+    for pw in pwd.getpwall():
+        if pw.pw_uid < 1000 or pw.pw_uid >= 60000:
+            continue
+        udir = os.path.join(pw.pw_dir, ".config", "systemd", "user")
+        try:
+            files = sorted(f for f in os.listdir(udir) if f.startswith("sb-") and f.endswith(".service"))
+        except OSError:
+            continue
+        files = [f for f in files if f not in ("sb-t3.service", "sb-t3-proxy.service")]
+        if not files:
+            continue
+        failed = set()
+        if os.path.isdir(f"/run/user/{pw.pw_uid}"):   # its systemd is running
+            for ln in run(["systemctl", "--user", "-M", f"{pw.pw_name}@", "list-units", "--failed", "--plain",
+                           "--no-legend", "--type=service", "sb-*"], timeout=20).splitlines():
+                if ln.split():
+                    failed.add(ln.split()[0])
+        wants = os.path.join(udir, "default.target.wants")
+        for f in files:
+            try:
+                with open(os.path.join(udir, f)) as fh:
+                    body = fh.read()
+            except OSError:
+                continue
+            wd = unit_value(body, "WorkingDirectory").replace("%%", "%").replace("$$", "$")
+            gone = bool(wd) and not wd.startswith(("~", "-")) and not os.path.isdir(wd)   # "-": optional
+            enabled = os.path.exists(os.path.join(wants, f))
+            if f in failed or (gone and enabled):
+                out.append({"user": pw.pw_name, "name": f[3:-8],
+                            "why": f"its folder {wd} no longer exists" if gone
+                            else "it exited with an error and systemd gave up restarting it",
+                            "folder_gone": gone})
+    return out
+
+
 def gather(cfg, since):
     now = time.time()
     m = jsonl(METRICS, since)
@@ -239,6 +375,16 @@ def gather(cfg, since):
 
     failed = run(["systemctl", "--failed", "--plain", "--no-legend"]).split("\n")
     g["failed_units"] = [l.split()[0] for l in failed if l.strip()]
+    try:
+        g["stopped_services"] = stopped_box_services()
+    except Exception as e:  # noqa: BLE001 - one part never stops the report
+        g["stopped_services"] = []
+        print(f"box services: {e!r}", file=sys.stderr)
+    try:
+        g["last_boot"] = last_boot_info()
+    except Exception as e:  # noqa: BLE001
+        g["last_boot"] = {}
+        print(f"last boot: {e!r}", file=sys.stderr)
     kern = journal(["-k"], since)
     g["oom"] = re.findall(r"[Oo]ut of memory: Killed process \d+ \(([^)]+)\)", kern)
     g["disk_errors"] = [l for l in kern.splitlines()
@@ -287,6 +433,13 @@ def sb_events(since):
 
 # ---------------------------------------------------------------- verdict + rendering
 
+RESTART_WHY = {"watchdog": "it had frozen and the hardware watchdog reset it",
+               "panic": "the kernel crashed (panic) and rebooted",
+               "unclean": "it went down without shutting down (a freeze the watchdog caught, a power cut or the "
+                          "reset button)"}
+REMIND_WEEKLY = ("`box serve` service", "the box restarted by itself")   # alerts that stay true for days
+
+
 def problems(cfg, g, findings):
     """(level, message) list; level 'red' or 'yellow'."""
     p = []
@@ -299,8 +452,20 @@ def problems(cfg, g, findings):
         days = g["disk_free"] / g["disk_per_day"]
         if days < 30:
             p.append(("yellow" if days > 7 else "red", f"at this week's rate the disk fills in ~{days:.0f} days"))
-    if g["failed_units"]:
-        p.append(("yellow", "failed services: " + ", ".join(g["failed_units"][:6])))
+    ours = [u for u in g["failed_units"] if u.startswith("sharedbox-")]
+    others = [u for u in g["failed_units"] if u not in ours]
+    if ours:   # treehouse's own (health, janitor, tune, web...): something every friend relies on is down
+        p.append(("red", "treehouse services failed: " + ", ".join(ours[:6])))
+    if others:
+        p.append(("yellow", "failed services: " + ", ".join(others[:6])))
+    for x in g.get("stopped_services") or []:
+        # one message per service: the hourly alert sends each once, then reminds weekly while it stays down
+        p.append(("red", f"{x['user']}'s `box serve` service {x['name']} is down and won't restart: {x['why']}"
+                         + (" (fix: `box serve rm` it, then `box serve add` it again from a lasting folder)"
+                            if x.get("folder_gone") else " (`box serve logs " + x["name"] + "` says why)")))
+    lb = g.get("last_boot") or {}
+    if lb.get("reason") in RESTART_WHY and time.time() - lb.get("boot_ts", 0) < 2 * 86400:
+        p.append(("red", f"the box restarted by itself at {lb['when']}: {RESTART_WHY[lb['reason']]}"))
     if g["oom"]:
         p.append(("yellow", f"{len(g['oom'])} process(es) killed for running out of memory"))
     lu = (sb.read_json(sb.TOOLS_JSON, {}) or {}).get("last_update") or {}
@@ -361,8 +526,16 @@ def build_report(cfg, g, findings, new_ids, resolved):
                                                       for b in g["boots"]) + ")" if g["boots"] else ""),
           f"Unaccounted gaps in monitoring: {g['downtime_min']:.0f} min" if g["downtime_min"] > 30 else "",
           f"Failed services: {', '.join(g['failed_units']) or 'none'}",
+          ("Stopped `box serve` services: " + ", ".join(f"{x['user']}/{x['name']}" for x in g["stopped_services"]))
+          if g.get("stopped_services") else "",
+          (f"Last restart: {g['last_boot'].get('when')}, "
+           + {"clean": "a normal reboot", "unknown": "reason unknown (no earlier log)"}.get(
+               g["last_boot"].get("reason"), RESTART_WHY.get(g["last_boot"].get("reason"), "?")))
+          if g.get("last_boot") else "",
           f"Out-of-memory kills: {', '.join(g['oom'][:10]) or 'none'}"]
     up += [f"  {l}" for l in g["disk_errors"][:5]]
+    if (g.get("last_boot") or {}).get("reason") in RESTART_WHY:
+        up += ["Last log lines before that restart:"] + [f"  {l}" for l in prev_boot_tail()]
     S.append(("Uptime & stability", [u for u in up if u]))
 
     us = []
@@ -378,6 +551,9 @@ def build_report(cfg, g, findings, new_ids, resolved):
         us.append(f"Janitor deleted {len(ev['deleted'])} item(s)")
     if ev.get("archived"):
         us.append(f"Projects archived (restorable with box restore): {len(ev['archived'])}")
+    if ev.get("weekly_clean"):
+        freed = sum(e.get("bytes") or 0 for e in ev["weekly_clean"] if isinstance(e.get("bytes"), int))
+        us.append(f"Weekly cleanup freed {sb.human(freed)} ({len(ev['weekly_clean'])} accounts and the system)")
     if ev.get("reboot_postponed"):
         us.append(f"Scheduled reboots that waited for agents to finish: {len(ev['reboot_postponed'])}")
     for k in ("over_budget", "user_suspended", "janitor_error", "disk_pressure"):
@@ -443,6 +619,53 @@ def _hl(line):
 
 # ---------------------------------------------------------------- commands
 
+def plain(subject):
+    """The subject without its leading status mark, for an inbox card ('🟡 weekly health: ...' -> 'weekly health:
+    ...')."""
+    return re.sub(r"^[^\w]+", "", subject).strip()
+
+
+def deliver(cfg, subject, text, page=None, level="normal", summary=""):
+    """Send a report or alert where the owner will see it, and never fail because email isn't set up:
+      1. email, when MAIL_TO/SMTP are configured (and sending works)
+      2. otherwise the owner's inbox (box msg; the Telegram bot pushes it when they linked Telegram), as a message
+         from the box itself
+      3. otherwise (no owner account, or the inbox refused) only the log (this unit's journal)
+    The full text always goes to stdout too when it isn't emailed. Returns 'email', 'inbox' or 'log'."""
+    why = "email isn't set up (MAIL_TO, SMTP_HOST and the SMTP password in sharedbox.conf)"
+    if sbmail.configured(cfg):
+        try:
+            sbmail.send(cfg, subject, text, page)
+            print(f"sent: {subject}")
+            return "email"
+        except sbmail.MailNotConfigured as e:
+            why = f"email isn't set up: {e}"
+        except Exception as e:  # noqa: BLE001 - SMTP trouble: still get the report to the owner
+            why = f"email failed: {str(e)[:200]}"
+    owner = sb.owner_account(cfg)
+    where = "log"
+    if owner:
+        try:
+            import sbmsg
+            host = socket.gethostname()
+            body = text if len(text) <= sbmsg.TEXT_MAX else text[:sbmsg.TEXT_MAX - 40] + "\n... (cut; full text in the log)"
+            sbmsg.deliver_system(owner.pw_name, f"{host}: {plain(subject)}", {
+                "context": (summary or plain(subject))[:1500] + f"\n\nSent to the inbox because {why}.",
+                "report": body, "via": "sharedbox-health",
+                "full_report": "sudo sharedbox-health report (or journalctl -u sharedbox-health-report)"}, level)
+            where = "inbox"
+        except Exception as e:  # noqa: BLE001 - fall through to the log
+            print(f"inbox delivery failed: {e!r}", file=sys.stderr)
+    told = f"delivered to {owner.pw_name}'s inbox" if where == "inbox" else "written to the log only"
+    print(f"{told} ({why}): {subject}\n\n{text}")
+    return where
+
+
+def verdict_summary(cfg, g, findings):
+    probs = problems(cfg, g, findings)
+    return "\n".join(f"- {m}" for _, m in probs) or "All good this week."
+
+
 def cmd_report(cfg, a):
     since = time.time() - WEEK
     au = sbaudit.Audit(cfg)
@@ -451,8 +674,9 @@ def cmd_report(cfg, a):
     g = gather(cfg, since)
     subject, text, page = build_report(cfg, g, findings, {f["id"] for f in new}, resolved)
     if a.send:
-        sbmail.send(cfg, subject, text, page)
-        print(f"sent: {subject}")
+        red = any(lvl == "red" for lvl, _ in problems(cfg, g, findings))
+        deliver(cfg, subject, text, page, level="high" if red else "normal",
+                summary=verdict_summary(cfg, g, findings))
     else:
         print(f"Subject: {subject}\n\n{text}")
 
@@ -489,10 +713,12 @@ def cmd_check(cfg, a):
     urgent += cloudflare_usage(cfg)
     state = sb.read_json(ALERT_STATE, {}) or {}
     now = time.time()
-    fresh = [m for _, m in urgent if now - state.get(m, 0) > 24 * 3600]   # same alert at most daily
+    # same alert at most daily; ones that stay true for days (a stopped service, a past restart) weekly
+    fresh = [m for _, m in urgent
+             if now - state.get(m, 0) > (7 * 86400 - 3600 if any(k in m for k in REMIND_WEEKLY) else 24 * 3600)]
     for m in fresh:
         state[m] = now
-    state = {k: v for k, v in state.items() if now - v < 7 * 86400}
+    state = {k: v for k, v in state.items() if now - v < 8 * 86400}
     if not fresh:
         if not a.send:
             print("nothing urgent")
@@ -504,7 +730,8 @@ def cmd_check(cfg, a):
     text = "Urgent:\n" + "\n".join(f"- {m}" for m in fresh) + ("\n\nDetails:\n" + "\n".join(detail) if detail else "") \
         + "\n\nFull report: sudo sharedbox-health report\n"
     if a.send:
-        sbmail.send(cfg, f"🔴 ALERT: {fresh[0]}" + (f" (+{len(fresh) - 1} more)" if len(fresh) > 1 else ""), text)
+        deliver(cfg, f"🔴 ALERT: {fresh[0]}" + (f" (+{len(fresh) - 1} more)" if len(fresh) > 1 else ""), text,
+                level="high", summary="\n".join(f"- {m}" for m in fresh))
         sb.write_json(ALERT_STATE, state, mode=0o600)
     else:
         print(text)
@@ -537,6 +764,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest="cmd", required=True)
     s.add_parser("sample").set_defaults(fn=cmd_sample)
+    s.add_parser("telemetry").set_defaults(fn=cmd_telemetry)
     x = s.add_parser("report"); x.add_argument("--send", action="store_true"); x.set_defaults(fn=cmd_report)
     x = s.add_parser("check"); x.add_argument("--send", action="store_true"); x.set_defaults(fn=cmd_check)
     x = s.add_parser("audit"); x.add_argument("--quick", action="store_true"); x.set_defaults(fn=cmd_audit)

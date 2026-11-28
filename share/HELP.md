@@ -40,8 +40,22 @@ Never ask for passwords or tokens in chat.
   caches and build outputs (`node_modules`, `target/`, `.venv`, …) go right away, then archives, then the oldest
   idle fully-pushed projects. Unpushed work is never deleted.
 - `/tmp` files older than {tmp_ttl} days are deleted.
+- Once a week caches that rebuild themselves are cleared too (`box help clean`).
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
+
+@@ clean
+A safe cleanup runs {clean_when}, in every account, while no agent of that account is mid-turn (a busy
+account is retried a few hours later). It only clears what rebuilds itself:
+- uv cache (`uv cache prune`; cleared when over the box's cap), npm `_cacache`, Go build cache, sccache, pip and
+  node-gyp caches, Chrome caches and headless Chrome leftovers older than a day, `pnpm store prune`
+- old Playwright builds (the newest of each browser stays)
+- your Docker daemon (only if it's running): build cache unused for 7 days and untagged (dangling) images
+Never touched: Docker volumes, tagged images and containers, `~/keep`, anything in a git repo, `~/.claude`,
+`~/.codex`, `~/.t3`. A cache whose tool is running right now (npm, go, pip, chrome, ...) waits for next week.
+- `box clean --dry-run` shows what it would free in your account now; `box clean` does it. Run it when the user
+  asks for space back or you're near the disk budget, never in the middle of someone's install or build.
+- Docker sizes in a dry run are estimates (build cache: an upper bound, Docker can't filter its estimate by age).
 
 @@ memory
 - Every account is guaranteed {mem_low} of RAM and may use up to {mem_max} while nobody else needs it. Nothing to
@@ -108,6 +122,8 @@ shallow 5 s / 18 MB.
   `box serve stop NAME --force`, and only when its owner asked.
 - The user also sees and controls these on their page {portal} (Servers tab), with Keep running and hackathon buttons.
 - Their T3 Code isn't one of these (it starts when they open it). Ports {t3_ports} are its: don't use them.
+- Never from a temporary folder (a T3 worktree under ~/.t3/worktrees, /tmp): it gets deleted and the server then
+  fails for good. `box serve add` runs it from ~ instead, or refuses when the code itself lives there.
 - While a server exists its project folder is never archived; `box serve rm` removes that protection.
 - Others on the user's private network (Tailscale) reach it at `http://{ip}:<port>`.{serve_public}
 
@@ -255,6 +271,9 @@ How to look further, agent-first:
 Places worth a look: zswap/swap/hugepages, inotify and open-file limits, disk trim and free space, I/O scheduler,
 TCP congestion control and buffers, Tailscale direct vs relayed peers, the Cloudflare tunnel protocol, what's
 running at boot, journald/log volume, per-account limits (`box status`), caching in front of web apps.
+A frozen box restarts by itself: `box tune` shows the hardware watchdog (systemd pings it; a hang resets the
+board after a minute), kernel panic/lockup -> reboot settings, earlyoom (stops the biggest heavy job before RAM runs
+out, never agents) and why the box last restarted. If it says the box restarted by itself, tell the user.
 
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
@@ -264,7 +283,8 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
 - Published ports must be in your range ({ports}); bind them on `0.0.0.0` like any server. Ports under 1024 don't work.
 - Images live in `~/.local/share/docker` and count toward your disk budget. Prune (`docker image prune`) only when
   the user asks or you're over budget. Never `docker system prune` (it deletes stopped databases' containers) and never
-  anything with `--volumes` (it deletes their data).
+  anything with `--volumes` (it deletes their data). The weekly cleanup already clears old build cache and untagged
+  images (`box help clean`).
 - Never stop a database yourself because a task seems done; the user decides that.
 - Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
 - `docker compose` works the same way.
@@ -358,17 +378,80 @@ Where someone is: their own status plus a rough "active on the machine" hint.
 
 @@ me
 `~/me` is the user's own folder about themselves: their agent history and efficiency, private to them (0700).
-- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every machine they have, kept forever. Tables:
-  `sessions` (box, agent, model, cwd, title, started/ended unix time, wall_s, active_s, prompts, tool_calls, tool_s,
-  errors, interrupts, out_tokens), `messages` (sid, ts, role, text; full-text index `messages_fts`), `tool_calls`
-  (sid, ts, name, input (2,000 chars), output (500), dur_s, is_error). Raw transcripts stay where the agents wrote them.
-- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`), `box me sql "SELECT
-  ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md` (slowest sessions, where tool time went,
-  sleep/poll loops, failing commands, usage per day).
+- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every machine they have, plus T3 threads of other
+  providers (OpenCode, Antigravity), kept forever. Tables: `sessions` (box, agent, model, cwd, title, started/ended
+  unix time, wall_s, active_s, prompts, tool_calls, tool_s, errors, interrupts, out_tokens), `messages` (sid, seq, ts,
+  role user|assistant|thinking, text; full-text index `messages_fts`; thinking = the model's reasoning: Claude's
+  thinking in full, Codex's reasoning summaries), `tool_calls` (sid, seq, ts, name, input (2,000 chars), output
+  (500), dur_s, is_error), `tool_blobs` (sid, seq, in_len, out_len, input_z, output_z: the full input and output up
+  to 256 KB, compressed; `unz(output_z)` in `box me sql` reads them), `t3_threads` (thread_id, provider, native_id =
+  the agent's session id, title, link).
+- `~/me/raw/`: xz copies of the raw transcripts (`xzcat ~/me/raw/claude/projects/DIR/ID.jsonl.xz`), refreshed when
+  they change and kept even after the agent deletes its own.
+- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`; `--thinking` to
+  include reasoning), `box me sql "SELECT ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md`
+  (slowest sessions, where tool time went, sleep/poll loops, failing commands, reasoning, full tool output, usage).
 - Kept fresh automatically every ~15 minutes, at the lowest priority, on every machine; the user's main machine copies in
   what their other machines indexed. Now: `box me ingest`, `box me pull`.
-- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention).
+- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention) and
+  turns on Codex's readable reasoning summaries (`model_reasoning_summary = "detailed"` in ~/.codex/config.toml,
+  only when the user hasn't set it).
 - Never copy their prompts off the machine or into other people's places.
+
+@@ telemetry
+Every box records what it was doing every minute, for finding bad patterns later: what froze a box, who ran out of
+memory, agents that spin for hours, services crash-looping, disks filling up. Collected by a plain timer (no agent
+involved); only process names and numbers are stored, never command lines, prompts or file contents.
+- `box telemetry` (last 24 h: peaks, the worst moments and who/what was using the box then, events, top accounts and
+  agent sessions; `--hours N`), `box telemetry patterns` (detectors over 14 days, `--days N`), `box telemetry sql
+  "SELECT ..."` (read-only), `box telemetry info`. `--json` on all; `--box NAME` to pick one box.
+- What you can read: the owner reads everything; anyone else reads their own rows plus the box-wide ones (box
+  metrics, disks, system slices, events not about another account).
+- All boxes at once: `box telemetry pull` (also runs by itself hourly) copies what you can read on every box into
+  `~/me/telemetry.db`; then add `--fleet` to any command (rows carry a `box` column).
+- Claude plan usage: `box telemetry usage on` checks the user's own Claude login every ~10 minutes into
+  `~/me/telemetry.db` (table plan_usage) and sends them a `box msg` (Telegram relays it) at 80% and 90%.
+  `box telemetry usage now` checks once; `off` stops it.
+Tables (unix-time `ts`; minute rows kept 14 days, `*_hourly` roll-ups and `events` ~400 days):
+- `samples` one per minute: load1/5/15, ncpu, cpu_pct, iowait_pct, steal_pct, procs, procs_running, procs_blocked,
+  psi_cpu, psi_mem, psi_mem_full, psi_io, psi_io_full (% of the minute something waited / everything was blocked),
+  mem_total_mb, mem_used_mb (really in use: total minus available), mem_avail_mb, mem_anon_mb, mem_cache_mb
+  (reclaimable cache), mem_shmem_mb, swap_total_mb, swap_used_mb, swap_in_mb/swap_out_mb (per minute), majfaults,
+  oom_kills (kernel kills that minute), disk_total_gb/disk_free_gb (of /), temp_max_c, cpu_mhz, throttles
+  (thermal throttle events), collect_ms.
+- `slices` per account (user-UID.slice, `user`) and system slice (`user` = ''): cpu_pct (100 = one core), mem_mb
+  (real: anon + shmem + kernel), cache_mb, swap_mb, pids, psi_mem, psi_mem_full, oom_kills, mem_high_events,
+  mem_max_events (times it hit its memory limit).
+- `procs` the top processes each minute by CPU and by memory: user, pid, name (comm, plus an allowlisted tool for
+  interpreters such as `python3 pytest`), cpu_pct, rss_mb, age_s.
+- `agents` one row per running agent session per minute: user, agent (claude, codex, opencode, gemini,
+  antigravity...), pid, started, cpu_pct/rss_mb (the agent itself), tree_cpu_pct/tree_rss_mb/tree_procs (with
+  everything it started: builds, tests, servers).
+- `containers` Docker containers per minute: user ('' = the system Docker), id, name, cpu_pct, mem_mb, peak_mb.
+- `disks` (mount, dev, total_gb, free_gb), `diskio` (dev, read_mb, write_mb, util_pct per minute).
+- `events` (ts, kind, user, unit, detail, value): oom_kill (kernel; detail = process, value = MB), earlyoom_kill,
+  oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
+  unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
+  samples for value seconds: the box stalled), container_start, container_stop (value = peak MB), hung_task,
+  disk_error.
+- Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
+  oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
+  swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
+  `agents_hourly` (sessions = average running, sessions_max, cpu_s, tree_cpu_s, rss_mb_max, tree_rss_mb_max),
+  `procs_hourly` (per user + name: n, cpu_s, cpu_pct_max, rss_mb_max), `containers_hourly`, `disks_hourly`,
+  `diskio_hourly`. Rows from before telemetry started came from the older health samples (memory estimated from a
+  percentage, account memory including cache).
+Example queries:
+- Worst memory minutes this week: `SELECT datetime(ts,'unixepoch','localtime'), mem_used_mb, psi_mem, psi_mem_full
+  FROM samples WHERE ts > strftime('%s','now','-7 days') ORDER BY psi_mem_full DESC, psi_mem DESC LIMIT 20`
+- Who used the most memory, per day: `SELECT date(ts,'unixepoch','localtime') AS day, user, max(mem_mb_max) FROM
+  slices_hourly WHERE user != '' GROUP BY day, user ORDER BY day DESC, 3 DESC`
+- What was running just before a restart: `SELECT * FROM procs WHERE ts BETWEEN (SELECT max(ts) FROM events WHERE
+  kind='boot') - 900 AND (SELECT max(ts) FROM events WHERE kind='boot') ORDER BY ts DESC, rss_mb DESC`
+- Agent CPU-hours per account and agent, last 30 days: `SELECT user, agent, round(sum(tree_cpu_s)/3600, 1) FROM
+  agents_hourly WHERE ts > strftime('%s','now','-30 days') GROUP BY 1, 2 ORDER BY 3 DESC`
+- Crash loops: `SELECT unit, user, count(*) FROM events WHERE kind IN ('unit_failed','unit_restart') GROUP BY 1, 2
+  ORDER BY 3 DESC`
 
 @@ settings
 Everything on the user's dashboard ({portal}) has a command, so when they ask you for it, do it (add `--json` to read

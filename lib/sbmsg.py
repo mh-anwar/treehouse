@@ -411,6 +411,36 @@ def deliver(sender, req, recipients, now=None, root=None, as_root=True):
             "message": f"sent {msg['id']} to {to}{note}"}
 
 
+SYSTEM_SENDER = "treehouse"   # the box itself (weekly health report, alerts); not an account, so replies bounce
+
+
+def deliver_system(to, title, brief, level="normal", now=None, root=None, as_root=True):
+    """Root: file a message from the box itself into `to`'s inbox (the Telegram bot pushes it like any other).
+    Same scrubbing and size limits as a person's message; no sent copy and no rate limit (callers are timers that
+    send a few a week). The same title within the hour bumps the card instead of stacking. Returns the message."""
+    now = time.time() if now is None else now
+    root = root or mail_root()
+    if not isinstance(to, str) or not USER_RE.match(to):
+        raise MsgError("no such account")
+    _dir(root, 0o711, 0, as_root)
+    rgid = private_gid(to) if as_root else os.getgid()
+    if rgid is None:
+        raise MsgError(f"{to}'s account has no private group, so it can't have an inbox")
+    msg = build(SYSTEM_SENDER, {"to": to, "title": title, "level": level, "brief": brief}, now)
+    rdir = os.path.join(root, to)
+    _dir(rdir, 0o750, rgid, as_root)
+    for n in sorted(os.listdir(rdir), reverse=True)[:200]:
+        old = _load(os.path.join(rdir, n)) if n.endswith(".json") else None
+        if old and old.get("from") == SYSTEM_SENDER and old.get("title") == msg["title"] \
+                and now - old.get("ts", 0) < DEDUP_SECONDS:
+            msg.update(id=old["id"], thread=old.get("thread") or old["id"], count=int(old.get("count") or 1) + 1)
+            _write(os.path.join(rdir, n), msg, rgid, as_root)
+            return msg
+    _write(os.path.join(rdir, f"{msg['id']}.json"), msg, rgid, as_root)
+    _prune(rdir)
+    return msg
+
+
 def mark_seen(user, ids, now=None, root=None, as_root=True):
     """Root: `user` opened these messages; stamp the sender's sent copy (first open only)."""
     now = time.time() if now is None else now
