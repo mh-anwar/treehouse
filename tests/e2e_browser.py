@@ -3,7 +3,7 @@
     uv run --no-project --with playwright python tests/e2e_browser.py [REPO] [--shots DIR] [--quick | --shots-only]
 
 How much to run: a look-only change (layout, CSS, copy) needs just `--shots DIR --shots-only` (every page as
-each persona, 1280 and 390 wide, dark and light, plus the page checks below; about a minute). `--quick` clicks
+each persona, 1920, 1280 and 390 wide, dark and light, plus the page checks below; about two minutes). `--quick` clicks
 one level deep. The full run (several minutes) is for changes to links, buttons, forms or flows, before a
 deploy, in the background.
 
@@ -19,7 +19,7 @@ no token, and new@x.io who signs up through an invite link. For each it opens ev
 submits every form it finds in the DOM (a few levels deep), and fails on: unexpected 4xx/5xx, "bad origin",
 tracebacks, {placeholders}, None/null/undefined, unprotected emails (Cloudflare would rewrite them), buttons in
 links, tailnet-only main actions, pages with no way back to the dashboard, console errors, horizontal overflow
-on a phone. Screenshots (1280 and 390 wide, dark and light) go to --shots.
+on a phone. Screenshots (1920, 1280 and 390 wide, dark and light) go to --shots.
 
 Exit 0 when clean, 1 on failures, 77 when no Chromium is available.
 """
@@ -169,7 +169,7 @@ write("health/metrics.jsonl", "\n".join(lines) + "\n")
 write("update.json", {"state": "done", "finished": NOW - 7200, "commit": "abc1234", "subject": "Fix things"})
 write("usage.json", {"generated": NOW - 600, "users": {
     "alice": {"disk": 3 * 2**30, "budget": 40 * 2**30, "projects": 4, "services": [{"name": "blog", "state": "running"}],
-              "pending_deletions": ["old-site"], "archives": [{"name": "toy", "until": NOW + 5 * 86400}]},
+              "pending_deletions": ["old-site"], "pending": [{"name": "old-site", "on": NOW + 3 * 86400}], "archives": [{"name": "toy", "until": NOW + 5 * 86400}]},
     "bob": {"disk": 2**20, "budget": 40 * 2**30, "projects": 1}}})
 write("events.jsonl", "\n".join(json.dumps(e) for e in [
     {"ts": NOW - 9000, "kind": "user_created", "user": "alice"},
@@ -1267,7 +1267,7 @@ SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stran
 def screenshots(browser):
     os.makedirs(SHOTS, exist_ok=True)
     for persona, paths in SHOT_PAGES.items():
-        for width in (1280, 390):
+        for width in (1920, 1280, 390):
             for scheme in ("dark", "light"):
                 s = Session(browser, persona, SHOT_TOK[persona], width=width, scheme=scheme)
                 s.expect_codes = {404}
@@ -1284,6 +1284,7 @@ def screenshots(browser):
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-logs-{width}-{scheme}.png"), full_page=True)
                 if persona == "alice":
                     s.page.goto(url("/_box/me"))
+                    s.page.locator("#start summary", has_text="Advanced").click()
                     b = s.page.locator("#start button:visible", has_text="Get setup instructions")
                     if not b.count():
                         fail("alice", f"screenshots {width} {scheme}", "no 'Get setup instructions' button")
@@ -1326,9 +1327,10 @@ def start_cards(browser):
     """The start card: exactly one main button per state (S0..S3), and the T3 app setup prompt."""
     cases = [("erin", "tok-erin", [], "T3 isn't set up on this machine yet"),
              ("bob", "tok-bob", ["Sign in with Claude"], "Sign in with ChatGPT"),
-             ("alice", "tok-alice", ["Open T3"], "Already on Tailscale?"),
+             ("bob", "tok-bob", ["Sign in with Claude"], "You only need one"),
+             ("alice", "tok-alice", ["Open T3"], "Set up the T3 app"),  # under Advanced (optional)
              ("dave", "tok-dave", ["Open T3"], "Get setup instructions"),  # no Tailscale id on record
-             ("alice", "tok-alice", ["Open T3"], "Use the T3 app", 390)]
+             ("alice", "tok-alice", ["Open T3"], "Start a chat", 390)]
     for persona, tok, want, text, *width in cases:
         s = Session(browser, persona, tok, **({"width": width[0]} if width else {}))
         s.page.goto(url("/_box/me"))
@@ -1337,6 +1339,9 @@ def start_cards(browser):
         got = s.page.evaluate(MAIN_JS)
         if got != want:
             fail(persona, where, f"main buttons {got}, expected {want}")
+        if s.page.locator("#start details.adv[open]").count():
+            fail(persona, where, "Advanced is open on arrival: the three steps should be all a new friend sees")
+        s.page.evaluate("document.querySelectorAll('#start details').forEach(d => d.open = true)")
         card = s.page.inner_text("#start") if s.page.locator("#start").count() else ""
         if text not in card:
             fail(persona, where, f"start card lacks {text!r}: {card[:200]!r}")
@@ -1351,6 +1356,7 @@ def start_cards(browser):
     s = Session(browser, "alice (prompt)", "tok-alice")
     page = s.page
     page.goto(url("/_box/me"))
+    page.locator("#start summary", has_text="Advanced").click()
     press(page, page.locator("#start button:visible", has_text="Get setup instructions"))
     inspect(s, "setup prompt")
     prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
@@ -1406,6 +1412,7 @@ def start_cards(browser):
             fail("alice", "app connected (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
         if not page.locator("#start button.linkbtn", has_text="Get new setup instructions").count():
             fail("alice", "app connected (S3)", "no 'Get new setup instructions'")
+        page.locator("#start summary", has_text="Advanced").click()
         press(page, page.locator("#start button", has_text="Get new setup instructions"))
         if not page.locator("#app-prompt").count():
             fail("alice", "S3 new prompt", "no prompt")
@@ -1430,7 +1437,7 @@ def boxes_card(browser):
             s.page.screenshot(path=os.path.join(SHOTS, f"owner-machines-{width}-{scheme}.png"), full_page=True)
         inspect(s, where)
         cards = s.page.locator("#machines .mach")
-        texts = [cards.nth(i).inner_text() for i in range(cards.count())]
+        texts = [cards.nth(i).inner_text().replace("\xa0", " ") for i in range(cards.count())]
         if len(texts) != 3:
             fail("owner", where, f"expected 3 machines, got {texts}")
         else:
@@ -1485,7 +1492,7 @@ def running_card(browser):
     where = "running card"
     inspect(s, where)
     card = s.page.locator("#running section")
-    text = card.inner_text() if card.count() else ""
+    text = card.inner_text().replace("\xa0", " ") if card.count() else ""
     for must in ("shop-db", "Supabase · 5 containers", "1.4 GB", "running 3d 2h", "Claude session", "blog",
                  "Show 1 more", "always get", "Your agent can list"):
         if must not in text:

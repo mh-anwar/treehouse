@@ -248,7 +248,7 @@ CSS = """
 :root{--bg:#0e1014;--panel:#15181d;--line:#262b32;--line2:#363c46;--fg:#e6e8eb;--mut:#949ba7;--acc:#6ea8ff;
 --pri:#3874e0;--pri-h:#4a82e8;--on-pri:#fff;--ring:rgba(110,168,255,.4);
 --ok:#4cc38a;--warn:#e6ad45;--bad:#f07a7a;--inset:#0b0d10;--track:#262b32;--btn2:#1d2128;--btn2-h:#242931;--on-acc:#06121f;
---okb:#24533f;--warnb:#5e4b1f;--badb:#5e2a2a;--c2:#b993f5;--grid:#1e232a;--w:800px;--r:8px;--h:36px;color-scheme:dark}
+--okb:#24533f;--warnb:#5e4b1f;--badb:#5e2a2a;--c2:#b993f5;--grid:#1e232a;--w:1160px;--r:8px;--h:36px;color-scheme:dark}
 @media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--panel:#fff;--line:#e3e6ea;--line2:#cfd4db;--fg:#17191d;--mut:#5d6572;
 --acc:#1f5bd1;--pri:#1f5bd1;--pri-h:#1a4fb8;--on-pri:#fff;--ring:rgba(31,91,209,.28);
 --ok:#16834f;--warn:#935f00;--bad:#c32f2f;--inset:#f3f4f6;--track:#e8eaee;--btn2:#fff;--btn2-h:#f3f4f6;
@@ -265,7 +265,7 @@ nav{display:flex;flex-wrap:wrap;gap:0 4px}header nav a{color:var(--mut);text-dec
 header nav a:hover{color:var(--fg);background:var(--btn2-h)}header nav a[aria-current]{color:var(--fg);font-weight:500}
 main{max-width:var(--w);margin:0 auto;padding:24px 16px 48px}
 h2{font-size:16px;font-weight:600;margin:32px 0 12px;line-height:1.35}h3{font-size:15px;font-weight:600;margin:0 0 8px;line-height:1.4}
-p{margin:8px 0}a{color:var(--acc);text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 40%,transparent);text-underline-offset:2px}
+p{margin:8px 0;max-width:82ch}a{color:var(--acc);text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 40%,transparent);text-underline-offset:2px}
 a:hover{text-decoration-color:currentColor}
 .mut{color:var(--mut)}.sub{color:var(--mut);font-size:13px}.err{color:var(--bad)}b,strong{font-weight:600}
 code,pre,.mono,input.mono,textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
@@ -417,7 +417,7 @@ table.acct td[colspan]{display:block}table.acct td[colspan]::before{content:none
 pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:12px}
 .hk .grid{display:flex;flex-wrap:wrap;gap:8px 20px;margin:8px 0}.hk .grid label{display:flex;align-items:center;gap:8px;margin:0;color:var(--fg);font-weight:400;min-height:32px}
 .hk .when{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.hk .when input{width:auto}
-.hk{display:block!important}.foot{margin-top:32px;display:flex;justify-content:flex-end}
+.hk{display:block!important}.foot{margin-top:32px;display:flex;justify-content:flex-end;max-width:none}
 @media (max-width:560px){main{padding:16px 16px 40px}.brand .host{display:none}.start{padding:20px}.sec,.card{padding:16px}
 .box:not(.me){padding:20px;margin-top:8px}
 details.sec{padding:0}details.sec>summary{padding:0 16px}details.sec>:not(summary){margin-left:16px;margin-right:16px}details.sec h3{margin-left:16px}details.sec[open]{padding-bottom:16px}
@@ -472,6 +472,20 @@ details.cf[open]{display:block;flex-basis:100%;order:9}details.cf[open]>summary{
 .cfb a.cfx{font-size:13px}ul.sw{list-style:none;padding:0;margin:4px 0 0;font-size:13px;color:var(--mut)}ul.sw li{margin:2px 0}
 ul.sw b{color:var(--fg);font-weight:500}ul.sw form{display:inline}.act .sub{white-space:normal}
 ul.hkl{margin:0 0 8px;padding-left:20px;font-size:14px}ul.hkl li{margin:2px 0}pre.logs .le{color:var(--bad);font-weight:600}.attn{margin-left:6px}
+ol.steps3{margin:12px 0 4px;padding:0;list-style:none;counter-reset:st}
+ol.steps3>li{position:relative;padding:0 0 16px 40px;counter-increment:st;max-width:82ch;color:var(--mut)}
+ol.steps3>li::before{content:counter(st);position:absolute;left:0;top:-1px;width:26px;height:26px;border-radius:50%;
+border:1px solid var(--line2);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--mut);background:var(--panel)}
+ol.steps3>li.now{color:var(--fg)}ol.steps3>li.now::before{border-color:var(--acc);color:var(--acc)}
+ol.steps3>li.done::before{content:"";border-color:var(--okb)}ol.steps3>li.done .ck{position:absolute;left:7px;top:6px;color:var(--ok)}
+ol.steps3>li b{color:var(--fg)}ol.steps3>li:last-child{padding-bottom:0}ol.steps3 .line.btns{margin-top:4px}
+details.adv{margin-top:16px;border-top:1px solid var(--line);padding-top:8px}details.adv>p{max-width:82ch}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:12px;margin-bottom:12px}.mgrid>.card{margin:0}
+@media(max-width:560px){.mgrid{grid-template-columns:1fr}
+.tabs{flex-wrap:wrap;overflow:visible;border-bottom:0;gap:6px;margin:4px 0 16px!important;padding:0!important}
+.tabs a{min-height:36px;border:1px solid var(--line2);border-radius:999px;padding:0 12px!important;margin:0;background:var(--panel)}
+.tabs a.on{border-color:var(--acc);color:var(--fg)}.tabs .tsep{flex-basis:100%;height:0;width:auto;margin:0;background:none}
+.run .nm>b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.run .nm .pill{margin-left:0;margin-right:6px}}
 dl.gloss{margin:4px 0 0}dl.gloss dt{font-weight:600;font-size:14px;margin-top:12px}dl.gloss dd{margin:2px 0 0;font-size:14px;color:var(--mut)}
 .needs .d b{font-weight:600}.adm{margin:0 0 16px}details.blk{margin-top:28px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
@@ -603,7 +617,8 @@ def cores(pct):
 
 
 def size(n):
-    return sb.size_text(n)
+    """"9.6 GB" with a no-break space: a number and its unit never split across lines."""
+    return sb.size_text(n).replace(" ", "\u00a0")
 
 
 def here_name():
@@ -1946,7 +1961,7 @@ def machines_section(owner=False, allowed=None, names=None):
              "Every treehouse machine you run. Friends see the ones they have an account on.")
     return ("<div class='blk' id='machines'><h2>Machines <span class='sub' style='font-weight:400'>"
             f"{plural(n, 'machine')}, updated every 30 seconds</span></h2><p class='sub' style='margin-top:-4px'>{intro}</p>"
-            + "".join(cards) + "<p class='sub'>Numbers here are for the whole machine, everyone together; your own "
+            + "<div class='mgrid'>" + "".join(cards) + "</div><p class='sub'>Numbers here are for the whole machine, everyone together; your own "
             "use is on the Account tab. Memory counts what programs really hold, not the cache the system frees by "
             f"itself. The state word is {LEVEL_SCALE}.</p></div>")
 
@@ -2435,7 +2450,8 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card="", pre=
         elif tab == "account":
             logins = st.get("logins") or {}
             rows = [r for r in [owner_app_row(st, logins, btn, base)] + owner_login_rows(st, logins, btn)
-                    + [telegram_row(tg, tok, base, owner=True)] if r]
+                    + [telegram_row(tg, tok, base, owner=True)]
+                    + ([issues_row(st, btn)] if "issues_on" in st else []) if r]
             parts.append(ai_accounts_section(st, logins, btn, tok, base, slot))
             if rows:
                 parts.append("<div class='blk' id='account' data-card='account'><h2>Connections</h2><section class='sec'>"
@@ -2567,7 +2583,8 @@ var h=location.hash.slice(1);if(h&&!/[?&]tab=/.test(location.search)){var map={}
 try{map=JSON.parse(nav.getAttribute("data-hash")||"{}")}catch(e){}
 var t=map[h];if(t&&t!==nav.getAttribute("data-cur"))location.replace(location.pathname+"?tab="+t+location.hash)}}
 // back from connecting the T3 app: show how to open it
-function openApp(){if(location.hash!=="#app")return;const d=document.getElementById("app");if(d){d.open=true;d.scrollIntoView({block:"center"})}}
+function openApp(){if(location.hash!=="#app")return;const d=document.getElementById("app");if(!d)return;
+for(var p=d;p;p=p.parentElement)if(p.tagName==="DETAILS")p.open=true;d.scrollIntoView({block:"center"})}
 openApp();window.addEventListener("hashchange",openApp);
 })();
 """
@@ -2617,12 +2634,18 @@ def app_prompt_result(res, rec=None):
             "_view": "t3prompt"}
 
 
+CHECK = ("<svg class='ck' viewBox='0 0 12 12' width='12' height='12' aria-hidden='true'><path d='M2.5 6.3l2.3 2.3 4.7-5' "
+         "fill='none' stroke='currentColor' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/></svg>")
+
+
 def prompt_body(res):
     e = html.escape
     return f"""<h3>Your setup prompt</h3>
 <textarea id="app-prompt" readonly rows="7" class="prompt">{e(res['app_prompt'])}</textarea>
 <div class="line"><button type="button" data-copy="app-prompt">Copy prompt</button></div>
-<p>Paste it into Claude Code, Codex or any agent on your laptop. It works once, for 30 minutes.</p>
+<p>Paste it into Claude Code, Codex or any agent on your laptop. It contains a one-time key to your T3, so it works
+once and only for the next 30 minutes. If that time passes, come back here and press the button again for a fresh
+one.</p>
 <details class="byhand"><summary>Do it by hand</summary>
 <p class="sub">Install the app from <a href="https://t3.codes" target="_blank" rel="noopener">t3.codes</a>,
 then <a href="{e(res['app_link'])}">open this link in the T3 app</a>.</p>
@@ -3288,46 +3311,63 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                       "<p>T3 is the app where you chat with your AI agent. " + owner_link(base, "T3 isn't set up for me")
                       + " so they can add it; everything else "
                       "on this page still works.</p>")
-        elif state == "S1":
-            sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Sign in with your AI account'}</h2>")
-            if not ai:
-                sc.append("<p>No AI coding agents are installed on this machine yet. "
-                          + owner_link(base, "No AI agents are installed") + " so they can install them.</p>")
-            else:
-                sc.append("<p>Your AI agents here work with your own Claude or ChatGPT subscription. Sign in once and "
-                          "they're ready.</p>")
-                verbs = {"claude": "Sign in with Claude", "codex": "Sign in with ChatGPT",
-                         "antigravity": "Sign in with Google Gemini"}
-                first = ai[0]
-                sc.append("<div class='line'>" + btn("login", verbs[first], first) + "</div>")
-                if first == "claude" and "codex" in logins:
-                    sc.append("<div class='line sub'>Or use your ChatGPT subscription: "
-                              + btn("login", "Sign in with ChatGPT", "codex", link=True) + ".</div>")
-                if first != "antigravity" and "antigravity" in logins:
-                    sc.append("<div class='line sub'>Or use your Google account: "
-                              + btn("login", verbs["antigravity"], "antigravity", link=True) + ".</div>")
-        else:  # S2, S3: T3 in this browser, or the T3 app on their laptop or phone (T3 Connect: no VPN)
+        elif state == "S1" and not ai:
+            sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Almost ready'}</h2>"
+                      "<p>No AI coding agents are installed on this machine yet. "
+                      + owner_link(base, "No AI agents are installed") + " so they can install them.</p>")
+        elif state == "S1":  # brand new: three steps, the first one live
+            verbs = {"claude": "Sign in with Claude", "codex": "Sign in with ChatGPT",
+                     "antigravity": "Sign in with Google Gemini"}
+            first = ai[0]
+            others = "".join(btn("login", verbs[k], k, primary=False) for k in ai[1:])
+            sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Get started'}</h2>"
+                      "<p class='sub'>Three steps, about two minutes.</p><ol class='steps3'>"
+                      "<li class='now'><b>Sign in with one AI account.</b> You only need one. It's your own Claude, "
+                      "ChatGPT or Google subscription, and that company bills you for it, not treehouse."
+                      f"<div class='line btns'>{btn('login', verbs[first], first)}{others}</div>"
+                      + ("<p class='sub'>Google Gemini works through Antigravity, Google's coding agent.</p>"
+                         if "antigravity" in ai else "") + "</li>"
+                      "<li><b>Open T3.</b> T3 is the chat app where you talk to your AI agent. It opens in this "
+                      "browser.</li>"
+                      "<li><b>Start a chat.</b> Tell your agent what you want, like \"make a website for my club\". "
+                      "It keeps working on this machine when you close the tab.</li></ol>")
+        else:  # S2, S3: T3 in this browser; the T3 app and laptop setup are tucked under Advanced
             t3c = logins.get("t3connect")
-            if t3c and t3c.get("ok"):
+            linked = bool(t3c and t3c.get("ok"))
+            if linked:
                 need = any(v.get("ssh") and (v.get("logins") or {}).get("t3connect") is not True
                            for v in (st.get("boxes") or {}).values() if isinstance(v, dict))
                 more = btn("peer-login", "Set it up there too", "t3connect", primary=False, small=True) if need else ""
                 app = (f"<details class='appd' id='app'><summary class='btn secondary'>Use the T3 app</summary>"
                        f"{app_help(more)}</details>")
-            elif t3c:  # the first press signs them in to T3 Connect; after that the app finds the box by itself
-                app = btn("login", "Use the T3 app", "t3connect", primary=False)
             else:
                 app = ""
-            sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><p>T3 is the app where you chat "
-                      "with your AI agent. It runs on this machine, so your agent keeps working when you close the tab "
-                      "or the app.</p>"
-                      f"<div class='line btns'>{open_t3('Open T3')}{app}</div>" + busy
-                      + ("" if t3c and t3c.get("ok") else
-                         "<div class='line sub'>" + ("Setting up another laptop? " if state == "S3" else
-                                                      "Already on Tailscale? " if app else "Want the T3 app on your laptop? ")
-                         + btn("t3prompt", "Get new setup instructions" if state == "S3" else "Get setup instructions",
-                               link=True, attrs=" data-busy='1'")
-                         + " for the AI agent on your laptop (Claude Code or Codex) to follow.</div>"))
+            main = f"<div class='line btns'>{open_t3('Open T3')}{app}</div>" + busy
+            if state == "S2":
+                sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><ol class='steps3'>"
+                          f"<li class='done'>{CHECK}<b>Signed in with your AI account.</b> <span class='sub'>Change "
+                          f"it on the <a href='{base}/me?tab=account#accounts'>Account</a> tab.</span></li>"
+                          "<li class='now'><b>Open T3.</b> T3 is the chat app where you talk to your AI agent." + main
+                          + "</li><li><b>Start a chat.</b> Tell your agent what you want, like \"make a website for my "
+                          "club\". It keeps working on this machine when you close the tab.</li></ol>")
+            else:
+                sc.append(f"<h2>{'Welcome, ' + e(name) if welcome else 'Open T3'}</h2><p>T3 is the chat app where you "
+                          "talk to your AI agent. It runs on this machine, so your agent keeps working when you close "
+                          "the tab or the app.</p>" + main)
+            adv = []
+            if t3c and not linked:  # the first press signs them in to their T3 account; then the app finds the machine
+                adv.append("<p><b>The T3 app on your phone or laptop.</b> Sign in to a T3 account once and the app "
+                           f"finds {e(here_name())} by itself, from anywhere.</p><div class='line'>"
+                           + btn("login", "Set up the T3 app", "t3connect", primary=False, small=True) + "</div>")
+            if not linked:
+                adv.append("<p><b>Your laptop's own AI agent</b> (Claude Code or Codex) can set up the T3 desktop app "
+                           "for you over Tailscale, a private network app. " + (
+                               "Setting up another laptop? " if state == "S3" else "")
+                           + btn("t3prompt", "Get new setup instructions" if state == "S3" else "Get setup instructions",
+                                 link=True, attrs=" data-busy='1'") + "</p>")
+            if adv:
+                sc.append("<details class='byhand adv' id='adv'><summary>Advanced (optional): the T3 app, your laptop"
+                          "</summary>" + "".join(adv) + "</details>")
     start_card = "<section class='start' id='start' data-card='start'>" + "".join(sc) + "</section>"
 
     out = []
