@@ -108,8 +108,8 @@ DEFAULTS = {
     "WEEKLY_CLEAN": "1",
     "WEEKLY_CLEAN_DAY": "Sun",
     "UV_CACHE_CLEAN_GB": "10",
-    "JOURNAL_KEEP_DAYS": "30",
-    "JOURNAL_MAX_SIZE": "1G",
+    "JOURNAL_KEEP_DAYS": "40",
+    "JOURNAL_MAX_SIZE": "5G",
     "TMP_TTL_DAYS": "2",
     "WARN_DAYS": "3",
     # an expired project is moved to ~/.sharedbox/archive/ (restorable: `box restore NAME`) and deleted this

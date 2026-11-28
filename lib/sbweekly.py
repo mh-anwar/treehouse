@@ -311,8 +311,8 @@ def run_user(plan):
 
 
 def journal_pass(plan, dry):
-    keep_days = int(plan.get("journal_keep_days", 30))
-    max_size = str(plan.get("journal_max_size", "1G"))
+    keep_days = int(plan.get("journal_keep_days", 40))
+    max_size = str(plan.get("journal_max_size", "5G"))
     args = [f"--vacuum-time={keep_days}d", f"--vacuum-size={max_size}"]
     label = f"journal: journalctl {' '.join(args)}"
     if dry:
@@ -388,8 +388,8 @@ def due(cfg, last, now=None):
 
 def plan_from(cfg, dry):
     return {"dry_run": bool(dry), "uv_clean_gb": float(cfg.get("UV_CACHE_CLEAN_GB") or 10),
-            "journal_keep_days": int(cfg.get("JOURNAL_KEEP_DAYS") or 30),
-            "journal_max_size": str(cfg.get("JOURNAL_MAX_SIZE") or "1G")}
+            "journal_keep_days": int(cfg.get("JOURNAL_KEEP_DAYS") or 40),
+            "journal_max_size": str(cfg.get("JOURNAL_MAX_SIZE") or "5G")}
 
 
 REASONS = ({r for _, r, _ in DIR_TARGETS} | {r for _, r, _ in AGED_TARGETS}
