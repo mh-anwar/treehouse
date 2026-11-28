@@ -24,8 +24,12 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
 - `install.sh`: must stay additive and idempotent. Never restart sshd/tailscale/network/firewall, never reboot.
 - Friends' T3 Code: `sb-t3.socket` holds their T3 port (first of their block) and starts T3 on the first connection;
   T3 listens on the block's last port on the same Tailscale IP (never loopback: T3 then revokes pairings and
-  Connect). Nothing stops an idle T3. `sharedbox-janitor tick` (every 10 min) starts it after a reboot when it has
-  scheduled tasks on (`box _t3-wake`), ends expired `box boost`s, and refreshes agent rules.
+  Connect). The owner's T3 runs the same way (OWNER_T3_PORT, default 3773, held by the socket) once the tick has
+  moved it off T3's own `t3code.service`. `sharedbox-janitor tick` (every 10 min) runs `box _t3-tick` as each of
+  those accounts: restarts T3 onto the box's version (T3_CHANNEL, stable by default; /etc/t3code/policy.json makes
+  T3 refuse nightlies) once nothing has run in it for T3_RESTART_QUIET_MIN, puts it to sleep after
+  T3_IDLE_STOP_HOURS with no client and no work (never in hackathon mode or with scheduled tasks on; the socket
+  wakes it), and starts it for scheduled tasks. It also ends expired `box boost`s and refreshes agent rules.
 - Owner rule: nothing may make agents slower. Equal limits for everyone (owner included), no CPU caps, no naps,
   no build throttling; unpushed work is never archived or deleted.
 
@@ -46,7 +50,8 @@ Every treehouse box should feel fast even when everyone is busy, and what one bo
   in `sharedbox-tune apply` (runs at install and every boot), and a matching check in `sharedbox-tune` CHECKS so
   `box tune` reports it. Must be safe live: no network restart, no reboot, nothing that drops security.
 - Machine-specific findings (desktop services, swap size, CPU power mode) are "owner" checks: suggestions only.
-- Nothing turns off things people may use to save resources (no T3 or Docker naps).
+- Nothing turns off things people may use to save resources (no Docker naps). The one idle timer is T3's sleep
+  above: it never fires while anything runs, and the next visit wakes T3 in a few seconds.
 
 ## UI taste (the owner notices)
 - No emojis, no "AI-sounding" copy, no decorative highlight strips. Sentences start with a capital letter.

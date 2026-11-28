@@ -170,6 +170,22 @@ installed. Suggest one only when it clearly helps, ask the user, and only after 
 The coding agents (`claude`, `codex`, `opencode`, `t3`, Google's `antigravity` / `agy`) are installed by the owner
 and update automatically every night, for everyone. `box updates` shows the installed versions.
 
+@@ t3
+T3 Code is installed by the box like the other agents, on one release channel for every account, the owner's too
+(stable unless the owner set T3_CHANNEL=nightly). T3 itself refuses other channels here: its update buttons and
+`t3 update` say "Managed by treehouse. Only stable releases can be installed."
+- Each account's T3 runs under `box t3` (`box t3 status`, `logs`, `pair`). A new version reaches a running T3 when
+  it restarts by itself, once nothing has run in it for {t3_quiet} minutes (no agent turn, command, subagent,
+  background job, terminal program or due scheduled task). Open tabs and apps reconnect on their own.
+- Asleep: after {t3_idle} with no tab or app connected and no work, T3 goes to sleep. It wakes in a few seconds
+  when someone opens it (dashboard, app, link). Never during hackathon mode, never with scheduled tasks on.
+  Don't wake or restart it yourself to "keep it alive"; it doesn't need that.
+- `box t3 versions [--json]`: every account's T3 version and state on this machine (from the last 10-minute check).
+- The owner's account: T3's own `t3code.service` (from `t3 up` or the desktop app) is moved to `box t3` the first
+  quiet moment, once; if the new one doesn't answer, the old one is put back. Afterwards don't run `t3 up`,
+  `t3 update`, `t3 service ...` or `t3 doctor --fix` there: they reinstall `t3code.service`, which is kept off on
+  purpose. If T3 says the server was "started by hand", that's expected.
+
 @@ connect
 The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this
 account, with no VPN: SSH goes through Cloudflare. {connect}
@@ -433,7 +449,8 @@ Tables (unix-time `ts`; minute rows kept 14 days, `*_hourly` roll-ups and `event
   oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
   unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
   samples for value seconds: the box stalled), container_start, container_stop (value = peak MB), hung_task,
-  disk_error.
+  disk_error, t3_asleep / t3_restarted / t3_moved (+ `_failed`; user's T3 Code went to sleep, restarted onto the
+  box's version, moved off t3code.service; detail = version, value = idle minutes).
 - Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
   oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
   swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
