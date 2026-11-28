@@ -535,6 +535,9 @@ def build_report(cfg, g, findings, new_ids, resolved):
         us.append(f"Janitor deleted {len(ev['deleted'])} item(s)")
     if ev.get("archived"):
         us.append(f"Projects archived (restorable with box restore): {len(ev['archived'])}")
+    if ev.get("weekly_clean"):
+        freed = sum(e.get("bytes") or 0 for e in ev["weekly_clean"] if isinstance(e.get("bytes"), int))
+        us.append(f"Weekly cleanup freed {sb.human(freed)} ({len(ev['weekly_clean'])} accounts and the system)")
     if ev.get("reboot_postponed"):
         us.append(f"Scheduled reboots that waited for agents to finish: {len(ev['reboot_postponed'])}")
     for k in ("over_budget", "user_suspended", "janitor_error", "disk_pressure"):
@@ -600,6 +603,53 @@ def _hl(line):
 
 # ---------------------------------------------------------------- commands
 
+def plain(subject):
+    """The subject without its leading status mark, for an inbox card ('🟡 weekly health: ...' -> 'weekly health:
+    ...')."""
+    return re.sub(r"^[^\w]+", "", subject).strip()
+
+
+def deliver(cfg, subject, text, page=None, level="normal", summary=""):
+    """Send a report or alert where the owner will see it, and never fail because email isn't set up:
+      1. email, when MAIL_TO/SMTP are configured (and sending works)
+      2. otherwise the owner's inbox (box msg; the Telegram bot pushes it when they linked Telegram), as a message
+         from the box itself
+      3. otherwise (no owner account, or the inbox refused) only the log (this unit's journal)
+    The full text always goes to stdout too when it isn't emailed. Returns 'email', 'inbox' or 'log'."""
+    why = "email isn't set up (MAIL_TO, SMTP_HOST and the SMTP password in sharedbox.conf)"
+    if sbmail.configured(cfg):
+        try:
+            sbmail.send(cfg, subject, text, page)
+            print(f"sent: {subject}")
+            return "email"
+        except sbmail.MailNotConfigured as e:
+            why = f"email isn't set up: {e}"
+        except Exception as e:  # noqa: BLE001 - SMTP trouble: still get the report to the owner
+            why = f"email failed: {str(e)[:200]}"
+    owner = sb.owner_account(cfg)
+    where = "log"
+    if owner:
+        try:
+            import sbmsg
+            host = socket.gethostname()
+            body = text if len(text) <= sbmsg.TEXT_MAX else text[:sbmsg.TEXT_MAX - 40] + "\n... (cut; full text in the log)"
+            sbmsg.deliver_system(owner.pw_name, f"{host}: {plain(subject)}", {
+                "context": (summary or plain(subject))[:1500] + f"\n\nSent to the inbox because {why}.",
+                "report": body, "via": "sharedbox-health",
+                "full_report": "sudo sharedbox-health report (or journalctl -u sharedbox-health-report)"}, level)
+            where = "inbox"
+        except Exception as e:  # noqa: BLE001 - fall through to the log
+            print(f"inbox delivery failed: {e!r}", file=sys.stderr)
+    told = f"delivered to {owner.pw_name}'s inbox" if where == "inbox" else "written to the log only"
+    print(f"{told} ({why}): {subject}\n\n{text}")
+    return where
+
+
+def verdict_summary(cfg, g, findings):
+    probs = problems(cfg, g, findings)
+    return "\n".join(f"- {m}" for _, m in probs) or "All good this week."
+
+
 def cmd_report(cfg, a):
     since = time.time() - WEEK
     au = sbaudit.Audit(cfg)
@@ -608,8 +658,9 @@ def cmd_report(cfg, a):
     g = gather(cfg, since)
     subject, text, page = build_report(cfg, g, findings, {f["id"] for f in new}, resolved)
     if a.send:
-        sbmail.send(cfg, subject, text, page)
-        print(f"sent: {subject}")
+        red = any(lvl == "red" for lvl, _ in problems(cfg, g, findings))
+        deliver(cfg, subject, text, page, level="high" if red else "normal",
+                summary=verdict_summary(cfg, g, findings))
     else:
         print(f"Subject: {subject}\n\n{text}")
 
@@ -663,7 +714,8 @@ def cmd_check(cfg, a):
     text = "Urgent:\n" + "\n".join(f"- {m}" for m in fresh) + ("\n\nDetails:\n" + "\n".join(detail) if detail else "") \
         + "\n\nFull report: sudo sharedbox-health report\n"
     if a.send:
-        sbmail.send(cfg, f"🔴 ALERT: {fresh[0]}" + (f" (+{len(fresh) - 1} more)" if len(fresh) > 1 else ""), text)
+        deliver(cfg, f"🔴 ALERT: {fresh[0]}" + (f" (+{len(fresh) - 1} more)" if len(fresh) > 1 else ""), text,
+                level="high", summary="\n".join(f"- {m}" for m in fresh))
         sb.write_json(ALERT_STATE, state, mode=0o600)
     else:
         print(text)
