@@ -1230,7 +1230,15 @@ def owner_requests(browser):
     page.goto(url("/_box/me"))
     for label in ("Approve", "Mark handled", "Decline"):
         page.goto(url("/_box/me?tab=requests"))
-        b = page.locator("#requests button", has_text=label)
+        ask = page.locator("#requests details.cf > summary", has_text=label)
+        if ask.count():  # says what it does first: open the panel, check it says something, press its button
+            ask.first.click()
+            panel = page.locator("#requests details.cf[open] .cfb").first
+            if len(panel.inner_text().strip()) < 40:
+                fail("owner", f"request {label}", f"the panel doesn't say what happens: {panel.inner_text()!r}")
+            b = panel.locator("button")
+        else:
+            b = page.locator("#requests button:visible", has_text=label)
         if not b.count():
             continue
         press(page, b.first)
