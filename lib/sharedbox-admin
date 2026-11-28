@@ -13,7 +13,7 @@
   sharedbox-admin reapply                         rewrite every account's limit drop-ins, owner's too (+ shared-sync)
   sharedbox-admin shared-sync                     shared servers: dirs, slice, SHARED_GROUP membership
   sharedbox-admin shared ls | ACTION NAME ...     act on a shared server as root (same as `box shared`)
-  sharedbox-admin telegram setup | status | off   the box's Telegram bot (setup reads the @BotFather token on stdin)
+  sharedbox-admin telegram setup | status | off   the machine's Telegram bot (setup reads the @BotFather token on stdin)
   sharedbox-admin telegram-bot                    run the bot (sharedbox-telegram.service)
   sharedbox-admin invite [--days N] [--note TEXT] [--tailscale] [--email ADDR]   a message to paste to a new
                                                   friend (Cloudflare creates the account and allows --email;
@@ -27,11 +27,11 @@
   sharedbox-admin access list | add EMAIL [--user NAME] | remove EMAIL   who Cloudflare Access lets in
   sharedbox-admin process-spool                   (run by sharedbox-provision.service)
   sharedbox-admin process-requests                (run by sharedbox-requests.service: `box request`s)
-  sharedbox-admin fed-init | fed-key              this box's roster signing key (made once) | its trust line
-  sharedbox-admin fed-trust 'NAME namespaces=... ssh-ed25519 ...'   trust another box's roster (once per box)
-  sharedbox-admin fed-sync [--force]              publish this box's roster, pull the others', mirror accounts
+  sharedbox-admin fed-init | fed-key              this machine's roster signing key (made once) | its trust line
+  sharedbox-admin fed-trust 'NAME namespaces=... ssh-ed25519 ...'   trust another machine's roster (once per box)
+  sharedbox-admin fed-sync [--force]              publish this machine's roster, pull the others', mirror accounts
                                                   (secondary), keys, T3 links (sharedbox-fed.timer, 5 min)
-  sharedbox-admin fed-status                      what each box's roster says and what was done here
+  sharedbox-admin fed-status                      what each machine's roster says and what was done here
 
 Never touches admin accounts, sshd, tailscaled, networking or the firewall.
 """
@@ -186,9 +186,9 @@ def create_user(cfg, name, key, login=None, ts_id=None, node=None, email=None):
         key = ""
     reg = sb.registry()
     if ts_id and any(r.get("ts_id") == ts_id for r in reg["users"].values()):
-        return None, "this Tailscale account already has a user on this box"
+        return None, "this Tailscale account already has a user on this machine"
     if len(reg["users"]) >= sb.cfg_int(cfg, "MAX_USERS"):
-        return None, "the box is full (MAX_USERS reached) — ask the admin"
+        return None, "the machine is full (MAX_USERS reached) — ask the admin"
 
     uid = next_uid(cfg)
     gecos = f"sharedbox {login or ''}".strip()
@@ -307,7 +307,7 @@ SKILL_PART_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
 
 
 def share_skill(req, user):
-    """Publish (or withdraw) an admin's skill in the box-wide catalog, SKILLS_SHARED/<name>.
+    """Publish (or withdraw) an admin's skill in the machine-wide catalog, SKILLS_SHARED/<name>.
 
     The request carries the files' text (never a path root would open). Users only ever get a
     read-only copy; installing it is each user's own `box skills add`.
@@ -501,7 +501,7 @@ def handle_telegram(cfg, name, req):
     if op == "status":
         return {"ok": True, "ready": bool(bot), "bot": bot or "", **sbtelegram.status(store, name)}
     if not bot:
-        return {"ok": False, "error": "Telegram isn't set up on this box yet. The owner adds it on their dashboard."}
+        return {"ok": False, "error": "Telegram isn't set up on this machine yet. The owner adds it on their dashboard."}
     try:
         if op == "link":
             code = sbtelegram.new_code(store, name)
@@ -649,7 +649,7 @@ def shared_handle(cfg, user, req):
             return sbteam.handle(cfg, user, req)
         return sbshared.handle(cfg, user, req)
     except KeyError as e:
-        return {"ok": False, "error": f"shared servers aren't set up on this box yet ({e} is missing); "
+        return {"ok": False, "error": f"shared servers aren't set up on this machine yet ({e} is missing); "
                                       "ask the owner to re-run install.sh"}
     except Exception as e:  # noqa: BLE001
         print(f"shared request {req.get('action')!r}: {e!r}", file=sys.stderr)
@@ -786,7 +786,7 @@ def process_spool(cfg):
 
 def handle_join(cfg, rid, req):
     if sb.solo(cfg):
-        return {"ok": False, "error": "this box is for one person only (solo mode): no signups"}
+        return {"ok": False, "error": "this machine is for one person only (solo mode): no signups"}
     if req.get("invite") is not None:
         return handle_invite_join(cfg, rid, req)
     ip = str(req.get("ip", ""))
@@ -795,7 +795,7 @@ def handle_join(cfg, rid, req):
     if not who or who["id"] != str(req.get("ts_id")):
         return {"ok": False, "error": "could not verify your Tailscale identity"}
     if ip == sb.tailscale_ip4():
-        return {"ok": False, "error": "requests from the box itself are not allowed"}
+        return {"ok": False, "error": "requests from the machine itself are not allowed"}
     mode = cfg["JOIN_MODE"]
     if mode != "open":
         return {"ok": False, "error": "signups are closed"}
@@ -822,7 +822,7 @@ def handle_join(cfg, rid, req):
 
 def create_joined(cfg, name, key, login, ts_id, node, email):
     """A verified Tailscale self-signup: the account, with its email allowed through Cloudflare
-    Access when the box uses it, so the friend can also come in from the public site."""
+    Access when the machine uses it, so the friend can also come in from the public site."""
     if email and cf_mode(cfg):
         err = cf_access(cfg, add=[email], quiet=True)
         if err:
@@ -950,7 +950,7 @@ def owner_t3_user(cfg):
 
 
 def handle_owner_pair(cfg, rid, req):
-    """The owner opened the public site in a new browser: mint a one-time pairing token for their own T3 Code
+    """The owner opened the public site in a new browser: mint a one-time pairing token for their own T3
     (OWNER_T3_PORT), so they go straight in instead of seeing T3's "paste a pairing token" screen."""
     email = cf_email(cfg, req.get("cf_jwt")) if cf_mode(cfg) else None
     if not email or email not in sb.owner_emails(cfg) or not cfg.get("OWNER_T3_PORT", "").strip().isdigit():
@@ -1002,7 +1002,7 @@ def handle_boost(cfg, name, req):
 
 
 def running_all(cfg):
-    """The owner's Running tab: what runs for every account on the box (root reads container names too)."""
+    """The owner's Running tab: what runs for every account on the machine (root reads container names too)."""
     accts = []
     for name, (uid, rec) in sorted(sb.limited_accounts(cfg).items()):
         try:
@@ -1050,7 +1050,7 @@ def start_update(cfg, by):
     """Install the latest treehouse from UPDATE_SOURCE, detached (it restarts the services that asked for it)."""
     src = (cfg.get("UPDATE_SOURCE") or "").strip()
     if not src:
-        return {"ok": False, "error": "updates from the dashboard aren't set up (UPDATE_SOURCE in sharedbox.conf)"}
+        return {"ok": False, "error": "Updates from the dashboard aren't set up on this machine yet: it doesn't know where to get treehouse from. Your agent can explain the one-time setup."}
     st = sb.read_json(os.path.join(sb.STATE_DIR, "update.json"), {}) or {}
     if st.get("state") == "running" and time.time() - float(st.get("started") or 0) < 1800:
         return {"ok": True, "message": "An update is already running. Refresh in a minute."}
@@ -1173,7 +1173,7 @@ def handle_portal(cfg, rid, req):
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._/ -]{0,120}", key) or ".." in key:
             return {"ok": False, "error": "no such project"}
         return box_portal(pw, ["restore", key])
-    if action == "projects":  # "Projects on all your boxes": on/off for one repo in ~ (box projects, as this account)
+    if action == "projects":  # "Projects on all your machines": on/off for one repo in ~ (box projects, as this account)
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}", key) \
                 or req.get("op") not in ("on", "off"):
             return {"ok": False, "error": "no such project"}
@@ -1391,7 +1391,7 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
     cloudflare: the account is bound to `email`, which goes on the Access allow list; signing in with it is
     the whole login."""
     if sb.solo(cfg):
-        raise InviteError("this box is in solo mode (SOLO=1 in sharedbox.conf): no friend accounts")
+        raise InviteError("This machine is set up for one person (solo mode), so it has no friend accounts.")
     if sbfed.role(cfg) == "secondary":
         raise InviteError("this is a secondary box (BOX_ROLE=secondary): invite on the primary box; "
                           "the account is copied here within minutes")
@@ -1405,7 +1405,7 @@ def invite_account(cfg, days=None, note=None, by=None, email=None, username=None
         raise InviteError(err)
     email = (email or "").lower()
     if not email:
-        raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
+        raise InviteError("this machine uses Cloudflare Access: give the friend's email, e.g. "
                           "--email sam@example.com (they log in with it)")
     taken = sb.email_taken(email) if email else None
     if taken:
@@ -1460,7 +1460,7 @@ def public_invite(cfg, days=None, note=None, by=None, email=None):
     fields = {}
     email, err = sb.validate_email(email or "")
     if err or not email:
-        raise InviteError("this box uses Cloudflare Access: give the friend's email, e.g. "
+        raise InviteError("this machine uses Cloudflare Access: give the friend's email, e.g. "
                           "--email sam@example.com (they log in with it)")
     email = email.lower()
     taken = sb.email_taken(email)
@@ -1746,7 +1746,7 @@ def friend_record(cfg, name):
     reg = sb.registry()
     rec = reg["users"].get(name)
     if not isinstance(rec, dict):
-        raise FriendError(f"{name} is not a friend account on this box (see: box friends)")
+        raise FriendError(f"{name} is not a friend account on this machine (see: box friends)")
     lo, hi = sb.cfg_int(cfg, "FRIEND_UID_MIN"), sb.cfg_int(cfg, "FRIEND_UID_MAX")
     if not lo <= int(rec.get("uid") or 0) <= hi:
         raise FriendError(f"{name} isn't in the friends' uid range; refusing")
@@ -1910,7 +1910,7 @@ def issues_summary(days=7, user=None):
 def access_list(cfg):
     import sbcloudflare
     if not cf_mode(cfg):
-        raise FriendError("this box doesn't use Cloudflare Access, so there's no allow list")
+        raise FriendError("this machine doesn't use Cloudflare Access, so there's no allow list")
     try:
         emails = sbcloudflare.policy_emails(sbcloudflare.get_policy(cfg, sbcloudflare.client(cfg)))
     except sbcloudflare.CFError as e:
@@ -1935,7 +1935,7 @@ def access_add(cfg, email, user=None, by="root"):
     """Allow EMAIL through Cloudflare Access, and with `user` link it to that friend account (they log in as it)."""
     import sbcloudflare
     if not cf_mode(cfg):
-        raise FriendError("this box doesn't use Cloudflare Access (PUBLIC_MODE isn't cloudflare)")
+        raise FriendError("This machine has no public site, so there are no email sign-ins to change. Friends sign in over Tailscale.")
     email, err = sb.validate_email(email or "")
     if err or not email:
         raise FriendError(err or "give an email address")
@@ -1943,7 +1943,7 @@ def access_add(cfg, email, user=None, by="root"):
     if user:
         friend_record(cfg, user)
         if email in sb.owner_emails(cfg):
-            raise FriendError(f"{email} is an owner email (CF_OWNER_EMAILS); it can't log in as a friend")
+            raise FriendError(f"{email} is one of the owner's own emails, so it can't sign in as a friend.")
         other = sb.email_taken(email)
         if other and other != user:
             raise FriendError(f"{email} already belongs to {other}")
@@ -2026,14 +2026,14 @@ def boxes_set(value, by):
     if len(parsed) != len(items):
         bad = [x for x in items if f"{x.partition('=')[0].lower()}={x.partition('=')[2]}" not in
                {f"{n}={ip}" for n, ip in parsed.items()}]
-        return {"ok": False, "error": "each box must be NAME=TAILSCALE-IP (lowercase name, a 100.x address, no "
+        return {"ok": False, "error": "each machine must be NAME=TAILSCALE-IP (lowercase name, a 100.x address, no "
                                       f"repeats); not valid: {' '.join(bad)[:300]}"}
     line = " ".join(f"{n}={ip}" for n, ip in parsed.items())
     sb.set_config({"BOXES": line})
     sb.log_event("boxes_set", by, boxes=line)
     return {"ok": True, "boxes": parsed,
-            "message": f"BOXES={line}. The dashboard shows them within a minute. Put the same line on every box."
-            if line else "BOXES cleared: the dashboard no longer shows other boxes."}
+            "message": f"BOXES={line}. The dashboard shows them within a minute. Put the same line on every machine."
+            if line else "BOXES cleared: the dashboard no longer shows other machines."}
 
 
 HACKATHON_MAX_DAYS = 7
@@ -2116,7 +2116,7 @@ def tune_service(op, unit, by):
         raise FriendError(f"{sb.printable(unit)[:60]} isn't on the list treehouse may switch "
                           f"({', '.join(sorted(u.removesuffix('.service') for u in tune.SWITCHABLE))})")
     if op == "disable" and unit == "wpa_supplicant.service" and tune.wireless_in_use():
-        raise FriendError("a Wi-Fi link is up: the box may be using wpa_supplicant for its network, so it stays on")
+        raise FriendError("a Wi-Fi link is up: the machine may be using wpa_supplicant for its network, so it stays on")
     r = run(["systemctl", f"{op}", "--now", unit], check=False, capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         raise FriendError(f"systemctl {op} {unit} failed: {(r.stderr or '').strip()[-300:]}")
@@ -2288,7 +2288,7 @@ NO_SUCH_PKG_RE = re.compile(r"Unable to locate package|has no installation candi
 def open_for(cfg, user):
     """REQUEST_OPEN_USERS (e.g. for a hackathon): these users' requests skip REQUEST_DENY, the dependency cap and
     the daily limit, like the owner's approval, until REQUEST_OPEN_UNTIL ("YYYY-MM-DD HH:MM" local time; empty =
-    no end). REQUEST_NEVER still applies to them: it guards the box itself, not the user."""
+    no end). REQUEST_NEVER still applies to them: it guards the machine itself, not the user."""
     users = re.split(r"[\s,]+", cfg.get("REQUEST_OPEN_USERS") or "")
     if not user or user not in users:
         return False
@@ -2770,9 +2770,9 @@ def cmd_boost(cfg, a):
 def write_user_slice(cfg):
     """All accounts together (user.slice). MemoryLow: the kernel only honours an account's MEMORY_LOW if its parent
     holds that much protection itself, so user.slice gets everything but the reserve to share out (in proportion
-    when more people want their share than there is). MemoryMax: every account together stays below the box minus
+    when more people want their share than there is). MemoryMax: every account together stays below the machine minus
     MEMORY_RESERVE, so sshd, Tailscale and the website keep room however many people are busy. oomd watches the
-    whole of user.slice too, so when the box itself is short it picks among everyone's processes, not just
+    whole of user.slice too, so when the machine itself is short it picks among everyone's processes, not just
     inside the account that happens to be waiting."""
     total = sb.auto_memory_max(cfg)
     lines = ["# managed by sharedbox (MEMORY_RESERVE, OOM_PRESSURE_LIMIT): sharedbox-admin reapply", "[Slice]",
@@ -2839,7 +2839,7 @@ FED_STATE = os.path.join(sb.STATE_DIR, sbfed.STATE_REL)
 
 
 def fed_init(cfg, a=None):
-    """This box's roster signing key, made once (root only)."""
+    """This machine's roster signing key, made once (root only)."""
     os.makedirs(sbfed.FED_ETC, mode=0o700, exist_ok=True)
     os.chmod(sbfed.FED_ETC, 0o700)
     if not os.path.exists(FED_KEY):
@@ -2865,12 +2865,12 @@ def fed_me(cfg):
 
 
 def fed_key(cfg, a=None):
-    """The line to give the other boxes (`sharedbox-admin fed-trust '<line>'` there)."""
+    """The line to give the other machines (`sharedbox-admin fed-trust '<line>'` there)."""
     if not os.path.exists(FED_KEY + ".pub"):
         die("no signing key yet: sharedbox-admin fed-init")
     line = sbfed.signer_line(fed_me(cfg), open(FED_KEY + ".pub").read())
     if not line:
-        die("this box isn't in BOXES (its name must be a box name there)")
+        die("this machine isn't in BOXES (its name must be a box name there)")
     print(line)
 
 
@@ -2879,10 +2879,10 @@ def fed_trust(cfg, a):
     m = re.search(r"((?:ssh-|ecdsa-|sk-)\S+ [A-Za-z0-9+/=]+)", a.line or "")
     line = sbfed.signer_line(parts[0] if parts else "", m.group(1) if m else "")
     if not line:
-        die("expected the line `sharedbox-admin fed-key` prints on the other box")
+        die("expected the line `sharedbox-admin fed-key` prints on the other machine")
     name = line.split()[0]
     if name not in sb.boxes(cfg):
-        die(f"{name} isn't in BOXES on this box; add it first: box friends boxes \"NAME=IP ...\"")
+        die(f"{name} isn't in BOXES on this machine; add it first: box friends boxes \"NAME=IP ...\"")
     fed_init(cfg)
     keep = [ln for ln in open(FED_SIGNERS).read().splitlines() if ln.strip() and ln.split()[0] != name]
     sbfed.write_private(FED_SIGNERS, "\n".join(keep + [line]) + "\n", mode=0o600)
@@ -2995,10 +2995,10 @@ def fed_sync(cfg, a=None):
     force = bool(getattr(a, "force", False))
     boxes = sb.boxes(cfg)
     if len(boxes) < 2 or not os.path.exists(FED_KEY):
-        return  # one box, or federation not set up (fed-init): nothing to do
+        return  # one machine, or federation not set up (fed-init): nothing to do
     me, my_role, now = fed_me(cfg), sbfed.role(cfg), time.time()
     if me not in boxes:
-        print(f"fed-sync: this box ({me}) isn't in BOXES", file=sys.stderr)
+        print(f"fed-sync: this machine ({me}) isn't in BOXES", file=sys.stderr)
         return
     st = fed_state()
     fed_autotrust(cfg, boxes, me, st)
@@ -3067,7 +3067,7 @@ def fed_sync(cfg, a=None):
             if r.get("ok"):
                 st["applied"]["keys:" + name] = h
         peers = {p: boxes[p] for p in sbfed.present_on(docs, name, uid, now) if p in boxes}
-        try:  # a login just finished on this box (box fed_nudge): copy it to the other boxes now, not in 12 h
+        try:  # a login just finished on this machine (box fed_nudge): copy it to the other machines now, not in 12 h
             nudged = os.path.getmtime(os.path.join(pw.pw_dir, ".sharedbox", "fed-nudge")) > st["linked"].get(name, 0)
         except OSError:
             nudged = False
@@ -3082,7 +3082,7 @@ def fed_sync(cfg, a=None):
 
 def fed_status(cfg, a):
     st = fed_state()
-    print(f"this box: {fed_me(cfg)} ({sbfed.role(cfg)}); signing key: "
+    print(f"this machine: {fed_me(cfg)} ({sbfed.role(cfg)}); signing key: "
           f"{'yes' if os.path.exists(FED_KEY) else 'no (sharedbox-admin fed-init)'}")
     trusted = [ln.split()[0] for ln in open(FED_SIGNERS).read().splitlines() if ln.strip()] \
         if os.path.exists(FED_SIGNERS) else []

@@ -809,7 +809,7 @@ class AppLink(unittest.TestCase):
         self.assertIn("make a new prompt at https://treehouse.example.com/_box/me", p)
         self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
         self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")
-        self.assertNotIn("What the box knows", p)  # no facts given: none made up
+        self.assertNotIn("What the machine knows", p)  # no facts given: none made up
         self.assertNotIn("paired with my T3 earlier", p)
 
     def test_prompt_invariants(self):
@@ -832,7 +832,7 @@ class AppLink(unittest.TestCase):
         self.assertIn("Never open the link in a web browser", p)
         self.assertIn("reopen the same link (a refused link isn't used up)", p)
         # the owner is only asked to share when this account can't see the box, with the login that will be used
-        self.assertIn("Only when this account can't see the box and no share is waiting for me, add this for the "
+        self.assertIn("Only when this account can't see the machine and no share is waiting for me, add this for the "
                       "owner: \"Please share sietchtabr with my Tailscale account <login>.\"", p)
         self.assertIn("--reset", p)  # forbidden, not suggested
         self.assertIn("never use --reset or --force-reauth", p)
@@ -856,11 +856,11 @@ class AppLink(unittest.TestCase):
         self.assertIn("expires at 2026-11-14 18:42 UTC (check the clock with date -u)", p)
         for mode in ("sharee", "member"):
             q = sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode)
-            self.assertIn("sign in as x@y (the account that has the box)", q)
+            self.assertIn("sign in as x@y (the account that has the machine)", q)
             self.assertIn("if this computer's account is another one, that is the cause; tell me both", q)
         for mode, text in (("sharee", "is shared with the Tailscale account"), ("member", "is a member"),
                            ("none", "That's normal if Tailscale isn't set up on any computer yet"),
-                           ("", "may have shared the box with the Tailscale account x@y (not confirmed)")):
+                           ("", "may have shared the machine with the Tailscale account x@y (not confirmed)")):
             self.assertIn(text, sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode))
         for q in (p, sbconnect.app_prompt(pair, "d", "sietchtabr")):
             self.assertIsNone(re.search(r"\{[^}]*\}", q))
@@ -911,7 +911,8 @@ class ConnectText(unittest.TestCase):
 
     def test_off(self):
         t = sbconnect.connect_text("sam", SITE, "")
-        self.assertIn("sudo sharedbox-admin cloudflare ssh", t)
+        self.assertIn("ask the owner to turn on SSH for the public site", t)
+        self.assertNotIn("sudo", t)
         self.assertNotIn("ProxyCommand", t)
 
 

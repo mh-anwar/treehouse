@@ -525,7 +525,7 @@ def auto_memory_max(cfg):
 
 
 def user_slice_low(cfg):
-    """Protection all accounts share (user.slice MemoryLow): the box minus twice the reserve (the box's own services:
+    """Protection all accounts share (user.slice MemoryLow): the machine minus twice the reserve (the machine's own services:
     sshd, Tailscale, the website) minus what group servers may use, so under pressure those aren't the only things
     the kernel takes memory from. Never below one account's MEMORY_LOW."""
     total = 0
@@ -1000,7 +1000,7 @@ BOX_IP_RE = re.compile(r"100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2
 
 def boxes(cfg):
     """BOXES as an ordered {name: ip}. Entries are "name=ip" split on spaces/commas; a bad entry or a repeated
-    name or ip is dropped. This box is in the list too (the same line goes on every box). Never raises."""
+    name or ip is dropped. This machine is in the list too (the same line goes on every machine). Never raises."""
     out = {}
     for item in re.split(r"[\s,]+", str(cfg.get("BOXES") or "")):
         name, _, ip = item.partition("=")
@@ -1345,7 +1345,7 @@ def boost_start(cfg, name, why="", now=None):
     now = int(now or time.time())
     acct = limited_accounts(cfg).get(name)
     if not acct:
-        return {"ok": False, "until": 0, "error": f"{name} has no account on this box"}
+        return {"ok": False, "until": 0, "error": f"{name} has no account on this machine"}
     uid, rec = acct
     if rec and rec.get("status", "active") != "active":
         return {"ok": False, "until": 0, "error": "the account is suspended"}
@@ -1362,7 +1362,7 @@ def boost_start(cfg, name, why="", now=None):
         avail = _mem_available()
         if need > 0 and avail < need:
             return {"ok": False, "until": 0,
-                    "error": f"the box doesn't have enough free memory for a boost right now ({human(avail)} free, "
+                    "error": f"the machine doesn't have enough free memory for a boost right now ({human(avail)} free, "
                              f"{human(need)} needed). Try again later, or stop something you don't need."}
     until = now + int(float(cfg["BOOST_HOURS"]) * 3600)
     r = subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],
