@@ -195,7 +195,7 @@ def t3_pass(cfg, users):
             rec["last"] = {"action": rep["action"], "why": rep["why"], "ts": int(time.time())}
             sb.log_event(T3_EVENTS[rep["action"]], name, version=rep["version"], why=rep["why"], target=target,
                          idle_min=rep["idle_min"])
-            print(f"{name}: T3 Code {rep['action']} ({rep['why']})")
+            print(f"{name}: T3 {rep['action']} ({rep['why']})")
         elif prev.get(name, {}).get("last"):
             rec["last"] = prev[name]["last"]
         out[name] = rec
@@ -204,7 +204,7 @@ def t3_pass(cfg, users):
 
 def heal_provision():
     """If the request handler's path unit ever ends up failed (it once hit systemd's start limit under a burst of
-    retries), nothing on the box answers joins, logins or `box shared` until root resets it: do that here."""
+    retries), nothing on the machine answers joins, logins or `box shared` until root resets it: do that here."""
     for unit in ("sharedbox-provision.service", "sharedbox-provision.path"):
         r = subprocess.run(["systemctl", "is-failed", "--quiet", unit], check=False)
         if r.returncode == 0:
@@ -354,7 +354,7 @@ def me_history(cfg, users):
     """~/me (lib/sbme.py): for every active account, `box _me-tick` AS THAT ACCOUNT at the lowest priority. It
     decides itself whether a pass is due (every ~15 min): keeps agent transcripts forever (and Codex reasoning
     readable), xz-compresses changed raw transcripts into ~/me/raw, indexes them into ~/me/agents.db (a long first backfill
-    stops after ~9 min and continues next tick) and copies in what the account's other boxes indexed. A few seconds
+    stops after ~9 min and continues next tick) and copies in what the account's other machines indexed. A few seconds
     per account when nothing changed."""
     import sbme
     names = set(users) | set(sb.admin_users(cfg))
@@ -373,9 +373,9 @@ def me_history(cfg, users):
 
 
 def projects_everywhere(cfg, users):
-    """"Projects on all my boxes" (lib/sbprojects.py): for each account that chose some, `box _projects-sync` AS
+    """"Projects on all my machines" (lib/sbprojects.py): for each account that chose some, `box _projects-sync` AS
     THAT ACCOUNT, at low priority (nice 10, best-effort IO class 7). It decides itself whether a sync is due (every
-    30 min, or right after the choice changed) and clones/fast-forwards on the other boxes over its own SSH login.
+    30 min, or right after the choice changed) and clones/fast-forwards on the other machines over its own SSH login.
     Root only checks that the choice file exists. Last in the tick: a first clone can take minutes."""
     import sbprojects
     if len(sb.boxes(cfg)) < 2:
@@ -393,13 +393,13 @@ def projects_everywhere(cfg, users):
             rep = user_pass(pw, {}, "_projects-sync", prefix=sbprojects.NICE,
                             check=lambda r: isinstance(r, dict) and isinstance(r.get("ran"), bool))
             if rep["ran"]:
-                print(f"{name}: projects synced to the other boxes")
+                print(f"{name}: projects synced to the other machines")
         except Exception as e:  # one account's trouble must not stop the others
             print(f"{name}: projects sync error: {str(e)[-300:]!r}", file=sys.stderr)
 
 
 def refresh_presence(cfg, users):
-    """`box where`'s rounded "active on the box" hint: newest agent session change per account."""
+    """`box where`'s rounded "active on the machine" hint: newest agent session change per account."""
     try:
         import sbwhere
         homes = {}
@@ -424,7 +424,7 @@ def boot_id():
 def refresh_rules(cfg, users, state):
     """Agents read the reboot notice from their rule files, which the 6-hourly janitor pass rewrites. Rewrite them
     as soon as the reboot picture changes instead: a reboot got scheduled (updates at 03:00 for 04:00), was
-    postponed, or just happened (new boot id). Otherwise a session after a reboot is told the box 'will reboot'
+    postponed, or just happened (new boot id). Otherwise a session after a reboot is told the machine 'will reboot'
     at a time already past. Cheap: nothing runs unless the picture changed."""
     rb = sb.reboot_info(cfg)
     soon = bool(rb["at"]) and rb["at"] - time.time() < 12 * 3600  # `box` bakes a scheduled reboot in 12 h ahead
@@ -544,6 +544,8 @@ def cmd_run(cfg, a):
                 "disk": used, "budget": budget, "over": over, "over_deadline": deadline,
                 "projects": len(rep["projects"]),
                 "pending_deletions": [p["name"] for p in rep["projects"] if p.get("delete_on")],
+                # the same with the day each moves to the archive, for the dashboard's "Keep it" (newer pages)
+                "pending": [{"name": p["name"], "on": p["delete_on"]} for p in rep["projects"] if p.get("delete_on")],
                 "archives": rep.get("archives", []),
                 "services": rep.get("services", []), "freed": rep["freed"],
             }

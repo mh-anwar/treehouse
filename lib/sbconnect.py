@@ -1,7 +1,7 @@
 """SSH from a friend's own computer, set up by their own local coding agent (Claude Code, Codex, ...).
 
 No VPN: `ssh treehouse` runs `cloudflared access ssh` as its ProxyCommand, which logs in to Cloudflare Access
-(the same email code as the website) and tunnels to sshd on the box (SSH_HOST -> tunnel -> localhost:22).
+(the same email code as the website) and tunnels to sshd on the machine (SSH_HOST -> tunnel -> localhost:22).
 sshd still wants the friend's key, which their agent registers through POST /_box/api/ssh-key with the
 Access token (sharedbox-web -> spool -> root -> `box _portal add-key`).
 
@@ -9,7 +9,7 @@ This module only renders text: the prompt the friend pastes into their agent (al
 /_box/connect.md), and the ~/.ssh/config block. Pure functions, no I/O; stdlib only.
 
 It also renders the T3 Code app's one-click pairing link (t3code://pair?pairingUrl=...) and the "setup prompt" a
-friend pastes into the agent on their laptop to install the app and connect it to their T3 on the box.
+friend pastes into the agent on their laptop to install the app and connect it to their T3 on the machine.
 """
 
 import re
@@ -21,7 +21,7 @@ ALIAS = "treehouse"
 
 def t3_app_link(pair_url):
     """The T3 Code app's pairing link. The app asks "Add the backend at <origin>?" and pairs with the token.
-    Built from the pairing URL people connect to (the box's Tailscale IP and the friend's first port), never from
+    Built from the pairing URL people connect to (the machine's Tailscale IP and the friend's first port), never from
     the "App link:" line `t3 pair` prints (that one carries T3's internal port)."""
     return "t3code://pair?pairingUrl=" + urllib.parse.quote(pair_url, safe="") if pair_url else ""
 
@@ -39,17 +39,17 @@ def pair_expires(now, minutes=29):
 
 
 def ts_facts(status, rec):
-    """What the box's own `tailscale status --json` says about a friend's Tailscale account, for the setup prompt.
+    """What the machine's own `tailscale status --json` says about a friend's Tailscale account, for the setup prompt.
     Pure: `status` is that JSON (or None), `rec` their users.json record. Returns {"login", "mode"}:
-    mode "sharee" (the box is shared with them and has seen their devices), "member" (they are in the owner's
-    tailnet), "reverse" (only their own computer is shared INTO the owner's tailnet: the box can reach it, but the
+    mode "sharee" (the machine is shared with them and has seen their devices), "member" (they are in the owner's
+    tailnet), "reverse" (only their own computer is shared INTO the owner's tailnet: the machine can reach it, but the
     box isn't shared back), "none" (no device of theirs seen) or "" (unknown)."""
     rec = rec or {}
     login, ts_id = rec.get("login") or "", str(rec.get("ts_id") or "")
     if not isinstance(status, dict):
         return {"login": login, "mode": ""}
     users = status.get("User") or {}
-    if not ts_id:  # an email-invited friend: match their email against the logins the box knows
+    if not ts_id:  # an email-invited friend: match their email against the logins the machine knows
         email = (rec.get("email") or "").lower()
         ts_id = next((str(k) for k, u in users.items() if email and (u.get("LoginName") or "").lower() == email), "")
     if not ts_id:
@@ -67,18 +67,18 @@ def ts_facts(status, rec):
 
 
 def _facts(ts_login, ts_mode, apps):
-    """The "What the box knows" lines of the setup prompt (only facts the box really has)."""
+    """The "What the machine knows" lines of the setup prompt (only facts the machine really has)."""
     out = []
     if ts_login:
         out.append({
-            "sharee": f"- The box is shared with the Tailscale account {ts_login}, and it has seen that account's devices.",
-            "member": f"- {ts_login} is a member of the box owner's tailnet.",
-            "reverse": f"- The box is NOT shared with the Tailscale account {ts_login} yet. (A computer of that account "
-                       f"is shared with the owner, which only lets the box reach it, not the other way round.)",
-            "none": f"- The box hasn't seen any device of the Tailscale account {ts_login} yet. That's normal if "
+            "sharee": f"- The machine is shared with the Tailscale account {ts_login}, and it has seen that account's devices.",
+            "member": f"- {ts_login} is a member of the machine owner's tailnet.",
+            "reverse": f"- The machine is NOT shared with the Tailscale account {ts_login} yet. (A computer of that account "
+                       f"is shared with the owner, which only lets the machine reach it, not the other way round.)",
+            "none": f"- The machine hasn't seen any device of the Tailscale account {ts_login} yet. That's normal if "
                     f"Tailscale isn't set up on any computer yet; otherwise the share isn't accepted, or this computer "
                     f"uses another account.",
-        }.get(ts_mode, f"- The owner may have shared the box with the Tailscale account {ts_login} (not confirmed)."))
+        }.get(ts_mode, f"- The owner may have shared the machine with the Tailscale account {ts_login} (not confirmed)."))
     for a in apps or ():
         bits = ", ".join(b for b in (a.get("os"), a.get("ip") and "Tailscale IP " + a["ip"],
                                      a.get("version") and "app " + a["version"]) if b)
@@ -87,38 +87,38 @@ def _facts(ts_login, ts_mode, apps):
     return "\n".join(out)
 
 
-def app_prompt(pair_url, dashboard, box="the box", *, ts_login="", ts_mode="", apps=(), expires=""):
+def app_prompt(pair_url, dashboard, box="the machine", *, ts_login="", ts_mode="", apps=(), expires=""):
     """The prompt for the friend's own agent on their laptop: check whether the app already works, diagnose
     read-only, fix only what's broken (Tailscale, then the T3 Code app), then open the one-time pairing link and ask
     the human what the app showed (the agent can't see it). `dashboard` is where they make a new one
-    ({site}/_box/me); `box` is the box's name (prose only: shared-in users can't resolve it, addresses use the IP).
-    Optional facts from the box: `ts_login`/`ts_mode` (ts_facts), `apps` (T3 app sessions paired earlier: dicts
+    ({site}/_box/me); `box` is the machine's name (prose only: shared-in users can't resolve it, addresses use the IP).
+    Optional facts from the machine: `ts_login`/`ts_mode` (ts_facts), `apps` (T3 app sessions paired earlier: dicts
     with os, ip, version, last) and `expires` (when the pairing link runs out, e.g. "2026-11-14 18:42 UTC")."""
     origin = app_origin(pair_url)
     if not origin:
         return ""
     ip = urllib.parse.urlsplit(origin).hostname
     facts = _facts(ts_login, ts_mode, apps)
-    facts = f"\nWhat the box knows:\n{facts}\n" if facts else ""
-    has_box = ts_login and ts_mode in ("sharee", "member")  # only these prove that account can see the box
-    who = (f"{ts_login} (the account that has the box)" if has_box else
+    facts = f"\nWhat the machine knows:\n{facts}\n" if facts else ""
+    has_box = ts_login and ts_mode in ("sharee", "member")  # only these prove that account can see the machine
+    who = (f"{ts_login} (the account that has the machine)" if has_box else
            f"the account that accepted the share of {box}, usually the one I use for Tailscale")
-    hint = {"sharee": f" The box is shared with {ts_login}: if this computer's account is another one, that is the "
+    hint = {"sharee": f" The machine is shared with {ts_login}: if this computer's account is another one, that is the "
                       f"cause; tell me both and ask which to use.",
-            "member": f" The box's tailnet has {ts_login}: if this computer's account is another one, that is the "
+            "member": f" The machine's tailnet has {ts_login}: if this computer's account is another one, that is the "
                       f"cause; tell me both and ask which to use.",
-            "reverse": f" The box isn't shared with {ts_login}: if that is this computer's account, ask me whether I "
+            "reverse": f" The machine isn't shared with {ts_login}: if that is this computer's account, ask me whether I "
                        f"have an email from Tailscale about {box}; if not, go straight to the message for the owner "
                        f"below."}.get(ts_mode, "") if ts_login else ""
     until = f"expires at {expires} (check the clock with date -u)" if expires else "lasts 30 minutes"
     seen = " An app paired earlier (see above) makes this likely." if apps else ""
-    return f"""Connect the T3 Code desktop app on this computer to my T3 on treehouse ({box}), a shared Linux box, over Tailscale. Do the work yourself; I only sign in, approve permission prompts, click Confirm, or type this computer's password. You can't see the apps' windows: when something should appear, ask me what I see. Look before you change anything and stop as soon as it works. Never repeat a step that failed unless you changed something since; after two rounds that change nothing, stop. Never sign out of or remove a Tailscale account, never use --reset or --force-reauth, don't set up T3 Connect, and don't change anything else on this computer. If your own sandbox blocks the network or a command, ask me to allow it: that isn't a Tailscale problem.
+    return f"""Connect the T3 Code desktop app on this computer to my T3 on treehouse ({box}), a shared Linux machine, over Tailscale. Do the work yourself; I only sign in, approve permission prompts, click Confirm, or type this computer's password. You can't see the apps' windows: when something should appear, ask me what I see. Look before you change anything and stop as soon as it works. Never repeat a step that failed unless you changed something since; after two rounds that change nothing, stop. Never sign out of or remove a Tailscale account, never use --reset or --force-reauth, don't set up T3 Connect, and don't change anything else on this computer. If your own sandbox blocks the network or a command, ask me to allow it: that isn't a Tailscale problem.
 
 My T3: {origin} (always use this IP address; the name {box} doesn't resolve for shared devices). The pairing link below works once and {until}.
 {facts}
 0. Already working? If the T3 Code app is installed, ask me: "In the T3 app, open Settings, Environments. Is there a {box} entry with the address {origin} that shows as connected, and do your threads open?" If yes, stop: it's done, change nothing.{seen}
 1. Look, read-only. Work out the OS, then:
-   a. curl -s --noproxy '*' --max-time 15 {origin}/.well-known/t3/environment   (Windows: curl.exe). A JSON reply with environmentId means the box is reachable: go to step 3. Anything else (nothing, or a proxy's page) means it isn't.
+   a. curl -s --noproxy '*' --max-time 15 {origin}/.well-known/t3/environment   (Windows: curl.exe). A JSON reply with environmentId means the machine is reachable: go to step 3. Anything else (nothing, or a proxy's page) means it isn't.
    b. Find the Tailscale command: tailscale on PATH, else /Applications/Tailscale.app/Contents/MacOS/Tailscale (macOS), else & 'C:\\Program Files\\Tailscale\\tailscale.exe' (PowerShell, keep the &). Run tailscale status --json and note BackendState, this computer's account (LoginName of the User entry whose ID is Self.UserID), and whether a Peer has {ip} in TailscaleIPs (no Peer list means no).
 2. Fix Tailscale (only when 1a failed). Fix what 1b found, then run 1b again and handle the new state: installing, starting, signing in and the peer check are one chain. Run the curl again only once BackendState is Running and the peer is there.
    - Not installed: macOS: curl -fLo ~/Downloads/Tailscale.pkg https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg and open it; I click through the installer and type my password. Windows: winget install --id Tailscale.Tailscale -e (I click Yes). Linux: unless you can get root without a password, give me ONE line to paste in a terminal that runs https://tailscale.com/install.sh, then tailscale set --operator=$USER as root, then tailscale up. Never install a second Tailscale next to an existing one.
@@ -127,9 +127,9 @@ My T3: {origin} (always use this IP address; the name {box} doesn't resolve for 
    - Stopped: tailscale up. If it asks for more flags, don't add any: ask me to turn Tailscale on from its menu-bar or tray icon.
    - NeedsLogin: start tailscale up in the background (tailscale login if tailscale switch --list shows other accounts, so they stay), show me the login link it prints (or AuthURL in tailscale status --json), and wait until BackendState is Running. Tell me to sign in as {who}.
    - NeedsMachineAuth: an admin of that tailnet must approve this computer. Tell me and stop.
-   - Running, no peer {ip}: wait a minute (a new sign-in takes a moment) and check again. Still none: this account can't see the box.{hint} If tailscale switch --list shows another account that has the box, ask me before switching; say it turns off my other Tailscale (for example work) until I switch back, and how to switch back (Tailscale menu, or tailscale switch with the old account). Never switch on a computer my employer manages. Add an account only with tailscale login, and only if I agree. Otherwise tell me: "Find the email from Tailscale about {box} (check spam and other inboxes) and click Accept. Sign in as <this computer's account>, with the same Google, GitHub or Microsoft button this computer's Tailscale uses, even if the email went to another address; if the page shows someone else signed in, sign out there first. Tell me when you're done." Whichever account accepts gets the box; on a work tailnet only its admins can accept. Wait for me, then check again.
-   - Running, peer {ip} there, curl fails: tailscale ping --c 3 --timeout 3s {ip}. A pong means Tailscale works and a proxy, firewall or work tailnet's rules block the port. No reply: the box or this computer is offline, or another VPN or a work tailnet's rules block it. Ask me before touching another VPN.
-   If it still times out, stop and tell me what blocks it. Only when this account can't see the box and no share is waiting for me, add this for the owner: "Please share {box} with my Tailscale account <login>." (<login> is the account this computer will use: the one from 1b, or the one I chose.) Then I make a new prompt at {dashboard}. Meanwhile T3 works in the browser: {dashboard}, Open T3.
+   - Running, no peer {ip}: wait a minute (a new sign-in takes a moment) and check again. Still none: this account can't see the machine.{hint} If tailscale switch --list shows another account that has the machine, ask me before switching; say it turns off my other Tailscale (for example work) until I switch back, and how to switch back (Tailscale menu, or tailscale switch with the old account). Never switch on a computer my employer manages. Add an account only with tailscale login, and only if I agree. Otherwise tell me: "Find the email from Tailscale about {box} (check spam and other inboxes) and click Accept. Sign in as <this computer's account>, with the same Google, GitHub or Microsoft button this computer's Tailscale uses, even if the email went to another address; if the page shows someone else signed in, sign out there first. Tell me when you're done." Whichever account accepts gets the machine; on a work tailnet only its admins can accept. Wait for me, then check again.
+   - Running, peer {ip} there, curl fails: tailscale ping --c 3 --timeout 3s {ip}. A pong means Tailscale works and a proxy, firewall or work tailnet's rules block the port. No reply: the machine or this computer is offline, or another VPN or a work tailnet's rules block it. Ask me before touching another VPN.
+   If it still times out, stop and tell me what blocks it. Only when this account can't see the machine and no share is waiting for me, add this for the owner: "Please share {box} with my Tailscale account <login>." (<login> is the account this computer will use: the one from 1b, or the one I chose.) Then I make a new prompt at {dashboard}. Meanwhile T3 works in the browser: {dashboard}, Open T3.
 3. The T3 Code app. Find it: macOS: /Applications or ~/Applications, T3 Code*.app (version: defaults read with its Contents/Info and CFBundleShortVersionString; older than 0.1.9 needs an update). Windows: winget list --id T3Tools.T3Code -e, or the Start menu. Linux: dpkg -s t3-code, the Exec line of ~/.local/share/applications/com.t3tools.T3Code.desktop, or a T3*Code*.AppImage in my home folder. Not sure: ask me before installing. Missing: macOS: brew install --cask t3-code if brew exists, else the .dmg for this CPU (uname -m) from https://github.com/pingdotgg/t3code/releases/latest, copied into /Applications. Windows: winget install --id T3Tools.T3Code -e (updates: winget upgrade). Linux: the AppImage for this CPU from https://t3.codes, kept in ~/Applications (the .deb needs root). Not t3.codes' install.sh: that is only the server. Then start it detached (macOS: open -a with the app; Linux: setsid with its path, output discarded, in the background; Windows: Start menu) and ask me whether its window is up. I can skip its welcome screens.
 4. Pair. First check that the link can open the app. Windows: if reg query HKCU\\Software\\Classes\\t3code and reg query HKCR\\t3code both find nothing, go to step 5. Linux: xdg-mime query default x-scheme-handler/t3code must print a .desktop name (the app registers it when it starts); nothing: go to step 5.
    Tell me: "The T3 app should ask: Add the backend at {origin}? Click Confirm." Then open this link with the system link opener (macOS: open, Linux: xdg-open, Windows: PowerShell's Start-Process), keeping the single quotes:
@@ -164,9 +164,9 @@ def connect_text(user, site, ssh_host, alias=ALIAS):
     site = site.rstrip("/")
     if not ssh_host:
         return (f"# Use {site} from your own computer's agent\n\n"
-                f"SSH through Cloudflare isn't turned on for this box yet. Tell the human: \"ask the owner to run "
-                f"`sudo sharedbox-admin cloudflare ssh` on the box, then copy these instructions again from "
-                f"{site}/_box/me\". Don't try other ways in (no VPN, no port forwarding).\n")
+                f"SSH through the public site isn't turned on for this machine yet. Tell the human: \"ask the owner to "
+                f"turn on SSH for the public site, then copy these instructions again from {site}/_box/me\". Don't "
+                "try other ways in (no VPN, no port forwarding).\n")
     key = f"~/.ssh/{alias}"
     block = ssh_config_block(user, ssh_host, alias=alias)
     win_block = ssh_config_block(user, ssh_host, '"C:\\Program Files (x86)\\cloudflared\\cloudflared.exe"', alias)
@@ -229,12 +229,12 @@ Windows: the file is `%USERPROFILE%\\.ssh\\config`, and ProxyCommand needs cloud
 
 ## 6. Test
     ssh -o StrictHostKeyChecking=accept-new {alias} 'box status'
-It should print {user}'s usage and limits on the box. "Permission denied (publickey)": step 4 didn't work.
+It should print {user}'s usage and limits on the machine. "Permission denied (publickey)": step 4 didn't work.
 A browser opening: Cloudflare wants the login again; tell the human to finish it.
 
 ## 7. Tell the human what they can do now
 - "Run X on my treehouse box": you run `ssh {alias} '<command>'` for them.
-- `ssh -t {alias} claude` (or `codex`) starts a coding agent that lives on the box.
+- `ssh -t {alias} claude` (or `codex`) starts a coding agent that lives on the machine.
 - VS Code / Cursor: Remote-SSH, "Connect to Host...", pick `{alias}`.
 - Every few weeks Cloudflare asks for the email code again; a browser tab opens by itself when it does.
 - The website is still {site} (their dashboard: {site}/_box/me).
@@ -242,11 +242,11 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
 ## Rules when you work on the box
 - It's a shared machine with no sudo for anyone. Never run `sudo` or ask for root/admin. Read
   `ssh {alias} 'box rules'` once before doing real work there and follow it.
-- Files live on the box, not on this computer: edit them there (`ssh`, Remote-SSH) or move them with
+- Files live on the machine, not on this computer: edit them there (`ssh`, Remote-SSH) or move them with
   `scp`/`git`. Keep each project as a git repo in `~/<name>/` and push it: idle projects are archived only once fully pushed.
 - Anything long-running goes in `box serve add <name> -- <command>` (or `box shared` for something the whole
-  group runs). Never leave servers in `nohup`, `tmux` or `&`: the box reboots for updates.
-- Memory: each account has a guaranteed share and may use most of the box while it's quiet; `ssh {alias} box running`
+  group runs). Never leave servers in `nohup`, `tmux` or `&`: the machine reboots for updates.
+- Memory: each account has a guaranteed share and may use most of the machine while it's quiet; `ssh {alias} box running`
   shows what's using it, `box help memory` explains. `box help` lists more topics.
 
 To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`

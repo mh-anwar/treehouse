@@ -773,7 +773,7 @@ def run_crew(name, tdir, role, agent="claude", model=None, runner=None, max_loop
 # ---------- CLI (`box team ...`) ----------
 
 def main(argv, cfg, request=None):
-    p = argparse.ArgumentParser(prog="box team", description="Team mode: a shared board for a hackathon team's agents.")
+    p = argparse.ArgumentParser(prog="box team", description="Team mode: a shared board for a team's agents (handy at a hackathon or on any group project).")
     p.add_argument("--team", "-t", help="team name (default: $BOX_TEAM, the folder you're in, or your only team)")
     p.add_argument("--as", dest="label", help="agent label (default: $BOX_TEAM_AS or the T3 thread)")
     p.add_argument("--json", action="store_true", help="JSON output")

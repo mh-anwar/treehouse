@@ -338,6 +338,26 @@ def hackathon_reconcile(cfg):
 HACKATHON_PAUSED = "hackathon-paused.json"  # in STATE_DIR: {"paused": {user: ["sb-NAME.service"]}, "ts"}
 
 
+def hackathon_candidates(cfg):
+    """Root: [{"user", "name", "about"}] of the `box serve` servers hackathon mode would pause (their owner allowed it,
+    not keep running), for the owner's Settings tab, before they turn it on."""
+    out = []
+    for user, (uid, _rec) in sorted(limited_accounts(cfg).items()):
+        try:
+            home = pwd.getpwnam(user).pw_dir
+            files = os.listdir(os.path.join(home, ".config", "systemd", "user"))
+        except (KeyError, OSError):
+            continue
+        for fn in sorted(files):
+            if not re.fullmatch(r"sb-[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.service", fn) or fn in (
+                    "sb-t3.service", "sb-t3-proxy.service"):
+                continue
+            m = sbrunning.server_meta(home, fn[3:-8], uid)
+            if m.get("hackathon") == "pause" and not m.get("keep"):
+                out.append({"user": user, "name": fn[3:-8], "about": printable(str(m.get("about") or ""))[:160]})
+    return out[:100]
+
+
 def hackathon_servers(cfg, active):
     """Root, at a hackathon mode transition: on -> stop every `box serve` server whose owner allowed it
     (`box serve hackathon NAME pause`; never one marked keep running), off -> start exactly those again.
@@ -581,7 +601,7 @@ def auto_memory_max(cfg):
 
 
 def user_slice_low(cfg):
-    """Protection all accounts share (user.slice MemoryLow): the box minus twice the reserve (the box's own services:
+    """Protection all accounts share (user.slice MemoryLow): the machine minus twice the reserve (the machine's own services:
     sshd, Tailscale, the website) minus what group servers may use, so under pressure those aren't the only things
     the kernel takes memory from. Never below one account's MEMORY_LOW."""
     total = 0
@@ -635,6 +655,47 @@ def human(n):
         if abs(n) < 1024 or u == "T":
             return f"{n:.0f}{u}" if u == "B" else f"{n:.1f}{u}"
         n /= 1024
+
+
+def size_text(n):
+    """Bytes for people: "9.6 GB", "600 MB", "0 GB". Same unit names everywhere people read numbers (the dashboard,
+    `box status`), never the "9.6G" shorthand."""
+    if n is None:
+        return "no limit"
+    n = float(n)
+    if abs(n) < 1 << 20:
+        return "0 MB" if n < 512 << 10 else "1 MB"
+    n /= 1024
+    for u in ("MB", "GB", "TB"):
+        n /= 1024
+        if abs(n) < 1000 or u == "TB":
+            if n >= 100 or u == "MB":
+                return f"{n:.0f} {u}"
+            return f"{n:.1f} {u}".replace(".0 ", " ")
+    return f"{n:.1f} TB"
+
+
+# The words people see, one meaning each (docs/glossary.md is generated from this; the dashboard's Home tab and
+# `box help words` show it too). Change a word here and in the UI together.
+GLOSSARY = (
+    ("Machine", "A computer treehouse runs on, called by its name (for example {machine}). Each machine has its own "
+                "memory and disk, and your files stay on the machine where they were made."),
+    ("Dashboard", "This website. Its tabs are Home, Messages, Servers, Machines and Account."),
+    ("T3", "The chat app where you talk to your AI agent. Open it in this browser with Open T3, or use the T3 app on "
+           "your phone or laptop (it's called T3 Code in the app stores)."),
+    ("AI account", "Your own Claude, ChatGPT or Google subscription. Agents use it to think. You need only one, and "
+                   "that company bills you for it, not treehouse."),
+    ("Agent", "An AI coding assistant (Claude Code, Codex, or Google's Antigravity, which uses Gemini) that works on "
+              "the machine for you. An agent session is one chat with it."),
+    ("Server", "An app, site or bot of yours that keeps running on the machine, with its own link."),
+    ("Group server", "A server the whole group shares. Anyone in the group can start, stop or change it."),
+    ("Database or container", "A program your agent started with Docker, such as a Postgres or Supabase database. It "
+                              "keeps running until someone stops it."),
+    ("Friend", "Someone with an account on the machine. The owner runs the machines and invites friends."),
+    ("Request", "Something an agent asks the owner for: a program to install for everyone, or a setting to change."),
+    ("Archive", "Where a project nobody opened for a while goes, once all its work is saved on GitHub. You can bring "
+                "it back from your Account tab."),
+)
 
 
 def printable(s):
@@ -1015,7 +1076,7 @@ BOX_IP_RE = re.compile(r"100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2
 
 def boxes(cfg):
     """BOXES as an ordered {name: ip}. Entries are "name=ip" split on spaces/commas; a bad entry or a repeated
-    name or ip is dropped. This box is in the list too (the same line goes on every box). Never raises."""
+    name or ip is dropped. This machine is in the list too (the same line goes on every machine). Never raises."""
     out = {}
     for item in re.split(r"[\s,]+", str(cfg.get("BOXES") or "")):
         name, _, ip = item.partition("=")
@@ -1360,7 +1421,7 @@ def boost_start(cfg, name, why="", now=None):
     now = int(now or time.time())
     acct = limited_accounts(cfg).get(name)
     if not acct:
-        return {"ok": False, "until": 0, "error": f"{name} has no account on this box"}
+        return {"ok": False, "until": 0, "error": f"{name} has no account on this machine"}
     uid, rec = acct
     if rec and rec.get("status", "active") != "active":
         return {"ok": False, "until": 0, "error": "the account is suspended"}
@@ -1377,7 +1438,7 @@ def boost_start(cfg, name, why="", now=None):
         avail = _mem_available()
         if need > 0 and avail < need:
             return {"ok": False, "until": 0,
-                    "error": f"the box doesn't have enough free memory for a boost right now ({human(avail)} free, "
+                    "error": f"the machine doesn't have enough free memory for a boost right now ({human(avail)} free, "
                              f"{human(need)} needed). Try again later, or stop something you don't need."}
     until = now + int(float(cfg["BOOST_HOURS"]) * 3600)
     r = subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],

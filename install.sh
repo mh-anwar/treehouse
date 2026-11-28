@@ -7,8 +7,10 @@
 #   sudo ./install.sh --apply --no-tools   skip installing agents/toolchains (sharedbox-tools install later)
 #   sudo ./install.sh --apply --mail-to you@gmail.com   where weekly health reports + alerts go
 #
-# This script never restarts or reconfigures sshd, tailscaled, networking or the firewall,
-# and never changes limits of existing users. It installs files, creates the `friends`
+# This script never restarts or reconfigures sshd, tailscaled or the firewall, and never restarts networking. The
+# one network change: Wi-Fi moves from netplan's single-dongle config to treehouse's any-dongle one (sharedbox-netguard
+# wifi-setup, rolled back by itself if the link doesn't come back).
+# It never changes limits of existing users. It installs files, creates the `friends`
 # group, a `sharedbox` system user and an `sbshared` system user/group (shared servers), runs `systemctl daemon-reload`
 # and starts its own units.
 set -euo pipefail
@@ -23,7 +25,7 @@ while [[ $# -gt 0 ]]; do
         --admins) ADMINS=$2; shift ;;
         --no-tools) TOOLS=0 ;;
         --mail-to) MAIL_TO=$2; shift ;;
-        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
@@ -107,7 +109,7 @@ say "files"
 do_ install -d -m 755 "$LIB" "$SHARE" "$ETC"
 for f in sbcommon.py sbclean.py sbweekly.py sbmail.py sbaudit.py sbdistro.py sbqr.py sbaccess.py sbcloudflare.py sbshared.py sbconnect.py sbteam.py sbmulti.py sbfed.py sbrunning.py sbmsg.py sbwhere.py sbtelegram.py sbprojects.py sbme.py sbtelemetry.py; do do_ install -m 644 "$SRC/lib/$f" "$LIB/$f"; done
 for f in box sharedbox-admin sharedbox-janitor sharedbox-web sharedbox-tools sharedbox-health sharedbox-update \
-         sharedbox-gate sharedbox-tune; do
+         sharedbox-gate sharedbox-tune sharedbox-netguard; do
     do_ install -m 755 "$SRC/lib/$f" "$LIB/$f"
 done
 do_ install -m 644 "$SRC/share/AGENTS.md" "$SHARE/AGENTS.md"
@@ -140,6 +142,27 @@ if command -v netplan >/dev/null 2>&1 && [[ -d /etc/netplan ]]; then
         do_ sh -c 'netplan generate && { ! command -v networkctl >/dev/null 2>&1 || \
             ! systemctl is-active --quiet systemd-networkd || networkctl reload; }' \
             || warn "netplan didn't take the wired-port config (/etc/netplan/90-treehouse-wired.yaml); see \`box tune\`"
+    fi
+fi
+# network self-recovery, part 1 (sharedbox-netguard; part 2 under "systemd units"): Wi-Fi for any USB dongle. netplan's
+# networkd backend only takes Wi-Fi by interface name, and a dongle's name is wlx + its MAC, so another dongle got no
+# Wi-Fi. treehouse's own networkd file matches wl* (DHCP, route metric 600 so a cable wins), and a udev rule starts
+# sharedbox-wifi@<iface> (the supplicant) whenever a Wi-Fi interface appears: boot, replug, driver reset. Only where
+# systemd-networkd runs the network and NetworkManager doesn't (NetworkManager handles replugging itself).
+# `networkctl reload` only picks up the new file; netplan's files naming an interface still win, so nothing changes
+# for a running link until wifi-setup (part 2) moves the Wi-Fi over.
+NETWORKD=0
+if command -v networkctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-networkd \
+    && ! systemctl is-active --quiet NetworkManager; then NETWORKD=1; fi
+if [[ $NETWORKD == 1 ]]; then
+    do_ install -d -m 755 "$ETC/wifi" /etc/systemd/network
+    if ! cmp -s "$SRC/etc/networkd-wifi.network" /etc/systemd/network/80-sharedbox-wifi.network; then
+        do_ install -m 644 "$SRC/etc/networkd-wifi.network" /etc/systemd/network/80-sharedbox-wifi.network
+        do_ networkctl reload || warn "systemd-networkd didn't reload; the any-dongle Wi-Fi config applies at the next boot"
+    fi
+    if ! cmp -s "$SRC/etc/udev-wifi.rules" /etc/udev/rules.d/99-sharedbox-wifi.rules; then
+        do_ install -m 644 "$SRC/etc/udev-wifi.rules" /etc/udev/rules.d/99-sharedbox-wifi.rules
+        do_ udevadm control --reload || true
     fi
 fi
 if [[ ! -e $ETC/sharedbox.conf ]]; then
@@ -312,6 +335,23 @@ do_ systemctl enable --now sharedbox-provision.path sharedbox-requests.path shar
 # until another box is trusted (sharedbox-admin fed-trust; docs/multibox.md)
 do_ "$LIB/sharedbox-admin" fed-init
 do_ systemctl enable --now sharedbox-fed.timer
+# network self-recovery, part 2: net-guard checks the network every 30 s and fixes it step by step (links,
+# Wi-Fi supplicant, networkd + tailscaled, a USB re-plug of a wedged dongle; a reboot only after 20 min with no
+# working link, at most every 6 h, never during apt/dpkg). NET_GUARD=0 turns it off.
+if [[ $(conf_get NET_GUARD) =~ ^(0|no|off|false)$ ]]; then
+    do_ systemctl disable --now sharedbox-netguard.timer 2>/dev/null || true
+else
+    do_ systemctl enable --now sharedbox-netguard.timer
+fi
+# Then the Wi-Fi moves from netplan's MAC-named config to the any-dongle one. On a Wi-Fi-only box this is the one step
+# that briefly drops the link, so it runs as its own unit (an install over SSH losing its session can't stop it
+# halfway) and puts netplan's config back by itself if the Wi-Fi isn't working again within 90 s.
+if [[ $NETWORKD == 1 ]] && command -v netplan >/dev/null 2>&1; then
+    do_ systemctl reset-failed sharedbox-wifi-setup.service 2>/dev/null || true
+    do_ systemd-run --wait --collect --quiet --unit=sharedbox-wifi-setup -p SyslogIdentifier=sharedbox-netguard \
+        "$LIB/sharedbox-netguard" wifi-setup \
+        || warn "Wi-Fi still uses netplan's config for one dongle (see \`box tune\`; journalctl -t sharedbox-netguard)"
+fi
 do_ systemctl enable sharedbox-tune.service   # every boot; applied right now too (--install: may add earlyoom).
 # Also the no-freeze step: hardware watchdog armed via systemd, earlyoom; kernel panic/lockup -> reboot is in
 # etc/sysctl-nofreeze.conf above. Nothing restarts but earlyoom itself; never reboots.

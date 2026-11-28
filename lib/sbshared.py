@@ -35,7 +35,7 @@ def check_desc(desc):
     d = " ".join("".join(c if c.isprintable() else " " for c in desc).split())
     if len(d) < DESC_MIN:
         return "", (f"the description needs at least {DESC_MIN} characters: one plain sentence saying what it does "
-                    "and who it's for (e.g. \"Discord bot that posts the week's hackathon schedule\")")
+                    "and who it's for (e.g. \"Discord bot that reminds the study group about deadlines\")")
     if len(d) > DESC_MAX:
         return "", f"the description can be at most {DESC_MAX} characters"
     return d, None
@@ -293,7 +293,7 @@ def _sctl(*args):
 def handle(cfg, user, req):
     """Carry out one request for `user` (already identified by the caller). Returns the reply dict."""
     if not may_use(cfg, user):
-        return {"ok": False, "error": "only friends and the box owner's accounts can manage shared servers"}
+        return {"ok": False, "error": "only friends and the machine owner's accounts can manage shared servers"}
     action, name = req.get("action"), req.get("name")
     if action not in ACTIONS:
         return {"ok": False, "error": f"unknown action; one of {', '.join(ACTIONS)}"}
@@ -318,7 +318,7 @@ def _handle(cfg, user, action, name, req):
         if err:
             return {"ok": False, "error": err}
         if len(reg) >= sb.cfg_int(cfg, "SHARED_MAX"):
-            return {"ok": False, "error": f"the box already has {len(reg)} shared servers (SHARED_MAX)"}
+            return {"ok": False, "error": f"the machine already has {len(reg)} shared servers (SHARED_MAX)"}
         port, err = _free_port(cfg, reg)
         if err:
             return {"ok": False, "error": err}

@@ -42,12 +42,12 @@ Never ask for passwords or tokens in chat.
 - `/tmp` files older than {tmp_ttl} days are deleted.
 - Once a week caches that rebuild themselves are cleared too (`box help clean`).
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
-  over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
+  over a file, push it to git or serve it on a port and give them the link; never ask them to copy it in a terminal.
 
 @@ clean
 A safe cleanup runs {clean_when}, in every account, while no agent of that account is mid-turn (a busy
 account is retried a few hours later). It only clears what rebuilds itself:
-- uv cache (`uv cache prune`; cleared when over the box's cap), npm `_cacache`, Go build cache, sccache, pip and
+- uv cache (`uv cache prune`; cleared when over this machine's cap), npm `_cacache`, Go build cache, sccache, pip and
   node-gyp caches, Chrome caches and headless Chrome leftovers older than a day, `pnpm store prune`
 - old Playwright builds (the newest of each browser stays)
 - your Docker daemon (only if it's running): build cache unused for 7 days and untagged (dangling) images
@@ -59,7 +59,7 @@ Never touched: Docker volumes, tagged images and containers, `~/keep`, anything 
 
 @@ memory
 - Every account is guaranteed {mem_low} of RAM and may use up to {mem_max} while nobody else needs it. Nothing to
-  ask for (`box boost` is gone). When others need memory back, the kernel takes it from whoever is above their
+  ask for. When others need memory back, the kernel takes it from whoever is above their
   guaranteed share first (if several people all need their full share at once, it's split fairly).
 - When memory really runs out (the machine spends most of its time freeing memory for {oom_seconds}s), it stops the
   single process group causing it: a container, a server, an agent session or a terminal. Servers marked keep running
@@ -95,12 +95,12 @@ shallow 5 s / 18 MB.
 {updates}
 **reboots at about {reboot_time} (machine local time)**. {reboot_days} `box status` warns ahead of every reboot.
 - Never start a long job (big build, long test run) close to a reboot `box status` announces.
-- Comes back: `box serve` servers, group servers, the user's T3 Code, everything on disk. Docker containers come
+- Comes back: `box serve` servers, group servers, the user's T3, everything on disk. Docker containers come
   back only if started with `--restart unless-stopped`.
 - Lost: processes in `tmux`/`screen`/`nohup`/`&`, terminals, running builds/tests, memory.
 - Make servers safe to restart any time: keep state in files or a database.
-- Owner: `box reboot hold --hours N` (or `--until "YYYY-MM-DD HH:MM"`) skips automatic and update reboots
-  temporarily without turning on hackathon mode; `box reboot off` resumes them early.
+- `box reboot` shows the next one. Owner: `box reboot hold --hours N` (or `--until "YYYY-MM-DD HH:MM"`) skips
+  automatic and update reboots for a while without turning on hackathon mode; `box reboot resume` ends that early.
 
 @@ servers
 - `box serve add NAME --about "<what it does>" --important|--safe-to-stop [--keep-running] [--hackathon-pause]
@@ -121,7 +121,7 @@ shallow 5 s / 18 MB.
 - Manage: `box serve logs NAME`, `box serve restart|stop|start|rm NAME`. A keep-running server only stops with
   `box serve stop NAME --force`, and only when its owner asked.
 - The user also sees and controls these on their page {portal} (Servers tab), with Keep running and hackathon buttons.
-- Their T3 Code isn't one of these (it starts when they open it). Ports {t3_ports} are its: don't use them.
+- Their T3 isn't one of these (it starts when they open it). Ports {t3_ports} are its: don't use them.
 - Never from a temporary folder (a T3 worktree under ~/.t3/worktrees, /tmp): it gets deleted and the server then
   fails for good. `box serve add` runs it from ~ instead, or refuses when the code itself lives there.
 - While a server exists its project folder is never archived; `box serve rm` removes that protection.
@@ -133,7 +133,7 @@ are always kept running: nothing on the machine stops them by itself, and they r
 - `box shared ls` lists them (check first; don't make a duplicate). `box shared create NAME --desc "<what it is>"`
   makes `{shared_dir}/NAME/` and picks a port in {shared_ports} (in `$PORT`).
 - The description is required and shows on everyone's page: one plain sentence saying what it does and who it's
-  for ("Discord bot that posts the week's hackathon schedule"), not how it's built. Change it with
+  for ("Discord bot that reminds the study group about deadlines"), not how it's built. Change it with
   `box shared describe NAME "<text>"` whenever what it does changes.
 - Put the code there, then `box shared set NAME -- COMMAND...` runs it. `./start.sh` = a file in that folder
   (`chmod +x` it); other commands must be installed system-wide, not in a home. Python: make the venv inside the
@@ -164,16 +164,17 @@ Headless browsers work without root (system libraries are installed). Never ask 
 @@ skills
 This machine has a catalog of agent skills: `box skills` lists, `box skills show NAME` prints one. None are active until
 installed. Suggest one only when it clearly helps, ask the user, and only after they agree run `box skills add NAME`
-(live in the next session). Never install one unasked.
+(live in the next session); `box skills rm NAME` takes it out again. Never install one unasked. Owner only:
+`box skills share DIR` publishes one of your own skills to the catalog, `box skills unshare NAME` withdraws it.
 
 @@ updates
 The coding agents (`claude`, `codex`, `opencode`, `t3`, Google's `antigravity` / `agy`) are installed by the owner
 and update automatically every night, for everyone. `box updates` shows the installed versions.
 
 @@ t3
-T3 Code is installed by the box like the other agents, on one release channel for every account, the owner's too
+T3 is installed on the machine like the other agents, on one release channel for every account, the owner's too
 (stable unless the owner set T3_CHANNEL=nightly). T3 itself refuses other channels here: its update buttons and
-`t3 update` say "Managed by treehouse. Only stable releases can be installed."
+`t3 update` say T3 is managed by treehouse and only stable releases can be installed.
 - Each account's T3 runs under `box t3` (`box t3 status`, `logs`, `pair`). A new version reaches a running T3 when
   it restarts by itself, once nothing has run in it for {t3_quiet} minutes (no agent turn, command, subagent,
   background job, terminal program or due scheduled task). Open tabs and apps reconnect on their own.
@@ -188,18 +189,20 @@ T3 Code is installed by the box like the other agents, on one release channel fo
 
 @@ connect
 The user can connect **their own computer's coding agent** (Claude Code, Codex, ... on their laptop) to this
-account, with no VPN: SSH goes through Cloudflare. {connect}
+account. SSH goes through the public site (Cloudflare), so the laptop needs no Tailscale for this. {connect}
 - Their agent does everything itself: installs `cloudflared`, makes a key `~/.ssh/treehouse`, runs
   `cloudflared access login <site>` (the user types one emailed code in the browser), registers the key with
   `POST <site>/_box/api/ssh-key`, and adds a `Host treehouse` block to `~/.ssh/config`.
 - Afterwards, on their computer: `ssh treehouse 'box status'`, `ssh -t treehouse claude`, VS Code / Cursor
   Remote-SSH to host `treehouse`, or just tell their local agent "run X on my treehouse machine".
-- If they ask how: point them to that page and its Copy button. Don't walk them through it in a terminal, and
-  don't add keys for them by hand.
-- The T3 Code desktop app on their laptop needs Tailscale there (the app can't pass Cloudflare). Their dashboard's
-  "Make a setup prompt" (or `box t3 app-link --prompt`) gives their laptop's agent the steps: check Tailscale and
-  the account first, fix only what's broken, then open a one-time pairing link. The machine's address is always its
-  Tailscale IP. No Tailscale: T3 in the browser (dashboard, Open T3) always works. T3 Connect isn't tested here yet.
+- If they ask how: point them to that page and its Copy button. Don't walk them through it in a terminal; their
+  laptop's agent registers its own key. Only when the user hands you a public key themselves, add it with
+  `box ssh-key add < key.pub`.
+- The T3 app on their phone or laptop: once they sign in to a T3 account (`box login t3connect`, or Set up the T3 app
+  under Advanced on Home) the app finds this machine by itself, no Tailscale needed. The older way, the T3 desktop
+  app over Tailscale: Home's "Get setup instructions" (or `box t3 app-link --prompt`) gives their laptop's agent the
+  steps (check Tailscale and the account first, fix only what's broken, then open a one-time pairing link). Always
+  works without either: T3 in the browser (Home, Open T3).
 
 @@ requests
 - A system package (apt/pacman) you can't install into your home: `box request install PKG [PKG...] --why "<why>"`.
@@ -212,26 +215,31 @@ account, with no VPN: SSH goes through Cloudflare. {connect}
   kernel) are never installed on request; a decline says why and what to do instead.
 - Anything else (a config change, more disk, a service): `box request "<plain words>"`. The owner sees it.
 - `box request status` lists yours with their state. When the owner answers, `box status` shows it.
+- Something about the machine itself slowed you down or broke: `box issue "<what> | <workaround> | <cost>"` (not
+  for bugs in the user's code). `box issues` lists what this account logged. The user can turn these notes off:
+  `box issue off` (`box issue on` again).
 
 @@ friends
-Only on the owner's account (ADMIN_USERS). No sudo: root does it. Add `--json` to any of these.
+Only on the owner's own accounts; the machine does the work, no sudo. Add `--json` to any of these.
 - `box friends`: every friend (username, email, status, joined, disk, last active), open requests.
-- The owner's All running tab can stop anyone's servers, databases and T3 Code (it says whose first).
-  Tailnet self-join is immediate when JOIN_MODE=open; there is no signup approval queue.
-- `box friends remove NAME [--archive]` deletes the account and its files (--archive keeps a tarball first);
+- The owner's All running tab can stop anyone's servers, databases and T3 (it says whose first).
+- `box friends remove NAME [--archive]` deletes the account and its files (`--archive` keeps a copy first);
   `box friends suspend NAME` / `resume NAME` locks them out / lets them back (files kept). Confirm with the
-  owner before remove. The owner's own accounts can't be changed here.
-- `box friends email NAME EMAIL`: link an email to an account and let it through Cloudflare Access.
-  `box friends access`: the exact Cloudflare allow list and seats in use.
+  owner before remove. The owner's own accounts can't be changed here. The Friends tab has the same buttons.
+- `box friends email NAME EMAIL`: link an email to an account and let it sign in on the public site.
+  `box friends access`: who may sign in, and how many of the site's seats are used.
+- `box invite --email E --note "who"`: make an account and a message to send them. `box friends invites` lists
+  unused invite links, `box friends invites cancel ID` stops one working.
 - `box friends requests [--all]`: friends' `box request`s that need the owner. `box friends requests approve ID`
-  installs a package request (even a REQUEST_DENY one); `done ID` once it's handled (e.g. a setting the owner
-  changed for them); `decline ID --why "..."`. Free-text requests are emailed to the owner too.
-  The friend's agent is told either way.
-- `box limits disk N`: the owner's own disk budget (whole GB). Not enforced on owner accounts, only what their
-  agents are told to stay within; friends' limits stay root's (`sharedbox-admin limits`).
+  installs a package request (even one the machine would never install by itself); `done ID` once it's handled
+  (e.g. a setting the owner changed for them); `decline ID --why "..."`. Free-text requests are emailed to the
+  owner too. The friend's agent is told either way.
+- `box limits disk N`: the owner's own disk budget (whole GB), only what their agents are told to stay within.
+  Friends get the machine's standard limits; the owner changes those on the machine itself.
 - `box friends issues [--days N]`: what everyone's agents logged with `box issue`, most widespread first.
 - `box friends boxes "NAME=IP NAME=IP"`: the owner's treehouse machines (Tailscale IPs, this one included), shown
   in everyone's Machines tab. Run the same line on every machine; `box friends boxes` shows it.
+- `box friends update`: install the newest treehouse on this machine (the Settings tab's button does the same).
 
 @@ lean
 Memory and CPU are shared and fill up fast once several people are busy, so waste counts even on a quiet day.
@@ -258,7 +266,7 @@ Typical waste:
   for it, and some machines have slow disks (measure: a few ms per sync is slow). For throwaway local test databases
   the wait isn't needed: Postgres `ALTER SYSTEM SET synchronous_commit = off;` then `SELECT pg_reload_conf();` (a
   crash loses the last second of writes, never corrupts). Only on databases the user treats as scratch; ask first
-  otherwise. Scratch files for builds and tests go in /tmp when `df /tmp` says tmpfs (memory).
+  otherwise.
 - Agent helpers (MCP servers) start with every agent session, one copy per session: launched as `npx -y PKG@latest`
   or `uvx PKG@latest` they ask the registry for a new version each time (~0.5-1.5 s, measured). Pin a version, and
   suggest removing ones the user doesn't use (each Python/Node helper is ~50-100 MB per open session).
@@ -290,6 +298,22 @@ running at boot, journald/log volume, per-account limits (`box status`), caching
 A frozen box restarts by itself: `box tune` shows the hardware watchdog (systemd pings it; a hang resets the
 board after a minute), kernel panic/lockup -> reboot settings, earlyoom (stops the biggest heavy job before RAM runs
 out, never agents) and why the box last restarted. If it says the box restarted by itself, tell the user.
+The network heals itself too (`box help network`).
+
+@@ network
+Machines are often out of reach, so the network comes back by itself; nobody needs to be at the keyboard.
+- Any USB Wi-Fi dongle works: treehouse's Wi-Fi config matches every Wi-Fi interface (not one dongle's wlx<MAC> name),
+  and a dongle that is unplugged and plugged back in, or replaced, connects again within seconds.
+- With a cable and a dongle both in, traffic takes the cable (route metric 100 vs 600); pull the cable and the Wi-Fi
+  takes over by itself.
+- net-guard checks every minute (links, address, default route, gateway, Tailscale). While the network stays down it
+  re-applies the config after 2 min, restarts the network service and Tailscale (and re-plugs a wedged dongle in
+  software) after 5 min, and reboots only after 20 min with no working link, at most once every 6 hours and never
+  during a package install. The owner can change the minutes (NET_GUARD_* in sharedbox.conf).
+- `box tune` shows the links, whether Wi-Fi works with any dongle, and net-guard's state and last action;
+  `sharedbox-netguard status` the details; `box telemetry` lists what net-guard did (net_guard events).
+- You can't change the network (no sudo, and a mistake cuts the box off). If `box tune` says net-guard rebooted the
+  box or the network keeps dropping, tell the user what it says.
 
 @@ docker
 Docker runs rootless here: your own Docker daemon, under your account and your limits. No sudo, no docker group.
@@ -317,31 +341,29 @@ on; `box hackathon` shows the state. While on:
 It ends by itself at its end time. Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2`
 (or `--hours N`), `box hackathon off`.
 
-@@ boxes
-The owner may have more than one machine (`box help boxes` is the topic name). The owner's own agents can reach the second machine, minastirith (a Dell,
-Tailscale 100.94.44.25), with `ssh minastirith`. It's SLOWER than sietchtabr (i3, 2 cores/4 threads, about 40-45%
-of the CPU power, 16 GB, Wi-Fi), so it's overflow capacity, not a speed-up. Move a job there only when all hold:
-1. sietchtabr is contended: load is above ~6 of 8, or you're near your own limits.
+@@ machines
+The owner's machines (this one is {host}). {machines}
+Each machine has its own memory, disk and files. Before moving work, look at them: `box boxes` shows each one's
+cores, load, free memory and whether you can sign in there. Move a job to another machine only when all hold:
+1. {host} is contended: load is above about three quarters of its cores, or you're near your own limits.
 2. The job is long (~10+ min here) and self-contained (full test suite, image build, benchmark, crawl, batch job),
    and doesn't need this machine's databases, dev servers or files you're editing.
 3. Little to copy: push to git and pull there, or rsync under ~1 GB; install dependencies there instead of
-   copying node_modules or Docker contexts over Wi-Fi.
-4. The other machine is free: `ssh minastirith uptime` load below ~3 of 4.
-Otherwise run it here. Never keep the only copy of anything there; results go back
-to git or this machine. There you log in as its admin: no sudo or system changes unless the owner asks.
-Tools for this: `box boxes` shows each machine's load and whether you can log in there. `box run -- CMD` runs a
-heavy command wherever there's most room, and runs it here when no other machine clearly wins or one is down. It
-copies only changed source files to a kept copy over there, streams the output back and returns the exit code.
-`box run --shards N -- CMD` splits a run over the machines (each part gets BOX_SHARD and BOX_SHARDS, e.g.
-`playwright test --shard=$((BOX_SHARD+1))/$BOX_SHARDS`). Add `--prep "npm ci"` to install dependencies there
-(this only re-runs when lockfiles change) and `--back DIR` to copy results back.
+   copying node_modules or Docker contexts.
+4. The other machine is free (`box boxes`): its load is well below its core count.
+Otherwise run it here. Never keep the only copy of anything there; results go back to git or this machine.
+`box run -- CMD` runs a heavy command wherever there's most room, and runs it here when no other machine clearly
+wins or one is down. It copies only changed source files to a kept copy over there, streams the output back and
+returns the exit code. `box run --shards N -- CMD` splits a run over the machines (each part gets BOX_SHARD and
+BOX_SHARDS, e.g. `playwright test --shard=$((BOX_SHARD+1))/$BOX_SHARDS`). Add `--prep "npm ci"` to install
+dependencies there (this only re-runs when lockfiles change) and `--back DIR` to copy results back.
 Friends have the same account (same name, file limits and ports) on every machine, made automatically:
-`ssh minastirith` just works (its own key, no prompt), and the T3 Code on each machine is linked into the other,
-so the human can start a thread "on minastirith" from their usual T3. GitHub and git identity are copied over.
-AI logins are per machine (each may have its own account): `box boxes setup` lists what's missing, then
-`box login claude --on minastirith` prints a link (`box help logins`). The user only clicks the link.
-Files are NOT shared between machines: push to git, use `box run`, or keep a project on
-every machine (`box help projects`).
+`ssh NAME` reaches another machine (its own key, no prompt), and the T3 on each machine is linked into the other,
+so the human can start a thread "on NAME" from their usual T3. GitHub and git identity are copied over.
+AI sign-ins are per machine (each may have its own account): `box boxes setup` lists what's missing, then
+`box login claude --on NAME` prints a link (`box help logins`). The user only clicks the link.
+Files are NOT shared between machines: push to git, use `box run`, or keep a project on every machine
+(`box help projects`).
 
 @@ projects
 Projects on all the user's machines: the same git repo in the same folder (`~/<name>`) on every machine they have, so the
@@ -394,81 +416,29 @@ Where someone is: their own status plus a rough "active on the machine" hint.
 
 @@ me
 `~/me` is the user's own folder about themselves: their agent history and efficiency, private to them (0700).
-- `~/me/agents.db` (SQLite): every Claude Code and Codex session on every machine they have, plus T3 threads of other
-  providers (OpenCode, Antigravity), kept forever. Tables: `sessions` (box, agent, model, cwd, title, started/ended
-  unix time, wall_s, active_s, prompts, tool_calls, tool_s, errors, interrupts, out_tokens), `messages` (sid, seq, ts,
-  role user|assistant|thinking, text; full-text index `messages_fts`; thinking = the model's reasoning: Claude's
-  thinking in full, Codex's reasoning summaries), `tool_calls` (sid, seq, ts, name, input (2,000 chars), output
-  (500), dur_s, is_error), `tool_blobs` (sid, seq, in_len, out_len, input_z, output_z: the full input and output up
-  to 256 KB, compressed; `unz(output_z)` in `box me sql` reads them), `t3_threads` (thread_id, provider, native_id =
-  the agent's session id, title, link).
-- `~/me/raw/`: xz copies of the raw transcripts (`xzcat ~/me/raw/claude/projects/DIR/ID.jsonl.xz`), refreshed when
-  they change and kept even after the agent deletes its own.
-- `box me stats`, `box me search WORDS` (FTS5: `machina AND rules`, `"exact phrase"`, `gast*`; `--thinking` to
-  include reasoning), `box me sql "SELECT ..."` (read-only, `--json`). Ready-made queries: `~/me/queries.md`
-  (slowest sessions, where tool time went, sleep/poll loops, failing commands, reasoning, full tool output, usage).
-- Kept fresh automatically every ~15 minutes, at the lowest priority, on every machine; the user's main machine copies in
-  what their other machines indexed. Now: `box me ingest`, `box me pull`.
-- It also keeps agents' own transcripts forever (Claude Code's cleanupPeriodDays, T3's usage history retention) and
-  turns on Codex's readable reasoning summaries (`model_reasoning_summary = "detailed"` in ~/.codex/config.toml,
-  only when the user hasn't set it).
+Every Claude Code and Codex session on every machine they have (plus T3 threads of other providers), kept forever,
+in `~/me/agents.db` (SQLite). `~/me/AGENTS.md` describes the tables; `~/me/queries.md` has ready-made queries
+(slowest sessions, where tool time went, failing commands, usage).
+- `box me stats`, `box me search WORDS` (`--thinking` to include the agents' reasoning), `box me sql "SELECT ..."`
+  (read-only, `--json`).
+- Kept fresh automatically every ~15 minutes on every machine; now: `box me ingest`, `box me pull`.
 - Never copy their prompts off the machine or into other people's places.
 
 @@ telemetry
-Every box records what it was doing every minute, for finding bad patterns later: what froze a box, who ran out of
-memory, agents that spin for hours, services crash-looping, disks filling up. Collected by a plain timer (no agent
+Every machine records what it was doing every minute, for finding bad patterns later: what froze it, who ran out
+of memory, agents that spin for hours, services crash-looping, disks filling up. Collected by a plain timer (no agent
 involved); only process names and numbers are stored, never command lines, prompts or file contents.
-- `box telemetry` (last 24 h: peaks, the worst moments and who/what was using the box then, events, top accounts and
-  agent sessions; `--hours N`), `box telemetry patterns` (detectors over 14 days, `--days N`), `box telemetry sql
-  "SELECT ..."` (read-only), `box telemetry info`. `--json` on all; `--box NAME` to pick one box.
-- What you can read: the owner reads everything; anyone else reads their own rows plus the box-wide ones (box
-  metrics, disks, system slices, events not about another account).
-- All boxes at once: `box telemetry pull` (also runs by itself hourly) copies what you can read on every box into
-  `~/me/telemetry.db`; then add `--fleet` to any command (rows carry a `box` column).
-- Claude plan usage: `box telemetry usage on` checks the user's own Claude login every ~10 minutes into
+- `box telemetry` (last 24 h: peaks, the worst moments and who/what was using the machine then, events, top accounts
+  and agent sessions; `--hours N`), `box telemetry patterns` (detectors over 14 days, `--days N`),
+  `box telemetry sql "SELECT ..."` (read-only). `--json` on all; `--box NAME` to pick one machine.
+- `box telemetry info`: every table and column, with example queries. Read it before writing SQL.
+- What you can read: the owner reads everything; anyone else reads their own rows plus the machine-wide ones
+  (machine metrics, disks, system services, events not about another account).
+- All machines at once: `box telemetry pull` (also runs by itself hourly) copies what you can read on every machine
+  into `~/me/telemetry.db`; then add `--fleet` to any command (rows carry a `box` column).
+- Claude plan usage: `box telemetry usage on` checks the user's own Claude sign-in every ~10 minutes into
   `~/me/telemetry.db` (table plan_usage) and sends them a `box msg` (Telegram relays it) at 80% and 90%.
   `box telemetry usage now` checks once; `off` stops it.
-Tables (unix-time `ts`; minute rows kept 14 days, `*_hourly` roll-ups and `events` ~400 days):
-- `samples` one per minute: load1/5/15, ncpu, cpu_pct, iowait_pct, steal_pct, procs, procs_running, procs_blocked,
-  psi_cpu, psi_mem, psi_mem_full, psi_io, psi_io_full (% of the minute something waited / everything was blocked),
-  mem_total_mb, mem_used_mb (really in use: total minus available), mem_avail_mb, mem_anon_mb, mem_cache_mb
-  (reclaimable cache), mem_shmem_mb, swap_total_mb, swap_used_mb, swap_in_mb/swap_out_mb (per minute), majfaults,
-  oom_kills (kernel kills that minute), disk_total_gb/disk_free_gb (of /), temp_max_c, cpu_mhz, throttles
-  (thermal throttle events), collect_ms.
-- `slices` per account (user-UID.slice, `user`) and system slice (`user` = ''): cpu_pct (100 = one core), mem_mb
-  (real: anon + shmem + kernel), cache_mb, swap_mb, pids, psi_mem, psi_mem_full, oom_kills, mem_high_events,
-  mem_max_events (times it hit its memory limit).
-- `procs` the top processes each minute by CPU and by memory: user, pid, name (comm, plus an allowlisted tool for
-  interpreters such as `python3 pytest`), cpu_pct, rss_mb, age_s.
-- `agents` one row per running agent session per minute: user, agent (claude, codex, opencode, gemini,
-  antigravity...), pid, started, cpu_pct/rss_mb (the agent itself), tree_cpu_pct/tree_rss_mb/tree_procs (with
-  everything it started: builds, tests, servers).
-- `containers` Docker containers per minute: user ('' = the system Docker), id, name, cpu_pct, mem_mb, peak_mb.
-- `disks` (mount, dev, total_gb, free_gb), `diskio` (dev, read_mb, write_mb, util_pct per minute).
-- `events` (ts, kind, user, unit, detail, value): oom_kill (kernel; detail = process, value = MB), earlyoom_kill,
-  oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
-  unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
-  samples for value seconds: the box stalled), container_start, container_stop (value = peak MB), hung_task,
-  disk_error, t3_asleep / t3_restarted / t3_moved (+ `_failed`; user's T3 Code went to sleep, restarted onto the
-  box's version, moved off t3code.service; detail = version, value = idle minutes).
-- Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
-  oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
-  swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
-  `agents_hourly` (sessions = average running, sessions_max, cpu_s, tree_cpu_s, rss_mb_max, tree_rss_mb_max),
-  `procs_hourly` (per user + name: n, cpu_s, cpu_pct_max, rss_mb_max), `containers_hourly`, `disks_hourly`,
-  `diskio_hourly`. Rows from before telemetry started came from the older health samples (memory estimated from a
-  percentage, account memory including cache).
-Example queries:
-- Worst memory minutes this week: `SELECT datetime(ts,'unixepoch','localtime'), mem_used_mb, psi_mem, psi_mem_full
-  FROM samples WHERE ts > strftime('%s','now','-7 days') ORDER BY psi_mem_full DESC, psi_mem DESC LIMIT 20`
-- Who used the most memory, per day: `SELECT date(ts,'unixepoch','localtime') AS day, user, max(mem_mb_max) FROM
-  slices_hourly WHERE user != '' GROUP BY day, user ORDER BY day DESC, 3 DESC`
-- What was running just before a restart: `SELECT * FROM procs WHERE ts BETWEEN (SELECT max(ts) FROM events WHERE
-  kind='boot') - 900 AND (SELECT max(ts) FROM events WHERE kind='boot') ORDER BY ts DESC, rss_mb DESC`
-- Agent CPU-hours per account and agent, last 30 days: `SELECT user, agent, round(sum(tree_cpu_s)/3600, 1) FROM
-  agents_hourly WHERE ts > strftime('%s','now','-30 days') GROUP BY 1, 2 ORDER BY 3 DESC`
-- Crash loops: `SELECT unit, user, count(*) FROM events WHERE kind IN ('unit_failed','unit_restart') GROUP BY 1, 2
-  ORDER BY 3 DESC`
 
 @@ settings
 Everything on the user's dashboard ({portal}) has a command, so when they ask you for it, do it (add `--json` to read
@@ -476,7 +446,8 @@ results). Never send them to the page for something listed here.
 - Logins (Claude, ChatGPT, GitHub, Google/Antigravity, T3 app): `box login` (see `box help logins`).
 - Telegram phone alerts: `box telegram status`; `box telegram link` prints a one-time t.me link, the user opens it
   on their phone and presses Start; then `box telegram test`, `box telegram notify all|important|off`,
-  `box telegram unlink`. "Not set up on this machine": the owner's agent runs `box telegram setup` first.
+  `box telegram unlink`. "Telegram isn't set up on this machine yet": the owner's agent runs `box telegram setup`
+  first.
 - Messages and status: `box msg` (`box help msg`), `box where --set "..."`, `box where --private|--public`.
 - Servers and what's running: `box serve` (with `describe`, `keep NAME on|off`, `hackathon NAME pause|keep`),
   `box shared`, `box running`; `box running stop KEY` only when the user asks.
@@ -484,10 +455,14 @@ results). Never send them to the page for something listed here.
 - Projects on all your machines: `box projects everywhere NAME on|off`. Archived projects: `box restore [NAME]`.
 - Teammates' agents in your T3: `box teammates ls`, `box teammates allow NAME --access read-only|approval-required|
   full-access`, `box teammates stop NAME`.
-- SSH key for this account: `box ssh-key add < key.pub`. T3 in the browser or app: `box t3 pair`, `box t3 app-link`.
+- SSH key for this account: `box ssh-key add < key.pub`. T3 in the browser or app: `box t3 pair`, `box t3 app-link`;
+  T3 won't start: `box t3 logs`.
+- Home's "Still need it?": `box running keep KEY` (don't ask for a week) or `box running stop KEY`. A project about to
+  move to the archive: `box projects keep NAME`. Problem reports for the owner: `box issue off|on`.
 - Usage and limits: `box status`, `box limits`, `box me stats`.
 Owner only (their Settings and admin tabs): Telegram bot `box telegram setup` (paste the @BotFather token on stdin,
 never as an argument; the user creates the bot in Telegram with /newbot and sends you the token through a private
 secret prompt if your app has one) and `box telegram off`; hackathon mode `box hackathon on --hours N [--users a,b]`
-/ `off`; update treehouse `box friends update`; invite `box invite --email E --note "who"`; friends' requests and
-accounts `box friends ...`; reboots `box reboot hold|resume`.
+/ `off`; update treehouse `box friends update`; invite `box invite --email E --note "who"`, unused invite links
+`box friends invites [cancel ID]`; friends' requests and accounts `box friends ...`; reboots `box reboot hold|resume`.
+Every other command, one line each: `box help commands`.

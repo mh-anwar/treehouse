@@ -3,7 +3,7 @@
     uv run --no-project --with playwright python tests/e2e_browser.py [REPO] [--shots DIR] [--quick | --shots-only]
 
 How much to run: a look-only change (layout, CSS, copy) needs just `--shots DIR --shots-only` (every page as
-each persona, 1280 and 390 wide, dark and light, plus the page checks below; about a minute). `--quick` clicks
+each persona, 1920, 1280 and 390 wide, dark and light, plus the page checks below; about two minutes). `--quick` clicks
 one level deep. The full run (several minutes) is for changes to links, buttons, forms or flows, before a
 deploy, in the background.
 
@@ -19,7 +19,7 @@ no token, and new@x.io who signs up through an invite link. For each it opens ev
 submits every form it finds in the DOM (a few levels deep), and fails on: unexpected 4xx/5xx, "bad origin",
 tracebacks, {placeholders}, None/null/undefined, unprotected emails (Cloudflare would rewrite them), buttons in
 links, tailnet-only main actions, pages with no way back to the dashboard, console errors, horizontal overflow
-on a phone. Screenshots (1280 and 390 wide, dark and light) go to --shots.
+on a phone. Screenshots (1920, 1280 and 390 wide, dark and light) go to --shots.
 
 Exit 0 when clean, 1 on failures, 77 when no Chromium is available.
 """
@@ -175,7 +175,7 @@ write("health/metrics.jsonl", "\n".join(lines) + "\n")
 write("update.json", {"state": "done", "finished": NOW - 7200, "commit": "abc1234", "subject": "Fix things"})
 write("usage.json", {"generated": NOW - 600, "users": {
     "alice": {"disk": 3 * 2**30, "budget": 40 * 2**30, "projects": 4, "services": [{"name": "blog", "state": "running"}],
-              "pending_deletions": ["old-site"], "archives": [{"name": "toy", "until": NOW + 5 * 86400}]},
+              "pending_deletions": ["old-site"], "pending": [{"name": "old-site", "on": NOW + 3 * 86400}], "archives": [{"name": "toy", "until": NOW + 5 * 86400}]},
     "bob": {"disk": 2**20, "budget": 40 * 2**30, "projects": 1}}})
 write("events.jsonl", "\n".join(json.dumps(e) for e in [
     {"ts": NOW - 9000, "kind": "user_created", "user": "alice"},
@@ -276,7 +276,7 @@ RUNNING = {  # what `box _portal status` says under "running" (lib/sbrunning.py)
         {"key": "u:sb-blog.service", "kind": "server", "name": "blog", "detail": "node", "mem": 220 * M,
          "age": 86400 * 2, "pids": 3, "stop": "server", "cpu_usec": 1000, "keep": True,
          "about": "Alice's blog about the hackathon, read by the whole class"},
-        {"key": "u:sb-t3.service", "kind": "t3", "name": "T3 Code", "detail": "node", "mem": 180 * M,
+        {"key": "u:sb-t3.service", "kind": "t3", "name": "T3", "detail": "node", "mem": 180 * M,
          "age": 86400, "pids": 4, "stop": "t3", "cpu_usec": 1000},
         {"key": "c:3e184558f4de", "kind": "database", "name": "legacy-siege-mongo-with-a-really-long-container-name",
          "detail": "mongodb-atlas-local:8.0", "mem": 120 * M, "age": 600, "pids": 30, "stop": "containers",
@@ -299,6 +299,8 @@ SHARED = [{"name": "web", "state": "running", "port": SHARED_BASE, "created_by":
            "desc": "Discord bot that posts the week's hackathon schedule <b>every Monday</b>"},
           {"name": "down", "state": "stopped", "port": SHARED_BASE + 1, "created_by": "bob", "created": NOW - 3600}]
 PAIR_TOKENS = set()
+RUNNING_OK = {}  # account -> keys answered "Keep it" on Home
+ISSUES_ON = {}  # account -> problem reports on (default) or off
 ROOT_LOG = []
 lock = threading.Lock()
 
@@ -416,8 +418,42 @@ def _fake_root(req):
         srv["hackathon"] = "pause" if req.get("value") == "pause" else ""
         return {"ok": True, "message": f"{srv['name']} will be stopped while hackathon mode is on." if srv["hackathon"]
                 else f"{srv['name']} keeps running during hackathons."}
+    if action in ("serve-describe", "shared-describe"):  # box _portal serve-describe / box shared describe
+        pool = ACCOUNTS[name]["servers"] if action == "serve-describe" else SHARED
+        srv = next((x for x in pool if x["name"] == req.get("key")), None)
+        about = " ".join(str(req.get("about") or "").split())
+        if not srv:
+            return {"ok": False, "error": "no such server"}
+        if len(about) < 12:
+            return {"ok": False, "error": "The description needs at least 12 characters."}
+        srv["about" if action == "serve-describe" else "desc"] = about
+        return {"ok": True, "message": f"Saved. {srv['name']}: {about}"}
+    if action == "running-ok":
+        RUNNING_OK.setdefault(name, set()).add(req.get("key"))
+        return {"ok": True, "message": "Kept. It keeps running, and Home won't ask about it again for 7 days."}
+    if action == "project-keep":
+        return {"ok": True, "message": f"Kept {req.get('key')}. It stays in your home folder for at least another 20 days."}
+    if action == "issues":
+        ISSUES_ON[name] = req.get("op") == "on"
+        return {"ok": True, "message": "Problem reports are on." if ISSUES_ON[name] else "Problem reports are off."}
+    if action in ("friend-suspend", "friend-resume", "friend-remove", "invite-revoke", "hackathon-preview"):
+        if not owner:
+            return {"ok": False, "error": "not available for this account"}
+        if action == "hackathon-preview":
+            return {"ok": True, "servers": [{"user": ME, "name": "site", "about": "The owner's portfolio site"}]}
+        if action == "invite-revoke":
+            return {"ok": True, "message": "Invite cancelled. Its link no longer works."}
+        reg = sb.registry()
+        if req.get("key") not in reg["users"]:
+            return {"ok": False, "error": f"{req.get('key')} is not a friend account on this machine"}
+        if action == "friend-remove":
+            return {"ok": True, "message": f"{req.get('key')}'s account is removed."}  # kept: other flows use them
+        reg["users"][req["key"]]["status"] = "suspended" if action == "friend-suspend" else "active"
+        save_registry(reg)
+        return {"ok": True, "message": f"{req.get('key')} is paused." if action == "friend-suspend" else
+                f"{req.get('key')} can sign in again."}
     if action in ("logout", "peer-logout"):
-        return {"ok": True, "message": f"Signed out on {req.get('box') or 'mybox'}. You can sign in again with any account."}
+        return {"ok": True, "message": f"Signed out on {req.get('box') or 'treebox'}. You can sign in again with any account."}
     if action == "peer-code":
         return {"ok": True, "done": True, "message": f"Signed in on {req.get('box')}."}
     if action == "running-stop":  # `box _portal running-stop KEY`: only a live, stoppable item of this account
@@ -544,7 +580,8 @@ def _fake_root(req):
         return {"ok": True, "logins": {k: {"label": LABELS[k], "ok": v} for k, v in acct["logins"].items()},
                 "t3": None if acct.get("no_t3") else {"url": f"http://{TS_IP}:{port}/", "running": not acct.get("t3_asleep"), "sleeping": False,
                                                       "app": bool(acct.get("app"))},  # the T3 app connected
-                "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "box": "mybox",
+                "git": {"name": name, "email": ""}, "ssh": acct["ssh"], "box": "treebox",
+                "running_ok": sorted(RUNNING_OK.get(name, ())), "issues_on": ISSUES_ON.get(name, True),
                 "boxes": acct.get("boxes") or {}, "accounts": acct.get("accounts") or {},
                 "boxes_checked": NOW - 240,
                 "servers": [dict(s) for s in acct["servers"]],
@@ -970,6 +1007,7 @@ def submit(page, sig):
                     continue
                 inp.fill({"sshkey": SSH_KEY, "code": "sk-paste-code-123", "username": "carol",
                           "email": "sam@example.com", "note": "Sam", "hours": "2",
+                          "about": "Telegram bot for the study group",
                           "until": time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() + 7200))}.get(n, "x"))
             press(page, f.locator("button").first)
             return True
@@ -1111,15 +1149,15 @@ def flow_login(browser):
     if "welcome=1" not in page.url or "Welcome" not in page.inner_text("body"):
         fail("bob", "first visit", f"expected the welcome page, got {page.url}")
     inspect(s, "welcome")
-    press(page, page.get_by_role("button", name="Log in with Claude"))
+    press(page, page.get_by_role("button", name="Sign in with Claude"))
     inspect(s, "claude login card")
     if not page.locator("#start a.btn[href^='https://claude.ai']").count():
         fail("bob", "claude login", "no 'Open the login page' link in the start card")
     page.fill("input[name=code]", "sk-paste-code-123")
     press(page, page.get_by_role("button", name="Finish"))
     inspect(s, "claude code pasted")
-    if "Logged in" not in page.locator("#start").inner_text():
-        fail("bob", "claude login", "no 'Logged in' confirmation in the start card")
+    if "Signed in" not in page.locator("#start").inner_text():
+        fail("bob", "claude login", "no 'Signed in' confirmation in the start card")
     if not stayed(page):
         fail("bob", "claude login", "the page reloaded instead of showing the result in place")
     page.goto(url("/_box/me?tab=account"))
@@ -1190,7 +1228,7 @@ def logout_hrefs(browser):
         s = Session(browser, persona, tok)
         s.page.goto(url("/_box/me"))
         hrefs = [a.get_attribute("href") for a in s.page.locator("a").all()
-                 if re.search(r"log ?out|sign out", (a.inner_text() or ""), re.I)]
+                 if re.search(r"log ?out|sign out|different email", (a.inner_text() or ""), re.I)]
         if not hrefs or any(h != "/cdn-cgi/access/logout" for h in hrefs):
             fail(persona, "log out", f"log out links: {hrefs}")
         s.drain("logout")
@@ -1203,7 +1241,15 @@ def owner_requests(browser):
     page.goto(url("/_box/me"))
     for label in ("Approve", "Mark handled", "Decline"):
         page.goto(url("/_box/me?tab=requests"))
-        b = page.locator("#requests button", has_text=label)
+        ask = page.locator("#requests details.cf > summary", has_text=label)
+        if ask.count():  # says what it does first: open the panel, check it says something, press its button
+            ask.first.click()
+            panel = page.locator("#requests details.cf[open] .cfb").first
+            if len(panel.inner_text().strip()) < 40:
+                fail("owner", f"request {label}", f"the panel doesn't say what happens: {panel.inner_text()!r}")
+            b = panel.locator("button")
+        else:
+            b = page.locator("#requests button:visible", has_text=label)
         if not b.count():
             continue
         press(page, b.first)
@@ -1232,7 +1278,7 @@ SHOT_TOK = {"alice": "tok-alice", "bob": "tok-bob", "owner": "tok-owner", "stran
 def screenshots(browser):
     os.makedirs(SHOTS, exist_ok=True)
     for persona, paths in SHOT_PAGES.items():
-        for width in (1280, 390):
+        for width in (1920, 1280, 390):
             for scheme in ("dark", "light"):
                 s = Session(browser, persona, SHOT_TOK[persona], width=width, scheme=scheme)
                 s.expect_codes = {404}
@@ -1245,10 +1291,11 @@ def screenshots(browser):
                 # result cards
                 if persona in ("alice", "owner"):
                     s.page.goto(url("/_box/me?tab=servers"))
-                    press(s.page, s.page.locator("button", has_text="Show recent output").first)
+                    press(s.page, s.page.locator("button", has_text="View logs").first)
                     s.page.screenshot(path=os.path.join(SHOTS, f"{persona}-logs-{width}-{scheme}.png"), full_page=True)
                 if persona == "alice":
                     s.page.goto(url("/_box/me"))
+                    s.page.locator("#start summary", has_text="Advanced").click()
                     b = s.page.locator("#start button:visible", has_text="Get setup instructions")
                     if not b.count():
                         fail("alice", f"screenshots {width} {scheme}", "no 'Get setup instructions' button")
@@ -1290,10 +1337,11 @@ def no_hostname_addresses(s, where, page=None):
 def start_cards(browser):
     """The start card: exactly one main button per state (S0..S3), and the T3 app setup prompt."""
     cases = [("erin", "tok-erin", [], "T3 isn't set up on this machine yet"),
-             ("bob", "tok-bob", ["Log in with Claude"], "Log in with ChatGPT"),
-             ("alice", "tok-alice", ["Open T3 in this browser"], "Already on Tailscale?"),
-             ("dave", "tok-dave", ["Open T3 in this browser"], "Get setup instructions"),  # no Tailscale id on record
-             ("alice", "tok-alice", ["Open T3 in this browser"], "Open T3 app", 390)]
+             ("bob", "tok-bob", ["Sign in with Claude"], "Sign in with ChatGPT"),
+             ("bob", "tok-bob", ["Sign in with Claude"], "You only need one"),
+             ("alice", "tok-alice", ["Open T3"], "Set up the T3 app"),  # under Advanced (optional)
+             ("dave", "tok-dave", ["Open T3"], "Get setup instructions"),  # no Tailscale id on record
+             ("alice", "tok-alice", ["Open T3"], "Start a chat", 390)]
     for persona, tok, want, text, *width in cases:
         s = Session(browser, persona, tok, **({"width": width[0]} if width else {}))
         s.page.goto(url("/_box/me"))
@@ -1302,6 +1350,9 @@ def start_cards(browser):
         got = s.page.evaluate(MAIN_JS)
         if got != want:
             fail(persona, where, f"main buttons {got}, expected {want}")
+        if s.page.locator("#start details.adv[open]").count():
+            fail(persona, where, "Advanced is open on arrival: the three steps should be all a new friend sees")
+        s.page.evaluate("document.querySelectorAll('#start details').forEach(d => d.open = true)")
         card = s.page.inner_text("#start") if s.page.locator("#start").count() else ""
         if text not in card:
             fail(persona, where, f"start card lacks {text!r}: {card[:200]!r}")
@@ -1316,6 +1367,7 @@ def start_cards(browser):
     s = Session(browser, "alice (prompt)", "tok-alice")
     page = s.page
     page.goto(url("/_box/me"))
+    page.locator("#start summary", has_text="Advanced").click()
     press(page, page.locator("#start button:visible", has_text="Get setup instructions"))
     inspect(s, "setup prompt")
     prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
@@ -1362,15 +1414,16 @@ def start_cards(browser):
     if any(c["name"] == "tb_app" for c in s.ctx.cookies()):
         fail("alice", "setup prompt", "sets the old tb_app cookie")
     page.goto(url("/_box/me"))  # only made a prompt, the app never connected: still the setup prompt
-    if page.evaluate(MAIN_JS) != ["Open T3 in this browser"]:
+    if page.evaluate(MAIN_JS) != ["Open T3"]:
         fail("alice", "after the prompt, app not connected", f"main buttons {page.evaluate(MAIN_JS)}")
     ACCOUNTS["alice"]["app"] = True
     try:
         page.goto(url("/_box/me"))
-        if page.evaluate(MAIN_JS) != ["Open T3 in this browser"]:
+        if page.evaluate(MAIN_JS) != ["Open T3"]:
             fail("alice", "app connected (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
         if not page.locator("#start button.linkbtn", has_text="Get new setup instructions").count():
             fail("alice", "app connected (S3)", "no 'Get new setup instructions'")
+        page.locator("#start summary", has_text="Advanced").click()
         press(page, page.locator("#start button", has_text="Get new setup instructions"))
         if not page.locator("#app-prompt").count():
             fail("alice", "S3 new prompt", "no prompt")
@@ -1395,13 +1448,13 @@ def boxes_card(browser):
             s.page.screenshot(path=os.path.join(SHOTS, f"owner-machines-{width}-{scheme}.png"), full_page=True)
         inspect(s, where)
         cards = s.page.locator("#machines .mach")
-        texts = [cards.nth(i).inner_text() for i in range(cards.count())]
+        texts = [cards.nth(i).inner_text().replace("\xa0", " ") for i in range(cards.count())]
         if len(texts) != 3:
             fail("owner", where, f"expected 3 machines, got {texts}")
         else:
             this, peer, gone = texts
-            for row, musts in ((this, ["treebox", "Online", "this page comes from it"]),
-                               (peer, ["minastirith", "Online", "23% busy", "13.0G", "of 31.0G", "86.0G", "1.2",
+            for row, musts in ((this, ["treebox", "Online", "(this machine)"]),
+                               (peer, ["minastirith", "Online", "23% busy", "13 GB", "of 31 GB", "86 GB", "1.2",
                                        "8 cores", "Alice", "dave", "abc1234", "Open its dashboard"]),
                                (gone, ["krishbox", "Offline", "doesn't answer"])):
                 for m in musts:
@@ -1419,7 +1472,7 @@ def boxes_card(browser):
             s.page.screenshot(path=os.path.join(SHOTS, f"alice-machines-{width}-light.png"), full_page=True)
         inspect(s, where)
         body = s.page.locator("#machines").inner_text() if s.page.locator("#machines").count() else ""
-        for m in ("treebox", "minastirith", "krishbox", "Memory", "Active now"):
+        for m in ("treebox", "minastirith", "krishbox", "Memory", "Using it now"):
             if m not in body:
                 fail("alice", where, f"lacks {m!r}")
         if s.page.locator("#machines a[href*='3773']").count() or "treehouse version" in body:
@@ -1450,17 +1503,23 @@ def running_card(browser):
     where = "running card"
     inspect(s, where)
     card = s.page.locator("#running section")
-    text = card.inner_text() if card.count() else ""
-    for must in ("shop-db", "Supabase · 5 containers", "1.4G", "running 3d 2h", "Claude session", "blog",
+    text = card.inner_text().replace("\xa0", " ") if card.count() else ""
+    for must in ("shop-db", "Supabase · 5 containers", "1.4 GB", "running 3d 2h", "Claude session", "blog",
                  "Show 1 more", "always get", "Your agent can list"):
         if must not in text:
             fail("alice", where, f"card lacks {must!r}")
     if card.locator("li").first.locator(".pill.warn").count() != 1:
         fail("alice", where, "a database up 3 days with 1.4G isn't flagged")
-    stops = card.locator("button", has_text="Stop")
+    stops = card.locator("details.cf > summary", has_text="Stop")
     if stops.count() != 4:  # shop-db, blog, mongo, tmux (+0 for the agent and the background line)
         fail("alice", where, f"expected 4 Stop buttons, got {stops.count()}")
-    press(s.page, stops.first)
+    stops.first.click()  # Stop first says what happens, in the page, with the button that does it
+    panel = card.locator("details.cf[open] .cfb").first
+    if "all 5 of its containers" not in panel.inner_text() or "data is kept" not in panel.inner_text():
+        fail("alice", where, f"Stop on shop-db didn't say what happens: {panel.inner_text()!r}")
+    if s.dialogs:
+        fail("alice", where, f"a browser pop-up appeared: {s.dialogs}")
+    press(s.page, panel.locator("button"))
     if "Stopped shop-db" not in s.page.locator("#running [data-out]").inner_text():
         fail("alice", where, "no 'Stopped shop-db' notice in the card")
     if "shop-db" in s.page.locator("#running ul.run").first.inner_text():
@@ -1483,37 +1542,45 @@ def running_card(browser):
     where = "owner running tab"
     inspect(s, where)
     t = s.page.locator(".runall").inner_text() if s.page.locator(".runall").count() else ""
-    for must in ("alice", "bob", "uoft-index", "Nothing running", "of memory in use by 3 people", "Keep running",
+    for must in ("alice", "bob", "uoft-index", "Nothing running", "People's programs use", "Protected from automatic stops",
                  "No description yet. Started with"):
         if must not in t:
             fail("owner", where, f"tab lacks {must!r}")
-    if not s.page.locator(".runall button", has_text="Stop").count():
+    if not s.page.locator(".runall summary", has_text="Stop").count():
         fail("owner", where, "no Stop buttons on All running")
-    # someone else's database: the confirmation names whose it is, the result shows in the card, no jump
+
+    def stop_says(row):
+        """Open a row's Stop: (what it says will happen, the button that does it)."""
+        row.locator("details.cf > summary").first.click()
+        panel = row.locator("details.cf[open] .cfb").first
+        return panel.inner_text(), panel.locator("button")
+    # someone else's database: the panel names whose it is, the result shows in the card, no jump
     s.page.evaluate("window.scrollTo(0, 400)")
-    s.dialogs.clear()
     row = s.page.locator(".runall li", has_text="shop-db")  # alice's (the owner's copy is called uoft-index)
-    press(s.page, row.locator("button", has_text="Stop"))
-    if not s.dialogs or "This is alice's" not in s.dialogs[0]:
-        fail("owner", where, f"Stop on alice's database didn't say whose it is: {s.dialogs}")
+    said, go = stop_says(row)
+    if "This is alice's" not in said:
+        fail("owner", where, f"Stop on alice's database didn't say whose it is: {said!r}")
+    press(s.page, go)
     out = s.page.locator("#running-all [data-out]").inner_text()
     if "Alice: Stopped shop-db" not in out or not stayed(s.page):
         fail("owner", where, f"no in-place result for stopping alice's database: {out!r}")
-    # T3 Code: says chats disconnect; keep-running: asked twice, sent with force
-    s.dialogs.clear()
-    press(s.page, s.page.locator(".runall li", has_text="T3 Code").filter(has=s.page.locator("button")).last.locator("button"))
-    if not any("open chats will disconnect" in d for d in s.dialogs):
-        fail("owner", where, f"stopping a T3 Code didn't warn about chats: {s.dialogs}")
-    s.dialogs.clear()
-    keep = s.page.locator(".runall li", has_text="Keep running").first
-    press(s.page, keep.locator("button", has_text="Stop anyway"))
-    if len(s.dialogs) != 2 or "keep running" not in s.dialogs[1]:
-        fail("owner", where, f"a keep-running server wasn't confirmed twice: {s.dialogs}")
+    # T3: says chats disconnect; protected: says so, and "Stop anyway" sends force
+    said, go = stop_says(s.page.locator(".runall li", has_text=re.compile(r"^T3")).filter(
+        has=s.page.locator("details.cf")).last)
+    if "open chats disconnect" not in said:
+        fail("owner", where, f"stopping a T3 didn't warn about chats: {said!r}")
+    press(s.page, go)
+    said, go = stop_says(s.page.locator(".runall li", has_text="Protected from automatic stops").first)
+    if "protected" not in said or go.inner_text().strip() != "Stop anyway":
+        fail("owner", where, f"a protected server's Stop didn't say so: {said!r}")
+    press(s.page, go)
     if not any(isinstance(x, tuple) and x[0] == "running-stop-any" and x[3] for x in ROOT_LOG):
-        fail("owner", where, "the second confirmation didn't send force")
+        fail("owner", where, "Stop anyway didn't send force")
+    if s.dialogs:
+        fail("owner", where, f"a browser pop-up appeared: {s.dialogs}")
     s.drain(where)
     # the Machines tab and the per-machine AI accounts
-    for tab, musts in (("machines", ("Machines", "Online", "CPU", "Memory", "Disk", "Load", "Active now")),
+    for tab, musts in (("machines", ("Machines", "Online", "CPU", "Memory", "Disk", "Load", "Using it now")),
                        ("account", ("AI accounts on each machine", "minastirith", "krishbox",
                                     "owner.chatgpt@x.io", "Sign in"))):
         s.page.goto(url(f"/_box/me?tab={tab}"))
@@ -1543,7 +1610,7 @@ def in_place(browser):
     page = s.page
     page.goto(url("/_box/me?tab=servers"))
     where = "in place: shared server logs"
-    b = page.locator("#shared button", has_text="Show recent output").first
+    b = page.locator("#shared button", has_text="View logs").first
     b.scroll_into_view_if_needed()
     page.evaluate("window.scrollBy(0, 120 - Math.max(0, innerHeight / 2 - document.querySelector('#shared').getBoundingClientRect().top))")
     y0 = page.evaluate("scrollY")
@@ -1576,9 +1643,10 @@ def in_place(browser):
         fail("alice", where, "the result isn't one ok notice")
     s.drain(where)
     where = "in place: Stop in Running"
-    stop = page.locator("#running button", has_text="Stop").last
+    stop = page.locator("#running details.cf > summary", has_text="Stop").last
     stop.scroll_into_view_if_needed()
-    press(page, stop)
+    stop.click()
+    press(page, page.locator("#running details.cf[open] .cfb button").first)
     if not stayed(page) or "Stopped" not in page.locator("#running [data-out]").inner_text():
         fail("alice", where, "Stop's result isn't in the Running card")
     if not in_view(page, "#running [data-out] > *") or page.evaluate("scrollY") < 1:
@@ -1605,7 +1673,7 @@ def in_place(browser):
     where = "in place: the machine unreachable"
     page.goto(url("/_box/me?tab=servers"))
     page.route("**/_box/me", lambda r: r.abort() if r.request.method == "POST" else r.continue_())
-    press(page, page.locator("#servers button", has_text="Show recent output").first)
+    press(page, page.locator("#servers button", has_text="View logs").first)
     if "Couldn't reach this machine" not in page.locator("#servers [data-out]").inner_text():
         fail("alice", where, "no error in the card when the request fails")
     if page.locator("#servers button.busy, #servers button:disabled").count():
@@ -1641,7 +1709,7 @@ def in_place(browser):
     page.goto(url("/_box/me?tab=servers"))
     where = "no JavaScript: logs"
     with page.expect_navigation():
-        page.locator("#servers button", has_text="Show recent output").first.click()
+        page.locator("#servers button", has_text="View logs").first.click()
     if "tab=servers" not in page.url or not page.url.endswith("#servers"):
         fail("alice", where, f"didn't come back to the servers card: {page.url}")
     if page.locator("#servers [data-out] pre.logs").count() != 1:
@@ -1683,7 +1751,7 @@ def tailnet_view():
     w.ALLOWED_HOSTS.add("127.0.0.1")
     import urllib.error
     import urllib.request
-    for app, want in ((False, ["Open T3 in this browser"]), (True, ["Open T3 in this browser"])):
+    for app, want in ((False, ["Open T3"]), (True, ["Open T3"])):
         ACCOUNTS["alice"]["app"] = app
         try:
             body = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}/me", timeout=60).read().decode()

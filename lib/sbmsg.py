@@ -1,4 +1,4 @@
-"""Inbox (`box msg`): short, structured messages between the box's accounts, written for agents.
+"""Inbox (`box msg`): short, structured messages between the machine's accounts, written for agents.
 
 A message has two layers:
   card   title (<= 60 chars, scrubbed), level, due, from: what a human sees in a list or a notification
@@ -411,11 +411,11 @@ def deliver(sender, req, recipients, now=None, root=None, as_root=True):
             "message": f"sent {msg['id']} to {to}{note}"}
 
 
-SYSTEM_SENDER = "treehouse"   # the box itself (weekly health report, alerts); not an account, so replies bounce
+SYSTEM_SENDER = "treehouse"   # the machine itself (weekly health report, alerts); not an account, so replies bounce
 
 
 def deliver_system(to, title, brief, level="normal", now=None, root=None, as_root=True):
-    """Root: file a message from the box itself into `to`'s inbox (the Telegram bot pushes it like any other).
+    """Root: file a message from the machine itself into `to`'s inbox (the Telegram bot pushes it like any other).
     Same scrubbing and size limits as a person's message; no sent copy and no rate limit (callers are timers that
     send a few a week). The same title within the hour bumps the card instead of stacking. Returns the message."""
     now = time.time() if now is None else now
@@ -826,7 +826,7 @@ def unread_count(user, home):
 
 def add_parsers(s, sb, cfg, user, home, request):
     """The argparse hook lib/box calls: `box msg`."""
-    x = s.add_parser("msg", help="inbox: structured messages between the box's accounts (box help msg)")
+    x = s.add_parser("msg", help="inbox: structured messages between the machine's accounts (box help msg)")
     x.add_argument("op", nargs="?", default="inbox",
                    choices=["inbox", "read", "send", "reply", "done", "sent", "archive", "unarchive", "who"])
     x.add_argument("target", nargs="?", metavar="USER|ID", help="send: who to; read/reply/done/archive: message id")

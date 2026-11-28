@@ -378,7 +378,7 @@ def enabled(cfg):
 
 
 def due(cfg, last, now=None):
-    """Due on WEEKLY_CLEAN_DAY once it's been 6+ days, or any day once it's 8+ days overdue (the box was off that
+    """Due on WEEKLY_CLEAN_DAY once it's been 6+ days, or any day once it's 8+ days overdue (the machine was off that
     day, or the account's agent was busy every time). An account never cleaned waits for the day."""
     now = time.time() if now is None else now
     if not enabled(cfg) or now - (last or 0) < 6 * DAY:
