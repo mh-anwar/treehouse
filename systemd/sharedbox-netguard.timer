@@ -1,0 +1,10 @@
+[Unit]
+Description=sharedbox net-guard every 30 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=60s
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

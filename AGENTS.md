@@ -22,6 +22,8 @@ Human-facing rules are in CONTRIBUTING.md; this file is how an agent should work
 - `lib/box`: the CLI friends' agents use. `share/AGENTS.md` + `share/HELP.md`: the rules every agent on the
   box gets (keep AGENTS.md lean, ~1k tokens; details go in HELP.md).
 - `install.sh`: must stay additive and idempotent. Never restart sshd/tailscale/network/firewall, never reboot.
+  The one network change is `sharedbox-netguard wifi-setup` (Wi-Fi to the any-dongle config, rolls itself back).
+  Netplan changes: `netplan generate && networkctl reload`, never `netplan apply` (it can drop the only link).
 - Friends' T3 Code: `sb-t3.socket` holds their T3 port (first of their block) and starts T3 on the first connection;
   T3 listens on the block's last port on the same Tailscale IP (never loopback: T3 then revokes pairings and
   Connect). Nothing stops an idle T3. `sharedbox-janitor tick` (every 10 min) starts it after a reboot when it has

@@ -247,6 +247,100 @@ def check_wired():
     return out
 
 
+# ---------- network self-recovery (sharedbox-netguard) ----------
+
+NETGUARD_RECENT_S = 7 * 86400
+
+
+def netguard():
+    """sharedbox-netguard loaded as a module (installed next to this file, or the checkout's lib/)."""
+    import importlib.machinery
+    import importlib.util
+    path = os.path.join(HERE, "sharedbox-netguard")
+    loader = importlib.machinery.SourceFileLoader("sbnetguard", path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("sbnetguard", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def netguard_status():
+    try:
+        return netguard().status()
+    except Exception:  # noqa: BLE001 - an old install without it: the check says so
+        return None
+
+
+def check_netguard(status=None, now=None):
+    import time
+    s = status if status is not None else netguard_status()
+    now = now or time.time()
+    if s is None:
+        return [finding("net-guard (brings the network back by itself)", False, "not installed", "running",
+                        "the install predates it: update treehouse", "treehouse")]
+    out = [finding("net-guard (brings the network back by itself)", s["timer"] or not s["on"],
+                   "running" if s["timer"] else ("off (NET_GUARD=0)" if not s["on"] else "not running"),
+                   "running (sharedbox-netguard.timer)",
+                   "a pulled cable or dongle, a wedged Wi-Fi driver or a router outage should heal without anyone "
+                   "at the keyboard: it re-applies the network, restarts networkd/Tailscale, re-plugs the dongle, and "
+                   "reboots only after 20 min with no working link", "treehouse")]
+    st = s.get("state") or {}
+    if s["wifi"] == "netplan":
+        ws = st.get("wifi_setup") or {}
+        why = ("a different or replaced USB dongle gets no Wi-Fi, because the config names one dongle's MAC "
+               "address. Updating treehouse moves it to the any-dongle config")
+        if ws.get("ok") is False:
+            why = f"moving it failed ({ws.get('why')}); {why}. `sudo sharedbox-netguard wifi-setup --retry`"
+        out.append(finding("Wi-Fi works with any USB dongle", False, "pinned to " + ", ".join(s["pinned"]),
+                           "any dongle (/etc/systemd/network/80-sharedbox-wifi.network)", why, "treehouse"))
+    elif s["wifi"] == "treehouse":
+        out.append(finding("Wi-Fi works with any USB dongle", True, "any dongle", "any dongle", "", "treehouse"))
+    metrics = {k: [ln["metric"] for ln in s["links"].values() if ln["kind"] == k and ln["metric"] is not None]
+               for k in ("wired", "wifi")}
+    if metrics["wired"] and metrics["wifi"]:
+        ok = min(metrics["wired"]) < min(metrics["wifi"])
+        out.append(finding("cable preferred over Wi-Fi", ok, f"route metric wired {min(metrics['wired'])}, Wi-Fi "
+                           f"{min(metrics['wifi'])}", "wired lower (100 vs 600)",
+                           "with both in, traffic should take the cable, and the Wi-Fi take over when it's pulled",
+                           "treehouse"))
+    if st.get("down_since"):
+        out.append(finding("network", False, f"down for {int((now - st['down_since']) // 60)} min: {st.get('links')}",
+                           "up", "net-guard is working on it (`sharedbox-netguard status`)", "owner"))
+    rb = st.get("last_reboot") or {}
+    if rb.get("ts") and now - rb["ts"] < NETGUARD_RECENT_S:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(rb["ts"]))
+        out.append(finding("net-guard rebooted the box", False, f"{when}: {rb.get('reason', '?')}", "no reboots",
+                           "the network was down with no working link for a long time and nothing else brought it "
+                           "back. Once is fine; if it repeats, check the dongle (or use a cable), the router and "
+                           "`box telemetry`", "owner"))
+    return out
+
+
+def network_lines(s):
+    """`box tune`'s Network block: links, Wi-Fi setup, net-guard's state and last action."""
+    import time
+    if not s:
+        return []
+    lines = []
+    for n, ln in s["links"].items():
+        lines.append(f"  {n} ({'Wi-Fi' if ln['kind'] == 'wifi' else 'wired'}): "
+                     + ("connected" if ln["carrier"] else "no link")
+                     + (f", {', '.join(ln['ipv4'])}" if ln["ipv4"] else "")
+                     + (f", route metric {ln['metric']}" if ln["metric"] is not None else ""))
+    w = {"treehouse": "any USB dongle", "": "not configured"}.get(s["wifi"]) \
+        or "pinned to " + ", ".join(s["pinned"]) + " (MAC-named; another dongle gets no Wi-Fi)"
+    lines.append(f"  Wi-Fi config: {w}")
+    st = s.get("state") or {}
+    g = "on" if s["timer"] else ("off (NET_GUARD=0)" if not s["on"] else "not running")
+    la = st.get("last_action")
+    if la:
+        g += f"; last action {time.strftime('%Y-%m-%d %H:%M', time.localtime(la['ts']))}: {la['action']}" \
+             f" ({la['detail']})"
+    else:
+        g += "; no action needed so far"
+    lines.append(f"  net-guard: {g}")
+    return lines
+
+
 def check_account():
     """This account's own setup (the agent may fix these itself; they're the user's files, kept with a backup)."""
     if os.geteuid() == 0:
@@ -358,7 +452,7 @@ def read_json_file(path):
 
 
 CHECKS = [check_sysctls, check_memory, check_nofreeze, check_disk, check_cpu, check_services, check_network, check_wired,
-          check_account]
+          check_netguard, check_account]
 
 
 def run_checks():
@@ -394,6 +488,10 @@ def cmd_check(a):
             print(f"  - {r['name']}: {r['now']} (want {r['want']}). {r['why']}")
     if not todo_t and not todo_o and not todo_a:
         print("Nothing to do. Look further: `box help tune`.")
+    net = network_lines(netguard_status())
+    if net:
+        print("\nNetwork (`box help network`):")
+        print("\n".join(net))
 
 
 # ---------- apply (root) ----------
