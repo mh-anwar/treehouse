@@ -54,7 +54,7 @@ NICE = ("nice", "-n", "15", "ionice", "-c", "3")
 JOURNAL_FIRST_LOOKBACK = "-24h"
 JOURNAL_PATTERN = ("Out of memory|oom-kill:|Killed process|sending SIG|Failed with result|Scheduled restart job|"
                    "killed by the OOM|due to memory|blocked for more than|I/O error|Start request repeated|"
-                   "EXT4-fs error|critical medium error")
+                   "EXT4-fs error|critical medium error|net-guard: ")
 RAW_TABLES = ("samples", "disks", "diskio", "slices", "procs", "agents", "containers")
 HOURLY_TABLES = tuple(t + "_hourly" for t in RAW_TABLES)
 
@@ -352,6 +352,10 @@ UNIT_RE = re.compile(r"^(\S+\.(?:service|scope|socket|timer|mount)): (Failed wit
                      r"Scheduled restart job, restart counter is at (\d+)|A process of this unit has been killed by "
                      r"the OOM killer|Start request repeated too quickly)")
 HUNG_RE = re.compile(r"INFO: task (.{1,20}):(\d+) blocked for more than (\d+) seconds")
+NETGUARD_RE = re.compile(r"^net-guard: ([a-z_]+)(?: \[down (\d+)s\])? ?(.*)$")
+# net-guard lines worth an event (not "down": the actions taken and how it ended say more)
+NETGUARD_ACTIONS = ("reconfigure", "restart", "usb_reset", "reboot", "reboot_blocked", "recovered", "wifi_fix",
+                    "wifi_setup", "wifi_setup_failed")
 DISK_ERR_RE = re.compile(r"(?:I/O error, dev (\w+)|EXT4-fs error \(device (\w+)\)|critical medium error, dev (\w+))")
 
 
@@ -390,6 +394,11 @@ def journal_event(entry, oom_info=None):
         elif DISK_ERR_RE.search(msg):
             m = DISK_ERR_RE.search(msg)
             ev = {"kind": "disk_error", "detail": next(g for g in m.groups() if g)}
+    elif ident == "sharedbox-netguard":
+        m = NETGUARD_RE.match(msg)
+        if m and m.group(1) in NETGUARD_ACTIONS:
+            ev = {"kind": "net_guard", "unit": m.group(1), "detail": clean(m.group(3), 200),
+                  "value": int(m.group(2)) if m.group(2) else None}
     elif ident == "earlyoom":
         m = EARLYOOM_RE.search(msg)
         if m:
@@ -791,7 +800,7 @@ class Collector:
         if not j.get("no_grep"):
             cmd += ["-g", JOURNAL_PATTERN]
         cmd += ["_TRANSPORT=kernel", "+", "SYSLOG_IDENTIFIER=earlyoom", "+", "SYSLOG_IDENTIFIER=systemd-oomd", "+",
-                "_COMM=systemd"]
+                "SYSLOG_IDENTIFIER=sharedbox-netguard", "+", "_COMM=systemd"]
         started = time.time()
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60)
@@ -1394,6 +1403,9 @@ def event_text(e):
         return f"kernel: {e['detail']} blocked for {int(e['value'] or 0)} s"
     if k == "disk_error":
         return f"disk error on {e['detail']}"
+    if k == "net_guard":
+        down = f" after {_dur(e['value'])} down" if e.get("value") else ""
+        return f"net-guard: {e['unit']}{down} ({e['detail']})"
     return f"{k} {e.get('unit') or ''} {e.get('detail') or ''}".strip()
 
 
@@ -1435,7 +1447,7 @@ def summary(con, hours=24, box=None, now=None):
                                  "ORDER BY n DESC", (b, since))
         d["notable"] = _rows(con, "SELECT ts, kind, user, unit, detail, value FROM events WHERE box=? AND ts>=? AND kind "
                                   "IN ('oom_kill','earlyoom_kill','oomd_kill','unit_oom','boot','sample_gap',"
-                                  "'hung_task','disk_error') ORDER BY ts DESC LIMIT 12", (b, since))
+                                  "'hung_task','disk_error','net_guard') ORDER BY ts DESC LIMIT 12", (b, since))
         d["users"] = _rows(con, "SELECT user, round(sum(coalesce(cpu_pct, 0) * 60) / 360000.0, 2) AS cpu_h, "
                                 "max(mem_mb) AS mem_peak_mb, sum(coalesce(oom_kills, 0)) AS oom_kills, "
                                 "sum(coalesce(mem_max_events, 0)) AS limit_hits FROM slices WHERE box=? AND ts>=? "

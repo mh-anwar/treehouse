@@ -1,0 +1,837 @@
+#!/usr/bin/python3 -I
+"""sharedbox-netguard: a headless box gets its network back by itself, with nobody at the keyboard.
+
+  sharedbox-netguard tick              root, every 30 s (sharedbox-netguard.timer): check the network, fix it step
+                                       by step while it stays down
+  sharedbox-netguard status [--json]   anyone: links, how Wi-Fi is set up, net-guard's state and last action
+  sharedbox-netguard wifi-setup [--retry]
+                                       root (install.sh): Wi-Fi for any USB dongle. Moves netplan's Wi-Fi (keyed by one
+                                       dongle's wlx<MAC> name) to treehouse's own wl* config; if the link doesn't come
+                                       back within 90 s it puts netplan's config back by itself
+  sharedbox-netguard wifi-restore      root (uninstall.sh): give the Wi-Fi back to netplan
+  sharedbox-netguard replug IFACE      root (udev): a dongle came back while netplan still runs its Wi-Fi: restart it
+
+What a tick checks: every physical link (cable/association, IPv4 address), the default routes, whether each
+route's gateway answers a ping, and Tailscale. The box is "down" when no gateway answers or Tailscale (logged in)
+is offline. While down, after NET_GUARD_RECONFIGURE_MIN (2): links up + `networkctl reconfigure`, Wi-Fi supplicant
+restarted, `networkctl reload`. After NET_GUARD_RESTART_MIN (5), then every 15 min: systemd-networkd and tailscaled
+restarted, and a dongle whose USB device is there but whose network interface vanished is re-plugged in software
+(USB `authorized` 0 -> 1). After NET_GUARD_REBOOT_MIN (20), only if no gateway answers on any link: reboot, at most
+once per NET_GUARD_REBOOT_EVERY_HOURS (6), never while apt/dpkg runs; the reason is kept for `box tune` and
+`box telemetry`. With the box up on a cable, a Wi-Fi link that stays dead is restarted in the background (at most
+every 30 min) so it is ready to take over. Plain code, no agent.
+
+Every action goes to the journal (identifier sharedbox-netguard, lines "net-guard: ACTION ..." that telemetry turns
+into net_guard events) and to /var/lib/sharedbox/events.jsonl. State: /var/lib/sharedbox/net-guard.json.
+"""
+
+import argparse
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", os.path.dirname(os.path.abspath(__file__))))
+try:
+    import sbcommon as sb
+except ImportError:  # a checkout without lib on the path: defaults only
+    sb = None
+
+STATE_DIR = os.environ.get("SHAREDBOX_STATE", "/var/lib/sharedbox")
+STATE = os.path.join(STATE_DIR, "net-guard.json")
+BACKUP_DIR = os.path.join(STATE_DIR, "net-guard", "netplan")   # netplan files moved aside by wifi-setup
+WIFI_DIR = "/etc/sharedbox/wifi"                                 # 0755: `box tune` can see the file exists
+WPA_CONF = os.path.join(WIFI_DIR, "wpa_supplicant.conf")         # 0600: holds the Wi-Fi password
+NETWORK_FILE = "/etc/systemd/network/80-sharedbox-wifi.network"
+NETPLAN_DIR = "/etc/netplan"
+NETPLAN_RUN = "/run/netplan"                                     # netplan's rendered wpa-<iface>.conf files
+NETPLAN_UNITS = "/run/systemd/generator.late"                    # netplan-wpa-<iface>.service
+SYS_NET = "/sys/class/net"
+SYS_USB = "/sys/bus/usb/devices"
+
+DEFAULTS = {"NET_GUARD": "1", "NET_GUARD_RECONFIGURE_MIN": "2", "NET_GUARD_RESTART_MIN": "5",
+            "NET_GUARD_REBOOT_MIN": "20", "NET_GUARD_REBOOT_EVERY_HOURS": "6"}
+REPEAT_RESTART_S = 15 * 60      # while still down, networkd/tailscaled are restarted again this often
+WIFI_FIX_EVERY_S = 30 * 60      # background repair of a dead Wi-Fi link while the cable carries the box
+WIFI_SETUP_WAIT_S = 90          # wifi-setup: how long the moved Wi-Fi gets to come back before it's rolled back
+HISTORY = 30                    # actions kept in the state file
+PKG_COMMS = {"dpkg", "apt", "apt-get", "aptitude", "unattended-upgr", "pacman", "apt.systemd.dai"}
+PKG_LOCKS = ("/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock", "/var/lib/pacman/db.lck")
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def run(cmd, timeout=30):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, str(e)
+
+
+def config():
+    cfg = dict(DEFAULTS)
+    if sb is not None:
+        try:
+            loaded = sb.load_config()
+            cfg.update({k: v for k, v in loaded.items() if k.startswith("NET_GUARD")})
+        except Exception:  # noqa: BLE001 - a broken conf must not stop the guard: defaults
+            pass
+
+    def num(k):
+        try:
+            return max(0.0, float(cfg[k]))
+        except (TypeError, ValueError):
+            return float(DEFAULTS[k])
+    on = str(cfg.get("NET_GUARD", "1")).strip().lower() not in ("0", "no", "off", "false")
+    return {"on": on, "t1": num("NET_GUARD_RECONFIGURE_MIN") * 60, "t2": num("NET_GUARD_RESTART_MIN") * 60,
+            "t3": num("NET_GUARD_REBOOT_MIN") * 60, "reboot_every": num("NET_GUARD_REBOOT_EVERY_HOURS") * 3600}
+
+
+def load_state(path=STATE):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(st, path=STATE):
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(st, f, indent=1, sort_keys=True)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"net-guard: can't save {path}: {e}", file=sys.stderr)
+
+
+def dur(sec):
+    sec = int(sec)
+    return f"{sec} s" if sec < 120 else f"{sec // 60} min" if sec < 7200 else f"{sec / 3600:.1f} h"
+
+
+# ---------------------------------------------------------------- looking (read-only)
+
+def usb_of(iface, sys_net=SYS_NET):
+    """The USB device a network interface hangs off ({usb: '3-6', id: '0bda:b812', driver}), or None."""
+    dev = os.path.realpath(os.path.join(sys_net, iface, "device"))
+    m = re.search(r"/(\d+-[\d.]+):\d+\.\d+$", dev)
+    if not m:
+        return None
+    usbdir = os.path.dirname(dev)
+    return {"usb": m.group(1), "id": f"{read(usbdir + '/idVendor')}:{read(usbdir + '/idProduct')}",
+            "driver": os.path.basename(os.path.realpath(os.path.join(dev, "driver"))) if
+            os.path.exists(os.path.join(dev, "driver")) else ""}
+
+
+def physical_links(sys_net=SYS_NET):
+    """{name: {kind: wired|wifi, admin_up, carrier, usb}} for interfaces backed by hardware (not tailscale0,
+    docker0, bridges)."""
+    out = {}
+    try:
+        names = sorted(os.listdir(sys_net))
+    except OSError:
+        return out
+    for n in names:
+        p = os.path.join(sys_net, n)
+        if not os.path.exists(os.path.join(p, "device")) or not n.startswith(("en", "eth", "wl")):
+            continue
+        try:
+            flags = int(read(p + "/flags", "0"), 16)
+        except ValueError:
+            flags = 0
+        wifi = os.path.isdir(os.path.join(p, "wireless")) or os.path.isdir(os.path.join(p, "phy80211")) \
+            or n.startswith("wl")
+        out[n] = {"kind": "wifi" if wifi else "wired", "admin_up": bool(flags & 1),
+                  "carrier": read(p + "/carrier") == "1", "usb": usb_of(n, sys_net)}
+    return out
+
+
+def ipv4_addrs():
+    """{iface: [global IPv4 addresses]}"""
+    rc, out = run(["ip", "-j", "-4", "addr", "show"], 10)
+    res = {}
+    try:
+        for i in json.loads(out) if rc == 0 else []:
+            res[i.get("ifname", "")] = [a["local"] for a in i.get("addr_info", [])
+                                        if a.get("scope") == "global" and a.get("local")]
+    except (ValueError, TypeError, KeyError):
+        pass
+    return res
+
+
+def default_routes():
+    """[{dev, gateway, metric}] for IPv4 default routes."""
+    rc, out = run(["ip", "-j", "-4", "route", "show", "default"], 10)
+    try:
+        return [{"dev": r.get("dev", ""), "gateway": r.get("gateway", ""), "metric": int(r.get("metric", 0))}
+                for r in (json.loads(out) if rc == 0 else [])]
+    except (ValueError, TypeError):
+        return []
+
+
+def gateway_answers(gw, dev):
+    """The gateway answers a ping, or at least its ARP (some routers drop pings from the LAN)."""
+    rc, _ = run(["ping", "-n", "-q", "-c", "2", "-i", "0.5", "-W", "2", "-I", dev, gw], 10)
+    if rc == 0:
+        return True
+    rc, out = run(["ip", "-j", "neigh", "show", gw, "dev", dev], 10)
+    try:
+        return rc == 0 and any("REACHABLE" in (n.get("state") or []) for n in json.loads(out or "[]"))
+    except (ValueError, AttributeError):
+        return False
+
+
+def tailscale_state():
+    """ok | down | n/a. n/a: not installed, or deliberately not running (logged out, stopped) - nothing to fix."""
+    if not shutil.which("tailscale"):
+        return "n/a"
+    rc, out = run(["tailscale", "status", "--json", "--peers=false"], 10)
+    try:
+        st = json.loads(out) if out.strip().startswith("{") else {}
+    except ValueError:
+        st = {}
+    be = st.get("BackendState", "")
+    if be in ("NeedsLogin", "NeedsMachineAuth", "Stopped"):
+        return "n/a"
+    if be == "Running":
+        return "ok" if (st.get("Self") or {}).get("Online", True) else "down"
+    if not be:  # tailscaled not answering: only a problem if it's meant to run
+        rc2, _ = run(["systemctl", "is-enabled", "--quiet", "tailscaled.service"], 10)
+        return "down" if rc2 == 0 else "n/a"
+    return "down"   # Starting, NoState
+
+
+def pkg_busy(proc="/proc"):
+    """An apt/dpkg/pacman run in progress (a reboot now could leave half-installed packages)."""
+    try:
+        pids = [p for p in os.listdir(proc) if p.isdigit()]
+    except OSError:
+        pids = []
+    for p in pids:
+        if read(os.path.join(proc, p, "comm")) in PKG_COMMS:
+            return True
+    inodes = set()
+    for lk in PKG_LOCKS:
+        try:
+            inodes.add(os.stat(lk).st_ino)
+        except OSError:
+            pass
+    for line in read(os.path.join(proc, "locks")).splitlines():
+        parts = line.split()
+        # "1: POSIX  ADVISORY  WRITE 1234 08:02:131090 0 EOF" (ino is the third field of maj:min:ino)
+        for f in parts:
+            if f.count(":") == 2:
+                try:
+                    if int(f.rsplit(":", 1)[1]) in inodes:
+                        return True
+                except ValueError:
+                    pass
+    return False
+
+
+def wifi_configured():
+    """'treehouse' (any dongle), 'netplan' (keyed by one interface name), or ''."""
+    if os.path.exists(WPA_CONF) and os.path.exists(NETWORK_FILE):
+        return "treehouse"
+    if netplan_wifi_units():
+        return "netplan"
+    return ""
+
+
+def netplan_wifi_units():
+    """Interfaces netplan runs a Wi-Fi supplicant for (netplan-wpa-<iface>.service)."""
+    return sorted(os.path.basename(u)[len("netplan-wpa-"):-len(".service")]
+                  for u in glob.glob(os.path.join(NETPLAN_UNITS, "netplan-wpa-*.service")))
+
+
+def observe(st):
+    """Everything a decision needs, from the live system."""
+    links = physical_links()
+    addrs = ipv4_addrs()
+    # every default route counts, not only physical ports: a bridge (br0 over eno1), PPPoE or a VPN carries the box
+    # just as well, and a box on one must never look "down"
+    routes = [r for r in default_routes() if r["dev"] and not r["dev"].startswith("tailscale")]
+    for r in routes:
+        r["ok"] = gateway_answers(r["gateway"], r["dev"]) if r["gateway"] else True
+        if r["dev"] in links:
+            links[r["dev"]].setdefault("routes", []).append(r)
+    for n, ln in links.items():
+        ln["ipv4"] = addrs.get(n, [])
+        ln["gw_ok"] = any(r["ok"] for r in ln.get("routes", []))
+    wifi_links = {n: ln for n, ln in links.items() if ln["kind"] == "wifi"}
+    dongle = st.get("dongle") or {}
+    for n, ln in wifi_links.items():
+        if ln["usb"]:
+            dongle = dict(ln["usb"], iface=n)
+    if wifi_links:
+        dongle_state = "ok"
+    elif dongle.get("usb"):
+        d = os.path.join(SYS_USB, dongle["usb"])
+        here = f"{read(d + '/idVendor')}:{read(d + '/idProduct')}"
+        dongle_state = "no_netdev" if here == dongle.get("id") else "gone"
+    else:
+        dongle_state = ""
+    conf = wifi_configured()
+    ts = tailscale_state()
+    return {"links": links, "path_ok": any(r["ok"] for r in routes) or ts == "ok", "ts": ts,
+            "routes": [f"{r['dev']} via {r['gateway'] or '-'}: {'ok' if r['ok'] else 'no answer'}" for r in routes
+                       if r["dev"] not in links],
+            "wifi_conf": conf, "wifi_expected": bool(conf) and (bool(wifi_links) or dongle_state == "no_netdev"),
+            "wifi_ok": any(ln["gw_ok"] or (ln["carrier"] and ln["ipv4"]) for ln in wifi_links.values()),
+            "dongle": dongle, "dongle_state": dongle_state, "pkg_busy": pkg_busy(),
+            "boot_id": read("/proc/sys/kernel/random/boot_id")}
+
+
+def describe(obs):
+    """One line: what each link is doing (for logs and the reboot reason)."""
+    bits = []
+    for n, ln in sorted(obs["links"].items()):
+        if not ln["admin_up"]:
+            s = "switched off"
+        elif not ln["carrier"]:
+            s = "no cable" if ln["kind"] == "wired" else "not connected to Wi-Fi"
+        elif not ln.get("ipv4"):
+            s = "no address"
+        elif not ln.get("routes"):
+            s = "no route"
+        elif not ln.get("gw_ok"):
+            s = f"gateway {ln['routes'][0]['gateway']} not answering"
+        else:
+            s = "ok"
+        bits.append(f"{n}: {s}")
+    if obs.get("dongle_state") == "no_netdev":
+        bits.append(f"Wi-Fi dongle on USB {obs['dongle'].get('usb')} has no network interface")
+    elif obs.get("dongle_state") == "gone" and obs.get("wifi_conf"):
+        bits.append("Wi-Fi dongle not on USB")
+    if not obs["links"]:
+        bits.append("no network hardware found")
+    bits += obs.get("routes") or []
+    bits.append(f"tailscale: {obs['ts']}")
+    return "; ".join(bits)
+
+
+# ---------------------------------------------------------------- deciding (pure: unit-tested)
+
+def decide(obs, st, now, cfg):
+    """(actions, new state). obs: observe()'s dict (only path_ok, ts, wifi_expected, wifi_ok, dongle_state,
+    pkg_busy, boot_id are used). Actions: list of (name, detail); names: recovered, reconfigure, restart,
+    usb_reset, reboot, reboot_blocked, wifi_fix."""
+    st = dict(st)
+    acts = []
+    if st.get("boot_id") != obs.get("boot_id"):   # a new boot: an outage from before it doesn't count
+        st.update(boot_id=obs.get("boot_id"), down_since=None, steps=[], blocked=None, wifi_down_since=None)
+    healthy = obs["path_ok"] and obs["ts"] != "down"
+    st["checked"] = now
+    if healthy:
+        if st.get("down_since"):
+            acts.append(("recovered", f"network back after {dur(now - st['down_since'])}"))
+            st["last_outage"] = {"start": st["down_since"], "end": now, "steps": st.get("steps") or []}
+        st.update(down_since=None, steps=[], blocked=None)
+        # the cable carries the box but the Wi-Fi is dead: fix it now, so it can take over when the cable goes
+        if obs.get("wifi_expected") and not obs.get("wifi_ok"):
+            st["wifi_down_since"] = st.get("wifi_down_since") or now
+            if now - st["wifi_down_since"] >= cfg["t2"] and now - (st.get("last_wifi_fix") or 0) >= WIFI_FIX_EVERY_S:
+                acts.append(("wifi_fix", f"Wi-Fi down for {dur(now - st['wifi_down_since'])} while the box is "
+                                         "up on another link"))
+                if obs.get("dongle_state") == "no_netdev":
+                    acts.append(("usb_reset", "the dongle is on USB but has no network interface"))
+                st["last_wifi_fix"] = now
+        else:
+            st["wifi_down_since"] = None
+        return acts, st
+    st["down_since"] = st.get("down_since") or now
+    down = now - st["down_since"]
+    steps = list(st.get("steps") or [])
+    if cfg["t1"] and down >= cfg["t1"] and "reconfigure" not in steps:
+        acts.append(("reconfigure", f"down {dur(down)}"))
+        steps.append("reconfigure")
+    reboot = False
+    if cfg["t3"] and down >= cfg["t3"]:
+        last_rb = (st.get("last_reboot") or {}).get("ts") or 0
+        if obs["path_ok"]:
+            why = "the router answers, so the problem is past it (rebooting this box won't fix that)"
+        elif obs.get("pkg_busy"):
+            why = "a package install (apt/dpkg) is running"
+        elif last_rb and now - last_rb < cfg["reboot_every"]:
+            why = f"net-guard already rebooted {dur(now - last_rb)} ago (at most once per " \
+                  f"{dur(cfg['reboot_every'])})"
+        else:
+            why = None
+        if why is None:
+            reboot = True
+        elif st.get("blocked") != why:
+            acts.append(("reboot_blocked", why))
+            st["blocked"] = why
+    last = st.get("last_restart") or 0
+    if not reboot and cfg["t2"] and down >= cfg["t2"] and (last < st["down_since"]
+                                                           or now - last >= REPEAT_RESTART_S):
+        acts.append(("restart", f"down {dur(down)}"))
+        if obs.get("dongle_state") == "no_netdev":
+            acts.append(("usb_reset", "the dongle is on USB but has no network interface"))
+        st["last_restart"] = now
+        if "restart" not in steps:
+            steps.append("restart")
+    if reboot:
+        acts.append(("reboot", f"no working network for {dur(down)}"))
+        st["last_reboot"] = {"ts": now, "down_s": int(down)}
+    st["steps"] = steps
+    return acts, st
+
+
+# ---------------------------------------------------------------- acting (root)
+
+def systemctl(*args):
+    return run(["systemctl", *args], 90)[0] == 0
+
+
+def networkd_active():
+    return run(["systemctl", "is-active", "--quiet", "systemd-networkd.service"], 10)[0] == 0
+
+
+def unit_exists(unit):
+    rc, out = run(["systemctl", "show", "-p", "LoadState", "--value", unit], 10)
+    return rc == 0 and out.strip() == "loaded"
+
+
+def restart_wifi(iface):
+    """Restart whichever supplicant runs this interface's Wi-Fi."""
+    if os.path.exists(WPA_CONF):
+        return systemctl("restart", f"sharedbox-wifi@{iface}.service")
+    if unit_exists(f"netplan-wpa-{iface}.service"):
+        return systemctl("restart", f"netplan-wpa-{iface}.service")
+    return False
+
+
+def usb_reset(usb):
+    """Software unplug + plug of one USB device (it re-enumerates and its driver binds again)."""
+    p = os.path.join(SYS_USB, usb, "authorized")
+    try:
+        with open(p, "w") as f:
+            f.write("0")
+        time.sleep(2)
+        with open(p, "w") as f:
+            f.write("1")
+        return True
+    except OSError as e:
+        print(f"net-guard: USB reset of {usb} failed: {e}", file=sys.stderr)
+        return False
+
+
+def act(name, obs):
+    links = obs["links"]
+    nd = networkd_active()
+    if name == "reconfigure":
+        for n, ln in links.items():
+            if nd:
+                if not ln["admin_up"]:
+                    run(["networkctl", "up", n])
+                run(["networkctl", "reconfigure", n])
+            elif not ln["admin_up"]:
+                run(["ip", "link", "set", n, "up"])
+        for n, ln in links.items():
+            if ln["kind"] == "wifi":
+                restart_wifi(n)
+        if nd:
+            run(["networkctl", "reload"])
+    elif name == "restart":
+        if run(["systemctl", "is-active", "--quiet", "NetworkManager.service"], 10)[0] == 0:
+            systemctl("restart", "NetworkManager.service")
+        if nd or unit_exists("systemd-networkd.service") and systemctl("is-enabled", "--quiet",
+                                                                     "systemd-networkd.service"):
+            systemctl("restart", "systemd-networkd.service")
+        for n, ln in links.items():
+            if ln["kind"] == "wifi":
+                restart_wifi(n)
+        if unit_exists("tailscaled.service"):
+            systemctl("restart", "tailscaled.service")
+    elif name == "wifi_fix":
+        for n, ln in links.items():
+            if ln["kind"] == "wifi":
+                restart_wifi(n)
+                if nd:
+                    run(["networkctl", "reconfigure", n])
+    elif name == "usb_reset":
+        if obs.get("dongle", {}).get("usb"):
+            usb_reset(obs["dongle"]["usb"])
+    elif name == "reboot":
+        run(["journalctl", "--sync"], 20)
+        systemctl("reboot")
+
+
+def log(st, name, detail, down=None):
+    tag = f" [down {int(down)}s]" if down is not None else ""
+    print(f"net-guard: {name}{tag} {detail}", flush=True)
+    rec = {"ts": int(time.time()), "action": name, "detail": detail}
+    st["last_action"] = rec
+    st["history"] = (st.get("history") or [])[-(HISTORY - 1):] + [rec]
+    if sb is not None:
+        sb.log_event("net_guard", action=name, detail=detail)
+
+
+def cmd_tick(a):
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-netguard tick: needs root (sharedbox-netguard.timer runs it)")
+    cfg = config()
+    st = load_state()
+    if not cfg["on"]:
+        if st.get("down_since"):
+            st["down_since"] = None
+            save_state(st)
+        return
+    obs = observe(st)
+    if obs["dongle"]:
+        st["dongle"] = obs["dongle"]
+    now = time.time()
+    was_down = bool(st.get("down_since")) and st.get("boot_id") == obs.get("boot_id")
+    acts, st = decide(obs, st, now, cfg)
+    if st.get("down_since") and not was_down:
+        log(st, "down", describe(obs), 0)
+    st["links"] = describe(obs)
+    for name, detail in acts:
+        down = now - st["down_since"] if st.get("down_since") else None
+        full = detail if name in ("recovered", "reboot_blocked") else f"{detail}: {describe(obs)}"
+        log(st, name, full, down)
+        if name == "reboot":
+            st["last_reboot"]["reason"] = full
+            save_state(st)
+        if name not in ("recovered", "reboot_blocked"):
+            act(name, obs)
+    save_state(st)
+
+
+# ---------------------------------------------------------------- status (anyone; `box tune`)
+
+def status():
+    st = load_state()
+    links = physical_links()
+    routes = default_routes()
+    addrs = ipv4_addrs()
+    rc, _ = run(["systemctl", "is-active", "--quiet", "sharedbox-netguard.timer"], 10)
+    out = {"timer": rc == 0, "on": config()["on"], "wifi": wifi_configured(),
+           "pinned": netplan_wifi_units(), "links": {}, "state": st}
+    for n, ln in links.items():
+        out["links"][n] = {"kind": ln["kind"], "carrier": ln["carrier"], "ipv4": addrs.get(n, []),
+                           "metric": min((r["metric"] for r in routes if r["dev"] == n), default=None)}
+    return out
+
+
+def cmd_status(a):
+    s = status()
+    if a.json:
+        print(json.dumps(s, indent=1))
+        return
+    print(f"net-guard: {'on' if s['timer'] else 'not running'}" + ("" if s["on"] else " (NET_GUARD=0)"))
+    w = {"treehouse": "any USB dongle (treehouse's wl* config)", "netplan": "pinned to "
+         + ", ".join(s["pinned"]) + " (netplan; another dongle would get no Wi-Fi)", "": "none configured"}
+    print(f"Wi-Fi: {w[s['wifi']]}")
+    for n, ln in s["links"].items():
+        print(f"  {n} ({ln['kind']}): {'connected' if ln['carrier'] else 'no link'}"
+              + (f", {', '.join(ln['ipv4'])}" if ln["ipv4"] else "")
+              + (f", route metric {ln['metric']}" if ln["metric"] is not None else ""))
+    st = s["state"]
+    if st.get("down_since"):
+        print(f"Down since {time.strftime('%Y-%m-%d %H:%M', time.localtime(st['down_since']))}: {st.get('links')}")
+    la = st.get("last_action")
+    if la:
+        print(f"Last action {time.strftime('%Y-%m-%d %H:%M', time.localtime(la['ts']))}: {la['action']} "
+              f"({la['detail']})")
+    ws = st.get("wifi_setup") or {}
+    if ws and not ws.get("ok"):
+        print(f"Wi-Fi setup failed {time.strftime('%Y-%m-%d %H:%M', time.localtime(ws.get('ts', 0)))}: "
+              f"{ws.get('why')}")
+
+
+# ---------------------------------------------------------------- Wi-Fi for any dongle
+
+def wpa_blocks(text):
+    """The network={...} blocks of a wpa_supplicant config, as text (never printed: they hold the password)."""
+    out, cur, depth = [], [], 0
+    for line in text.splitlines():
+        s = line.strip()
+        if depth == 0 and re.match(r"network\s*=\s*\{", s):
+            cur, depth = [line], 1
+            continue
+        if depth:
+            cur.append(line)
+            depth += s.count("{") - s.count("}")
+            if depth <= 0:
+                out.append("\n".join(cur))
+                depth = 0
+    return out
+
+
+def wpa_conf_text(blocks):
+    seen, uniq = set(), []
+    for b in blocks:
+        key = "\n".join(x.strip() for x in b.splitlines())
+        if key not in seen:
+            seen.add(key)
+            uniq.append(b)
+    return ("# managed by treehouse (sharedbox-netguard wifi-setup): Wi-Fi for any USB dongle (wl*).\n"
+            "# Copied from netplan's Wi-Fi config; netplan's own file is kept in "
+            f"{BACKUP_DIR}.\nctrl_interface=/run/wpa_supplicant\nupdate_config=0\n\n" + "\n\n".join(uniq) + "\n")
+
+
+# netplan Wi-Fi settings treehouse's config reproduces (DHCP on any wl* link); anything else (a static address, a
+# custom MAC, routes, NetworkManager) stays with netplan
+WIFI_KEYS_OK = {"dhcp4", "dhcp6", "optional", "access-points", "dhcp4-overrides", "dhcp6-overrides", "link-local",
+                "accept-ra", "ipv6-privacy", "regulatory-domain", "wakeonwlan"}
+
+
+def split_netplan(text):
+    """(text without the wifis section or None if nothing would be left but `version`, has_wifis). Uses PyYAML
+    (netplan itself depends on it); raises ImportError without it."""
+    import yaml
+    doc = yaml.safe_load(text) or {}
+    net = doc.get("network") or {}
+    if not net.get("wifis"):
+        return text, False
+    for name, d in (net.get("wifis") or {}).items():
+        extra = set(d or {}) - WIFI_KEYS_OK
+        if extra or (d or {}).get("dhcp4") is False or not (d or {}).get("access-points"):
+            raise ValueError(f"Wi-Fi {name} uses settings treehouse's DHCP config doesn't cover ("
+                             + (", ".join(sorted(extra)) or "no DHCP or no access point") + ")")
+    if net.get("renderer") == "NetworkManager":
+        raise ValueError("netplan hands this Wi-Fi to NetworkManager")
+    net = dict(net)
+    net.pop("wifis")
+    if not (set(net) - {"version", "renderer"}) and len(doc) == 1:
+        return None, True
+    doc = dict(doc, network=net)
+    return "# wifis moved to treehouse's Wi-Fi config by sharedbox-netguard (original: " + BACKUP_DIR + ")\n" \
+        + yaml.safe_dump(doc, default_flow_style=False, sort_keys=False), True
+
+
+def link_works(iface):
+    addrs = ipv4_addrs().get(iface)
+    if not addrs or read(f"{SYS_NET}/{iface}/carrier") != "1":
+        return False
+    gws = [r["gateway"] for r in default_routes() if r["dev"] == iface and r["gateway"]]
+    return any(gateway_answers(g, iface) for g in gws) if gws else True
+
+
+def wifi_ifaces():
+    return sorted(n for n, ln in physical_links().items() if ln["kind"] == "wifi")
+
+
+def netplan_generate():
+    rc, out = run(["netplan", "generate"], 120)
+    systemctl("daemon-reload")
+    return rc == 0, out
+
+
+def say(msg):
+    print(f"net-guard: {msg}", flush=True)
+
+
+def cmd_wifi_setup(a):
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-netguard wifi-setup: needs root (install.sh runs it)")
+    st = load_state()
+    if not shutil.which("netplan") or not os.path.isdir(NETPLAN_DIR):
+        say("wifi-setup: no netplan here; nothing to move")
+        return 0
+    if not networkd_active():
+        say("wifi-setup: systemd-networkd isn't running (NetworkManager or similar handles Wi-Fi and replugging)")
+        return 0
+    files = []
+    for fn in sorted(glob.glob(os.path.join(NETPLAN_DIR, "*.yaml"))):
+        txt = read(fn)
+        if re.search(r"^\s*wifis\s*:", txt, re.M):
+            files.append(fn)
+    if not files:
+        if os.path.exists(WPA_CONF):
+            say("wifi-setup: Wi-Fi already works with any dongle")
+        else:
+            say("wifi-setup: no Wi-Fi configured")
+        return 0
+    prev = st.get("wifi_setup") or {}
+    sig = sorted(f"{fn}:{int(os.stat(fn).st_mtime)}" for fn in files)
+    if prev.get("ok") is False and prev.get("files") == sig and not a.retry:
+        say(f"wifi-setup: skipped, it failed before on these files ({prev.get('why')}); --retry to try again")
+        return 1
+
+    def fail(why):
+        st["wifi_setup"] = {"ok": False, "ts": int(time.time()), "why": why, "files": sig}
+        log(st, "wifi_setup_failed", why)
+        save_state(st)
+        return 1
+
+    pinned = netplan_wifi_units()
+    blocks = []
+    for i in pinned:
+        blocks += wpa_blocks(read(os.path.join(NETPLAN_RUN, f"wpa-{i}.conf")))
+    if not blocks:   # netplan hasn't rendered them (yet): render, then read again
+        netplan_generate()
+        pinned = netplan_wifi_units()
+        for i in pinned:
+            blocks += wpa_blocks(read(os.path.join(NETPLAN_RUN, f"wpa-{i}.conf")))
+    if not blocks:
+        return fail("couldn't read netplan's Wi-Fi settings (/run/netplan/wpa-*.conf)")
+    if os.path.exists(WPA_CONF):
+        blocks = wpa_blocks(read(WPA_CONF)) + blocks
+    try:
+        plans = [(fn, *split_netplan(read(fn))) for fn in files]
+    except ImportError:
+        return fail("PyYAML is missing, so netplan's files can't be split safely")
+    except Exception as e:  # noqa: BLE001 - yaml errors: leave everything as it is
+        return fail(f"couldn't parse netplan's files: {e}")
+
+    before = {i: link_works(i) for i in wifi_ifaces()}
+    os.makedirs(WIFI_DIR, mode=0o755, exist_ok=True)
+    os.chmod(WIFI_DIR, 0o755)
+    tmp = WPA_CONF + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(wpa_conf_text(blocks))
+    os.replace(tmp, WPA_CONF)
+    os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    moved = []
+    for fn, rest, _has in plans:
+        bk = os.path.join(BACKUP_DIR, os.path.basename(fn))
+        if os.path.exists(bk):
+            bk = f"{bk}.{stamp}"
+        shutil.copy2(fn, bk)
+        os.chmod(bk, 0o600)
+        moved.append((fn, bk))
+        if rest is None:
+            os.remove(fn)
+        else:
+            fd = os.open(fn + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(rest)
+            os.replace(fn + ".tmp", fn)
+
+    def rollback(why):
+        for i in wifi_ifaces():
+            systemctl("stop", f"sharedbox-wifi@{i}.service")
+        for fn, bk in moved:
+            shutil.copy2(bk, fn)
+            os.chmod(fn, 0o600)
+            os.remove(bk)
+        os.remove(WPA_CONF)
+        netplan_generate()
+        run(["networkctl", "reload"])
+        for i in wifi_ifaces():
+            systemctl("start", f"netplan-wpa-{i}.service")
+            run(["networkctl", "reconfigure", i])
+        return fail(why + "; netplan's Wi-Fi config is back")
+
+    ok, out = netplan_generate()
+    if not ok:
+        return rollback(f"netplan generate failed after moving the Wi-Fi out: {out.strip()[-200:]}")
+    present = wifi_ifaces()
+    for i in present:
+        systemctl("stop", f"netplan-wpa-{i}.service")
+    run(["networkctl", "reload"])
+    for i in present:
+        systemctl("start", f"sharedbox-wifi@{i}.service")
+        run(["networkctl", "reconfigure", i])
+    if any(before.values()):
+        deadline = time.time() + WIFI_SETUP_WAIT_S
+        while time.time() < deadline and not any(link_works(i) for i in wifi_ifaces()):
+            time.sleep(3)
+        if not any(link_works(i) for i in wifi_ifaces()):
+            return rollback(f"the Wi-Fi didn't come back within {WIFI_SETUP_WAIT_S} s on treehouse's config")
+    st["wifi_setup"] = {"ok": True, "ts": int(time.time()), "moved": [fn for fn, _ in moved]}
+    log(st, "wifi_setup", "Wi-Fi now works with any USB dongle (moved from netplan: "
+        + ", ".join(os.path.basename(fn) for fn, _ in moved) + ")")
+    save_state(st)
+    return 0
+
+
+def cmd_wifi_restore(a):
+    """Uninstall: netplan's Wi-Fi files back. Exit 3 = kept treehouse's Wi-Fi (restoring would cut the box off)."""
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-netguard wifi-restore: needs root (uninstall.sh runs it)")
+    backups = sorted(glob.glob(os.path.join(BACKUP_DIR, "*.yaml")))
+    if not backups:
+        if os.path.exists(WPA_CONF):
+            say("wifi-restore: no netplan Wi-Fi files to put back; treehouse's Wi-Fi config stays "
+                f"({WPA_CONF}) so the box keeps its Wi-Fi")
+            return 3
+        return 0
+    names = set()
+    for bk in backups:
+        names |= set(re.findall(r"^\s{2,}([A-Za-z0-9_.:-]+)\s*:\s*$", read(bk), re.M))
+    present = wifi_ifaces()
+    others_ok = any(link_works(n) for n, ln in physical_links().items() if ln["kind"] == "wired")
+    if present and not set(present) & names and not others_ok:
+        say(f"wifi-restore: netplan's Wi-Fi config names {', '.join(sorted(names)) or '?'}, but the dongle here is "
+            f"{', '.join(present)}, and no cable is connected: keeping treehouse's Wi-Fi so the box stays online")
+        return 3
+    for i in present:
+        systemctl("stop", f"sharedbox-wifi@{i}.service")
+    for bk in backups:
+        dst = os.path.join(NETPLAN_DIR, os.path.basename(bk))
+        shutil.copy2(bk, dst)
+        os.chmod(dst, 0o600)
+        os.remove(bk)
+    if os.path.exists(WPA_CONF):
+        os.remove(WPA_CONF)
+    netplan_generate()
+    run(["networkctl", "reload"])
+    for i in present:
+        systemctl("start", f"netplan-wpa-{i}.service")
+        run(["networkctl", "reconfigure", i])
+    say("wifi-restore: netplan's Wi-Fi config is back")
+    return 0
+
+
+def cmd_replug(a):
+    """udev: a Wi-Fi interface appeared. With treehouse's config, sharedbox-wifi@ starts by itself; with netplan's,
+    its supplicant unit isn't started again on replug (Restart=no, only systemd-networkd wants it): restart it."""
+    if os.geteuid() != 0:
+        sys.exit("sharedbox-netguard replug: needs root")
+    i = a.iface
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", i) or os.path.exists(WPA_CONF):
+        return 0
+    if unit_exists(f"netplan-wpa-{i}.service"):
+        # at boot netplan's supplicant is already running this interface: leave it (wpa_cli answers PONG)
+        rc, out = run(["wpa_cli", "-i", i, "ping"], 10)
+        if rc == 0 and "PONG" in out:
+            return 0
+        systemctl("restart", f"netplan-wpa-{i}.service")
+        if networkd_active():
+            run(["networkctl", "reconfigure", i])
+        say(f"replug: {i} came back; restarted netplan-wpa-{i}")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="sharedbox-netguard", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest="cmd", required=True)
+    s.add_parser("tick").set_defaults(fn=cmd_tick)
+    x = s.add_parser("status")
+    x.add_argument("--json", action="store_true")
+    x.set_defaults(fn=cmd_status)
+    x = s.add_parser("wifi-setup")
+    x.add_argument("--retry", action="store_true", help="try again after an earlier failure")
+    x.set_defaults(fn=cmd_wifi_setup)
+    s.add_parser("wifi-restore").set_defaults(fn=cmd_wifi_restore)
+    x = s.add_parser("replug")
+    x.add_argument("iface")
+    x.set_defaults(fn=cmd_replug)
+    a = p.parse_args()
+    sys.exit(a.fn(a) or 0)
+
+
+if __name__ == "__main__":
+    main()

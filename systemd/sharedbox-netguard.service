@@ -1,0 +1,10 @@
+[Unit]
+Description=sharedbox net-guard: bring the network back by itself (links, Wi-Fi, networkd, Tailscale; reboot last)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sharedbox/sharedbox-netguard tick
+SyslogIdentifier=sharedbox-netguard
+# restarting networkd/tailscaled and a USB re-plug take a while; a stuck command must not block the next tick forever
+TimeoutStartSec=5min
