@@ -211,11 +211,11 @@ class StopAnything(unittest.TestCase):
 
     def test_confirmations_say_whose_it_is(self):
         btn = web.portal_btn("tok", "/_box")
-        items = [{"key": "u:sb-t3.service", "kind": "t3", "name": "T3 Code", "stop": "t3", "mem": 1},
+        items = [{"key": "u:sb-t3.service", "kind": "t3", "name": "T3", "stop": "t3", "mem": 1},
                  {"key": "u:sb-bot.service", "kind": "server", "name": "bot", "stop": "server", "mem": 1, "keep": True,
                   "about": "Study group bot"}]
         theirs = "".join(web.run_rows(items, btn, "mk30", "owner"))
-        self.assertIn("This is mk30&#x27;s T3 Code. Their open chats will disconnect", theirs.replace("\\u2019", "'"))
+        self.assertIn("This is mk30&#x27;s T3. Their open chats will disconnect", theirs.replace("\\u2019", "'"))
         self.assertIn("marked keep running by mk30", theirs)
         self.assertIn("name='force' value='1'", theirs)
         self.assertIn("running-stop-any", theirs)

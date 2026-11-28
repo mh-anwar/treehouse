@@ -561,6 +561,47 @@ def human(n):
         n /= 1024
 
 
+def size_text(n):
+    """Bytes for people: "9.6 GB", "600 MB", "0 GB". Same unit names everywhere people read numbers (the dashboard,
+    `box status`), never the "9.6G" shorthand."""
+    if n is None:
+        return "no limit"
+    n = float(n)
+    if abs(n) < 1 << 20:
+        return "0 MB" if n < 512 << 10 else "1 MB"
+    n /= 1024
+    for u in ("MB", "GB", "TB"):
+        n /= 1024
+        if abs(n) < 1000 or u == "TB":
+            if n >= 100 or u == "MB":
+                return f"{n:.0f} {u}"
+            return f"{n:.1f} {u}".replace(".0 ", " ")
+    return f"{n:.1f} TB"
+
+
+# The words people see, one meaning each (docs/glossary.md is generated from this; the dashboard's Home tab and
+# `box help words` show it too). Change a word here and in the UI together.
+GLOSSARY = (
+    ("Machine", "A computer treehouse runs on, called by its name (for example {machine}). Each machine has its own "
+                "memory and disk, and your files stay on the machine where they were made."),
+    ("Dashboard", "This website. Its tabs are Home, Messages, Servers, Machines and Account."),
+    ("T3", "The chat app where you talk to your AI agent. Open it in this browser with Open T3, or use the T3 app on "
+           "your phone or laptop (it's called T3 Code in the app stores)."),
+    ("AI account", "Your own Claude, ChatGPT or Google subscription. Agents use it to think. You need only one, and "
+                   "that company bills you for it, not treehouse."),
+    ("Agent", "An AI coding assistant (Claude Code, Codex, or Google's Antigravity, which uses Gemini) that works on "
+              "the machine for you. An agent session is one chat with it."),
+    ("Server", "An app, site or bot of yours that keeps running on the machine, with its own link."),
+    ("Group server", "A server the whole group shares. Anyone in the group can start, stop or change it."),
+    ("Database or container", "A program your agent started with Docker, such as a Postgres or Supabase database. It "
+                              "keeps running until someone stops it."),
+    ("Friend", "Someone with an account on the machine. The owner runs the machines and invites friends."),
+    ("Request", "Something an agent asks the owner for: a program to install for everyone, or a setting to change."),
+    ("Archive", "Where a project nobody opened for a while goes, once all its work is saved on GitHub. You can bring "
+                "it back from your Account tab."),
+)
+
+
 def printable(s):
     """Friend-controlled text for an admin's terminal: no escape sequences or other controls."""
     return "".join(c if c.isprintable() else "?" for c in str(s))

@@ -48,6 +48,14 @@ Every treehouse box should feel fast even when everyone is busy, and what one bo
 - Machine-specific findings (desktop services, swap size, CPU power mode) are "owner" checks: suggestions only.
 - Nothing turns off things people may use to save resources (no T3 or Docker naps).
 
+## Words (docs/glossary.md)
+- One word per thing, everywhere people read: machine (never "box" in prose), server, group server, database or
+  container, agent session, friend, request, dashboard, T3 / the T3 app. "Sign in", never "log in". Real machine
+  names. Every number says whose it is (yours, the whole machine). The list lives in `GLOSSARY` (lib/sbcommon.py);
+  `python3 tests/glossary_doc.py` rewrites docs/glossary.md from it.
+- No config keys, `sudo` commands, "sharedbox"/"provisioner" or raw errors in anything a person reads
+  (tests/test_ui_lint.py).
+
 ## UI taste (the owner notices)
 - No emojis, no "AI-sounding" copy, no decorative highlight strips. Sentences start with a capital letter.
 - Icons must not depend on fonts: draw small marks as inline SVG, not ✓/✗ characters.
@@ -56,6 +64,10 @@ Every treehouse box should feel fast even when everyone is busy, and what one bo
 
 ## Shipping
 - Commit with an area prefix (`web:`, `box:`, `admin:`, ...). Push only when asked.
+- PR descriptions are the record future agents search: what changed (a before -> after table for UI), why, what
+  was removed, how it was tested, known limits. State each decision with its technical or product reason. Never
+  attribute it to a person ("the owner wanted", "owner's choice", "as requested", "per the owner") in PRs,
+  commits or code comments, and never quote anyone's prompts.
 - The agent account has no sudo; never ask for root. To deploy: push to main, `git pull` the checkout in
   `UPDATE_SOURCE` (see /etc/sharedbox/sharedbox.conf), then `box friends update` (or the owner's "Update
   treehouse" button). It installs that checkout's committed main; check `/var/lib/sharedbox/update.json`.
