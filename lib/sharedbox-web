@@ -94,7 +94,10 @@ def rows():
         out.append((name, name, "admin", sb.slice_path(uid)))
     for name, rec in sorted(sb.friend_users().items()):
         out.append((name, name, "friend", sb.slice_path(rec["uid"])))
-    out.append(("system", "system services (the machine's own)", "system", os.path.join(sb.CGROUP_ROOT, "system.slice")))
+    grp = os.path.join(sb.CGROUP_ROOT, "sharedbox.slice", "sharedbox-shared.slice")  # every group server together
+    if os.path.isdir(grp):
+        out.append(("group", "group servers", "group", grp))
+    out.append(("system", "system services", "system", os.path.join(sb.CGROUP_ROOT, "system.slice")))
     return out
 
 
@@ -478,13 +481,13 @@ async function tick(){
  <div class="card"><h3>People</h3><div class="big">${s.rows.filter(r=>r.kind=='friend').length}</div>
   <div class="sub">sign-ups: ${esc(s.join_mode)}${s.open_requests?` · <b style="color:var(--warn)">${s.open_requests} request${s.open_requests>1?'s':''}</b>`:''}</div></div>
  <div class="card"><h3>Agents installed</h3><div class="sub" style="font-size:13px;color:var(--fg)">${s.agents.map(esc).join('<br>')||'–'}</div></div>`;
- const order={admin:0,friend:1,system:2};
+ const order={admin:0,friend:1,group:2,system:3};
  const rows=s.rows.sort((a,b)=>order[a.kind]-order[b.kind]||(b.cpu_pct||0)-(a.cpu_pct||0));
  document.getElementById('rows').innerHTML=rows.map(r=>{
   const cpuCap=r.cpu_quota_cores?r.cpu_quota_cores*100:b.ncpu*100;
   const memCap=r.mem_max||b.mem_total;
   const flags=[];
-  if(r.kind!='friend')flags.push(`<span class="pill">${r.kind=='admin'?'owner':'the machine itself'}</span>`);
+  if(r.kind!='friend')flags.push(`<span class="pill">${{admin:'owner',group:'shared by everyone',system:'the machine itself'}[r.kind]||esc(r.kind)}</span>`);
   if(r.status&&r.status!='active')flags.push(`<span class="pill bad">${esc(r.status)}</span>`);
   if(r.throttled)flags.push('<span class="pill warn">CPU limited</span>');
   if(r.mem_high&&r.mem>0.9*r.mem_high)flags.push('<span class="pill warn">memory near its limit</span>');

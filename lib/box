@@ -126,6 +126,21 @@ def gather(sample=0.5):
             "box": sb.box_load(), "janitor": st, "running": run}
 
 
+def undescribed_servers():
+    """This account's `box serve` servers whose unit file has no X-Treehouse-About line (made before descriptions
+    were asked for). Reads a few small files; never fails session start."""
+    try:
+        files = sorted(os.listdir(os.path.join(HOME, ".config", "systemd", "user")))
+    except OSError:
+        return []
+    out = []
+    for fn in files:
+        m = re.fullmatch(r"sb-([A-Za-z0-9][A-Za-z0-9_-]{0,39})\.service", fn)
+        if m and m.group(1) not in ("t3", "t3-proxy") and not sbrunning.server_meta(HOME, m.group(1)).get("about"):
+            out.append(m.group(1))
+    return out
+
+
 def size_text(v):
     """'28160M' -> '27.5G' (limits as people read them); '' for nothing."""
     try:
@@ -193,9 +208,9 @@ def advice(g):
                    f"to finish their current turn, until {fmt_ts(rb['latest'])} at the latest. Wrap up now; don't "
                    f"start long jobs. {REBOOT_BACK}")
     elif rb["at"] and rb["why"] == "updates":
-        out.append(f"The box will REBOOT on {fmt_ts(rb['at'])} for security updates. {REBOOT_BACK}")
+        out.append(f"The machine will REBOOT on {fmt_ts(rb['at'])} for security updates. {REBOOT_BACK}")
     elif rb["at"] and rb["at"] - time.time() < 12 * 3600:
-        out.append(f"The box will REBOOT on {fmt_ts(rb['at'])}: its scheduled reboot, {rb['schedule']}. If an agent "
+        out.append(f"The machine will REBOOT on {fmt_ts(rb['at'])}: its scheduled reboot, {rb['schedule']}. If an agent "
                    f"is mid-turn it waits up to 2 hours. {REBOOT_BACK}")
     b = g["box"]
     live = g["live"] or {}
@@ -205,7 +220,7 @@ def advice(g):
         out.append(f"You are using {sb.human(used)} of the {sb.human(cap)} this account can have. If memory runs out, "
                    "the machine stops whatever uses the most: free what you don't need (`box running`) and tell the user.")
     elif b.get("mem_avail") is not None and b["mem_avail"] < 0.1 * b["mem_total"]:
-        out.append(f"The box is nearly out of memory ({sb.human(b['mem_avail'])} free). Avoid starting big jobs; "
+        out.append(f"The machine is nearly out of memory ({sb.human(b['mem_avail'])} free). Avoid starting big jobs; "
                    "`box running` shows what this account runs.")
     for k in recent_oom_kills():
         out.append(f"{fmt_ts(k['ts'])}: the machine ran out of memory and stopped {k['what']} to keep everything "
@@ -216,6 +231,14 @@ def advice(g):
                    + (f"; and {len(big) - 6} more" if len(big) > 6 else "")
                    + ". Full list: `box running`. Don't stop these yourself; if one has been up for days and nothing "
                      "in this conversation uses it, mention it to the user.")
+    try:
+        bare = undescribed_servers()
+    except Exception:  # noqa: BLE001 - session start must never fail over this
+        bare = []
+    if bare:
+        out.append("Servers with no description yet: " + ", ".join(f"`{n}`" for n in bare[:5])
+                   + ". People looking at the machine can't tell what they're for: when it fits the conversation, "
+                     "ask the user and run `box serve describe NAME --about \"...\" --important|--safe-to-stop`.")
     j = g["janitor"]
     if j.get("over_budget"):
         out.append(f"You are OVER your disk budget. Caches and build outputs were wiped. "
@@ -345,8 +368,8 @@ def cmd_status(a):
     b, live, lim, j = g["box"], g["live"] or {}, g["limits"], g["janitor"]
     lines = []
     if a.agent:
-        lines.append(f"## Shared box status for {g['user']} ({time.strftime('%H:%M')})")
-    lines.append(f"Box: {b['level']} | load {b['loadavg'][0]:.1f}/{b['ncpu']} cpus | "
+        lines.append(f"## Machine status for {g['user']} ({time.strftime('%H:%M')})")
+    lines.append(f"Machine: {b['level']} | load {b['loadavg'][0]:.1f}/{b['ncpu']} cpus | "
                  f"RAM avail {sb.human(b['mem_avail'])}/{sb.human(b['mem_total'])} | "
                  f"disk free {sb.human(b['disk_free'])}/{sb.human(b['disk_total'])}")
     if hackathon_line():
