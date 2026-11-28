@@ -34,6 +34,17 @@ join page with a second Tailscale account.
 - One logical change per commit, with the subject prefixed by area: `web:`, `box:`, `admin:`,
   `janitor:`, `tools:`, `install:`, `rules:`, `docs:`.
 - Say in the PR what you tested and on which distro.
+- A PR description is a durable record: what was built, removed and changed (a before -> after table for anything
+  people see), the reason for each decision, how it was tested, known limits and follow-ups.
+- Give reasons, not people: write the technical or product reason for a decision. Never write "the owner wanted",
+  "owner's choice", "as requested", "per X" or similar in PRs, commit messages or code comments, and never quote
+  someone's prompts or reactions.
+
+## Words people read
+
+Use the glossary in [docs/glossary.md](docs/glossary.md) (generated from `GLOSSARY` in lib/sbcommon.py) for every
+page, `box` message, help topic and agent rule. `tests/test_ui_lint.py` fails on internal names (config keys,
+`sudo` commands, "sharedbox", "provisioner") in user-facing text.
 
 ## The design rule: agents do the work
 

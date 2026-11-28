@@ -508,13 +508,14 @@ class Web(unittest.TestCase):
         try:
             cases = [  # (logins, t3, ts_id, app, main button, text)
                 ({"claude": True}, False, "n1", False, None, "T3 isn't set up on this machine yet"),
-                ({"claude": False, "codex": False}, True, "n1", False, "Log in with Claude", "Log in with ChatGPT"),
-                ({"claude": True}, True, "n1", False, "Open T3 in this browser", "Want the T3 app on your laptop?"),
-                ({"claude": True}, True, "", False, "Open T3 in this browser", "Want the T3 app on your laptop?"),
-                ({"claude": True}, True, "n1", True, "Open T3 in this browser", "Setting up another laptop?"),
-                # T3 Connect offered: a second, secondary "Open T3 app" (signs in first, then shows how)
-                ({"claude": True, "t3connect": False}, True, "n1", False, "Open T3 in this browser", "Already on Tailscale?"),
-                ({"claude": True, "t3connect": True}, True, "n1", False, "Open T3 in this browser", "Download T3"),
+                ({"claude": False, "codex": False}, True, "n1", False, "Sign in with Claude", "Sign in with ChatGPT"),
+                ({"claude": False, "codex": False}, True, "n1", False, "Sign in with Claude", "You only need one"),
+                ({"claude": True}, True, "n1", False, "Open T3", "Advanced (optional)"),
+                ({"claude": True}, True, "", False, "Open T3", "Signed in with your AI account."),
+                ({"claude": True}, True, "n1", True, "Open T3", "Setting up another laptop?"),
+                # T3 Connect offered: a second, secondary "Use the T3 app" (signs in first, then shows how)
+                ({"claude": True, "t3connect": False}, True, "n1", False, "Open T3", "Set up the T3 app"),
+                ({"claude": True, "t3connect": True}, True, "n1", False, "Open T3", "Download T3"),
             ]
             for logins, t3, ts_id, app, main, text in cases:
                 page = self.render(logins, t3, ts_id, app)
@@ -522,7 +523,7 @@ class Web(unittest.TestCase):
                 self.assertEqual(mains, [main] if main else [], (logins, t3, ts_id, app))
                 self.assertIn(text, page)
                 self.assertNotIn("Ask the owner to add you to Tailscale", page)
-                if text.startswith("Want the T3 app"):  # the laptop app is a secondary link, not a second button
+                if text.startswith("Advanced"):  # the laptop app is tucked away, a link, not a second button
                     self.assertIn("Get setup instructions", page)
                 self.assertNotIn("Link my T3 account", page)  # T3 Connect stays hidden until it's tested
                 self.assertNotIn("→", page)
@@ -593,7 +594,7 @@ class Web(unittest.TestCase):
             if action == "status" else logged_out(ip, who, action, **kw))
         for t in ("", "servers", "account"):
             page = w.portal_page("gate", who, "sam", rec, tab=t)
-            self.assertIn("Log in with Claude", page)
+            self.assertIn("Sign in with Claude", page)
             for gone in ("id='messages'", "id='running'", "id='account'", "Your servers", "class='tabs'"):
                 self.assertNotIn(gone, page)
 
@@ -701,8 +702,10 @@ class Boxes(unittest.TestCase):
         self.assertEqual(r["code"], 200)
         self.assertEqual(set(json.loads(r["body"])), {"v", "name", "version", "ncpu", "load1", "level", "mem",
                                                       "disk_free", "dashboard", "t3", "cpu", "mem_used_b",
-                                                      "mem_total_b", "disk_free_b", "disk_total_b", "people"})
-        # per user only the names of who's active now (the Machines tab's "Active now"), never their usage
+                                                      "mem_total_b", "disk_free_b", "disk_total_b", "people",
+                                                      "t3_target", "t3_accounts"})
+        # per user only the names of who's active now (the Machines tab's "Active now") and which T3 Code version
+        # each account runs (the owner's Machines card), never their usage
         self.assertIsInstance(json.loads(r["body"])["people"], list)
         self.assertEqual(self.get("/api/box", ip="::ffff:100.64.0.2")["code"], 200)
         self.assertEqual(self.get("/api/box", ip="100.64.0.3")["code"], 403)  # a friend's laptop on the tailnet
@@ -754,13 +757,13 @@ class Boxes(unittest.TestCase):
         w.peers_tick()  # the next poll: nothing piles up, the dead box is asked again
         page = w.machines_section(owner=True)
         cards = {m.group(1): m.group(0) for m in re.finditer(r'<div class="mach card"><div class="mh"><h3>([a-z]+)</h3>'
-                                                              r'.*?(?=<div class="mach card">|<p class=\'sub\'>Memory)', page, re.S)}
+                                                              r'.*?(?=<div class="mach card">|<p class=\'sub\'>Numbers)', page, re.S)}
         self.assertEqual(list(cards), ["here", "dead", "good", "old"])
-        self.assertIn("this page comes from it", cards["here"])
+        self.assertIn("(this machine)", cards["here"])
         self.assertIn("Offline", cards["dead"])
         self.assertIn("It doesn&#x27;t answer", cards["dead"])
         self.assertIn("Online", cards["good"])
-        self.assertIn("0.5 <small>for 8 cores", cards["good"])
+        self.assertIn("0.5 <small>of 8", cards["good"])
         self.assertIn('href="http://100.64.0.3:3773"', cards["good"])
         self.assertNotIn("javascript:", page)
         self.assertIn("older treehouse", cards["old"])
@@ -808,7 +811,7 @@ class AppLink(unittest.TestCase):
         self.assertIn("make a new prompt at https://treehouse.example.com/_box/me", p)
         self.assertIsNone(re.search(r"\{[^}]*\}", p))  # every placeholder filled
         self.assertEqual(sbconnect.app_prompt("not a url", "x"), "")
-        self.assertNotIn("What the box knows", p)  # no facts given: none made up
+        self.assertNotIn("What the machine knows", p)  # no facts given: none made up
         self.assertNotIn("paired with my T3 earlier", p)
 
     def test_prompt_invariants(self):
@@ -831,7 +834,7 @@ class AppLink(unittest.TestCase):
         self.assertIn("Never open the link in a web browser", p)
         self.assertIn("reopen the same link (a refused link isn't used up)", p)
         # the owner is only asked to share when this account can't see the box, with the login that will be used
-        self.assertIn("Only when this account can't see the box and no share is waiting for me, add this for the "
+        self.assertIn("Only when this account can't see the machine and no share is waiting for me, add this for the "
                       "owner: \"Please share sietchtabr with my Tailscale account <login>.\"", p)
         self.assertIn("--reset", p)  # forbidden, not suggested
         self.assertIn("never use --reset or --force-reauth", p)
@@ -855,11 +858,11 @@ class AppLink(unittest.TestCase):
         self.assertIn("expires at 2026-11-14 18:42 UTC (check the clock with date -u)", p)
         for mode in ("sharee", "member"):
             q = sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode)
-            self.assertIn("sign in as x@y (the account that has the box)", q)
+            self.assertIn("sign in as x@y (the account that has the machine)", q)
             self.assertIn("if this computer's account is another one, that is the cause; tell me both", q)
         for mode, text in (("sharee", "is shared with the Tailscale account"), ("member", "is a member"),
                            ("none", "That's normal if Tailscale isn't set up on any computer yet"),
-                           ("", "may have shared the box with the Tailscale account x@y (not confirmed)")):
+                           ("", "may have shared the machine with the Tailscale account x@y (not confirmed)")):
             self.assertIn(text, sbconnect.app_prompt(pair, "d", ts_login="x@y", ts_mode=mode))
         for q in (p, sbconnect.app_prompt(pair, "d", "sietchtabr")):
             self.assertIsNone(re.search(r"\{[^}]*\}", q))
@@ -910,7 +913,8 @@ class ConnectText(unittest.TestCase):
 
     def test_off(self):
         t = sbconnect.connect_text("sam", SITE, "")
-        self.assertIn("sudo sharedbox-admin cloudflare ssh", t)
+        self.assertIn("ask the owner to turn on SSH for the public site", t)
+        self.assertNotIn("sudo", t)
         self.assertNotIn("ProxyCommand", t)
 
 
@@ -933,6 +937,8 @@ class YourBoxes(unittest.TestCase):
                             "accounts": {"claude": "work@y.io", "antigravity": "g@z.io"}, "claude_own": True},
             "krishbox": {"ssh": False, "logins": {}}}}
         logins = {"claude": {"ok": True}, "codex": {"ok": False}, "antigravity": {"ok": False}}
+        self.addCleanup(setattr, self.web, "HOST", self.web.HOST)
+        self.web.HOST = "sietchtabr"  # this machine's name (no BOXES here): the first row, whatever status says
         page = self.web.ai_accounts_section(st, logins, self.btn, "tok", "/_box")
         rows = {m.group(1): m.group(0) for m in re.finditer(r"<tr><th scope='row'>([a-z]+).*?</tr>", page, re.S)}
         self.assertEqual(list(rows), ["sietchtabr", "krishbox", "minastirith"])  # this one first, then by name
@@ -948,7 +954,8 @@ class YourBoxes(unittest.TestCase):
     def test_single_machine_and_nothing_installed(self):
         self.assertEqual(self.web.ai_accounts_section({"boxes": {}}, {"gh": {"ok": True}}, self.btn, "t", ""), "")
         page = self.web.ai_accounts_section({"box": "solo", "boxes": {}}, {"codex": {"ok": True}}, self.btn, "t", "")
-        self.assertIn("solo", page)
+        self.assertIn(self.web.here_name(), page)  # the page's one name for this machine, whatever status says
+        self.assertNotIn("solo", page)
         self.assertNotIn("Shared across your machines", page)
 
     def test_peer_card(self):

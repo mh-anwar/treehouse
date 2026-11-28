@@ -272,9 +272,9 @@ def _unit_kind(unit, procs):
     """(kind, display name, how to stop it or None)."""
     joined = " ".join(procs)
     if unit in ("t3code.service", "sb-t3.service"):  # stoppable only from the owner's All running tab
-        return "t3", "T3 Code", "t3"
+        return "t3", "T3", "t3"
     if unit == "sb-t3.socket":
-        return "t3", "T3 Code", None
+        return "t3", "T3", None
     t3 = T3_SCOPE_RE.match(unit)  # what T3 Code starts: agents (claude, codex, opencode, acp, muse, pi, ...),
     if t3:                        # its built-in terminals and preview browsers
         what = t3.group(1)
@@ -407,7 +407,7 @@ def ago(seconds):
 
 
 KIND_LABEL = {"database": "Database", "container": "Container", "server": "Server", "agent": "Agent",
-              "t3": "T3 Code", "terminal": "Terminal", "app": "App", "service": "Service", "login": "Login",
+              "t3": "T3", "terminal": "Terminal", "app": "App", "service": "Service", "login": "Login",
               "background": "Background"}
 
 

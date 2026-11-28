@@ -1,32 +1,32 @@
-"""Projects on all my boxes: the same git projects in the same folder on every treehouse box a person has.
+"""Projects on all my machines: the same git projects in the same folder on every treehouse box a person has.
 
 Why: the T3 app's automatic load balancing (Settings > Environments > Load balancing) only moves work for a
 project that exists on several connected environments. Federation (lib/sbfed.py) already gives a person the
-same account, uid, SSH key and GitHub login on every box and links their T3s; this adds the projects.
+same account, uid, SSH key and GitHub login on every machine and links their T3s; this adds the projects.
 
   box projects [--json]                       git repos directly in ~ (with their remote), which ones are kept on
-                                              every box, and the last sync to each box
-  box projects everywhere NAME on|off         choose (on this box); off stops syncing, the copies stay
+                                              every machine, and the last sync to each machine
+  box projects everywhere NAME on|off         choose (on this machine); off stops syncing, the copies stay
   box projects sync [--json]                  sync now instead of at the next janitor tick
 
 How it runs:
-- The choice lives on the box where it was made (~/.sharedbox/projects.json). That box pushes it: root's
+- The choice lives on the machine where it was made (~/.sharedbox/projects.json). That machine pushes it: root's
   `sharedbox-janitor tick` (every 10 min) runs `box _projects-sync` AS THE USER under nice/ionice, which, when
-  due (every SYNC_EVERY, or right after the choice changed), SSHes to each other box in BOXES as the same user
+  due (every SYNC_EVERY, or right after the choice changed), SSHes to each other machine in BOXES as the same user
   (the `Host <box>` block and per-user key federation writes; the owner's own alias works too) and runs
   `nice ionice box _projects-here` there with the list of {name, url}.
-- On the other box, as that person: ~/NAME missing -> blobless clone from the project's remote (GitHub; never
-  from this box, so only pushed work travels). ~/NAME is that same repo -> git fetch, then fast-forward only when
+- On the other machine, as that person: ~/NAME missing -> blobless clone from the project's remote (GitHub; never
+  from this machine, so only pushed work travels). ~/NAME is that same repo -> git fetch, then fast-forward only when
   nothing is uncommitted or untracked and the branch has no commits of its own. Anything else (a different repo,
   not a repo, local changes, unpushed commits, diverged) is skipped and reported. Nothing here ever resets,
   overwrites or deletes; turning a project off only stops the syncing.
-- A copy that holds the repo is added to that person's T3 on that box (`t3 project add PATH --title NAME`, once),
+- A copy that holds the repo is added to that person's T3 on that machine (`t3 project add PATH --title NAME`, once),
   so it shows in T3 and load balancing can pick it.
 - Every git call has a timeout and runs non-interactively (no credential prompt can hang it). The receiving side
   stops starting new clones after HERE_BUDGET seconds; the rest wait for the next sync.
 
 Pure logic plus small I/O helpers that take home folders and runners explicitly, so the whole round trip is
-unit-testable with a fake second box (tests/test_projects.py). Stdlib only.
+unit-testable with a fake second machine (tests/test_projects.py). Stdlib only.
 """
 
 import json
@@ -35,16 +35,16 @@ import re
 import subprocess
 import time
 
-CHOICE_REL = ".sharedbox/projects.json"         # {"everywhere": [names]}: chosen on this box
-STATE_REL = ".sharedbox/projects-state.json"    # this box's last sync to each other box
+CHOICE_REL = ".sharedbox/projects.json"         # {"everywhere": [names]}: chosen on this machine
+STATE_REL = ".sharedbox/projects-state.json"    # this machine's last sync to each other machine
 HERE_REL = ".sharedbox/projects-here.json"      # on a receiving box: copies already added to T3 there
 SYNC_EVERY = 1800        # seconds between syncs when nothing changed (the janitor ticks every 10 min)
 CLONE_TIMEOUT = 600
 FETCH_TIMEOUT = 180
 GIT_TIMEOUT = 30
 HERE_BUDGET = 480        # the receiving box starts no new clone after this many seconds (next sync does the rest)
-PEER_TIMEOUT = 840       # one other box's whole answer over SSH (the janitor gives the user pass 900 s)
-SYNC_BUDGET = 600        # the sending box starts no new box after this
+PEER_TIMEOUT = 840       # one other machine's whole answer over SSH (the janitor gives the user pass 900 s)
+SYNC_BUDGET = 600        # the sending box starts no new machine after this
 MAX_PROJECTS = 50
 NICE = ("nice", "-n", "10", "ionice", "-c", "2", "-n", "7")   # low priority; best-effort IO so it never starves
 NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")
@@ -119,7 +119,7 @@ def write_json(path, data):
 
 def list_repos(home, git=run_git):
     """Git repos directly in ~ (not hidden, not symlinks): [{"name", "url", "available", "why"}]. "url" is only
-    filled when another box can clone from it."""
+    filled when another machine can clone from it."""
     out = []
     try:
         names = sorted(os.listdir(home), key=str.lower)
@@ -134,7 +134,7 @@ def list_repos(home, git=run_git):
         url = url.strip() if rc == 0 else ""
         ok = cloneable(url)
         why = "" if ok else ("No remote yet. Push it to GitHub first." if not url else
-                             "Its remote can't be reached from another box. Push it to GitHub first.")
+                             "Its remote can't be reached from another machine. Push it to GitHub first.")
         out.append({"name": name, "url": url if ok else "", "available": ok, "why": why})
     return out
 
@@ -149,7 +149,7 @@ def load_choice(home):
 
 
 def set_choice(home, name, on, repos=None):
-    """(ok, message). Turning on needs a repo in ~ another box can clone; off always works (the copies stay)."""
+    """(ok, message). Turning on needs a repo in ~ another machine can clone; off always works (the copies stay)."""
     if not NAME_RE.fullmatch(str(name or "")):
         return False, "That isn't a project name."
     cur = set(load_choice(home))
@@ -160,19 +160,19 @@ def set_choice(home, name, on, repos=None):
         if not r["available"]:
             return False, f"{name}: {r['why']}"
         cur.add(name)
-        msg = f"{name} will be on all your boxes. The first copy starts within 10 minutes."
+        msg = f"{name} will be on all your machines. The first copy starts within 10 minutes."
     else:
         cur.discard(name)
-        msg = f"{name} is no longer synced. Copies already on your other boxes stay where they are."
+        msg = f"{name} is no longer synced. Copies already on your other machines stay where they are."
     if len(cur) > MAX_PROJECTS:
-        return False, f"At most {MAX_PROJECTS} projects can be kept on every box."
+        return False, f"At most {MAX_PROJECTS} projects can be kept on every machine."
     write_json(choice_path(home), {"everywhere": sorted(cur, key=str.lower)})
     return True, msg
 
 
 def summary(home, peers=(), git=run_git, repos=None):
-    """What `box projects --json` and the dashboard show: every repo in ~, whether it's kept on every box, and
-    per other box the last result for it."""
+    """What `box projects --json` and the dashboard show: every repo in ~, whether it's kept on every machine, and
+    per other machine the last result for it."""
     repos = repos if repos is not None else list_repos(home, git)
     chosen = set(load_choice(home))
     st = read_json(os.path.join(home, STATE_REL), {})
@@ -209,8 +209,8 @@ def due(home, now, every=SYNC_EVERY):
 
 
 def sync(home, peers, remote, git=run_git, now=None, force=False, clock=time.monotonic, budget=SYNC_BUDGET):
-    """Push the chosen projects to each other box. peers: {box: ssh destination}; remote(dest, request) -> the
-    other box's `box _projects-here` answer (a dict). Returns {"ok", "ran", "boxes": {box: summary line}}."""
+    """Push the chosen projects to each other machine. peers: {box: ssh destination}; remote(dest, request) -> the
+    other machine's `box _projects-here` answer (a dict). Returns {"ok", "ran", "boxes": {box: summary line}}."""
     now = time.time() if now is None else now
     repos = {r["name"]: r for r in list_repos(home, git)}
     want = [{"name": n, "url": repos[n]["url"]} for n in load_choice(home) if n in repos and repos[n]["available"]]
@@ -222,7 +222,7 @@ def sync(home, peers, remote, git=run_git, now=None, force=False, clock=time.mon
     boxes, lines, t0 = {}, {}, clock()
     for b, dest in sorted(peers.items()):
         prev = old.get(b) if isinstance(old.get(b), dict) else {}
-        if clock() - t0 > budget:  # out of time: this box waits for the next sync, its last results stay
+        if clock() - t0 > budget:  # out of time: this machine waits for the next sync, its last results stay
             boxes[b] = prev
             continue
         ans = remote(dest, {"projects": want})

@@ -2,8 +2,9 @@
 """sharedbox-janitor: periodic housekeeping (root).
 
   sharedbox-janitor run [--dry-run] [--user NAME]   measure disk, clean, publish usage + notices
-  sharedbox-janitor tick [--dry-run]                 every 10 min: note what systemd-oomd stopped, end old boosts, start T3 Code for
-                                                     scheduled tasks after a reboot, hackathon on/off, rule refresh,
+  sharedbox-janitor tick [--dry-run]                 every 10 min: note what systemd-oomd stopped, end old boosts, T3 Code (restart
+                                                     onto the box's version when idle, sleep when unused, wake for
+                                                     scheduled tasks), hackathon on/off, rule refresh,
                                                      projects kept on all of a person's boxes (as that person)
   sharedbox-janitor weekly [--dry-run] [--user NAME] [--force]
                                                      the weekly safe cleanup (caches that rebuild themselves, old
@@ -128,25 +129,82 @@ def valid_reply(rep):
 
 
 # ---------- tick (every 10 minutes) ----------
-# A T3 that isn't running (after a reboot: its port is held by sb-t3.socket and the first connection starts it) is
-# started if it has scheduled tasks on (`box _t3-wake`): T3 skips a fixed-time run it was down for.
+# T3 Code, as every account that has one (`box _t3-tick`, lib/box): restart onto the box's version when idle, sleep
+# after T3_IDLE_STOP_HOURS with no client and no work (not in hackathon mode), wake for scheduled tasks, and the
+# owner's one-time move from T3's own t3code.service to sb-t3. Root decides the inputs (target version, hackathon,
+# which accounts' agents used CPU in one shared sample) and records the answers in t3.json and the event log.
 
-def t3_running(uid):
-    base = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
-    for cg in (f"{base}/app.slice/sb-t3.service", f"{base}/sb-t3.service"):
-        for root, _, files in os.walk(cg):
-            try:
-                with open(os.path.join(root, "cgroup.procs")) as f:
-                    if f.read().split():
-                        return True
-            except OSError:
-                pass
-    return False
+T3_EVENTS = {"asleep": "t3_asleep", "restarted": "t3_restarted", "restart-failed": "t3_restart_failed",
+             "woke": "t3_woke", "moved": "t3_moved", "move-failed": "t3_move_failed"}
+T3_STATES = ("none", "running", "asleep", "off", "legacy")
 
+
+def valid_t3_reply(r):
+    s = lambda v: isinstance(v, str) and len(v) <= 400  # noqa: E731
+    return (isinstance(r, dict) and r.get("state") in T3_STATES and s(r.get("version")) and s(r.get("action"))
+            and (r["action"] in T3_EVENTS or r["action"] == "") and s(r.get("why")) and _is_int(r.get("clients"))
+            and _is_int(r.get("idle_min")) and isinstance(r.get("busy"), list) and all(s(b) for b in r["busy"]))
+
+
+def t3_accounts(cfg, users):
+    """{name: pwd entry} of accounts that have a T3 to look after: friends with the T3 socket, and the owner's own
+    account (sb-t3 once moved, or T3's own t3code.service before that)."""
+    out = {}
+    for name in users:
+        try:
+            pw = pwd.getpwnam(name)
+        except KeyError:
+            continue
+        if os.path.exists(os.path.join(pw.pw_dir, ".config", "systemd", "user", "sb-t3.socket")):
+            out[name] = pw
+    own = sb.owner_account(cfg)
+    if own and own.pw_name not in out and any(os.path.exists(os.path.join(own.pw_dir, ".config", "systemd", "user", u))
+                                              for u in ("sb-t3.socket", "t3code.service")):
+        out[own.pw_name] = own
+    return out
+
+
+def t3_pass(cfg, users):
+    accts = t3_accounts(cfg, users)
+    if not accts:
+        return
+    target = sb.t3_box_version()
+    busy = sb.busy_agents({pw.pw_uid for pw in accts.values()}, seconds=5)
+    busy_uids = {uid for uid, _ in busy.values()}
+    plan = {"target": target, "hackathon": cfg.get("HACKATHON") == "1",
+            "idle_hours": float(cfg.get("T3_IDLE_STOP_HOURS") or 0),
+            "quiet_min": int(cfg.get("T3_RESTART_QUIET_MIN") or 20)}
+    prev = (sb.read_json(sb.T3_STATE, {}) or {}).get("accounts") or {}
+    out = {}
+    for name, pw in sorted(accts.items()):
+        try:
+            rep = user_pass(pw, dict(plan, busy_cpu=pw.pw_uid in busy_uids), "_t3-tick", check=valid_t3_reply)
+        except Exception as e:  # one account's trouble must not stop the others
+            print(f"{name}: t3 tick error: {str(e)[-500:]!r}", file=sys.stderr)
+            if name in prev:
+                out[name] = dict(prev[name], error=str(e)[-200:])
+            continue
+        if rep["state"] == "none":
+            continue
+        rec = {k: rep[k] for k in ("state", "version", "clients", "idle_min")}
+        rec["busy"] = rep["busy"][:5]
+        rec["owner"] = bool(rep.get("owner"))
+        rec["since"] = prev.get(name, {}).get("since") if prev.get(name, {}).get("state") == rep["state"] \
+            else int(time.time())
+        if rep["action"]:
+            rec["last"] = {"action": rep["action"], "why": rep["why"], "ts": int(time.time())}
+            sb.log_event(T3_EVENTS[rep["action"]], name, version=rep["version"], why=rep["why"], target=target,
+                         idle_min=rep["idle_min"])
+            print(f"{name}: T3 {rep['action']} ({rep['why']})")
+        elif prev.get(name, {}).get("last"):
+            rec["last"] = prev[name]["last"]
+        out[name] = rec
+    sb.write_json(sb.T3_STATE, {"ts": int(time.time()), "target": target, "channel": sb.t3_channel(cfg),
+                                "accounts": out}, mode=0o644)
 
 def heal_provision():
     """If the request handler's path unit ever ends up failed (it once hit systemd's start limit under a burst of
-    retries), nothing on the box answers joins, logins or `box shared` until root resets it: do that here."""
+    retries), nothing on the machine answers joins, logins or `box shared` until root resets it: do that here."""
     for unit in ("sharedbox-provision.service", "sharedbox-provision.path"):
         r = subprocess.run(["systemctl", "is-failed", "--quiet", unit], check=False)
         if r.returncode == 0:
@@ -279,20 +337,11 @@ def cmd_tick(cfg, a):
                 print(f"{what}: {e!r}", file=sys.stderr)
     state = sb.read_json(TICK_STATE, {}) or {}
     users = sb.friend_users()
-    for name, rec in sorted(users.items()):
-        if a.dry_run:
-            continue
+    if not a.dry_run:
         try:
-            pw = pwd.getpwnam(name)
-            if t3_running(rec["uid"]) or not os.path.exists(
-                    os.path.join(pw.pw_dir, ".config", "systemd", "user", "sb-t3.socket")):
-                continue
-            rep = user_pass(pw, {}, "_t3-wake",
-                            check=lambda r: isinstance(r, dict) and isinstance(r.get("woke"), bool))
-            if rep["woke"]:
-                print(f"{name}: woke T3 Code for scheduled tasks")
-        except Exception as e:  # one friend's trouble must not stop the others
-            print(f"{name}: t3 wake error: {str(e)[-500:]!r}", file=sys.stderr)
+            t3_pass(cfg, users)
+        except Exception as e:  # noqa: BLE001 - the rest of the tick must still run
+            print(f"t3: {e!r}", file=sys.stderr)
     if not a.dry_run:
         refresh_presence(cfg, users)
         refresh_rules(cfg, users, state)
@@ -305,7 +354,7 @@ def me_history(cfg, users):
     """~/me (lib/sbme.py): for every active account, `box _me-tick` AS THAT ACCOUNT at the lowest priority. It
     decides itself whether a pass is due (every ~15 min): keeps agent transcripts forever (and Codex reasoning
     readable), xz-compresses changed raw transcripts into ~/me/raw, indexes them into ~/me/agents.db (a long first backfill
-    stops after ~9 min and continues next tick) and copies in what the account's other boxes indexed. A few seconds
+    stops after ~9 min and continues next tick) and copies in what the account's other machines indexed. A few seconds
     per account when nothing changed."""
     import sbme
     names = set(users) | set(sb.admin_users(cfg))
@@ -324,9 +373,9 @@ def me_history(cfg, users):
 
 
 def projects_everywhere(cfg, users):
-    """"Projects on all my boxes" (lib/sbprojects.py): for each account that chose some, `box _projects-sync` AS
+    """"Projects on all my machines" (lib/sbprojects.py): for each account that chose some, `box _projects-sync` AS
     THAT ACCOUNT, at low priority (nice 10, best-effort IO class 7). It decides itself whether a sync is due (every
-    30 min, or right after the choice changed) and clones/fast-forwards on the other boxes over its own SSH login.
+    30 min, or right after the choice changed) and clones/fast-forwards on the other machines over its own SSH login.
     Root only checks that the choice file exists. Last in the tick: a first clone can take minutes."""
     import sbprojects
     if len(sb.boxes(cfg)) < 2:
@@ -344,13 +393,13 @@ def projects_everywhere(cfg, users):
             rep = user_pass(pw, {}, "_projects-sync", prefix=sbprojects.NICE,
                             check=lambda r: isinstance(r, dict) and isinstance(r.get("ran"), bool))
             if rep["ran"]:
-                print(f"{name}: projects synced to the other boxes")
+                print(f"{name}: projects synced to the other machines")
         except Exception as e:  # one account's trouble must not stop the others
             print(f"{name}: projects sync error: {str(e)[-300:]!r}", file=sys.stderr)
 
 
 def refresh_presence(cfg, users):
-    """`box where`'s rounded "active on the box" hint: newest agent session change per account."""
+    """`box where`'s rounded "active on the machine" hint: newest agent session change per account."""
     try:
         import sbwhere
         homes = {}
@@ -375,7 +424,7 @@ def boot_id():
 def refresh_rules(cfg, users, state):
     """Agents read the reboot notice from their rule files, which the 6-hourly janitor pass rewrites. Rewrite them
     as soon as the reboot picture changes instead: a reboot got scheduled (updates at 03:00 for 04:00), was
-    postponed, or just happened (new boot id). Otherwise a session after a reboot is told the box 'will reboot'
+    postponed, or just happened (new boot id). Otherwise a session after a reboot is told the machine 'will reboot'
     at a time already past. Cheap: nothing runs unless the picture changed."""
     rb = sb.reboot_info(cfg)
     soon = bool(rb["at"]) and rb["at"] - time.time() < 12 * 3600  # `box` bakes a scheduled reboot in 12 h ahead
@@ -495,6 +544,8 @@ def cmd_run(cfg, a):
                 "disk": used, "budget": budget, "over": over, "over_deadline": deadline,
                 "projects": len(rep["projects"]),
                 "pending_deletions": [p["name"] for p in rep["projects"] if p.get("delete_on")],
+                # the same with the day each moves to the archive, for the dashboard's "Keep it" (newer pages)
+                "pending": [{"name": p["name"], "on": p["delete_on"]} for p in rep["projects"] if p.get("delete_on")],
                 "archives": rep.get("archives", []),
                 "services": rep.get("services", []), "freed": rep["freed"],
             }

@@ -96,7 +96,7 @@ class Running(unittest.TestCase):
         self.assertEqual(it["gascity"]["kind"], "database")         # a server running dolt
         self.assertEqual((it["Claude session"]["kind"], it["Claude session"]["stop"]), ("agent", None))
         # T3 Code: stoppable only from the owner's All running tab (the person's own card shows no Stop for it)
-        self.assertEqual((it["T3 Code"]["kind"], it["T3 Code"]["stop"]), ("t3", "t3"))
+        self.assertEqual((it["T3"]["kind"], it["T3"]["stop"]), ("t3", "t3"))
         self.assertEqual((it["tmux terminal"]["kind"], it["tmux terminal"]["stop"]), ("terminal", "unit"))
         self.assertEqual((it["SSH login"]["kind"], it["SSH login"]["stop"]), ("login", None))
         bg = it["Background"]
@@ -135,7 +135,7 @@ class Running(unittest.TestCase):
     def test_worth_mentioning_skips_agents_and_plumbing(self):
         names = {i["name"] for i in r.worth_mentioning(r.running(self.UID, self.home, now=1_000_000 + 90_000))}
         self.assertTrue({"uoft", "legacy-mongo", "gascity"} <= names)
-        self.assertFalse(names & {"Claude session", "T3 Code", "Background", "SSH login"})
+        self.assertFalse(names & {"Claude session", "T3", "Background", "SSH login"})
         self.assertNotIn("tmux terminal", names)  # small
 
     def meta_file(self, k):

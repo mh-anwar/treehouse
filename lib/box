@@ -1,32 +1,6 @@
 #!/usr/bin/python3 -I
-"""box — your view of this shared machine.
-
-  box status [--agent|--json]      usage, limits, box load, pending deletions
-  box ports                        your port range (+ which are in use)
-  box running [--json]             what runs for you (containers, databases, servers, agents), RAM and age
-  box serve add NAME --about "what it does" --important|--safe-to-stop [--keep-running] [--hackathon-pause] -- CMD...
-                                   long-running server (survives logout/reboot); box help servers
-  box serve ls | describe NAME --about ... | keep NAME on|off | hackathon NAME pause|keep
-  box serve logs NAME | restart NAME | stop NAME | start NAME | rm NAME
-  box shared ls | create NAME --desc TEXT | describe NAME TEXT | set NAME [--port P] -- CMD... | start|stop|restart|rm NAME | logs NAME [-n N]
-                                   servers the whole group owns (code in /srv/shared/NAME); add --json
-  box clean [--dry-run]            the weekly safe cleanup, for your account, now: caches that rebuild themselves,
-                                   old Playwright builds, your Docker's build cache + untagged images (box help clean)
-  box restore [NAME]               put an archived project back in ~ (lists archives without NAME)
-  box rules                        the rules your agents are given
-  box t3 [pair|status|stop|logs]   your own T3 Code web UI: start it and get a pairing link
-  box setup [--check]              guided setup: git identity, GitHub, agent logins
-  box agents                       installed coding agents + whether you're logged in
-  box updates                      installed coding agent versions (they update every night)
-  box request "TEXT"               ask the owner for something (e.g. a system package)
-  box issue [--kind K] "TEXT"      log something that slowed you down or didn't work (agents do this)
-  box issues [--days N] [--json]   what's been logged in ~/.sharedbox/issues.jsonl
-  box msg [inbox|read ID|send USER|reply ID|done ID|sent|who]   messages between accounts (box help msg)
-  box projects [--json] | everywhere NAME on|off | sync   projects kept on all your boxes (box help projects)
-  box where [NAME] | --set TEXT [--until WHEN] | --clear | --name NAME   where someone is (box help where)
-  box team create NAME --members a,b | board | task | claim | done | wait | inbox set | crew start ROLE
-                                   hackathon team: one board, agents hand off directly (box team -h)
-"""
+"""box: your view of this treehouse machine, and everything your dashboard does, as commands.
+Agents: `box help` lists the topics (rules and details, read on demand)."""
 
 import argparse
 import fcntl
@@ -82,8 +56,8 @@ def my_limits():
 
 def cmd_limits(a):
     if ME.pw_name not in sb.admin_users(CFG) or sb.registry().get("users", {}).get(ME.pw_name):
-        sys.exit("box limits: only the owner's own accounts set their limits here. A friend's limits are set by the "
-                 "owner (`sudo sharedbox-admin limits NAME DISK_BUDGET_GB=N`); ask with `box request`.")
+        sys.exit("box limits: only the owner's own accounts set their limits here. To get more disk or memory, ask "
+                 "the owner: box request \"more disk please, because ...\"")
     if a.what == "disk" and a.value:
         if not a.value.isdigit() or not 1 <= int(a.value) <= 100000:
             sys.exit("box limits disk N: N is whole gigabytes, e.g. 50")
@@ -143,12 +117,12 @@ def undescribed_servers():
 
 
 def size_text(v):
-    """'28160M' -> '27.5G' (limits as people read them); '' for nothing."""
+    """'28160M' -> '27.5 GB' (limits as people read them); '' for nothing."""
     try:
         n = sb.parse_size(v) if v not in (None, "") else None
     except ValueError:
         return str(v)
-    return sb.human(n) if n else ""
+    return sb.size_text(n) if n else ""
 
 
 def running_line(it):
@@ -156,11 +130,11 @@ def running_line(it):
     return (f"`{sbrunning.clean(it['name'], 60)}` ({sbrunning.KIND_LABEL.get(it['kind'], it['kind']).lower()}"
             + (f", {sbrunning.clean(it['detail'], 60)}" if it.get("detail") and it["kind"] in ("database", "container")
                else "")
-            + f", {sb.human(it['mem'])}, up {sbrunning.ago(it.get('age'))})")
+            + f", {sb.size_text(it['mem'])}, up {sbrunning.ago(it.get('age'))})")
 
 
 def recent_oom_kills(days=2):
-    """What the box stopped for this account when memory ran out (root writes oom/USER.jsonl, 0640 root:USER,
+    """What the machine stopped for this account when memory ran out (root writes oom/USER.jsonl, 0640 root:USER,
     from the janitor tick)."""
     out = []
     try:
@@ -195,7 +169,7 @@ def archive_until_text():
     return f"restorable for {CFG['ARCHIVE_DAYS']} days with `box restore NAME`"
 
 
-REBOOT_BACK = ("Comes back by itself: `box serve` services, group servers (`box shared`), T3 Code. "
+REBOOT_BACK = ("Comes back by itself: `box serve` services, group servers (`box shared`), T3. "
                "Everything else stops (tmux, nohup, running builds): save work and finish long jobs before then.")
 
 
@@ -205,7 +179,7 @@ def advice(g):
         out.append(f"{fmt_ts(n['ts'])}: {sb.printable(n['text'])} Tell the user if it's what they were waiting for.")
     rb = sb.reboot_info(CFG)
     if rb["postponed"]:
-        out.append(f"The box is about to REBOOT (its scheduled reboot, {rb['schedule']}). It's waiting for agents "
+        out.append(f"The machine is about to REBOOT (its scheduled reboot, {rb['schedule']}). It's waiting for agents "
                    f"to finish their current turn, until {fmt_ts(rb['latest'])} at the latest. Wrap up now; don't "
                    f"start long jobs. {REBOOT_BACK}")
     elif rb["at"] and rb["why"] == "updates":
@@ -218,10 +192,10 @@ def advice(g):
     used = live.get("mem_used") if live.get("mem_used") is not None else live.get("mem", 0)
     cap = live.get("mem_max") or live.get("mem_high")
     if cap and used > 0.85 * cap:
-        out.append(f"You are using {sb.human(used)} of the {sb.human(cap)} this account can have. If memory runs out, "
+        out.append(f"You are using {sb.size_text(used)} of the {sb.size_text(cap)} this account can have. If memory runs out, "
                    "the machine stops whatever uses the most: free what you don't need (`box running`) and tell the user.")
     elif b.get("mem_avail") is not None and b["mem_avail"] < 0.1 * b["mem_total"]:
-        out.append(f"The machine is nearly out of memory ({sb.human(b['mem_avail'])} free). Avoid starting big jobs; "
+        out.append(f"The machine is nearly out of memory ({sb.size_text(b['mem_avail'])} free). Avoid starting big jobs; "
                    "`box running` shows what this account runs.")
     for k in recent_oom_kills():
         out.append(f"{fmt_ts(k['ts'])}: the machine ran out of memory and stopped {k['what']} to keep everything "
@@ -362,8 +336,8 @@ def cmd_reboot(a):
 
 def cmd_status(a):
     if (CFG.get("PUBLIC_MODE") or "").strip().lower() == "funnel":
-        print("Public access is off: Tailscale Funnel is no longer supported. The owner can set up Cloudflare instead "
-              "(sudo bash /usr/share/sharedbox/cloudflare-setup.sh).", file=sys.stderr)
+        print("The public website is off on this machine (its old setup isn't supported any more). Ask the owner to "
+              "turn the public site back on; T3 and the dashboard still work over Tailscale.", file=sys.stderr)
     if a.agent:
         try:
             auto_issues()
@@ -380,18 +354,21 @@ def cmd_status(a):
     lines = []
     if a.agent:
         lines.append(f"## Machine status for {g['user']} ({time.strftime('%H:%M')})")
-    lines.append(f"Machine: {b['level']} | load {b['loadavg'][0]:.1f}/{b['ncpu']} cpus | "
-                 f"RAM avail {sb.human(b['mem_avail'])}/{sb.human(b['mem_total'])} | "
-                 f"disk free {sb.human(b['disk_free'])}/{sb.human(b['disk_total'])}")
+    word = {"calm": "Normal", "moderate": "Busy", "busy": "Overloaded"}.get(b["level"], b["level"])
+    disk = (f"{size_text(b['disk_free'])} free of {size_text(b['disk_total'])}" if b.get("disk_total")
+            else "unknown")
+    lines.append(f"Machine: {word} (load {b['loadavg'][0]:.1f} of {b['ncpu']} cores) · "
+                 f"Memory: {size_text(b['mem_avail'])} free of {size_text(b['mem_total'])} · Disk: {disk}")
     if hackathon_line():
         lines.append(hackathon_line())
     if lim:
         mem_cap = size_text(lim["MEMORY_MAX"])
         mem_lim = (f"{size_text(lim['MEMORY_LOW'])} guaranteed, up to {mem_cap}" if lim.get("MEMORY_LOW") else mem_cap)
         lines.append(f"You: CPU {live.get('cpu_pct', 0)}% | "
-                     f"RAM {sb.human(live.get('mem_used') if live.get('mem_used') is not None else live.get('mem', 0))} ({mem_lim}) | "
-                     f"procs {live.get('pids', 0)}/{lim['TASKS_MAX']} | "
-                     f"disk {sb.human(j.get('disk')) if j.get('disk') else '?'} / {lim['DISK_BUDGET_GB']}G"
+                     f"RAM {size_text(live.get('mem_used') if live.get('mem_used') is not None else live.get('mem', 0))} ({mem_lim}) | "
+                     f"processes {live.get('pids', 0)} of {lim['TASKS_MAX']} | "
+                     + (f"disk {sb.size_text(j.get('disk'))} of {lim['DISK_BUDGET_GB']} GB" if j.get('disk') else
+                        f"disk not counted yet (you can use {lim['DISK_BUDGET_GB']} GB)")
                      + (f" (measured {fmt_ts(j['measured'])})" if j.get('measured') else ""))
         if g["ports"]:
             lines.append(f"Ports: {g['ports'][0]}-{g['ports'][1]}  |  servers: "
@@ -431,7 +408,7 @@ def cmd_ports(a):
     if not r:
         sys.exit(f"you are not a {BRAND} friend account; any free port is fine")
     used = [p for p in range(r[0], r[1] + 1) if port_in_use(p)]
-    print(f"your ports: {r[0]}-{r[1]}  ({r[0]} and {r[1]} are reserved for your T3 Code server)")
+    print(f"your ports: {r[0]}-{r[1]}  ({r[0]} and {r[1]} are reserved for your T3 server)")
     print("in use: " + (", ".join(map(str, used)) or "none"))
 
 
@@ -464,6 +441,10 @@ def cmd_boost(a):
 # ---------- running ----------
 
 def cmd_running(a):
+    if a.op == "keep":  # Home's "Still need it?" -> Keep it: don't flag it for a week
+        if not a.key:
+            sys.exit("box running keep KEY (the key from `box running`)")
+        return emit(portal_running_ok(a.key), a.json)
     if a.op == "stop":  # the Running card's Stop: only when the user asked for it
         if not a.key:
             sys.exit("box running stop KEY (the key from `box running`)")
@@ -477,11 +458,11 @@ def cmd_running(a):
         return
     lim = my_limits()
     total = sum(it["mem"] for it in items)
-    print(f"{sb.human(total)} in use; {size_text(lim.get('MEMORY_LOW')) or '?'} guaranteed, "
+    print(f"{sb.size_text(total)} in use; {size_text(lim.get('MEMORY_LOW')) or '?'} guaranteed, "
           f"up to {size_text(lim['MEMORY_MAX'])} while the machine has it free\n")
     print(f"{'RAM':>7}  {'KIND':<10} {'UP':>7} {'CPU':>6}  NAME")
     for it in items:
-        print(f"{sb.human(it['mem']):>7}  {sbrunning.KIND_LABEL.get(it['kind'], it['kind']):<10} "
+        print(f"{sb.size_text(it['mem']):>7}  {sbrunning.KIND_LABEL.get(it['kind'], it['kind']):<10} "
               f"{sbrunning.ago(it.get('age')):>7} {sbrunning.cpu_avg(it):>5}%  {sb.printable(it['name'])}"
               + (f"  ({sb.printable(it['about'])[:90]})" if it.get("about") else
                  f"  (no description yet, started with {sb.printable(it['exec'])[:60]}: box serve describe "
@@ -508,7 +489,7 @@ def unit(name):
     if not name.replace("-", "").replace("_", "").isalnum() or len(name) > 40:
         sys.exit("service name: letters, digits, - and _ only")
     if name in ("t3", "t3-proxy"):
-        sys.exit(f"service name: {name} is taken by T3 Code; pick another")
+        sys.exit(f"service name: {name} is taken by T3; pick another")
     return f"sb-{name}.service"
 
 
@@ -766,7 +747,7 @@ def cmd_serve(a):
         if r and port is None:
             port = next((p for p in range(r[0] + 1, r[1]) if not port_in_use(p)), None)  # first+last: T3
         if r and port in r:
-            sys.exit(f"port {port} is reserved for your T3 Code server; pick one from {r[0] + 1}-{r[1] - 1}")
+            sys.exit(f"port {port} is reserved for your T3 server; pick one from {r[0] + 1}-{r[1] - 1}")
         if r and port is not None and not (r[0] <= port <= r[1]):
             print(f"warning: port {port} is outside your range {r[0]}-{r[1]}", file=sys.stderr)
         if wd.startswith(HOME + "/") and wd != HOME:
@@ -868,13 +849,13 @@ def cmd_clean(a):
         return
     if a.verbose:
         for d in rep["deleted"]:
-            print(f"{'would delete' if a.dry_run else 'deleted'} {sb.human(d['bytes']):>8}  {d['path']}  ({d['reason']})")
+            print(f"{'would delete' if a.dry_run else 'deleted'} {sb.size_text(d['bytes']):>8}  {d['path']}  ({d['reason']})")
     else:
         for line in sbweekly.summarize(rep["deleted"], a.dry_run, sb.human):
             print(line)
     if not rep["deleted"]:
         print("Nothing to clean.")
-    print(f"total: {sb.human(rep['freed'])}" + (" (dry run: nothing was deleted)" if a.dry_run else ""))
+    print(f"total: {sb.size_text(rep['freed'])}" + (" (dry run: nothing was deleted)" if a.dry_run else ""))
 
 
 def cmd_weekly_clean(a):
@@ -955,9 +936,9 @@ def render_rules(notices=()):
                       "asked you to. `box invite --json` gives `username`, `link`, `expires`. "
                       "Manage friends and their requests with `box friends` (no sudo; `box help friends`).")
     if ME.pw_name in sb.admin_users(CFG):
-        extras.append("- The box's own efficiency (kernel, memory, disk, network): `box tune` (read-only). Run it at setup, "
+        extras.append("- The machine's own efficiency (kernel, memory, disk, network): `box tune` (read-only). Run it at setup, "
                       "after updates, and when the machine itself feels slow; `box help tune` for finding more and getting "
-                      "fixes into treehouse so every box gets them.")
+                      "fixes into treehouse so every machine gets them.")
     if "gh" in tv:
         extras.append("- GitHub: `gh` is installed. If `gh auth status` fails, log the user in yourself "
                       "(`box help logins`). Clones and CI: `box help git` (blobless clones, faster workflows).")
@@ -972,18 +953,41 @@ BASE_PATH_NOTE = ("It's served under that path (prefix stripped, `X-Forwarded-Pr
                   "`--server.baseUrlPath`).")
 
 
+def t3_idle_text():
+    try:
+        h = float(CFG.get("T3_IDLE_STOP_HOURS") or 0)
+    except ValueError:
+        h = 0
+    return "never (T3_IDLE_STOP_HOURS=0 on this machine)" if h <= 0 else f"{h:g} hour" + ("" if h == 1 else "s")
+def machine_name():
+    """This machine's name as people see it: its name in BOXES (the dashboard and the other machines use it), else
+    the hostname."""
+    import sbfed
+    return sbfed.self_name(sb.boxes(CFG), sb.tailscale_ip4(), socket.gethostname())
+
+
+def machines_text():
+    """`box help machines`: the owner's other machines, from BOXES (never hard-coded hosts or hardware)."""
+    others = [(n, ip) for n, ip in sb.boxes(CFG).items() if n != machine_name()]
+    if not others:
+        return "Right now it's the only one."
+    return ("The others: " + ", ".join(f"{n} (Tailscale {ip})" for n, ip in others)
+            + ". Their hardware differs, so check before you move work there.")
+
+
 def rule_fields(tl="", extras=(), nt=""):
     """Values for the {placeholders} in AGENTS.md (always loaded) and HELP.md (`box help`, on demand)."""
     lim = my_limits()
     r = ports() or (0, 0)
     return dict(
-        host=socket.gethostname(), ip=sb.tailscale_ip4() or socket.gethostname(), user=ME.pw_name,
+        host=machine_name(), ip=sb.tailscale_ip4() or socket.gethostname(), user=ME.pw_name, machines=machines_text(),
         mem_high=lim["MEMORY_HIGH"], mem_max=size_text(lim["MEMORY_MAX"]), tasks=lim["TASKS_MAX"],
         mem_low=size_text(lim.get("MEMORY_LOW")) or size_text(lim["MEMORY_MAX"]),
         oom_seconds=CFG.get("OOM_PRESSURE_SECONDS", "30"),
         boost_mem=size_text(lim["MEMORY_MAX"]), boost_hours=CFG["BOOST_HOURS"],  # old templates only
-        disk=f"{lim['DISK_BUDGET_GB']}G", ports=f"{r[0]}-{r[1]}", t3_ports=f"{r[0]} and {r[1]}",
-        ports_line=(f"Ports: **{r[0]}-{r[1]}** only (the first and last are the user's T3 Code)." if r != (0, 0) else
+        disk=f"{lim['DISK_BUDGET_GB']} GB", ports=f"{r[0]}-{r[1]}", t3_ports=f"{r[0]} and {r[1]}",
+        t3_quiet=CFG.get("T3_RESTART_QUIET_MIN") or "20", t3_idle=t3_idle_text(),
+        ports_line=(f"Ports: **{r[0]}-{r[1]}** only (the first and last are the user's T3)." if r != (0, 0) else
                     "Ports: no fixed range for this account; check `ss -ltn` and pick a free one."),
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
         cache_ttl=CFG["CACHE_TTL_DAYS"], clean_when=clean_when(),
@@ -1034,8 +1038,8 @@ def connect_text():
     """`box help connect`: how this user's laptop agent connects (SSH through Cloudflare), or why it can't yet."""
     pub, ssh_host = sb.public_url(CFG), sb.ssh_host(CFG)
     if not ssh_host:
-        return ("SSH through Cloudflare isn't turned on for this box"
-                + (f" (the owner turns it on with `sudo sharedbox-admin cloudflare ssh`; the site is {pub})" if pub
+        return ("SSH through Cloudflare isn't turned on for this machine"
+                + (f" (ask the owner to turn on SSH for the public site, {pub})" if pub
                    else " (it needs the Cloudflare login; until then they connect over Tailscale)") + ".")
     return (f"It's on: their laptop reaches this account with `ssh {ME.pw_name}@{ssh_host}` through "
             f"`cloudflared access ssh`. The ready prompt for their agent is on {pub}/_box/me (Account tab, "
@@ -1043,10 +1047,10 @@ def connect_text():
 
 
 def clean_when():
-    """'every Sunday' / 'off on this box' for HELP.md's clean topic."""
+    """'every Sunday' / 'off on this machine' for HELP.md's clean topic."""
     import sbweekly
     if not sbweekly.enabled(CFG):
-        return "only on demand on this box (the owner turned the weekly run off)"
+        return "only on demand on this machine (the owner turned the weekly run off)"
     names = dict(zip(sbweekly.DAYS, ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
     return f"every {names[sbweekly.weekday(CFG)]}"
 
@@ -1063,7 +1067,78 @@ def help_topics():
     for chunk in raw.split("@@ ")[1:]:
         name, _, body = chunk.partition("\n")
         out[name.strip()] = body.format(**fields).strip()
+    # made from the code, so they can't drift: the words people see, and every command
+    out["words"] = ("The words treehouse uses with people, one meaning each. Use them with the user too.\n"
+                    + "\n".join(f"- {t}: {d.format(machine=fields['host'])}" for t, d in sb.GLOSSARY))
+    out["commands"] = commands_text()
     return out
+
+
+TOPIC_LINES = {  # `box help`: one line per topic (a test checks every topic has one)
+    "logins": "signing the user in to Claude, ChatGPT, Gemini, GitHub and the T3 app",
+    "files": "where projects live, when they're archived, handing files to the user",
+    "clean": "the weekly cleanup of caches that rebuild themselves",
+    "memory": "memory limits, what happens when it runs out, what's running",
+    "git": "faster clones and CI",
+    "reboots": "nightly restarts: what comes back, what doesn't",
+    "servers": "keeping a server running: describe it, protect it, logs",
+    "shared": "group servers the whole group owns",
+    "browsers": "headless Chrome and Playwright without root",
+    "skills": "extra abilities for agents, installed on request",
+    "updates": "how the coding agents stay up to date",
+    "t3": "T3's version, its restarts onto new releases, and sleep when unused",
+    "connect": "the user's laptop agent and the T3 app",
+    "requests": "asking the owner for a program or a change; problem reports",
+    "friends": "(owner) friends, invites, requests, the machine list",
+    "lean": "finding and fixing wasted memory and CPU",
+    "tune": "how efficient the machine itself is",
+    "network": "how the machine recovers its network by itself",
+    "docker": "rootless Docker for your account",
+    "hackathon": "hackathon mode: what changes while it's on",
+    "machines": "the owner's other machines, and when to move work there",
+    "projects": "the same project on all the user's machines",
+    "msg": "messages between people and their agents",
+    "where": "where someone is, and your own status",
+    "me": "the user's own agent history (~/me)",
+    "telemetry": "what the machine did minute by minute",
+    "settings": "everything on the dashboard, as commands",
+    "words": "the words treehouse uses with people",
+    "commands": "every box command, one line each",
+}
+
+
+MAIN_COMMANDS = (  # `box -h` and `box help commands` lead with these
+    ("status", "usage, limits and what needs attention"), ("running", "what runs for you, with memory and age"),
+    ("serve", "keep a server of yours running (box help servers)"), ("shared", "the group's servers"),
+    ("login", "sign in to Claude, ChatGPT, Gemini, GitHub, the T3 app"), ("t3", "your T3: start it, pair a browser"),
+    ("msg", "messages between people (box help msg)"), ("where", "where someone is"),
+    ("request", "ask the owner for a program or a change"), ("restore", "bring back an archived project"),
+    ("issue", "note what about the machine slowed you down, for the owner"),
+    ("projects", "projects on all your machines"), ("help", "box help <topic>: details, read on demand"))
+
+
+def commands_text():
+    """`box help commands`: the main commands, then every other one with its line (internal `_` ones never)."""
+    subs = parser_commands()
+    main = dict(MAIN_COMMANDS)
+    out = ["Main commands:"] + [f"  box {k:<11} {v}" for k, v in MAIN_COMMANDS]
+    rest = sorted(k for k in subs if k not in main and not k.startswith("_") and k not in HIDDEN_COMMANDS)
+    out.append("\nEverything else:")
+    out += [f"  box {k:<11} {subs[k] or ''}".rstrip() for k in rest]
+    out.append("\nEach command's options: box COMMAND -h.")
+    return "\n".join(out)
+
+
+HIDDEN_COMMANDS = ("heavy", "boost", "machines")  # old names (box machines = box boxes) and old scripts  # still accepted from old scripts, never offered
+
+
+def parser_commands():
+    """{name: one-line help} of every `box` subcommand, from the real parser."""
+    p = build_parser()
+    for act in p._actions:
+        if isinstance(act, argparse._SubParsersAction):
+            return {k: (p.cmd_helps.get(k) or "").split("(box help")[0].strip() for k in act.choices}
+    return {}
 
 
 def cmd_help(a):
@@ -1071,21 +1146,28 @@ def cmd_help(a):
     if not topics:
         sys.exit("box help: the help file is missing on this machine (HELP.md). Tell the owner; "
                  "meanwhile `box rules` has the basics.")
-    a.topic = {"machines": "boxes", "machine": "boxes", "accounts": "logins", "server": "servers"}.get(a.topic, a.topic)
+    a.topic = {"boxes": "machines", "machine": "machines", "accounts": "logins", "server": "servers",
+               "glossary": "words", "command": "commands"}.get(a.topic, a.topic)
     if a.topic and a.topic in topics:
         print(topics[a.topic])
         return
-    if a.topic and a.topic not in ("all",):
-        print(f"no help topic {a.topic!r}.", file=sys.stderr)
     if a.topic == "all":
         print("\n\n".join(f"## {k}\n{v}" for k, v in topics.items()))
         return
-    print("box help <topic>: details agents read on demand.\ntopics: " + ", ".join(topics) + ", all")
-    print("\ncommands: box -h")
+    out = sys.stderr if a.topic else sys.stdout
+    if a.topic:
+        print(f"box help: there's no topic called {a.topic!r}.", file=out)
+    print("box help <topic>: details agents read on demand. Topics:", file=out)
+    for k in topics:
+        print(f"  {k:<10} {TOPIC_LINES.get(k, '')}".rstrip(), file=out)
+    print("  all        every topic at once", file=out)
+    print("\nevery command: box help commands", file=out)
+    if a.topic:
+        sys.exit(2)
 
 
 def updates_text():
-    """First sentence of the Reboots section in AGENTS.md: how this box gets its updates."""
+    """First sentence of the Reboots section in AGENTS.md: how this machine gets its updates."""
     if sbdistro.current() == "arch":
         return ("System updates are installed by the owner, not automatically. When one needs a reboot "
                 "(usually a kernel update), the machine usually")
@@ -1119,7 +1201,7 @@ def sync_agent_files(notices=()):
 def cmd_t3_wake(a):
     """The janitor's check on a stopped (e.g. rebooted) T3: scheduled tasks on = start it, so they run on time."""
     woke = False
-    if shutil.which("t3") and ports() and sb.tailscale_ip4() and t3_db_state()[1]:
+    if shutil.which("t3") and t3_ports() and sb.tailscale_ip4() and t3_db_state()[1]:
         host, port, env = t3_env()
         if not t3_up(host, env):
             t3_ensure(host, port, env, quiet=True)
@@ -1246,7 +1328,7 @@ def cmd_tune_shell():
 
 
 def cmd_tune(a):
-    """The box's own efficiency (kernel, memory, disk, network): read-only report from sharedbox-tune.
+    """The machine's own efficiency (kernel, memory, disk, network): read-only report from sharedbox-tune.
     `box tune disable|enable NAME`: the owner's accounts switch a service from sharedbox-tune's fixed list."""
     if a.op == "shell":
         return cmd_tune_shell()
@@ -1273,6 +1355,12 @@ def cmd_rules(a):
 T3_UNIT = "sb-t3.service"
 T3_SOCKET = "sb-t3.socket"        # holds the friend's T3 port; the first connection starts T3 (e.g. after a reboot)
 T3_PROXY = "sb-t3-proxy.service"  # passes connections from that port to T3's own port
+T3_OLD = "t3code.service"         # T3's own boot service (`t3 up`, the desktop app): the owner's T3 before the move
+T3_MANAGED_MARK = os.path.join(HOME, ".sharedbox", "t3-managed")  # the owner's T3 runs as sb-t3; t3code.service can't
+T3_OLD_DROPIN = os.path.join(UNIT_DIR, T3_OLD + ".d", "sb-managed.conf")
+T3_OWNER_JSON = os.path.join(HOME, ".sharedbox", "t3-owner.json")  # {"listen": "all"|"tailscale", "moved": ts}
+T3_TICK_STATE = os.path.join(HOME, ".sharedbox", "t3-tick.json")   # last time work/clients were seen (the tick)
+T3_BACKUP = os.path.join(HOME, ".t3", "sb-backup", "statev2-before-move.sqlite")
 PROXYD = "/usr/lib/systemd/systemd-socket-proxyd"
 
 # T3 Code starts on the first connection (after a reboot, or after `box t3 stop`), so it's always "there" for
@@ -1317,7 +1405,7 @@ def t3_db_state():
 def t3_app_sessions():
     """The T3 apps (desktop, or paired by the setup prompt: "<user> T3 app", see portal_t3) that are connected to
     this friend's T3 right now: not revoked, not expired (T3 sessions last 30 days). Newest first, as dicts with
-    os, ip (the laptop's Tailscale IP as the box saw it), version and last (date it last connected).
+    os, ip (the laptop's Tailscale IP as the machine saw it), version and last (date it last connected).
     A read-only look at T3's database; trouble = []."""
     import sqlite3
     db = os.path.join(os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3"), "userdata", "statev2.sqlite")
@@ -1353,20 +1441,64 @@ def t3_app_paired():
     return bool(t3_app_sessions())
 
 
+def is_t3_owner():
+    """This is the owner's own account (OWNER_T3_USER, default the first ADMIN_USERS), not a friend's."""
+    pw = sb.owner_account(CFG)
+    return bool(pw) and pw.pw_uid == ME.pw_uid and not is_friend()
+
+
+def owner_t3_ports():
+    """(public, inner) for the owner's T3: OWNER_T3_PORT (default 3773, T3's own default, so paired apps keep
+    working) and OWNER_T3_INNER_PORT (default the next port)."""
+    pub = CFG.get("OWNER_T3_PORT", "").strip()
+    pub = int(pub) if pub.isdigit() else 3773
+    inner = CFG.get("OWNER_T3_INNER_PORT", "").strip()
+    return pub, int(inner) if inner.isdigit() else pub + 1
+
+
+def t3_ports():
+    """(public, inner) ports of this account's T3 under `box t3`: a friend's block (first, last), the owner's once it
+    has moved from T3's own t3code.service (T3_MANAGED_MARK), else None."""
+    if is_friend():
+        return ports()
+    if is_t3_owner() and os.path.exists(T3_MANAGED_MARK):
+        return owner_t3_ports()
+    return None
+
+
+def t3_service_env():
+    """KEY=VALUE lines of ~/.t3/service.env (what T3's own boot service gave its server, e.g. DOCKER_HOST): the
+    owner's sb-t3 keeps them. Host and port come from `box t3`."""
+    out = {}
+    try:
+        with open(os.path.join(HOME, ".t3", "service.env")) as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if (sep and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and re.fullmatch(r"[^\s'\"\\]*", v)
+                        and k not in ("T3CODE_HOST", "T3CODE_PORT", "T3CODE_HOME", "T3_BOOT_SERVICE_UNIT")):
+                    out[k] = v
+    except OSError:
+        pass
+    return out
+
+
 def t3_env():
-    """(tailscale ip, public T3 port, env for `t3 serve`/`t3 pair`). T3 itself listens on the block's last port."""
-    r = ports()
+    """(tailscale ip, public T3 port, env for `t3 serve`/`t3 pair`). T3 itself listens on the inner port (a friend's
+    block's last port; the owner's OWNER_T3_INNER_PORT)."""
+    r = t3_ports()
     host = sb.tailscale_ip4()
     if not r or not host:
-        sys.exit("box t3: needs a friend account and Tailscale running on the machine")
-    return host, r[0], {"T3CODE_HOST": host, "T3CODE_PORT": str(r[1]),
-                        "T3CODE_PROJECT_ROOT": HOME, "T3CODE_NO_BROWSER": "1"}
+        sys.exit("box t3: needs a friend account (or the owner's, once its T3 has moved to `box t3`) and Tailscale "
+                 "running on the machine")
+    env = t3_service_env() if not is_friend() else {}
+    env.update({"T3CODE_HOST": host, "T3CODE_PORT": str(r[1]), "T3CODE_PROJECT_ROOT": HOME, "T3CODE_NO_BROWSER": "1"})
+    return host, r[0], env
 
 
 def t3_legacy(host):
     """An older T3 (from before the socket) still running on the public port itself, without the socket?"""
     return (sctl("is-active", T3_SOCKET, capture=True).stdout.strip() != "active"
-            and listening(host, ports()[0]))
+            and listening(host, t3_ports()[0]))
 
 
 def t3_up(host, env):
@@ -1376,7 +1508,7 @@ def t3_up(host, env):
 
 def t3_live_env(host, env):
     """Env for talking to the running T3 (`t3 pair`): an older one listens on the public port."""
-    return dict(env, T3CODE_PORT=str(ports()[0])) if t3_legacy(host) else env
+    return dict(env, T3CODE_PORT=str(t3_ports()[0])) if t3_legacy(host) else env
 
 
 def public_t3_url(url, host, port):
@@ -1391,7 +1523,9 @@ def t3_pair(host, port, env, ttl="30m", label=None):
     url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines()
                 if l.startswith("Pairing URL:")), None)
     if not url:
-        sys.exit("box t3: pairing failed:\n" + (r.stdout + r.stderr)[-1500:])
+        first = next((ln.strip() for ln in (r.stderr + r.stdout).splitlines() if ln.strip()), "no output")
+        sys.exit(f"box t3: T3 couldn't make a pairing link ({sb.printable(first)[:160]}). Try again in a minute; "
+                 "details: box t3 logs")
     return public_t3_url(url, host, port)
 
 
@@ -1405,9 +1539,14 @@ def listening(host, port):
 
 def t3_write_units(host, env):
     """Write the T3, proxy and socket user units. True if any changed (then daemon-reload has run)."""
-    public, inner = ports()[0], env["T3CODE_PORT"]
+    public, inner = t3_ports()[0], env["T3CODE_PORT"]
+    # the owner's T3 keeps answering where T3's own service listened: every address (its LAN mode) or Tailscale's
+    listen = str(public) if not is_friend() and (sb.read_json(T3_OWNER_JSON, {}) or {}).get("listen") == "all" \
+        else f"{host}:{public}"
+    # started = answering; gives up at once if T3 itself exited (a bad port, a database it can't open)
     ready = (f"for i in $(seq 600); do c=$(curl -s -o /dev/null -w %{{http_code}} --max-time 2 "
-             f"http://{host}:{inner}/api/auth/session); [ \"$c\" = 200 ] && exit 0; sleep 0.5; done; exit 1")
+             f"http://{host}:{inner}/api/auth/session); [ \"$c\" = 200 ] && exit 0; "
+             "[ -n \"$MAINPID\" ] && ! kill -0 \"$MAINPID\" 2>/dev/null && exit 1; sleep 0.5; done; exit 1")
     t3 = ["[Unit]", "Description=T3 Code (box t3; " + T3_SOCKET + " starts it)",
           "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
           "[Service]", "WorkingDirectory=%h",
@@ -1416,11 +1555,11 @@ def t3_write_units(host, env):
     t3 += [f"Environment={k}={sd_escape(v)}" for k, v in env.items()]
     t3 += ["ExecStart=/usr/local/bin/t3 serve",
            f"ExecStartPost=/bin/bash -c '{sd_escape(ready)}'",  # started = answering (first start downloads T3)
-           "TimeoutStartSec=330", "SuccessExitStatus=143 SIGTERM", "Restart=on-failure", "RestartSec=5", ""]
+           "TimeoutStartSec=330", "SuccessExitStatus=130 143 SIGTERM", "Restart=on-failure", "RestartSec=5", ""]
     proxy = ["[Unit]", "Description=T3 Code wake-up proxy", f"Requires={T3_UNIT}", f"After={T3_UNIT}",
              f"BindsTo={T3_UNIT}", "", "[Service]", f"ExecStart={PROXYD} {host}:{inner}", ""]
     sock = ["[Unit]", "Description=T3 Code port (wakes T3 on the first connection)", "",
-            "[Socket]", f"ListenStream={host}:{public}", "FreeBind=yes", f"Service={T3_PROXY}", "",
+            "[Socket]", f"ListenStream={listen}", "FreeBind=yes", f"Service={T3_PROXY}", "",
             "[Install]", "WantedBy=sockets.target", ""]
     changed = False
     for name, lines in ((T3_UNIT, t3), (T3_PROXY, proxy), (T3_SOCKET, sock)):
@@ -1454,7 +1593,7 @@ def t3_ensure(host, port, env, quiet=False):
 
 
 def owner_t3():
-    """(host, port) of the owner's own T3 Code (OWNER_T3_PORT) when this is the owner's account, else None."""
+    """(host, port) of the owner's own T3 (OWNER_T3_PORT) when this is the owner's account, else None."""
     pw, port = sb.owner_account(CFG), CFG.get("OWNER_T3_PORT", "").strip()
     if not pw or pw.pw_uid != ME.pw_uid or not port.isdigit():
         return None
@@ -1463,18 +1602,23 @@ def owner_t3():
 
 
 def cmd_t3(a):
-    own = owner_t3() if not is_friend() else None
-    if own:  # the owner's account: their own T3 Code runs on OWNER_T3_PORT, not under `box t3`
-        host, port = own
+    if a.action == "versions":
+        return t3_versions(a)
+    own = owner_t3() if is_t3_owner() and not t3_ports() else None
+    if own or (is_t3_owner() and not t3_ports()):  # the owner's T3 still runs as T3's own t3code.service
+        host, port = own or (sb.tailscale_ip4() or "127.0.0.1", owner_t3_ports()[0])
         up = listening(host, port) or listening("127.0.0.1", port)
+        move = (f"{BRAND} moves it to `box t3` (stable releases, sleeps when unused) the first time no agent has "
+                f"worked in it for {sb.cfg_int(CFG, 'T3_RESTART_QUIET_MIN')} minutes.")
         if a.action == "status":
-            pub = f"; on the public site: {sb.public_url(CFG)}/" if sb.public_url(CFG) else ""
-            print(f"T3 Code (the owner's own): {'running' if up else 'NOT running'} on port {port}{pub}")
+            pub = f"; on the public site: {sb.public_url(CFG)}/" if sb.public_url(CFG) and own else ""
+            print(f"T3 (the owner's own, T3's t3code.service): {'running' if up else 'NOT running'} on port "
+                  f"{port}{pub}. " + (move if t3_old_installed() else ""))
             return
-        sys.exit(f"box t3 {a.action}: this is the owner's account; its T3 Code is the owner's own on port "
-                 f"{port} ({'running' if up else 'not running'}), not managed by `box t3`.")
+        sys.exit(f"box t3 {a.action}: this is the owner's account; its T3 still runs as T3's own t3code.service "
+                 f"on port {port} ({'running' if up else 'not running'}). " + (move if t3_old_installed() else ""))
     if not shutil.which("t3"):
-        sys.exit('T3 Code is not installed on this box. Ask the owner: box request "install t3 (npm)"')
+        sys.exit('T3 is not installed on this machine. Ask the owner: box request "install t3 (npm)"')
     host, port, env = t3_env()
     if a.action == "stop":  # fully off: no waking either, until `box t3` or the T3 button
         sctl("disable", "--now", T3_SOCKET, capture=True)
@@ -1484,14 +1628,18 @@ def cmd_t3(a):
     if a.action == "status":
         up = t3_up(host, env)
         wakes = sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active"
-        state = ("running" if up else "stopped (it starts by itself in a few seconds when opened)"
+        ver, target = t3_running_version() if up else "", sb.t3_box_version()
+        state = ("running" + (f" {ver}" if ver else "") if up else "asleep (wakes when you open it)"
                  if wakes else "not running (`box t3` starts it)")
-        print(f"T3 Code: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in this browser")
+        if up and ver and target and ver != target:
+            state += f"; moves to {target} the next time no agent has worked in it for " \
+                     f"{sb.cfg_int(CFG, 'T3_RESTART_QUIET_MIN')} minutes"
+        print(f"T3: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in this browser")
         return
     # start (if needed) + pair
     t3_ensure(host, port, env)
     if not t3_up(host, env):
-        print("starting T3 Code (the first start downloads it, about 1 minute)…", file=sys.stderr)
+        print("starting T3 (the first start downloads it, about 1 minute)…", file=sys.stderr)
     deadline = time.time() + 300
     while not t3_up(host, env):
         if time.time() > deadline:
@@ -1523,7 +1671,7 @@ T3_PAIR_URL={url}""")
         return
     url = t3_pair(host, port, t3_live_env(host, env))
     print(f"""
-T3 Code is running at http://{host}:{port}/ (only you can use it, after pairing)
+T3 is running at http://{host}:{port}/ (only you can use it, after pairing)
 
 Open this link in your browser within 30 minutes to pair it:
 
@@ -1532,6 +1680,438 @@ Open this link in your browser within 30 minutes to pair it:
 Easiest from now on: open {portal_url()} on any device and click "Open T3 in this browser".
 First time? Log in to your agent on that page too; T3 uses that login.
 T3_PAIR_URL={url}""")
+
+
+# ---------- T3 Code: idle restarts onto the box's version, sleep, the owner's move (janitor tick) ----------
+# The janitor's tick (every 10 min, root) runs `box _t3-tick` as every account with a T3. Root only reads and decides
+# what it passes in (the target version, the hackathon flag, whether this account's agents used CPU in its own
+# sample); this side reads T3's database read-only and its own process tree, then at most:
+#   - restarts T3 (sb-t3.service; the socket stays, so a client reconnects by itself) onto the box's version, once
+#     nothing has run in it for T3_RESTART_QUIET_MIN;
+#   - puts it to sleep (stops sb-t3 + its proxy, the socket stays and the next visit wakes it in a few seconds)
+#     after T3_IDLE_STOP_HOURS with no client and no work, never during hackathon mode or with scheduled tasks on;
+#   - wakes a sleeping T3 that has scheduled tasks (T3 skips a fixed-time run it was down for);
+#   - the owner only, once: moves their T3 from T3's own t3code.service (which T3 and its desktop app update to
+#     any channel, from a launcher path pinned at install time) to sb-t3 like everyone's, when idle; if the new one
+#     doesn't answer, t3code.service comes back (with the database copy, if anything migrated it).
+# "Work" is judged by "not finished" in T3's tables (unknown is never idle) plus processes: agents using CPU,
+# commands an agent started (background jobs, watchers), programs in T3's terminals.
+
+T3_DONE = ("completed", "failed", "cancelled", "interrupted", "rolled_back", "resolved", "expired")
+T3_STALE = 86400  # a row still "running" after a day without an update is a leftover from a crash
+T3_MOVE_RETRY = 86400  # a failed move of the owner's T3 is tried again after this long (or for a new version)
+
+
+def iso_ts(v):
+    """'2026-11-28T06:17:37.784Z' -> epoch (UTC), else 0."""
+    import calendar
+    try:
+        return calendar.timegm(time.strptime(str(v)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return 0
+
+
+def t3_db_path():
+    return os.path.join(os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3"), "userdata", "statev2.sqlite")
+
+
+def t3_db_work(db=None, now=None):
+    """(reasons T3 is working, last time work started or ended, last time a client connected) from a read-only look
+    at T3's database. A table this T3 version doesn't have counts as nothing; any other trouble counts as working."""
+    import sqlite3
+    db, now = db or t3_db_path(), now or time.time()
+    if not os.path.exists(db):
+        return [], 0, 0
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t))  # noqa: E731
+    done = ", ".join(f"'{x}'" for x in T3_DONE)
+    old = iso(now - T3_STALE)
+    checks = [
+        ("an agent turn is running", "SELECT count(*) FROM orchestration_v2_projection_runs "
+         f"WHERE status NOT IN ({done}) AND completed_at IS NULL AND requested_at > ?", (old,)),
+        ("an agent turn is running", "SELECT count(*) FROM orchestration_v2_projection_provider_turns "
+         "WHERE status = 'running' AND completed_at IS NULL AND started_at > ?", (old,)),
+        ("a command, tool or subagent is running", "SELECT count(*) FROM orchestration_v2_projection_turn_items "
+         f"WHERE type IN ('command_execution', 'dynamic_tool', 'subagent') AND status NOT IN ({done}) AND updated_at > ?",
+         (old,)),
+        ("a subagent is running", "SELECT count(*) FROM orchestration_v2_projection_subagents "
+         f"WHERE status NOT IN ({done}) AND completed_at IS NULL AND updated_at > ?", (old,)),
+        ("an agent is waiting for an answer", "SELECT count(*) FROM orchestration_v2_projection_runtime_requests "
+         f"WHERE status NOT IN ({done}) AND resolved_at IS NULL AND created_at > ?", (old,)),
+        ("a new thread is being set up", "SELECT count(*) FROM orchestration_v2_thread_launch_workflows "
+         f"WHERE status NOT IN ({done}, 'committed', 'succeeded') AND updated_at > ?", (old,)),
+        ("a scheduled task is due", "SELECT count(*) FROM scheduled_tasks WHERE enabled = 1 AND next_run_at BETWEEN ? AND ?",
+         (iso(now - 300), iso(now + 1800))),
+    ]
+    out, last_work, last_client = [], 0, 0
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=10)
+    except sqlite3.Error as ex:
+        return [f"can't read T3's database ({ex})"], now, 0
+    try:
+        for what, sql, args in checks:
+            try:
+                if con.execute(sql, args).fetchone()[0] and what not in out:
+                    out.append(what)
+            except sqlite3.Error as ex:
+                if "no such table" not in str(ex) and "no such column" not in str(ex):
+                    out.append(f"can't tell whether {what.split(' is ')[0]} is running ({ex})")
+        for sql in ("SELECT max(max(requested_at, coalesce(completed_at, ''))) FROM orchestration_v2_projection_runs",
+                    "SELECT max(max(started_at, coalesce(completed_at, ''))) FROM orchestration_v2_projection_provider_turns"):
+            try:
+                last_work = max(last_work, iso_ts(con.execute(sql).fetchone()[0]))
+            except sqlite3.Error:
+                pass
+        try:
+            last_client = iso_ts(con.execute("SELECT max(last_connected_at) FROM auth_sessions "
+                                             "WHERE revoked_at IS NULL").fetchone()[0])
+        except sqlite3.Error:
+            pass
+    finally:
+        con.close()
+    return out, last_work, last_client
+
+
+def t3_agents_cgroup():
+    """T3 starts each agent session, terminal and preview browser in its own scope under app-t3code.slice."""
+    uid = ME.pw_uid
+    return f"{sb.CGROUP_ROOT}/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/app-t3code.slice"
+
+
+SHELLS = {"bash", "sh", "zsh", "fish", "dash"}
+
+
+def t3_proc_work(cg=None):
+    """Reasons from T3's process tree: commands an agent session still runs (Claude Code's background jobs and
+    watchers outlive the turn in T3's database) and programs other than a shell in T3's terminals."""
+    cg = cg or t3_agents_cgroup()
+    agent_cmds = terminal = 0
+    for root, _, files in os.walk(cg):
+        if "cgroup.procs" not in files:
+            continue
+        name = os.path.basename(root)
+        is_term = name.startswith("t3code-terminal-")
+        try:
+            pids = open(os.path.join(root, "cgroup.procs")).read().split()
+        except OSError:
+            continue
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read(4096)
+                with open(f"/proc/{pid}/comm") as f:
+                    comm = f.read().strip()
+            except OSError:
+                continue
+            if is_term and comm not in SHELLS:
+                terminal += 1
+            elif not is_term and b"/shell-snapshots/snapshot-" in cmd:
+                agent_cmds += 1
+    out = []
+    if agent_cmds:
+        out.append("commands an agent started are still running")
+    if terminal:
+        out.append("a program is running in a T3 terminal")
+    return out
+
+
+def t3_runtime_info():
+    """~/.t3/userdata/server-runtime.json when the server it describes is still running as this account, else {}."""
+    rt = sb.read_json(os.path.join(HOME, ".t3", "userdata", "server-runtime.json"), {}) or {}
+    pid = rt.get("pid") if isinstance(rt, dict) else None
+    try:
+        if not isinstance(pid, int) or os.stat(f"/proc/{pid}").st_uid != ME.pw_uid:
+            return {}
+    except OSError:
+        return {}
+    return rt
+
+
+def t3_running_version():
+    v = str(t3_runtime_info().get("serverVersion") or "")
+    return v if sb.T3_VERSION_RE.fullmatch(v) else ""
+
+
+def t3_old_installed():
+    return os.path.exists(os.path.join(UNIT_DIR, T3_OLD))
+
+
+def t3_old_active():
+    return sctl("is-active", T3_OLD, capture=True).stdout.strip() in ("active", "activating", "reloading")
+
+
+def t3_http_ok(host, port):
+    import urllib.request
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://{host}:{port}/api/auth/session", timeout=5) as r:
+            return r.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def t3_migration(db):
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=10)
+        try:
+            return con.execute("SELECT max(migration_id) FROM effect_sql_migrations").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def t3_backup(db, dest):
+    """A consistent copy of T3's database while it runs (SQLite's online backup), owner-only."""
+    import sqlite3
+    os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+    tmp = dest + ".tmp"
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    src = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=30)
+    dst = sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, dest)
+
+
+def t3_stage(db):
+    """Download the T3 version the box runs (touches no database) and ask it whether it can open this one.
+    Returns (version, problem)."""
+    env = dict(user_env(), T3CODE_HOME=os.path.join(HOME, ".t3"))
+    try:
+        r = subprocess.run(["/usr/local/bin/t3", "--version"], env=env, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as ex:
+        return "", f"couldn't download T3 ({ex})"
+    vers = sb.T3_VERSION_RE.findall(r.stdout)
+    if r.returncode != 0 or not vers:
+        return "", "couldn't download T3: " + (r.stdout + r.stderr)[-300:]
+    ver = vers[-1]
+    binary = os.path.join(HOME, ".t3", "runtime", "versions", ver, "t3")
+    if not os.path.exists(db):
+        return ver, ""
+    try:
+        p = subprocess.run([binary, "__service-preflight", "--database-path", db, "--launcher-protocol", "4"],
+                           env=env, capture_output=True, text=True, timeout=300)
+        res = json.loads((p.stdout.strip().splitlines() or ["null"])[-1])
+    except (OSError, subprocess.SubprocessError, ValueError) as ex:
+        return "", f"T3 {ver} couldn't check the database ({ex})"
+    if not isinstance(res, dict) or res.get("status") != "ready":
+        return "", f"T3 {ver} can't open this database yet: {str((res or {}).get('reason') or res)[:300]}"
+    return ver, ""
+
+
+def t3_move_owner(plan):
+    """The owner's one-time move from t3code.service to sb-t3 (see the comment above). Returns "" or the problem;
+    on a problem t3code.service is running again."""
+    db = t3_db_path()
+    ver, why = t3_stage(db)
+    if why:
+        return why
+    rt = sb.read_json(os.path.join(HOME, ".t3", "userdata", "server-runtime.json"), {}) or {}
+    listen = "all" if str(rt.get("host") or "") in ("0.0.0.0", "::", "") and rt else "tailscale"
+    mig_before = t3_migration(db)
+    if os.path.exists(db):
+        t3_backup(db, T3_BACKUP)
+    os.makedirs(os.path.dirname(T3_MANAGED_MARK), exist_ok=True)
+    sb.write_json(T3_OWNER_JSON, {"listen": listen, "moved": int(time.time()), "from": rt.get("serverVersion") or ""},
+                  mode=0o600)
+    # one of the two always starts at boot: sb-t3.socket is on before t3code.service is kept from starting
+    open(T3_MANAGED_MARK, "w").close()
+    host, port, env = t3_env()
+    os.makedirs(os.path.dirname(T3_OLD_DROPIN), exist_ok=True)
+    with open(T3_OLD_DROPIN, "w") as f:
+        f.write(f"# {BRAND} runs this T3 Code as {T3_UNIT} (`box t3`). Delete this file and\n"
+                f"# {T3_MANAGED_MARK} to give it back to T3's own service.\n"
+                f"[Unit]\nConditionPathExists=!{T3_MANAGED_MARK}\n")
+    t3_write_units(host, env)
+    sctl("daemon-reload", capture=True)
+    sctl("stop", T3_OLD, capture=True)
+    sctl("disable", T3_OLD, capture=True)
+    try:  # T3 refuses to start outside its service while this says a restart of it is pending
+        os.unlink(os.path.join(HOME, ".t3", "runtime", ".restart-pending"))
+    except OSError:
+        pass
+    for _ in range(30):  # the old server lets go of the port and the database
+        if not listening(host, port) and not listening("127.0.0.1", port):
+            break
+        time.sleep(1)
+    sctl("reset-failed", T3_UNIT, T3_SOCKET, capture=True)
+    sctl("enable", "--now", T3_SOCKET, capture=True)
+    r = sctl("start", T3_UNIT, capture=True)  # returns once it answers (ExecStartPost), or fails
+    why = "" if r.returncode == 0 else f"{T3_UNIT} didn't start: {(r.stderr or '').strip()[-300:]}"
+    if not why:
+        for i in range(3):
+            if i:
+                time.sleep(3)
+            if not t3_http_ok(host, port):
+                why = f"T3 doesn't answer on {host}:{port} through {T3_SOCKET}"
+                break
+    if not why:
+        return ""
+    # back to T3's own service, with the database as it was if the new version changed it
+    sctl("stop", T3_PROXY, T3_UNIT, capture=True)
+    sctl("disable", "--now", T3_SOCKET, capture=True)
+    for path in (T3_MANAGED_MARK, T3_OLD_DROPIN):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    sctl("daemon-reload", capture=True)
+    if os.path.exists(T3_BACKUP) and t3_migration(db) != mig_before:
+        for ext in ("-wal", "-shm"):
+            try:
+                os.unlink(db + ext)
+            except FileNotFoundError:
+                pass
+        shutil.copyfile(T3_BACKUP, db + ".sb-restore")
+        os.replace(db + ".sb-restore", db)
+        why += f"; the database was put back (T3 {ver} had migrated it)"
+    sctl("reset-failed", T3_OLD, capture=True)
+    sctl("enable", "--now", T3_OLD, capture=True)
+    return why
+
+
+def t3_prune_runtimes(keep):
+    """Remove ~/.t3/runtime/versions/* no process runs and that aren't in `keep` (T3 prunes its own on start, but
+    keeps whatever t3code.service names: the owner's launcher pinned at install time held ~260 MB)."""
+    base = os.path.join(HOME, ".t3", "runtime", "versions")
+    used = set()
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                exe = os.readlink(f"/proc/{pid}/exe")
+            except OSError:
+                continue
+            if exe.startswith(base + "/"):
+                used.add(exe[len(base) + 1:].split("/", 1)[0])
+    freed = []
+    for v in os.listdir(base) if os.path.isdir(base) else []:
+        if v not in used and v not in keep and sb.T3_VERSION_RE.fullmatch(v):
+            shutil.rmtree(os.path.join(base, v), ignore_errors=True)
+            freed.append(v)
+    return freed
+
+
+def t3_tick(plan, now=None):
+    """One tick for this account (see the comment above). Returns the record root keeps in t3.json."""
+    now = now or time.time()
+    target = str(plan.get("target") or "")
+    quiet = max(60, int(plan.get("quiet_min") or 20) * 60)
+    idle_s = max(0.0, float(plan.get("idle_hours") or 0)) * 3600
+    out = {"state": "none", "version": "", "target": target, "action": "", "why": "", "clients": 0, "busy": [],
+           "idle_min": 0, "owner": is_t3_owner()}
+    if not shutil.which("t3") or not sb.tailscale_ip4():
+        return out
+    st = sb.read_json(T3_TICK_STATE, {}) or {}
+    work, last_work, last_client = t3_db_work(now=now)
+    work += t3_proc_work()
+    if plan.get("busy_cpu"):
+        work.append("an agent is using the CPU")
+    out["busy"] = work
+
+    def save(**kw):
+        st.update(kw)
+        os.makedirs(os.path.dirname(T3_TICK_STATE), exist_ok=True)
+        sb.write_json(T3_TICK_STATE, st, mode=0o600)
+
+    if is_t3_owner() and not t3_ports():  # still T3's own t3code.service
+        if not t3_old_installed():
+            return out
+        rt = t3_runtime_info()
+        out.update(state="legacy" if t3_old_active() else "off", version=t3_running_version())
+        seen = max(last_work, st.get("work_ts", 0), now if work else 0)
+        save(work_ts=seen, first_ts=st.get("first_ts") or now)
+        quiet_for = now - max(seen, st["first_ts"])  # a full quiet stretch watched by the tick itself, too
+        out["idle_min"] = int(quiet_for // 60)
+        if work or quiet_for < quiet:
+            out["why"] = "waiting for a quiet moment to move it to box t3"
+            return out
+        if now - st.get("move_failed", 0) < T3_MOVE_RETRY and st.get("move_target") == target:
+            out["why"] = f"the last move failed ({st.get('move_why', '')[:200]}); trying again later"
+            return out  # each try restarts the owner's T3: once a day, or sooner when the box gets a new version
+        why = t3_move_owner(plan)
+        if why:
+            save(move_failed=int(now), move_why=why[:300], move_target=target)
+            out.update(action="move-failed", why=why[:300])
+            return out
+        out.update(action="moved", state="running", version=t3_running_version() or target,
+                   why=f"from t3code.service {rt.get('serverVersion') or ''}".strip())
+        out["freed"] = t3_prune_runtimes({out["version"], target})
+        save(work_ts=0, client_ts=now, first_ts=now)
+        return out
+    if not t3_ports():
+        return out
+    host, port, env = t3_env()
+    inner = int(env["T3CODE_PORT"])
+    t3_write_units(host, env)  # current unit files (a change applies at T3's next start; nothing restarts here)
+    if not t3_up(host, env):
+        wakes = sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active"
+        out["state"] = "asleep" if wakes else "off"
+        if wakes and t3_db_state()[1]:  # scheduled tasks: T3 skips a fixed-time run it was down for
+            t3_ensure(host, port, env, quiet=True)
+            out.update(action="woke", why="scheduled tasks are on", state="running")
+        save(work_ts=0, client_ts=0)
+        return out
+    out.update(state="running", version=t3_running_version())
+    out["clients"] = clients = sb.tcp_clients(inner)
+    started = iso_ts(t3_runtime_info().get("startedAt")) or now
+    work_ts = max(last_work, st.get("work_ts", 0), now if work else 0, started)
+    client_ts = max(last_client, st.get("client_ts", 0), now if clients else 0, started)
+    save(work_ts=work_ts, client_ts=client_ts)
+    out["idle_min"] = int((now - max(work_ts, client_ts)) // 60)
+    if work:
+        return out
+    if target and out["version"] and out["version"] != target and now - work_ts >= quiet:
+        t3_write_units(host, env)  # a changed unit (the owner's env, a port) applies with this restart
+        r = sctl("restart", T3_UNIT, capture=True)  # the socket stays: open tabs and apps reconnect by themselves
+        new = t3_running_version()
+        out.update(action="restarted" if r.returncode == 0 else "restart-failed", version=new or out["version"],
+                   why=f"from {out['version']}" if r.returncode == 0 else (r.stderr or "").strip()[-300:])
+        if r.returncode == 0:
+            out["freed"] = t3_prune_runtimes({new, target})
+        save(work_ts=now, client_ts=now)
+        return out
+    if (idle_s and not plan.get("hackathon") and not clients and not t3_db_state()[1]
+            and now - max(work_ts, client_ts) >= idle_s):
+        sctl("stop", T3_PROXY, T3_UNIT, capture=True)  # the socket stays: the next visit wakes it
+        sctl("reset-failed", T3_UNIT, capture=True)  # older units count T3's exit code on a stop as a failure
+        m = out["idle_min"]
+        out.update(action="asleep", state="asleep",
+                   why="no client and no work for " + (f"{m // 60} h {m % 60} min" if m >= 60 else f"{m} min"))
+        save(work_ts=0, client_ts=0)
+    return out
+
+
+def cmd_t3_tick(a):
+    try:
+        plan = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        plan = {}
+    print(json.dumps(t3_tick(plan if isinstance(plan, dict) else {})))
+
+
+def t3_versions(a):
+    """Every account's T3 on this machine, from the janitor's last tick (/var/lib/sharedbox/t3.json)."""
+    st = sb.read_json(sb.T3_STATE, {}) or {}
+    data = {"target": st.get("target") or sb.t3_box_version(), "channel": sb.t3_channel(CFG),
+            "checked": st.get("ts") or 0, "accounts": st.get("accounts") or {}}
+    if getattr(a, "json", False):
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    print(f"T3 on this machine: {data['target'] or '?'} ({data['channel']} channel); checked "
+          + (fmt_ts(data["checked"]) if data["checked"] else "never (the janitor tick hasn't run yet)"))
+    for name, r in sorted(data["accounts"].items()):
+        state = {"running": "running", "asleep": "asleep, wakes when opened", "off": "off", "legacy":
+                 "running as T3's own t3code.service"}.get(r.get("state"), r.get("state") or "?")
+        ver = r.get("version") or "-"
+        note = "" if not r.get("version") or ver == data["target"] else \
+            "  (moves to the machine's version when idle)"
+        print(f"  {name:<16}{ver:<32}{state}{note}")
 
 
 # ---------- agents / onboarding ----------
@@ -1811,7 +2391,7 @@ def cmd_request(a):
         print("request received, still working on it; check `box request status` in a minute.")
     else:
         print("request sent to the owner; you'll see the answer in `box status` / `box request status`. "
-              "Meanwhile, most tools install without sudo: "
+              "Meanwhile, most tools install into your home folder without asking: "
               "`npm i -g X`, `uv tool install X`, `pipx install X`, `cargo install X`, `go install X`.")
 
 
@@ -1821,7 +2401,7 @@ def cmd_request(a):
 def cmd_invite(a):
     """Ask root for a one-time invite link. Only accounts in ADMIN_USERS get an answer."""
     if ME.pw_name not in sb.admin_users(CFG):
-        sys.exit("only the owner's accounts (ADMIN_USERS) can invite people. "
+        sys.exit("only the owner's accounts can invite people. "
                  "Ask the owner, or `box request \"invite <name>\"`.")
     rid = f"{os.getpid()}{int(time.time() * 1000)}{os.urandom(4).hex()}"
     req = {"action": "invite", "note": (a.note or "")[:120], "days": a.days, "tailscale": a.tailscale,
@@ -1833,7 +2413,7 @@ def cmd_invite(a):
     if a.email:
         req["email"] = a.email.strip()[:254]
     elif sb.public_mode(CFG) == "cloudflare" and not a.tailscale:
-        sys.exit("this box uses Cloudflare Access: give the friend's email, e.g. "
+        sys.exit("this machine uses Cloudflare Access: give the friend's email, e.g. "
                  "box invite --email sam@example.com --note \"Sam\" (they log in with it)")
     path = os.path.join(sb.ADMIN_DROP, f"{rid}.json")
     tmp = os.path.join(sb.ADMIN_DROP, f".{rid}.tmp")
@@ -1883,10 +2463,10 @@ FRIENDS_USAGE = """usage: box friends [--json]                      list friends
        box friends access                        the exact Cloudflare allow list + seats in use
        box friends requests [--all]              what friends asked for with `box request` (--all: closed too)
        box friends requests approve|done|decline ID [--why TEXT]
-                                                 approve = install it (REQUEST_DENY aside); done = handled it
+                                                 approve = install it (even one on the never-install list); done = handled it
        box friends issues [--days N]             what everyone's agents logged with `box issue`
        box friends boxes ["NAME=IP NAME=IP"]     your treehouse boxes for the dashboard's Boxes card (same line
-                                                 on every box; Tailscale IPs; "" clears it)"""
+                                                 on every machine; Tailscale IPs; "" clears it)"""
 
 
 def friends_ago(ts):
@@ -1912,6 +2492,9 @@ def cmd_friends(a):
         fail("only the owner's accounts can manage friends. Ask the owner.")
     act, args = a.action or "list", list(a.args or [])
     need = {"remove": 1, "suspend": 1, "resume": 1, "email": 2}
+    if act == "invites":  # unused invite links; `box friends invites cancel ID` stops one working
+        if args and (args[0] != "cancel" or len(args) != 2):
+            fail("usage: box friends invites [cancel ID]")
     if act in need and len(args) != need[act]:
         fail(FRIENDS_USAGE)
     if act == "requests" and args and (args[0] not in ("approve", "done", "decline") or len(args) != 2):
@@ -1923,7 +2506,7 @@ def cmd_friends(a):
         if a.json:
             print(json.dumps({"ok": True, "boxes": cur}))
         else:
-            print(" ".join(f"{n}={ip}" for n, ip in cur.items()) or 'no other boxes. add them: box friends boxes '
+            print(" ".join(f"{n}={ip}" for n, ip in cur.items()) or 'no other machines. add them: box friends boxes '
                   '"thisbox=100.x.y.z otherbox=100.x.y.z"')
         return
     req, wait = {"action": "friends-" + act}, 60
@@ -1942,6 +2525,8 @@ def cmd_friends(a):
         req["days"] = a.days
     elif act == "boxes":
         req["boxes"] = args[0]
+    elif act == "invites" and args:
+        req = {"action": "friends-invite-cancel", "id": args[1]}
     res = admin_request(req, wait)
     if not isinstance(res, dict):
         fail("bad answer from the machine")
@@ -1961,7 +2546,7 @@ def cmd_friends(a):
             print(f"{'USERNAME':<16}{'STATUS':<11}{'JOINED':<12}{'DISK':>8}  {'LAST ACTIVE':<12} EMAIL")
         for r in rows:
             joined = time.strftime("%Y-%m-%d", time.localtime(r["joined"])) if r.get("joined") else "?"
-            disk = sb.human(r["disk"]) if r.get("disk") is not None else "-"
+            disk = sb.size_text(r["disk"]) if r.get("disk") is not None else "-"
             over = " (over budget)" if r.get("over_budget") else ""
             print(f"{P(r['username']):<16}{P(r['status']):<11}{joined:<12}{disk:>8}  "
                   f"{friends_ago(r.get('last_active')) if r.get('last_active') else 'not this week':<12} "
@@ -1971,8 +2556,17 @@ def cmd_friends(a):
     elif act == "access":
         for r in res.get("emails") or []:
             print(f"{P(r['email']):<40} {P(r['who'])}")
-        print(f"\n{res.get('used')} of {res.get('limit')} seats in use (CF_SEAT_LIMIT). "
+        print(f"\n{res.get('used')} of {res.get('limit')} sign-in seats in use. "
               "Link one to a friend: box friends email NAME EMAIL")
+    elif act == "invites" and not args:
+        inv = res.get("invites") or []
+        if not inv:
+            print("No unused invite links.")
+        for r in inv:
+            print(f"{P(r['id'])}  {P(r.get('email') or 'anyone with the link'):<32} works until "
+                  f"{fmt_ts(r['expires']) if r.get('expires') else '?'}")
+        if inv:
+            print("\nCancel one: box friends invites cancel ID")
     elif act == "requests" and not args:
         reqs = res.get("requests") or []
         if not reqs:
@@ -2019,7 +2613,8 @@ def shared_request(req, wait=60):
         try:
             with open(reply) as f:
                 res = json.load(f)  # root prunes replies after 10 min
-            return res if isinstance(res, dict) else {"ok": False, "error": "bad answer from the provisioner"}
+            return res if isinstance(res, dict) else {"ok": False, "error": "The machine gave an answer this "
+                                                      "command doesn't understand. Try again in a minute."}
         except (FileNotFoundError, ValueError):
             time.sleep(0.25)
     return {"ok": False, "error": provisioner_trouble(f"the machine didn't answer within {wait} seconds")}
@@ -2140,13 +2735,13 @@ def cmd_skills(a):
             print(json.dumps({n: dict(v, state=skill_state(n, v["path"])) for n, v in cat.items()}))
             return
         if not cat:
-            print("no shared skills on this box yet")
+            print("no shared skills on this machine yet")
             return
         for n, v in cat.items():
             st = skill_state(n, v["path"])
             mark = {"installed": "[installed] ", "yours": "[you have your own] "}.get(st, "")
             print(f"{n:22} {mark}{v['description'][:100]}  ({v['source']})")
-        print(f"\nCatalog: {sb.SKILLS_BUILTIN}/README.md. Agents: ask your owner before `box skills add NAME`.")
+        print("\nMore about each: box skills show NAME. Agents: ask your user before `box skills add NAME`.")
     elif a.action == "show":
         v = need_skill(cat, a.name)
         print(f"# {v['path']}\n")
@@ -2182,7 +2777,7 @@ def cmd_skills(a):
         print(f"removed {a.name}" if removed else f"{a.name} isn't installed from the catalog (your own skills are left alone)")
     elif a.action in ("share", "unshare"):
         if ME.pw_name not in sb.admin_users(CFG):
-            sys.exit("only box admins (ADMIN_USERS) can publish skills. Ask the owner, "
+            sys.exit("only the owner's accounts can publish skills. Ask the owner, "
                      "or `box request \"share skill <name>\"`.")
         if a.action == "unshare":
             res = admin_request({"action": "unshare-skill", "name": a.name}, 30)
@@ -2225,14 +2820,17 @@ def pack_skill(src):
 
 
 def provisioner_trouble(what):
-    """Plain words for "root's helper didn't answer". Logged as an issue, so the owner really is told."""
+    """Plain words for "root's helper didn't answer": what happened, then what to do. The technical detail goes to
+    the issue log for the owner, never to the person."""
     try:  # a repeat within 10 minutes is deduplicated, but it was logged the first time
-        log_issue(f"box: {what} (sharedbox-provision.path / process-spool)", kind="broken", auto=True)
-        told = True
+        told = log_issue(f"box: root helper: {what} (sharedbox-provision.path / process-spool)", kind="broken",
+                         auto=True) or issues_on()
     except Exception:  # noqa: BLE001 - never hide the real error behind a logging one
         told = False
-    return f"{what}. Try again in a minute; " + ("the owner has been told." if told else
-                                                 "if it keeps happening, tell the owner.")
+    slow = "didn't answer" in what
+    return (("The machine didn't answer in time." if slow else "The machine couldn't take this request right now.")
+            + " Try again in a minute; " + ("the owner has been told." if told else
+                                            "if it keeps happening, tell the owner."))
 
 
 def admin_request(req, wait):
@@ -2296,10 +2894,31 @@ def which_agent():
 ISSUES_PER_DAY = 25
 
 
+ISSUES_OFF = os.path.join(HOME, ".sharedbox", "issues-off")  # this account turned problem reports off
+
+
+def issues_on():
+    return not os.path.exists(ISSUES_OFF)
+
+
+def set_issues(on):
+    """Problem reports on or off for this account (the dashboard's Account tab, `box issue on|off`)."""
+    if on:
+        try:
+            os.unlink(ISSUES_OFF)
+        except FileNotFoundError:
+            pass
+        return "Problem reports are on. Your agents note what slowed them down; the owner reads the notes."
+    os.makedirs(os.path.dirname(ISSUES_OFF), mode=0o700, exist_ok=True)
+    with open(ISSUES_OFF, "w") as f:
+        f.write("off\n")
+    return "Problem reports are off. Your agents won't note anything for the owner."
+
+
 def log_issue(text, kind="other", auto=False, dedupe_s=600):
     """Append one issue; skip exact repeats from the last `dedupe_s` seconds. True if written."""
     text = " ".join(text.split())[:2000]
-    if not text:
+    if not text or not issues_on():
         return False
     now = time.time()
     mine = read_my_issues()
@@ -2375,11 +2994,11 @@ def auto_issues():
         found = []
         if d_oom > 0:
             found.append(("oom", "limit", f"{d_oom} process(es) of {ME.pw_name} were OOM-killed "
-                          f"(hard RAM limit {sb.human(cg.get('mem_max')) if cg.get('mem_max') else 'max'})"))
+                          f"(hard RAM limit {sb.size_text(cg.get('mem_max')) if cg.get('mem_max') else 'max'})"))
         if d_high > 100:
             found.append(("mem_high", "slow", f"RAM soft limit hit {d_high} times since last session "
-                          f"(memory.high {sb.human(cg.get('mem_high')) if cg.get('mem_high') else 'max'}, "
-                          f"now using {sb.human(cg.get('mem', 0))}); processes were throttled"))
+                          f"(memory.high {sb.size_text(cg.get('mem_high')) if cg.get('mem_high') else 'max'}, "
+                          f"now using {sb.size_text(cg.get('mem', 0))}); processes were throttled"))
         if d_thr > 60:
             found.append(("cpu", "slow", f"CPU quota throttled processes for {d_thr / 60:.0f} min since "
                           "last session"))
@@ -2393,11 +3012,17 @@ def auto_issues():
 
 def cmd_issue(a):
     text = " ".join(a.text).strip()
+    if text in ("on", "off"):
+        print(set_issues(text == "on"))
+        return
+    if not issues_on():
+        print("Problem reports are off for this account; nothing logged. Keep working around it.")
+        return
     if not text:
         sys.exit('usage: box issue [--kind slow|broken|missing|limit|confusing|other] "what happened, '
                  'what you tried, what it cost"')
     if log_issue(text, a.kind, dedupe_s=600):
-        print(f"logged to {ISSUES_FILE}. The box owner reviews these. Keep working around it.")
+        print(f"Logged to {ISSUES_FILE}. The owner reviews these. Keep working around it.")
     else:
         print("already logged in the last 10 minutes; not repeated.")
 
@@ -2443,7 +3068,7 @@ PASTE_RE = re.compile(r"[A-Za-z0-9#_.~+/=-]{4,600}")
 
 
 def t3_connect_on():
-    """Is this account's T3 Code linked to a T3 account (T3 Connect)? T3 keeps the link in its data folder
+    """Is this account's T3 linked to a T3 account (T3 Connect)? T3 keeps the link in its data folder
     (`t3 status` reports the T3 desktop service instead, which friends' accounts don't use)."""
     return os.path.exists(os.path.join(HOME, ".t3", "userdata", "secrets", "cloud-linked-user-id.bin"))
 
@@ -2624,7 +3249,7 @@ def portal_status():
                 mark_setup_done(key)  # also covers friends who logged in before setup-done was written here
     if out["logins"].get("gh", {}).get("ok") and not all(git_ident()):
         gh_finish()
-    r, host = ports(), sb.tailscale_ip4()
+    r, host = t3_ports(), sb.tailscale_ip4()
     if r and host and shutil.which("t3"):
         _, _, env = t3_env()
         out["t3"] = {"url": f"http://{host}:{r[0]}/", "running": t3_up(host, env)}
@@ -2641,7 +3266,9 @@ def portal_status():
                     for p, v in (st.get("peers") or {}).items() if isinstance(v, dict)}
     out["boxes_checked"] = int(st.get("ts") or 0)
     out["box"] = st.get("self") or socket.gethostname().split(".")[0]
-    if len(sb.boxes(CFG)) > 1:  # the Account tab's "Projects on all your boxes" (lib/sbprojects.py)
+    out["running_ok"] = running_ok_keys()
+    out["issues_on"] = issues_on()
+    if len(sb.boxes(CFG)) > 1:  # the Account tab's "Projects on all your machines" (lib/sbprojects.py)
         try:
             import sbprojects
             out["projects"] = sbprojects.summary(HOME, projects_peers())
@@ -2652,8 +3279,8 @@ def portal_status():
 
 def portal_t3(pair, app=False, label=None, ttl="30m"):
     if not shutil.which("t3"):
-        return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
-    r, host = ports(), sb.tailscale_ip4()
+        return {"ok": False, "error": "T3 isn't installed on this machine yet. Ask the owner."}
+    r, host = t3_ports(), sb.tailscale_ip4()
     if not r or not host:
         return {"ok": False, "error": "Tailscale isn't running on the machine. Ask the owner."}
     host, port, env = t3_env()
@@ -2664,7 +3291,7 @@ def portal_t3(pair, app=False, label=None, ttl="30m"):
     while not t3_up(host, env):
         if time.time() > deadline:
             return {"ok": False, "starting": True,
-                    "error": "T3 Code is still starting (the first start downloads it). Try again in a minute."}
+                    "error": "T3 is still starting (the first start downloads it). Try again in a minute."}
         time.sleep(2)
     time.sleep(2)
     env = t3_live_env(host, env)
@@ -2683,7 +3310,7 @@ def portal_t3(pair, app=False, label=None, ttl="30m"):
 
 
 def app_setup_prompt(url):
-    """The setup prompt for the agent on the friend's laptop, with what the box knows (their Tailscale account,
+    """The setup prompt for the agent on the friend's laptop, with what the machine knows (their Tailscale account,
     T3 apps already connected): the same text as the dashboard's "Make a setup prompt"."""
     rec = (sb.registry().get("users") or {}).get(ME.pw_name) or {}
     ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
@@ -2709,7 +3336,7 @@ def portal_team(req):
     teammate. See sbconnect.team_*."""
     op = req.get("op")
     if not shutil.which("t3"):
-        return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
+        return {"ok": False, "error": "T3 isn't installed on this machine yet. Ask the owner."}
     if op == "list":
         sessions = t3_json(["auth", "session", "list"])
         return {"ok": True, "grants": sbconnect.team_grants(sessions or [])}
@@ -2815,7 +3442,7 @@ def mark_setup_done(key):
 def portal_login_start(key, console=False):
     label, cmd, paste = PORTAL_LOGINS[key]
     if not shutil.which(cmd[0]):
-        return {"ok": False, "error": f"{label} isn't installed on this box. Ask the owner."}
+        return {"ok": False, "error": f"{label} isn't installed on this machine. Ask the owner."}
     if portal_logged_in(key, fresh=True):  # never let a cached "signed in" block signing in again
         if key == "gh":
             gh_finish()
@@ -2865,7 +3492,7 @@ def portal_login_code(key, code):
 
 CLAUDE_TOKEN = os.path.join(HOME, ".config", "treehouse", "claude-token")
 CLAUDE_TOKEN_RE = re.compile(r"sk-ant-oat01-[A-Za-z0-9_-]{20,300}")
-FED_NUDGE = os.path.join(HOME, ".sharedbox", "fed-nudge")  # root's fed-sync copies logins to the other boxes soon
+FED_NUDGE = os.path.join(HOME, ".sharedbox", "fed-nudge")  # root's fed-sync copies logins to the other machines soon
 
 
 def fed_nudge():
@@ -2915,7 +3542,7 @@ def portal_login_wait(key, seconds):
                 # T3 links "on next start": restart this account's T3 Code so its relay comes up
                 sctl("restart", "--no-block", T3_UNIT, capture=True)
             if key in ("gh", "t3connect"):
-                fed_nudge()  # the other boxes: copy GitHub, offer the T3 app there too
+                fed_nudge()  # the other machines: copy GitHub, offer the T3 app there too
             tmux("kill-session", "-t", key)
             mark_setup_done(key)
             return {"ok": True, "done": True}
@@ -3039,6 +3666,73 @@ def portal_serve_set(name, what, value):
     return {"ok": True, "name": name, "message": msg}
 
 
+def portal_serve_describe(name, req):
+    """What a server is for, from the dashboard: the same check and record as `box serve describe`."""
+    import sbshared
+    name = portal_own_server(name)
+    if not name:
+        return {"ok": False, "error": "No such server. Refresh the page."}
+    about, err = sbshared.check_desc(req.get("about"))
+    if err:
+        return {"ok": False, "error": err[:1].upper() + err[1:] + "."}
+    meta = serve_meta(name)
+    meta["about"] = about
+    if req.get("importance") in ("important", "safe-to-stop") and not meta.get("keep"):
+        meta["importance"] = req["importance"]
+    rewrite_meta(name, meta)
+    return {"ok": True, "name": name, "message": f"Saved. {name}: {about}"}
+
+
+def portal_shared_describe(name, text):
+    name = portal_server_name(name)
+    if not name:
+        return {"ok": False, "error": "no such server"}
+    text = " ".join(str(text or "").split())
+    if not text or text.startswith("-"):
+        return {"ok": False, "error": "Write one plain sentence saying what it does and who it's for."}
+    out = portal_shared(["describe", name, text], {"ok": False, "error": "group servers aren't set up on this machine yet"})
+    if out.get("ok"):
+        out["message"] = f"Saved. Everyone now sees what {name} is for."
+    return dict(out, name=name)
+
+
+RUNNING_OK = os.path.join(HOME, ".sharedbox", "running-ok.json")  # {key: ts}: "still need it?" answered "keep it"
+RUNNING_OK_DAYS = 7
+
+
+def running_ok_keys():
+    now = time.time()
+    return sorted(k for k, ts in (sb.read_json(RUNNING_OK, {}) or {}).items()
+                  if isinstance(ts, (int, float)) and now - ts < RUNNING_OK_DAYS * 86400)
+
+
+def portal_running_ok(key):
+    if not sbrunning.KEY_RE.match(str(key)):
+        return {"ok": False, "error": "That isn't running any more. Refresh the page."}
+    cur = {k: ts for k, ts in (sb.read_json(RUNNING_OK, {}) or {}).items()
+           if isinstance(ts, (int, float)) and time.time() - ts < RUNNING_OK_DAYS * 86400}
+    cur[str(key)] = int(time.time())
+    os.makedirs(os.path.dirname(RUNNING_OK), mode=0o700, exist_ok=True)
+    sb.write_json(RUNNING_OK, cur, mode=0o600)
+    return {"ok": True, "message": f"Kept. It keeps running, and Home won't ask about it again for {RUNNING_OK_DAYS} days."}
+
+
+def portal_project_keep(name):
+    """Mark a project as used today, so the archive clock starts again (the janitor looks at the newest file in it)."""
+    name = str(name or "").strip().strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}", name):
+        return {"ok": False, "error": "no such project"}
+    path = os.path.join(HOME, name)
+    if not os.path.isdir(path) or os.path.islink(path):
+        return {"ok": False, "error": f"~/{name} isn't there any more. Refresh the page."}
+    mark = os.path.join(path, ".git" if os.path.isdir(os.path.join(path, ".git")) else "", ".treehouse-kept")
+    with open(mark, "w") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M\n"))
+    os.utime(path)
+    return {"ok": True, "message": f"Kept {name}. It stays in your home folder for at least another "
+                                   f"{CFG['PROJECT_TTL_DAYS']} days."}
+
+
 def serve_op(op, u):
     """stop = stays off across reboots too; start/restart = on, and back after a reboot (like group servers)."""
     if op == "restart":
@@ -3079,7 +3773,7 @@ def portal_running():
 def portal_running_stop(key, force=False):
     """Stop one item of the Running card. The key is matched against the live list again, so only this account's
     own containers and units can be named. Containers: `docker stop` (they stay stopped across reboots until started
-    again); `box serve` servers: disabled + stopped; T3 Code (only the owner's All running tab offers it): stopped,
+    again); `box serve` servers: disabled + stopped; T3 (only the owner's All running tab offers it): stopped,
     it starts again when the person next opens T3; other units (terminals, browsers, user services): stopped.
     A server marked keep running needs force (the page asks a second time)."""
     it = sbrunning.find(sbrunning.with_meta(sbrunning.running(ME.pw_uid, HOME), HOME), key)
@@ -3091,8 +3785,8 @@ def portal_running_stop(key, force=False):
     if it["stop"] == "t3":
         r = sctl("stop", it.get("unit") or "sb-t3.service", capture=True)
         if r.returncode != 0:
-            return {"ok": False, "error": "Couldn't stop T3 Code: " + (r.stderr or r.stdout or "").strip()[-300:]}
-        return {"ok": True, "message": "Stopped T3 Code. Open chats disconnected; it starts again the next time T3 is "
+            return {"ok": False, "error": "Couldn't stop T3: " + (r.stderr or r.stdout or "").strip()[-300:]}
+        return {"ok": True, "message": "Stopped T3. Open chats disconnected; it starts again the next time T3 is "
                                        "opened."}
     env = dict(os.environ, XDG_RUNTIME_DIR=f"/run/user/{ME.pw_uid}",
                DOCKER_HOST=os.environ.get("DOCKER_HOST") or f"unix:///run/user/{ME.pw_uid}/docker.sock")
@@ -3129,7 +3823,7 @@ def portal_running_stop(key, force=False):
 
 def portal_shared(args, missing):
     """Run `box shared ARGS --json` (a fresh process, as this user) and pass its JSON answer through.
-    `missing` is the answer when this box's `box` has no `shared` command yet."""
+    `missing` is the answer when this machine's `box` has no `shared` command yet."""
     r = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "shared", *args, "--json"],
                        capture_output=True, text=True, errors="replace", timeout=240)
     for line in reversed(r.stdout.splitlines()):
@@ -3158,7 +3852,7 @@ def portal_shared_ctl(name, op):
     if not name or op not in PORTAL_SERVER_OPS:
         return {"ok": False, "error": "no such server"}
     return dict(portal_shared([op, name], {"ok": False, "unavailable": True,
-                                           "error": "group servers aren't set up on this box yet"}),
+                                           "error": "group servers aren't set up on this machine yet"}),
                 name=name, op=op)
 
 
@@ -3168,7 +3862,7 @@ def portal_shared_logs(name):
         return {"ok": False, "error": "no such server"}
     return dict(portal_shared(["logs", name, "-n", str(PORTAL_LOG_LINES)],
                               {"ok": False, "unavailable": True,
-                               "error": "group servers aren't set up on this box yet"}), name=name)
+                               "error": "group servers aren't set up on this machine yet"}), name=name)
 
 
 def portal_msg(req):
@@ -3299,6 +3993,20 @@ def cmd_portal(a):
             out = portal_serve_logs(a.key)
         elif a.action == "serve-set" and a.arg and ":" in a.arg:  # keep:on|off, hackathon:pause|keep
             out = portal_serve_set(a.key, *a.arg.split(":", 1))
+        elif a.action == "serve-describe":  # the dashboard's "Add a description" (JSON on stdin: about, importance)
+            try:
+                req = json.loads(sys.stdin.read(4096) or "{}")
+            except ValueError:
+                req = None
+            out = portal_serve_describe(a.key, req) if isinstance(req, dict) else {"ok": False, "error": "bad request"}
+        elif a.action == "shared-describe":  # a group server's description (the text on stdin)
+            out = portal_shared_describe(a.key, sys.stdin.read(4096))
+        elif a.action == "running-ok" and a.key:  # "Still need it?" -> Keep it: don't ask again for a week
+            out = portal_running_ok(a.key)
+        elif a.action == "project-keep" and a.key:  # "Soon moved to the archive" -> Keep it
+            out = portal_project_keep(a.key)
+        elif a.action == "issues" and a.key in ("on", "off"):  # problem reports on or off
+            out = {"ok": True, "message": set_issues(a.key == "on"), "issues_on": a.key == "on"}
         elif a.action == "shared-ls":
             out = portal_shared_ls()
         elif a.action == "shared-ctl" and a.arg in PORTAL_SERVER_OPS:
@@ -3338,7 +4046,7 @@ def cmd_portal(a):
                 and sb.BOX_NAME_RE.fullmatch(a.arg):
             out = (portal_peer_code(a.key, a.arg, sys.stdin.read(4096)) if a.action == "peer-code"
                    else portal_peer_logout(a.key, a.arg))
-        elif a.action == "claude-token-info":  # federation: how new is this box's copy (never the token itself)
+        elif a.action == "claude-token-info":  # federation: how new is this machine's copy (never the token itself)
             out = {"ok": True, "mtime": int(os.path.getmtime(CLAUDE_TOKEN)) if os.path.exists(CLAUDE_TOKEN) else 0,
                    "own": os.path.exists(CLAUDE_OWN)}
         elif a.action == "claude-token-put":  # federation: a newer token from another of this person's boxes
@@ -3561,14 +4269,14 @@ def fed_remote_json(dest, cmd, input_text=None, timeout=120):
 
 
 def fed_link_peer(peer, ip, home, notes):
-    """One other box: can we log in; T3 there linked into T3 here; GitHub token + git identity (from the home
+    """One other machine: can we log in; T3 there linked into T3 here; GitHub token + git identity (from the home
     box only); which agent logins are missing there."""
     out = {"ssh": False}
     if fed_ssh(peer, "true", timeout=20).returncode != 0:
         notes.append(f"can't ssh to {peer} yet")
         return out
     out["ssh"] = True
-    if home and gh_ok():  # a GitHub OAuth token doesn't rotate: the same one works on both boxes
+    if home and gh_ok():  # a GitHub OAuth token doesn't rotate: the same one works on both machines
         st = fed_remote_json(peer, "box _portal status", timeout=60)
         if not (st.get("logins") or {}).get("gh", {}).get("ok"):
             tok = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=20).stdout.strip()
@@ -3636,14 +4344,14 @@ PEER_LOGINS = ("t3connect", "codex")
 
 
 def fed_peers():
-    """{box: ip} of this person's other boxes that answer over SSH (from the last federation link pass)."""
+    """{box: ip} of this person's other machines that answer over SSH (from the last federation link pass)."""
     st = sb.read_json(FED_STATE, {}) or {}
     boxes = sb.boxes(CFG)
     return {p: boxes.get(p, "") for p, v in (st.get("peers") or {}).items() if isinstance(v, dict) and v.get("ssh")}
 
 
 def fed_peer_note(peer, key, ok):
-    """Remember a login's state on a peer between link passes (the dashboard's "Your boxes" line)."""
+    """Remember a login's state on a peer between link passes (the dashboard's "Your machines" line)."""
     st = sb.read_json(FED_STATE, {}) or {}
     p = (st.setdefault("peers", {}).setdefault(peer, {}))
     p.setdefault("logins", {})[key] = bool(ok)
@@ -3651,7 +4359,7 @@ def fed_peer_note(peer, key, ok):
 
 
 def portal_peer_login(key, check=False, box=None):
-    """Start (or check) a login on each of this person's other boxes, or only on `box`. Each box answers with its
+    """Start (or check) a login on each of this person's other machines, or only on `box`. Each machine answers with its
     own sign-in link and code, or done. [{"box", "done", "url", "code", "paste", "error"}]
     A Claude sign-in started for one machine makes that machine keep its own Claude account ("local")."""
     peers = sorted(fed_peers())
@@ -3706,7 +4414,7 @@ def cmd_fed_user(a):
     except ValueError:
         req = {}
     os.umask(0o077)
-    if a.action == "prepare":  # make the box-to-box key once; report it (and, on the home box, laptop keys)
+    if a.action == "prepare":  # make the machine-to-box key once; report it (and, on the home box, laptop keys)
         os.makedirs(os.path.dirname(FED_KEY), mode=0o700, exist_ok=True)
         if not os.path.exists(FED_KEY):
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
@@ -3741,7 +4449,7 @@ def cmd_fed_user(a):
 # ---------- projects on all my boxes (lib/sbprojects.py) ----------
 
 def projects_peers():
-    """{box: ssh destination} for every other box in BOXES (federation's `Host <box>` block, the owner's alias, or
+    """{box: ssh destination} for every other machine in BOXES (federation's `Host <box>` block, the owner's alias, or
     user@ip: sbmulti.ssh_dest). {} when this is the only box."""
     import sbfed
     import sbmulti
@@ -3751,19 +4459,19 @@ def projects_peers():
 
 
 def projects_remote(dest, req):
-    """Run `box _projects-here` on another box as this person, at low priority. Its answer, or an error."""
+    """Run `box _projects-here` on another machine as this person, at low priority. Its answer, or an error."""
     import sbprojects
     try:
         r = fed_ssh(dest, shlex.join([*sbprojects.NICE, "box", "_projects-here"]), json.dumps(req),
                     timeout=sbprojects.PEER_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "That box took too long to answer; trying again at the next sync."}
+        return {"ok": False, "error": "That machine took too long to answer; trying again at the next sync."}
     except OSError as ex:
         return {"ok": False, "error": str(ex)[:200]}
     if "invalid choice" in r.stderr and "_projects-here" in r.stderr:
-        return {"ok": False, "error": "That box needs a treehouse update first."}
+        return {"ok": False, "error": "That machine needs a treehouse update first."}
     if r.returncode == 255:
-        return {"ok": False, "error": ("Not connected yet. Your boxes connect to each other by themselves within a few minutes; "
+        return {"ok": False, "error": ("Not connected yet. Your machines connect to each other by themselves within a few minutes; "
                                       "if this stays for a day, the owner can fix it.")}
     try:
         return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
@@ -3774,7 +4482,7 @@ def projects_remote(dest, req):
 def projects_t3_add(path, name):
     """Add a copy to this person's T3 here (`t3 project add`): (ok, why not). An existing project counts as done."""
     if not shutil.which("t3", path=user_env()["PATH"]):
-        return False, "T3 isn't installed on this box."
+        return False, "T3 isn't installed on this machine."
     try:
         r = subprocess.run(["t3", "project", "add", "--title", name, path], env=user_env(), capture_output=True,
                            text=True, errors="replace", timeout=120, stdin=subprocess.DEVNULL)
@@ -3795,6 +4503,10 @@ def projects_ago(ts):
 
 def cmd_projects(a):
     import sbprojects
+    if a.op == "keep":  # "moves to the archive soon" -> Keep it
+        if not a.name:
+            sys.exit("usage: box projects keep NAME")
+        return emit(portal_project_keep(a.name), a.json)
     peers = projects_peers()
     if a.op == "everywhere":
         if not a.name or a.state not in ("on", "off"):
@@ -3831,7 +4543,7 @@ def cmd_projects(a):
         if not r["available"]:
             print(f"  {r['name']:<24} not available: {r['why']}")
             continue
-        print(f"  {r['name']:<24} {'on all boxes' if r['everywhere'] else 'only here'}")
+        print(f"  {r['name']:<24} {'on all machines' if r['everywhere'] else 'only here'}")
         for b, v in r["boxes"].items():
             print(f"      {b}: {v['state']}" + (f" ({v['note']})" if v.get("note") else "")
                   + ("" if v["state"] in ("waiting", "error") or v.get("t3") else "; not in T3 there"))
@@ -3852,13 +4564,13 @@ def cmd_projects_sync(a):
 
 
 def me_box():
-    """This box's name in BOXES (falls back to the hostname): the `box` column in ~/me/agents.db."""
+    """This machine's name in BOXES (falls back to the hostname): the `box` column in ~/me/agents.db."""
     import sbfed
     return sbfed.self_name(sb.boxes(CFG), sb.tailscale_ip4(), socket.gethostname()) or socket.gethostname()
 
 
 def cmd_me(a):
-    """~/me: your own searchable history of every agent session on all your boxes (lib/sbme.py)."""
+    """~/me: your own searchable history of every agent session on all your machines (lib/sbme.py)."""
     import sbme
     if a.op == "ingest":
         sbme.keep_history(HOME)
@@ -3869,7 +4581,7 @@ def cmd_me(a):
     elif a.op == "pull":
         import sbmulti
         out = sbme.pull(HOME, projects_peers(), sbmulti.SSH_OPTS)
-        print(json.dumps(out) if a.json else "\n".join(f"{k}: {v}" for k, v in out.items()) or "no other boxes")
+        print(json.dumps(out) if a.json else "\n".join(f"{k}: {v}" for k, v in out.items()) or "no other machines")
     elif a.op == "stats":
         out = sbme.stats(HOME)
         if a.json or not out.get("exists"):
@@ -3912,7 +4624,7 @@ ME_TICK_BUDGET = 540   # s; the janitor gives a pass 900: a long first backfill 
 
 def cmd_me_tick(a):
     """The janitor's tick, as this person (already under nice/ionice): keep history forever, index new transcripts
-    every ~15 minutes and copy in what the other boxes indexed."""
+    every ~15 minutes and copy in what the other machines indexed."""
     import sbme
     sys.stdin.read(1 << 16)
     ran = False
@@ -3932,7 +4644,7 @@ def cmd_me_tick(a):
 
 
 def cmd_me_export(a):
-    """Another of this person's boxes pulls the sessions this box indexed (`box me pull`), as JSON lines."""
+    """Another of this person's boxes pulls the sessions this machine indexed (`box me pull`), as JSON lines."""
     import sbme
     if not os.path.exists(sbme.db_path(HOME)):
         return
@@ -3942,30 +4654,30 @@ def cmd_me_export(a):
 
 def telemetry_source(a):
     """(path, label) of the telemetry this command reads: ~/me/telemetry.db with --fleet (what `box telemetry pull`
-    copied from every box), else this box's file (everything for the owner, your own rows otherwise)."""
+    copied from every machine), else this machine's file (everything for the owner, your own rows otherwise)."""
     import sbtelemetry
     if getattr(a, "fleet", False):
         p = sbtelemetry.fleet_path(ME.pw_dir)
         if not os.path.exists(p):
             sys.exit("no fleet copy yet: run `box telemetry pull` first")
-        return p, "all your boxes"
+        return p, "all your machines"
     p, scope = sbtelemetry.readable_db(sb.STATE_DIR, ME.pw_name)
     if not p:
         sys.exit(f"box telemetry: {scope}")
-    return p, ("this box" if scope == "all" else "this box (your own rows plus box-wide ones)")
+    return p, ("this machine" if scope == "all" else "this machine (your own rows plus box-wide ones)")
 
 
 TELEMETRY_USAGE = """usage: box telemetry [--hours N] [--box NAME] [--fleet] [--json]   the last 24 h: worst moments and why
        box telemetry patterns [--days N] [--box NAME] [--fleet] [--json]   built-in detectors
        box telemetry sql "SELECT ..." [--fleet] [--json]               read-only SQL (tables: box help telemetry)
-       box telemetry pull [--json]                    copy every box's telemetry you may read into ~/me/telemetry.db
+       box telemetry pull [--json]                    copy every machine's telemetry you may read into ~/me/telemetry.db
        box telemetry usage [on|off|now] [--json]      your Claude plan usage (on: checked every ~10 min, box msg at
                                                       80% and 90%)
        box telemetry info [--json]                    which file you read, its size and time span"""
 
 
 def cmd_telemetry(a):
-    """Box telemetry (lib/sbtelemetry.py): what this box was doing minute by minute, kept for a year in roll-ups."""
+    """Box telemetry (lib/sbtelemetry.py): what this machine was doing minute by minute, kept for a year in roll-ups."""
     import sbtelemetry
     op, args = a.op, a.args
     if op == "summary":
@@ -4032,9 +4744,56 @@ def cmd_telemetry(a):
         when = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "-"  # noqa: E731
         print(f"{res['path']} ({res['reads']}): {res['size_mb']} MB, boxes {', '.join(res['boxes']) or '-'}, "
               f"minute rows since {when(res['minute_rows_from'])}, hourly since {when(res['hourly_rows_from'])}, "
-              f"{res['events']} events")
+              f"{res['events']} events\n")
+        print(TELEMETRY_SCHEMA)
     else:
         sys.exit(TELEMETRY_USAGE)
+
+
+# `box telemetry info`: the tables, read before writing SQL (kept out of `box help telemetry` to keep it short)
+TELEMETRY_SCHEMA = """Tables (unix-time `ts`; minute rows kept 14 days, `*_hourly` roll-ups and `events` ~400 days):
+- `samples` one per minute: load1/5/15, ncpu, cpu_pct, iowait_pct, steal_pct, procs, procs_running, procs_blocked,
+  psi_cpu, psi_mem, psi_mem_full, psi_io, psi_io_full (% of the minute something waited / everything was blocked),
+  mem_total_mb, mem_used_mb (really in use: total minus available), mem_avail_mb, mem_anon_mb, mem_cache_mb
+  (reclaimable cache), mem_shmem_mb, swap_total_mb, swap_used_mb, swap_in_mb/swap_out_mb (per minute), majfaults,
+  oom_kills (kernel kills that minute), disk_total_gb/disk_free_gb (of /), temp_max_c, cpu_mhz, throttles
+  (thermal throttle events), collect_ms.
+- `slices` per account (user-UID.slice, `user`) and system slice (`user` = ''): cpu_pct (100 = one core), mem_mb
+  (real: anon + shmem + kernel), cache_mb, swap_mb, pids, psi_mem, psi_mem_full, oom_kills, mem_high_events,
+  mem_max_events (times it hit its memory limit).
+- `procs` the top processes each minute by CPU and by memory: user, pid, name (comm, plus an allowlisted tool for
+  interpreters such as `python3 pytest`), cpu_pct, rss_mb, age_s.
+- `agents` one row per running agent session per minute: user, agent (claude, codex, opencode, gemini,
+  antigravity...), pid, started, cpu_pct/rss_mb (the agent itself), tree_cpu_pct/tree_rss_mb/tree_procs (with
+  everything it started: builds, tests, servers).
+- `containers` Docker containers per minute: user ('' = the system Docker), id, name, cpu_pct, mem_mb, peak_mb.
+- `disks` (mount, dev, total_gb, free_gb), `diskio` (dev, read_mb, write_mb, util_pct per minute).
+- `events` (ts, kind, user, unit, detail, value): oom_kill (kernel; detail = process, value = MB), earlyoom_kill,
+  oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
+  unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
+  samples for value seconds: the machine stalled), container_start, container_stop (value = peak MB), hung_task,
+  disk_error, net_guard (network self-recovery: unit = reconfigure, restart, usb_reset, reboot, reboot_blocked,
+  recovered, wifi_fix, wifi_setup[_failed]; value = seconds the network had been down; detail = why and each link),
+  t3_asleep / t3_restarted / t3_moved (+ `_failed`; user's T3 went to sleep, restarted onto the machine's version,
+  moved off t3code.service; detail = version, value = idle minutes).
+- Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
+  oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
+  swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
+  `agents_hourly` (sessions = average running, sessions_max, cpu_s, tree_cpu_s, rss_mb_max, tree_rss_mb_max),
+  `procs_hourly` (per user + name: n, cpu_s, cpu_pct_max, rss_mb_max), `containers_hourly`, `disks_hourly`,
+  `diskio_hourly`. Rows from before telemetry started came from the older health samples (memory estimated from a
+  percentage, account memory including cache).
+Example queries:
+- Worst memory minutes this week: `SELECT datetime(ts,'unixepoch','localtime'), mem_used_mb, psi_mem, psi_mem_full
+  FROM samples WHERE ts > strftime('%s','now','-7 days') ORDER BY psi_mem_full DESC, psi_mem DESC LIMIT 20`
+- Who used the most memory, per day: `SELECT date(ts,'unixepoch','localtime') AS day, user, max(mem_mb_max) FROM
+  slices_hourly WHERE user != '' GROUP BY day, user ORDER BY day DESC, 3 DESC`
+- What was running just before a restart: `SELECT * FROM procs WHERE ts BETWEEN (SELECT max(ts) FROM events WHERE
+  kind='boot') - 900 AND (SELECT max(ts) FROM events WHERE kind='boot') ORDER BY ts DESC, rss_mb DESC`
+- Agent CPU-hours per account and agent, last 30 days: `SELECT user, agent, round(sum(tree_cpu_s)/3600, 1) FROM
+  agents_hourly WHERE ts > strftime('%s','now','-30 days') GROUP BY 1, 2 ORDER BY 3 DESC`
+- Crash loops: `SELECT unit, user, count(*) FROM events WHERE kind IN ('unit_failed','unit_restart') GROUP BY 1, 2
+  ORDER BY 3 DESC`"""
 
 
 def sbme_dir():
@@ -4049,7 +4808,7 @@ def telemetry_notify(title, text):
 
 
 def cmd_telemetry_export(a):
-    """Another of your boxes pulls the telemetry you may read here (`box telemetry pull`), as JSON lines."""
+    """Another of your machines pulls the telemetry you may read here (`box telemetry pull`), as JSON lines."""
     import sbtelemetry
     path, _ = sbtelemetry.readable_db(sb.STATE_DIR, ME.pw_name)
     if not path:
@@ -4063,7 +4822,7 @@ def cmd_telemetry_export(a):
 
 
 def telemetry_tick():
-    """Part of the janitor's tick, as this person: plan usage when on, and an hourly copy of every box's
+    """Part of the janitor's tick, as this person: plan usage when on, and an hourly copy of every machine's
     telemetry into ~/me/telemetry.db."""
     import sbtelemetry
     if sbtelemetry.usage_on(ME.pw_dir):
@@ -4199,7 +4958,7 @@ TG_OPS = ("status", "link", "test", "notify", "unlink", "setup", "off")
 
 
 def cmd_telegram(a):
-    """Phone alerts (the Account tab's Telegram row) and, for the owner, the box's bot (Settings tab)."""
+    """Phone alerts (the Account tab's Telegram row) and, for the owner, the machine's bot (Settings tab)."""
     op = a.op or "status"
     if op in ("setup", "off"):
         if ME.pw_name not in sb.admin_users(CFG):
@@ -4218,7 +4977,7 @@ def cmd_telegram(a):
     res = shared_request(req, 60)
     if op == "status" and res.get("ok"):
         if not res.get("ready"):
-            text = ("Telegram isn't set up on this box yet. "
+            text = ("Telegram isn't set up on this machine yet. "
                     + ("Set it up: make a bot with @BotFather, then `box telegram setup` (token on stdin)."
                        if ME.pw_name in sb.admin_users(CFG) else "The owner turns it on."))
         elif res.get("linked"):
@@ -4296,7 +5055,7 @@ def cmd_login(a):
                                       f"open {r['url']}" + (f" and enter {r['code']}" if r.get("code") else "")
                                       if r.get("url") else r.get("error") or "not yet"))
         if not res.get("boxes"):
-            print("No other boxes answer over SSH yet (box boxes).")
+            print("No other machines answer over SSH yet (box boxes).")
         return
     if a.code:
         res = portal_login_code(a.key, read_secret("Code from the sign-in page: "))
@@ -4348,25 +5107,25 @@ def cmd_team(a):
     sys.exit(sbteam.main(a.rest, CFG, request=lambda req: shared_request(req, 60)) or 0)
 
 
-def main():
-    if sys.argv[1:2] == ["team"]:  # argparse's REMAINDER drops leading options (--team, -h): hand over raw argv
-        return cmd_team(argparse.Namespace(rest=sys.argv[2:]))
-    p = argparse.ArgumentParser(prog="box", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    s = p.add_subparsers(dest="sub")
+def build_parser():
+    p = argparse.ArgumentParser(prog="box", description=__doc__, usage="box <command> [options]",
+                                formatter_class=argparse.RawDescriptionHelpFormatter,
+                                epilog="Owner: box friends, box invite, box hackathon (box help friends).\n"
+                                       "Every command: box help commands. Details on a topic: box help <topic>.")
+    s = p.add_subparsers(dest="sub", metavar="<command>", title="main commands")
     x = s.add_parser("limits", help="owner: the disk budget your agents see (`box limits disk 50`)")
     x.add_argument("what", nargs="?", choices=["disk"], default="disk"); x.add_argument("value", nargs="?")
     x.set_defaults(fn=cmd_limits)
     x = s.add_parser("status"); x.add_argument("--agent", action="store_true")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_status)
-    s.add_parser("ports").set_defaults(fn=cmd_ports)
+    s.add_parser("ports", help="your port range, and which ports are in use").set_defaults(fn=cmd_ports)
     x = s.add_parser("heavy"); x.add_argument("cmd", nargs=argparse.REMAINDER)  # old scripts: just runs CMD
     x.set_defaults(fn=cmd_heavy)
     x = s.add_parser("boost", help=argparse.SUPPRESS)  # gone (limits are dynamic); explains that
     x.add_argument("--why"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_boost)
     x = s.add_parser("running", help="what runs for you: containers, databases, servers, agents, with RAM and age; "
                                      "stop KEY (only when the user asks)")
-    x.add_argument("op", nargs="?", choices=["stop"]); x.add_argument("key", nargs="?")
+    x.add_argument("op", nargs="?", choices=["stop", "keep"]); x.add_argument("key", nargs="?")
     x.add_argument("--force", action="store_true", help="stop: also a server marked keep running (only when its "
                                                         "owner asked)")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_running)
@@ -4388,7 +5147,7 @@ def main():
     x.set_defaults(fn=cmd_clean)
     x = s.add_parser("restore", help="put an archived project back in ~ (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
-    s.add_parser("rules").set_defaults(fn=cmd_rules)
+    s.add_parser("rules", help="the rules your agents are given here (box help has the details)").set_defaults(fn=cmd_rules)
     x = s.add_parser("hackathon", help="develop freely until a set time: open installs")
     x.add_argument("op", nargs="?", choices=["status", "on", "off"])
     x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
@@ -4396,7 +5155,7 @@ def main():
     x.add_argument("--users", help="friends who get open package requests too (the owner always does)")
     x.set_defaults(fn=cmd_hackathon)
     x = s.add_parser("reboot", help="show the next reboot, or (owner) hold automatic reboots temporarily")
-    x.add_argument("op", nargs="?", choices=["status", "hold", "off", "resume"])
+    x.add_argument("op", nargs="?", choices=["status", "hold", "resume", "off"])
     x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
     x.add_argument("--hours", type=float, help="or: hold for this many hours (default 24)")
     x.add_argument("--json", action="store_true")
@@ -4406,56 +5165,61 @@ def main():
     x.add_argument("unit", nargs="?")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=cmd_tune)
-    x = s.add_parser("setup"); x.add_argument("--check", action="store_true")
+    x = s.add_parser("setup", help="guided setup in a terminal: git identity, GitHub, AI sign-ins (--check: what's missing)")
+    x.add_argument("--check", action="store_true")
     x.set_defaults(fn=cmd_setup)
-    s.add_parser("agents").set_defaults(fn=cmd_agents)
-    x = s.add_parser("updates"); x.add_argument("action", nargs="?", choices=["status"])
+    s.add_parser("agents", help="the coding agents installed here, and whether you're signed in to each").set_defaults(fn=cmd_agents)
+    x = s.add_parser("updates", help="installed coding agent versions (they update every night)")
+    x.add_argument("action", nargs="?", choices=["status"])
     x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
-                                           choices=["start", "pair", "app-link", "status", "stop", "logs"])
+                                           choices=["start", "pair", "app-link", "status", "stop", "logs", "versions"])
     x.add_argument("--prompt", action="store_true", help="app-link: print the setup steps for an agent on the laptop")
+    x.add_argument("--json", action="store_true", help="versions: as JSON")
     x.set_defaults(fn=cmd_t3)
-    s.add_parser("welcome").set_defaults(fn=cmd_welcome)
+    s.add_parser("welcome", help="the first-time welcome text for this account").set_defaults(fn=cmd_welcome)
     x = s.add_parser("request", help="ask for a system package (install PKG...), anything else, or: status")
     x.add_argument("text", nargs="*"); x.add_argument("--why", help="what it's for (shown to the owner)")
     x.add_argument("--json", action="store_true")
     x.add_argument("--wait", type=int, help="seconds to wait for an install's outcome (default 90)")
     x.set_defaults(fn=cmd_request)
-    x = s.add_parser("issue"); x.add_argument("--kind", "-k", default="other", choices=sb.ISSUE_KINDS)
+    x = s.add_parser("issue", help="note what about the machine slowed you down, for the owner; on|off for this account")
+    x.add_argument("--kind", "-k", default="other", choices=sb.ISSUE_KINDS)
     x.add_argument("text", nargs="+"); x.set_defaults(fn=cmd_issue)
-    x = s.add_parser("issues"); x.add_argument("--days", type=int, default=14)
+    x = s.add_parser("issues", help="what this account's agents noted with box issue")
+    x.add_argument("--days", type=int, default=14)
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_issues)
-    x = s.add_parser("team", add_help=False, help="hackathon team: shared board, tasks, wait, inbox, crew (box team -h)")
+    x = s.add_parser("team", add_help=False, help="team mode: a shared board, tasks and hand-offs for a team's agents (box team -h)")
     x.add_argument("rest", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_team)
     s.add_parser("_init-home").set_defaults(fn=cmd_init_home)
     x = s.add_parser("_fed-user"); x.add_argument("action"); x.set_defaults(fn=cmd_fed_user)
-    x = s.add_parser("projects", help="projects kept on all your boxes: ls, everywhere NAME on|off, sync (--json)")
-    x.add_argument("op", nargs="?", default="ls", choices=["ls", "everywhere", "sync"])
+    x = s.add_parser("projects", help="projects kept on all your machines: ls, everywhere NAME on|off, sync (--json)")
+    x.add_argument("op", nargs="?", default="ls", choices=["ls", "everywhere", "sync", "keep"])
     x.add_argument("name", nargs="?"); x.add_argument("state", nargs="?")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_projects)
     s.add_parser("_projects-sync").set_defaults(fn=cmd_projects_sync)  # the janitor tick, as this person
-    s.add_parser("_projects-here").set_defaults(fn=cmd_projects_here)  # another of your boxes, over SSH
-    x = s.add_parser("me", help="your agent history on all your boxes, kept forever: stats, search WORDS, sql QUERY, "
+    s.add_parser("_projects-here").set_defaults(fn=cmd_projects_here)  # another of your machines, over SSH
+    x = s.add_parser("me", help="your agent history on all your machines, kept forever: stats, search WORDS, sql QUERY, "
                      "ingest, pull (~/me/AGENTS.md)")
     x.add_argument("op", nargs="?", default="stats", choices=["stats", "search", "sql", "ingest", "pull"])
     x.add_argument("args", nargs="*"); x.add_argument("--limit", type=int, default=20)
     x.add_argument("--thinking", action="store_true", help="search: include the agents' reasoning")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_me)
     s.add_parser("_me-tick").set_defaults(fn=cmd_me_tick)  # the janitor tick, as this person
-    x = s.add_parser("telemetry", help="what this box was doing, minute by minute: summary (default), patterns, "
+    x = s.add_parser("telemetry", help="what this machine was doing, minute by minute: summary (default), patterns, "
                      "sql QUERY, pull, usage, info (box help telemetry)")
     x.add_argument("op", nargs="?", default="summary", choices=["summary", "patterns", "sql", "pull", "usage", "info"])
     x.add_argument("args", nargs="*"); x.add_argument("--hours", type=int, default=24)
     x.add_argument("--days", type=int, default=14); x.add_argument("--box")
-    x.add_argument("--fleet", action="store_true", help="read ~/me/telemetry.db (every box, after pull)")
+    x.add_argument("--fleet", action="store_true", help="read ~/me/telemetry.db (every machine, after pull)")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_telemetry)
     x = s.add_parser("_telemetry-export"); x.add_argument("--since", type=float, default=0)
-    x.add_argument("--raw-since", type=float); x.set_defaults(fn=cmd_telemetry_export)  # another box, over SSH
+    x.add_argument("--raw-since", type=float); x.set_defaults(fn=cmd_telemetry_export)  # another machine, over SSH
     x = s.add_parser("_me-export"); x.add_argument("--since", type=float, default=0)
-    x.set_defaults(fn=cmd_me_export)  # another of your boxes, over SSH
+    x.set_defaults(fn=cmd_me_export)  # another of your machines, over SSH
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")
     x.add_argument("arg", nargs="?"); x.set_defaults(fn=cmd_portal)
-    x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them, no sudo")
+    x = s.add_parser("invite", help="(owner) create a friend's account and a message to send them")
     x.add_argument("--note", help="who it's for, e.g. 'Sam from work'"); x.add_argument("--days", type=int)
     x.add_argument("--tailscale", action="store_true"); x.add_argument("--json", action="store_true")
     x.add_argument("--email", help="the friend's email (required when the machine uses Cloudflare Access)")
@@ -4463,15 +5227,15 @@ def main():
     x.add_argument("--no-create", action="store_true",
                    help="old style: an invite link and the friend picks a username on a signup form")
     x.set_defaults(fn=cmd_invite)
-    x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, requests, issues")
+    x = s.add_parser("friends", help="(owner) list, remove, suspend/resume friends; emails, invites, requests, issues, update")
     x.add_argument("action", nargs="?", default="list",
                    choices=["list", "remove", "suspend", "resume", "email", "access", "requests", "issues",
-                            "update", "boxes"])
+                            "update", "boxes", "invites"])
     x.add_argument("args", nargs="*"); x.add_argument("--archive", action="store_true")
     x.add_argument("--days", type=int, default=7); x.add_argument("--json", action="store_true")
     x.add_argument("--all", action="store_true"); x.add_argument("--why", help="decline: the reason they see")
     x.set_defaults(fn=cmd_friends)
-    x = s.add_parser("skills", help="shared skill catalog: ls, show NAME, add NAME, rm NAME, share DIR (admins)")
+    x = s.add_parser("skills", help="extra abilities for agents: ls, show NAME, add NAME, rm NAME; (owner) share DIR, unshare NAME")
     x.add_argument("action", nargs="?", default="ls", choices=["ls", "show", "add", "rm", "share", "unshare"])
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true")
     x.set_defaults(fn=lambda a: (a.action != "ls" and not a.name and sys.exit(f"box skills {a.action}: which skill?"))
@@ -4496,14 +5260,15 @@ def main():
     x.add_argument("op", nargs="?", choices=["ls", "allow", "stop"]); x.add_argument("name", nargs="?")
     x.add_argument("--access", default="approval-required", choices=["read-only", "approval-required", "full-access"])
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_teammates)
-    x = s.add_parser("ssh-key", help="add NAME's public key to this account: box ssh-key add < key.pub")
+    x = s.add_parser("ssh-key", help="add a public key the user gave you to this account: box ssh-key add < key.pub")
     x.add_argument("op", choices=["add"]); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_ssh_key)
     x = s.add_parser("help", help="details for agents: box help <topic>")
     x.add_argument("topic", nargs="?"); x.set_defaults(fn=cmd_help)
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_cache-pass").set_defaults(fn=cmd_cache_pass)
     s.add_parser("_weekly-clean").set_defaults(fn=cmd_weekly_clean)
-    s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
+    s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # older janitors, for a T3 that isn't running
+    s.add_parser("_t3-tick").set_defaults(fn=cmd_t3_tick)  # the janitor tick, as each account: versions, sleep
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     import sbmsg  # noqa: E402
@@ -4514,6 +5279,16 @@ def main():
     import sbmulti  # noqa: E402
     sbmulti.add_parsers(s, sb, CFG, ME.pw_name, HOME, os.path.abspath(sys.argv[0]))
     # ---- end multi-box ----
+    # `box -h` lists the main commands only; `box help commands` has the rest (internal `_` ones never show)
+    p.cmd_helps = {c.dest: c.help for c in s._choices_actions}
+    s._choices_actions = [s._ChoicesPseudoAction(k, (), v) for k, v in MAIN_COMMANDS if k in s.choices]
+    return p
+
+
+def main():
+    if sys.argv[1:2] == ["team"]:  # argparse's REMAINDER drops leading options (--team, -h): hand over raw argv
+        return cmd_team(argparse.Namespace(rest=sys.argv[2:]))
+    p = build_parser()
     a = p.parse_args()
     if not a.sub:
         a = p.parse_args(["status"])

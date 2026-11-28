@@ -1,22 +1,22 @@
 """Federation: the same friend accounts on every treehouse box (docs/multibox.md, "Accounts across boxes").
 
 The primary box (BOX_ROLE=primary, where invites happen and the public site lives) is the only source of truth
-for which accounts exist. Every box publishes a small *roster* (users, uids, status, limits, the per-user
-box-to-box SSH key and this box's SSH host key), signed by that box's root-only ed25519 key
-(`ssh-keygen -Y sign`, namespace treehouse-roster). sharedbox-web serves it to the boxes in BOXES at
-GET /api/peer/roster; each box's root (`sharedbox-admin fed-sync`, a 5-minute timer, no daemon) pulls the
+for which accounts exist. Every machine publishes a small *roster* (users, uids, status, limits, the per-user
+box-to-box SSH key and this machine's SSH host key), signed by that machine's root-only ed25519 key
+(`ssh-keygen -Y sign`, namespace treehouse-roster). sharedbox-web serves it to the machines in BOXES at
+GET /api/peer/roster; each machine's root (`sharedbox-admin fed-sync`, a 5-minute timer, no daemon) pulls the
 others', verifies the signature against /etc/sharedbox/fed/allowed_signers, and:
   - on a secondary: creates missing accounts with the SAME uid/gid (so the same port block, file owners and
     limits), resumes/suspends them to match, never deletes a home (removed upstream = suspended here);
-  - on every box: authorizes the user's keys from the other boxes in a managed block of their
+  - on every machine: authorizes the user's keys from the other machines in a managed block of their
     ~/.ssh/authorized_keys, writes `Host <box>` blocks and pinned host keys, so `ssh minastirith` and
     `box run --anywhere` work as that user with no prompt, in both directions;
-  - then, as the user, links their T3 Code on each box to the other one (`t3 environment link`), copies the
+  - then, as the user, links their T3 Code on each machine to the other one (`t3 environment link`), copies the
     GitHub token (long-lived, safe to share) and git identity from the home box, and the Claude one-year token
     (`claude setup-token`, ~/.config/treehouse/claude-token, read by the claude shim; the newest copy wins).
     Codex logins and T3 Connect are NOT copied (Codex refresh tokens rotate and OpenAI says not to share
-    auth.json; a T3 Connect authorization belongs to one machine): the dashboard's "Your boxes" row starts
-    them on every other box at once (`box _portal peer-login KEY`) and shows one approve link per box.
+    auth.json; a T3 Connect authorization belongs to one machine): the dashboard's "Your machines" row starts
+    them on every other machine at once (`box _portal peer-login KEY`) and shows one approve link per box.
 
 Trust: an attacker who can bind the web port on a peer (a friend, if sharedbox-web is down) can serve any JSON,
 but can't sign it; a replayed old roster is refused by its serial. Root on any listed box is the owner.
@@ -111,7 +111,7 @@ def outside_block(text):
 
 def own_keys(authorized_text):
     """Valid keys the user put in ~/.ssh/authorized_keys themselves (their laptop): sent from their home box so
-    their laptop reaches the other boxes too."""
+    their laptop reaches the other machines too."""
     out = []
     for line in outside_block(authorized_text).splitlines():
         k = clean_key(line)
@@ -166,8 +166,8 @@ def fresh(doc, now):
 def plan_accounts(upstream, local, passwd, uid_lo, uid_hi):
     """What a secondary does to match the primary's roster `upstream`. Never deletes.
 
-    local:  this box's registry records {name: {uid, status, home_box}} (only friends' accounts)
-    passwd: {name: uid} of every account on this box (plus groups' gids under the key "gid:<n>" -> name)
+    local:  this machine's registry records {name: {uid, status, home_box}} (only friends' accounts)
+    passwd: {name: uid} of every account on this machine (plus groups' gids under the key "gid:<n>" -> name)
     Returns [(action, name, detail)], action in create|resume|suspend|limits|conflict."""
     box = upstream["box"]
     users = upstream.get("users") or {}
@@ -212,7 +212,7 @@ def plan_accounts(upstream, local, passwd, uid_lo, uid_hi):
 
 
 def merge_keys(local_uids, rosters, now):
-    """{name: [keys]} to authorize on this box: every peer's keys for a user with the SAME uid here. A peer
+    """{name: [keys]} to authorize on this machine: every peer's keys for a user with the SAME uid here. A peer
     silent for KEEP_KEYS_DAYS stops counting."""
     out = {n: [] for n in local_uids}
     for doc in rosters.values():
@@ -319,7 +319,7 @@ def unwire(w, signers_path, identity):
         return None, "not a signed roster"
     data = w["doc"].encode()
     if not verify(data, w["sig"], signers_path, identity):
-        return None, "bad signature (or this box doesn't trust that box's key yet: sharedbox-admin fed-trust)"
+        return None, "bad signature (or this machine doesn't trust that machine's key yet: sharedbox-admin fed-trust)"
     try:
         return json.loads(data), ""
     except ValueError:
@@ -350,7 +350,7 @@ def fetch(ip, port, timeout=5):
             return None, "too big"
         return json.loads(body), ""
     except urllib.error.HTTPError as ex:
-        return None, {403: "doesn't list this box in BOXES", 404: "needs a treehouse update (or fed-init)"}.get(
+        return None, {403: "doesn't list this machine in BOXES", 404: "needs a treehouse update (or fed-init)"}.get(
             ex.code, f"error {ex.code}")
     except Exception:  # noqa: BLE001 - refused, timeout, bad JSON
         return None, "not reachable"

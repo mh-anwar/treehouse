@@ -29,8 +29,8 @@ What is stored (agents.db):
 Runs AS THE ACCOUNT (the janitor calls `box _me-tick` at the lowest priority every ~15 minutes; `box me ingest` by
 hand). Incremental: a file is parsed and archived again only when its size or mtime changed; PARSER_VERSION bumps
 re-parse every file once (the old rows stay until the new ones replace them, and a pass that runs out of time
-continues on the next one). Other boxes: `box me pull` copies the sessions the account's other boxes indexed (over
-the account's own fed SSH login) so one agents.db holds every box. Stdlib only.
+continues on the next one). Other machines: `box me pull` copies the sessions the account's other machines indexed (over
+the account's own fed SSH login) so one agents.db holds every machine. Stdlib only.
 """
 
 import base64
@@ -99,12 +99,12 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text); END;
 """
 
-AGENTS_MD = """# ~/me: you, your agents, your boxes
+AGENTS_MD = """# ~/me: you, your agents, your machines
 
 This folder is about the person who owns this account. Use it when they ask about their own history, habits,
 efficiency, inbox or boxes. It is private to them (mode 0700).
 
-- `agents.db`: SQLite, every agent session on every box they have (Claude Code, Codex, and T3 threads of other
+- `agents.db`: SQLite, every agent session on every machine they have (Claude Code, Codex, and T3 threads of other
   providers), kept forever. Tables: `sessions` (box, agent, model, cwd, title, started/ended as unix time, wall_s,
   active_s, prompts, tool_calls, tool_s, errors, interrupts, out_tokens), `messages` (sid, seq, ts, role
   user|assistant|thinking, text; full-text index `messages_fts`; thinking = the model's reasoning), `tool_calls`
@@ -116,7 +116,7 @@ efficiency, inbox or boxes. It is private to them (mode 0700).
 - `raw/`: xz copies of the agents' original transcript files (`xzcat raw/claude/projects/.../ID.jsonl.xz`), kept
   even after the agent deletes its own.
 - Refreshed every ~15 minutes automatically (`box me ingest` and `box me pull` to do it now).
-- Never paste their prompts anywhere outside this box.
+- Never paste their prompts anywhere outside this machine.
 """
 
 QUERIES_MD = """# Ready-made queries for agents.db (run with `box me sql "..."`)
@@ -741,7 +741,7 @@ def _unb64(s):
 
 
 def export_since(home, since, box=None):
-    """JSON lines of this box's sessions updated after `since` (with messages incl. thinking, tool calls and their
+    """JSON lines of this machine's sessions updated after `since` (with messages incl. thinking, tool calls and their
     full compressed input/output as base64 "input_z"/"output_z"), for `box me pull`. Opens read-write so an
     agents.db from before this version gets its new tables first."""
     con = connect(db_path(home))
@@ -767,7 +767,7 @@ SESSION_COLS = ["id", "box", "agent", "session", "parent", "path", "cwd", "title
 
 
 def import_lines(con, lines):
-    """Store what export_since printed on another box (older boxes send no blobs: those sessions just lack them)."""
+    """Store what export_since printed on another machine (older boxes send no blobs: those sessions just lack them)."""
     n = 0
     for line in lines:
         try:
@@ -787,7 +787,7 @@ def import_lines(con, lines):
 
 
 def pull(home, dests, ssh_opts=()):
-    """Copy what each other box indexed into this box's agents.db. `dests` = {box: ssh destination} for this account
+    """Copy what each other machine indexed into this machine's agents.db. `dests` = {box: ssh destination} for this account
     (lib/box projects_peers). Only sessions updated since the last pull travel."""
     con = connect(db_path(home))
     out = {}

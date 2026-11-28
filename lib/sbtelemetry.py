@@ -10,7 +10,7 @@ Storage: one SQLite file per box, STATE_DIR/telemetry/telemetry.db (WAL while th
 kept TELEMETRY_RAW_DAYS (14), hourly roll-ups and events TELEMETRY_KEEP_DAYS (400); the file is capped at
 TELEMETRY_MAX_MB (oldest raw days go first). Privacy is plain file permissions:
   telemetry.db          everything; root:<owner's private group> 0640 (the owner reads it, nobody else)
-  users/<name>.db       the same schema holding only that account's rows plus the box-wide ones;
+  users/<name>.db       the same schema holding only that account's rows plus the machine-wide ones;
                         root:<their private group> 0640
 Readers open these read-only and immutable (the directory isn't theirs, so they can't create the -shm file a WAL
 reader needs); the collector checkpoints and closes within a second each minute, and readers retry if the file
@@ -19,7 +19,7 @@ changed under them.
 What is stored about processes: the kernel's short name (comm) and, for interpreters (node, python, ...), the name
 of a known tool from an allowlist (`node vite`, `python3 pytest`). Never arguments, paths, prompts or environment.
 
-Fleet: `box telemetry pull` copies what the account can read on every box (all of it for the owner, their own rows
+Fleet: `box telemetry pull` copies what the account can read on every machine (all of it for the owner, their own rows
 for anyone else) into ~/me/telemetry.db, over the account's own federation SSH login, like `box me pull`.
 
 Plan usage (optional, `box telemetry usage on`): the account's own janitor tick reads the account's own Claude
@@ -47,14 +47,14 @@ HZ = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 MB = 1 << 20
 SCHEMA_VERSION = 1
-GAP_S = 180               # two samples further apart than this (same boot) = the box stalled or sampling stopped
+GAP_S = 180               # two samples further apart than this (same boot) = the machine stalled or sampling stopped
 MAX_INTERVAL_S = 900      # deltas over longer gaps are meaningless
 TOP_N = 12                # processes kept per sample, by CPU and by memory (each)
 NICE = ("nice", "-n", "15", "ionice", "-c", "3")
 JOURNAL_FIRST_LOOKBACK = "-24h"
 JOURNAL_PATTERN = ("Out of memory|oom-kill:|Killed process|sending SIG|Failed with result|Scheduled restart job|"
                    "killed by the OOM|due to memory|blocked for more than|I/O error|Start request repeated|"
-                   "EXT4-fs error|critical medium error")
+                   "EXT4-fs error|critical medium error|net-guard: ")
 RAW_TABLES = ("samples", "disks", "diskio", "slices", "procs", "agents", "containers")
 HOURLY_TABLES = tuple(t + "_hourly" for t in RAW_TABLES)
 
@@ -352,6 +352,10 @@ UNIT_RE = re.compile(r"^(\S+\.(?:service|scope|socket|timer|mount)): (Failed wit
                      r"Scheduled restart job, restart counter is at (\d+)|A process of this unit has been killed by "
                      r"the OOM killer|Start request repeated too quickly)")
 HUNG_RE = re.compile(r"INFO: task (.{1,20}):(\d+) blocked for more than (\d+) seconds")
+NETGUARD_RE = re.compile(r"^net-guard: ([a-z_]+)(?: \[down (\d+)s\])? ?(.*)$")
+# net-guard lines worth an event (not "down": the actions taken and how it ended say more)
+NETGUARD_ACTIONS = ("reconfigure", "restart", "usb_reset", "reboot", "reboot_blocked", "recovered", "wifi_fix",
+                    "wifi_setup", "wifi_setup_failed")
 DISK_ERR_RE = re.compile(r"(?:I/O error, dev (\w+)|EXT4-fs error \(device (\w+)\)|critical medium error, dev (\w+))")
 
 
@@ -390,6 +394,11 @@ def journal_event(entry, oom_info=None):
         elif DISK_ERR_RE.search(msg):
             m = DISK_ERR_RE.search(msg)
             ev = {"kind": "disk_error", "detail": next(g for g in m.groups() if g)}
+    elif ident == "sharedbox-netguard":
+        m = NETGUARD_RE.match(msg)
+        if m and m.group(1) in NETGUARD_ACTIONS:
+            ev = {"kind": "net_guard", "unit": m.group(1), "detail": clean(m.group(3), 200),
+                  "value": int(m.group(2)) if m.group(2) else None}
     elif ident == "earlyoom":
         m = EARLYOOM_RE.search(msg)
         if m:
@@ -448,12 +457,13 @@ def boot_reason(bootstatus, prev_last, pstore_new):
 # ---------------------------------------------------------------- collection (root, every minute)
 
 class Collector:
-    """One sample of the box. `state` is what the previous run left (counters for deltas); collect() returns
+    """One sample of the machine. `state` is what the previous run left (counters for deltas); collect() returns
     ({table: [row dicts]}, new state). Paths are parameters so tests can point it at a fake tree."""
 
     def __init__(self, box, state=None, proc="/proc", sys_dir="/sys", cgroup="/sys/fs/cgroup", journal=True,
-                 home_of=None):
+                 home_of=None, box_events=None):
         self.box = box
+        self.box_events = box_events  # the box's own event log (events.jsonl): T3 sleeps and restarts come from it
         self.old = state or {}
         self.proc, self.sys, self.cg = proc, sys_dir, cgroup
         self.journal = journal
@@ -495,6 +505,8 @@ class Collector:
                                   "detail": "", "value": now - old["ts"]})
         if self.journal:
             out["events"] += self._journal(old, new)
+        if self.box_events:
+            out["events"] += self._box_events(old, new)
         s["collect_ms"] = int((time.monotonic() - t0) * 1000)
         out["samples"] = [s]
         for t in out:
@@ -791,7 +803,7 @@ class Collector:
         if not j.get("no_grep"):
             cmd += ["-g", JOURNAL_PATTERN]
         cmd += ["_TRANSPORT=kernel", "+", "SYSLOG_IDENTIFIER=earlyoom", "+", "SYSLOG_IDENTIFIER=systemd-oomd", "+",
-                "_COMM=systemd"]
+                "SYSLOG_IDENTIFIER=sharedbox-netguard", "+", "_COMM=systemd"]
         started = time.time()
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60)
@@ -822,8 +834,43 @@ class Collector:
         new["journal"] = j
         return events
 
+    BOX_EVENT_KINDS = ("t3_asleep", "t3_restarted", "t3_restart_failed", "t3_moved", "t3_move_failed")
+
+    def _box_events(self, old, new):
+        """New lines of events.jsonl since the last sample (by inode + offset) whose kind is in BOX_EVENT_KINDS:
+        T3 Code going to sleep or restarting onto the box's version (detail = version, value = idle minutes)."""
+        pos = dict(old.get("box_events") or {})
+        try:
+            st = os.stat(self.box_events)
+        except OSError:
+            new["box_events"] = pos
+            return []
+        off = pos.get("off", 0) if pos.get("ino") == st.st_ino and pos.get("off", 0) <= st.st_size else \
+            (st.st_size if not pos else 0)  # first run: start at the end, no backfill of old lines
+        out = []
+        try:
+            with open(self.box_events, "rb") as f:
+                f.seek(off)
+                data = f.read(1 << 20)
+        except OSError:
+            data = b""
+        end = data.rfind(b"\n") + 1
+        for line in data[:end].splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("kind") in self.BOX_EVENT_KINDS:
+                val = e.get("idle_min")
+                out.append({"ts": float(e.get("ts") or 0), "kind": e["kind"], "user": str(e.get("user") or ""),
+                            "unit": "sb-t3.service" if str(e["kind"]).startswith("t3_") else "",
+                            "detail": str(e.get("version") or e.get("why") or "")[:200],
+                            "value": val if isinstance(val, (int, float)) and not isinstance(val, bool) else None})
+        new["box_events"] = {"ino": st.st_ino, "off": off + end}
+        return out
+
     def _boot_event(self, now, old):
-        """The box (re)started since the last sample: when, and how the previous boot ended."""
+        """The machine (re)started since the last sample: when, and how the previous boot ended."""
         up = num((_read(self._p("uptime")) or "0").split()[0], 0)
         boot_ts = now - up
         prev = None
@@ -855,7 +902,7 @@ class Collector:
 
 
 def for_user(data, user):
-    """The rows one account may read: its own plus the box-wide ones (box metrics, disks, system slices, events
+    """The rows one account may read: its own plus the machine-wide ones (box metrics, disks, system slices, events
     that aren't about another account)."""
     out = {}
     for t, rows in data.items():
@@ -1093,7 +1140,7 @@ def run_root(cfg, sb, now=None, verbose=False):
         except Exception:  # noqa: BLE001
             box = socket.gethostname().split(".")[0].lower()
         state["box_ts"] = now
-    data, new = Collector(box, state).collect(now)
+    data, new = Collector(box, state, box_events=getattr(sb, "EVENTS", None)).collect(now)
     new["box"], new["box_ts"] = box, state.get("box_ts", now)
     owner = sb.owner_account(cfg)
     owner_gid = private_gid(owner.pw_name) if owner else None
@@ -1261,7 +1308,7 @@ def readable_db(state_dir, user):
     if os.access(own, os.R_OK):
         return own, "yours"
     if not os.path.exists(full):
-        return None, "no telemetry on this box yet (it starts with the next treehouse update)"
+        return None, "no telemetry on this machine yet (it starts with the next treehouse update)"
     return None, "no telemetry file for your account yet (it appears within a minute of the next sample)"
 
 
@@ -1352,7 +1399,7 @@ def badness(s, ncpu=None):
 
 
 def why_at(con, box, ts, user=None):
-    """Who and what was using the box at one moment: biggest accounts by memory, busiest processes, events nearby."""
+    """Who and what was using the machine at one moment: biggest accounts by memory, busiest processes, events nearby."""
     slices = _rows(con, "SELECT user, slice, mem_mb, cpu_pct FROM slices WHERE box=? AND ts=? "
                         "ORDER BY coalesce(mem_mb, 0) DESC LIMIT 3", (box, ts))
     procs = _rows(con, "SELECT user, name, cpu_pct, rss_mb FROM procs WHERE box=? AND ts=? "
@@ -1394,6 +1441,9 @@ def event_text(e):
         return f"kernel: {e['detail']} blocked for {int(e['value'] or 0)} s"
     if k == "disk_error":
         return f"disk error on {e['detail']}"
+    if k == "net_guard":
+        down = f" after {_dur(e['value'])} down" if e.get("value") else ""
+        return f"net-guard: {e['unit']}{down} ({e['detail']})"
     return f"{k} {e.get('unit') or ''} {e.get('detail') or ''}".strip()
 
 
@@ -1435,7 +1485,7 @@ def summary(con, hours=24, box=None, now=None):
                                  "ORDER BY n DESC", (b, since))
         d["notable"] = _rows(con, "SELECT ts, kind, user, unit, detail, value FROM events WHERE box=? AND ts>=? AND kind "
                                   "IN ('oom_kill','earlyoom_kill','oomd_kill','unit_oom','boot','sample_gap',"
-                                  "'hung_task','disk_error') ORDER BY ts DESC LIMIT 12", (b, since))
+                                  "'hung_task','disk_error','net_guard') ORDER BY ts DESC LIMIT 12", (b, since))
         d["users"] = _rows(con, "SELECT user, round(sum(coalesce(cpu_pct, 0) * 60) / 360000.0, 2) AS cpu_h, "
                                 "max(mem_mb) AS mem_peak_mb, sum(coalesce(oom_kills, 0)) AS oom_kills, "
                                 "sum(coalesce(mem_max_events, 0)) AS limit_hits FROM slices WHERE box=? AND ts>=? "
@@ -1556,7 +1606,7 @@ def detect_oom_climb(con, box, since):
             pts = [(r["ts"], r["mem_used_mb"]) for r in _rows(
                 con, "SELECT ts, mem_used_mb FROM samples WHERE box=? AND ts BETWEEN ? AND ? ORDER BY ts",
                 (box, t - 1800, t + 30))]
-            whose = "the box's memory"
+            whose = "the machine's memory"
         pts = [(x, y) for x, y in pts if y is not None]
         what = event_text(e)
         if len(pts) >= 5:
@@ -1682,7 +1732,7 @@ def detect_hot_agents(con, box, since, min_hours=2.0, min_cpu=80):
 
 
 def detect_near_freeze(con, box, since):
-    """Stretches where the box was close to freezing (memory or disk stalls, swap storms, RAM all but gone), and
+    """Stretches where the machine was close to freezing (memory or disk stalls, swap storms, RAM all but gone), and
     restarts or sampling gaps that followed them."""
     S = _rows(con, "SELECT * FROM samples WHERE box=? AND ts>=? ORDER BY ts", (box, since))
     gaps = _rows(con, "SELECT ts, kind, detail, value FROM events WHERE box=? AND ts>=? AND "
@@ -1825,7 +1875,7 @@ def pull_due(home, every=3600, now=None):
 
 
 def export(con, since=0, raw_since=None):
-    """JSON lines of rows newer than `since` (minute rows: newer than raw_since), for another box's pull."""
+    """JSON lines of rows newer than `since` (minute rows: newer than raw_since), for another machine's pull."""
     for table in EXPORT_TABLES:
         s = raw_since if table in RAW_TABLES and raw_since is not None else since
         cols = columns(con, table)
@@ -1838,7 +1888,7 @@ def export(con, since=0, raw_since=None):
 
 
 def import_lines(con, lines):
-    """Rows from export() into this database. Tables and columns must be ones this schema has (the other box's
+    """Rows from export() into this database. Tables and columns must be ones this schema has (the other machine's
     text is never trusted as SQL)."""
     counts = {}
     for line in lines:
@@ -1862,7 +1912,7 @@ def import_lines(con, lines):
 
 
 def pull(home, local_path, peers, ssh_opts=(), now=None, max_mb=2048, raw_days=14, keep_days=400):
-    """Copy this box's readable rows and every peer's into ~/me/telemetry.db. {box: rows copied | error}."""
+    """Copy this machine's readable rows and every peer's into ~/me/telemetry.db. {box: rows copied | error}."""
     now = int(now or time.time())
     con = connect(fleet_path(home))
     out = {}
@@ -1975,7 +2025,7 @@ def poll_usage(home, user, box, notify=None, force=False, fetch=None, now=None):
                 return {"ok": False, "error": "that Claude login file isn't this account's"}
             tok = (json.load(f).get("claudeAiOauth") or {})
     except (OSError, ValueError, AttributeError):
-        return {"ok": False, "error": "no Claude login on this box (box login claude)"}
+        return {"ok": False, "error": "no Claude login on this machine (box login claude)"}
     if not tok.get("accessToken"):
         return {"ok": False, "error": "this Claude login has no plan (API-key logins have no plan usage)"}
     exp = num(tok.get("expiresAt"))

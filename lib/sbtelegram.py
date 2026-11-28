@@ -249,7 +249,7 @@ class Bot:
                 linked = _redeem(self.store, arg, chat, handle[:40], now)
                 if linked:
                     self.sb.log_event("telegram_linked", linked)
-                    return self.send(chat, f"Connected to <b>{esc(display(linked))}</b> on this box.\n\n" + HELP)
+                    return self.send(chat, f"Connected to <b>{esc(display(linked))}</b> on this machine.\n\n" + HELP)
                 return self.send(chat, "That link has expired or was already used. Open your treehouse page and "
                                        "press Connect Telegram again.")
             if user:

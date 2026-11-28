@@ -215,6 +215,18 @@ DEFAULTS = {
     # same site as everyone's T3 Code a malicious script there could act as whoever opens it. Tailnet links only.
     "SHARED_PUBLIC_LINKS": "no",
     "OWNER_T3_USER": "",   # account that runs that T3 (default: the first ADMIN_USERS)
+    # T3 Code release channel for every account on this box (the owner's too): stable = npm's `latest` release, and
+    # /etc/t3code/policy.json makes T3 refuse nightly/preview builds (the desktop app's "update server" included);
+    # nightly = npm's `nightly` tag. A new version reaches a running T3 when it restarts while idle (below).
+    "T3_CHANNEL": "stable",
+    # a T3 Code with no client connected and no agent work for this many hours goes to sleep (its socket stays, so
+    # the next visit wakes it in a few seconds). Never during hackathon mode or while anything runs. 0 = never.
+    "T3_IDLE_STOP_HOURS": "3",
+    # a T3 on an older version than the box's restarts once nothing has run in it for this many minutes
+    "T3_RESTART_QUIET_MIN": "20",
+    # the owner's T3 under `box t3`: sb-t3.socket holds the public port (OWNER_T3_PORT, else 3773) and T3 itself
+    # listens on this one (empty = the public port + 1)
+    "OWNER_T3_INNER_PORT": "",
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
     "CF_SESSION_HOURS": "720",
@@ -326,6 +338,26 @@ def hackathon_reconcile(cfg):
 HACKATHON_PAUSED = "hackathon-paused.json"  # in STATE_DIR: {"paused": {user: ["sb-NAME.service"]}, "ts"}
 
 
+def hackathon_candidates(cfg):
+    """Root: [{"user", "name", "about"}] of the `box serve` servers hackathon mode would pause (their owner allowed it,
+    not keep running), for the owner's Settings tab, before they turn it on."""
+    out = []
+    for user, (uid, _rec) in sorted(limited_accounts(cfg).items()):
+        try:
+            home = pwd.getpwnam(user).pw_dir
+            files = os.listdir(os.path.join(home, ".config", "systemd", "user"))
+        except (KeyError, OSError):
+            continue
+        for fn in sorted(files):
+            if not re.fullmatch(r"sb-[A-Za-z0-9][A-Za-z0-9_-]{0,39}\.service", fn) or fn in (
+                    "sb-t3.service", "sb-t3-proxy.service"):
+                continue
+            m = sbrunning.server_meta(home, fn[3:-8], uid)
+            if m.get("hackathon") == "pause" and not m.get("keep"):
+                out.append({"user": user, "name": fn[3:-8], "about": printable(str(m.get("about") or ""))[:160]})
+    return out[:100]
+
+
 def hackathon_servers(cfg, active):
     """Root, at a hackathon mode transition: on -> stop every `box serve` server whose owner allowed it
     (`box serve hackathon NAME pause`; never one marked keep running), off -> start exactly those again.
@@ -394,6 +426,70 @@ def cfg_int(cfg, key):
 
 def admin_users(cfg):
     return [u.strip() for u in cfg["ADMIN_USERS"].split(",") if u.strip()]
+
+
+# ---------- T3 Code: one release channel, idle restarts and sleep (lib/box `_t3-tick`, janitor tick) ----------
+
+T3_POLICY = os.environ.get("SHAREDBOX_T3_POLICY", "/etc/t3code/policy.json")  # T3 reads this machine-wide file
+T3_STATE = os.path.join(STATE_DIR, "t3.json")   # root writes after each tick: every account's T3 version + state
+T3_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+
+
+def t3_channel(cfg):
+    return "nightly" if str(cfg.get("T3_CHANNEL") or "").strip().lower() == "nightly" else "stable"
+
+
+def t3_policy(cfg):
+    """T3's managed policy document (schemaVersion 1). Only `limits.updates` is set: with allowNightly false every
+    T3 on the box (the owner's desktop app asking the server to update included) refuses nightly/preview builds.
+    Nothing else changes; T3 shows "Managed by <brand>" next to updates."""
+    doc = {"schemaVersion": 1, "organization": brand(cfg),
+           "limits": {"updates": {"mode": "auto", "allowNightly": t3_channel(cfg) == "nightly"}}}
+    url = public_url(cfg)
+    if url:
+        doc["supportUrl"] = url + "/_box/me"
+    return doc
+
+
+def write_t3_policy(cfg, path=None):
+    """Write /etc/t3code/policy.json (root). A policy someone else wrote (another organization) is left alone.
+    Returns what happened, for the log."""
+    path = path or T3_POLICY
+    want = t3_policy(cfg)
+    cur = read_json(path, None) if os.path.exists(path) else None
+    if os.path.exists(path) and not (isinstance(cur, dict) and cur.get("organization") == want["organization"]):
+        return f"left {path} alone: it was written by someone else"
+    if cur == want:
+        return ""
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    write_json(path, want, mode=0o644)
+    return f"wrote {path} (T3 channel: {t3_channel(cfg)})"
+
+
+def t3_box_version():
+    """The T3 Code version the box installed for everyone (/opt/sharedbox/agents/t3/current), or ""."""
+    try:
+        v = os.path.basename(os.readlink(os.path.join(AGENTS_DIR, "t3", "current")))
+    except OSError:
+        return ""
+    return v if T3_VERSION_RE.fullmatch(v) else ""
+
+
+def tcp_clients(port, procnet="/proc/net"):
+    """Established TCP connections to local `port` (any address): open T3 tabs and apps, through the gate or the
+    wake-up proxy. Read from /proc/net/tcp{,6}, which every account may read."""
+    n = 0
+    for name in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(procnet, name)) as f:
+                next(f, None)
+                for line in f:
+                    cols = line.split()
+                    if len(cols) > 3 and cols[3] == "01" and cols[1].rsplit(":", 1)[-1].upper() == f"{port:04X}":
+                        n += 1
+        except OSError:
+            pass
+    return n
 
 
 # ---------- json files ----------
@@ -505,7 +601,7 @@ def auto_memory_max(cfg):
 
 
 def user_slice_low(cfg):
-    """Protection all accounts share (user.slice MemoryLow): the box minus twice the reserve (the box's own services:
+    """Protection all accounts share (user.slice MemoryLow): the machine minus twice the reserve (the machine's own services:
     sshd, Tailscale, the website) minus what group servers may use, so under pressure those aren't the only things
     the kernel takes memory from. Never below one account's MEMORY_LOW."""
     total = 0
@@ -559,6 +655,47 @@ def human(n):
         if abs(n) < 1024 or u == "T":
             return f"{n:.0f}{u}" if u == "B" else f"{n:.1f}{u}"
         n /= 1024
+
+
+def size_text(n):
+    """Bytes for people: "9.6 GB", "600 MB", "0 GB". Same unit names everywhere people read numbers (the dashboard,
+    `box status`), never the "9.6G" shorthand."""
+    if n is None:
+        return "no limit"
+    n = float(n)
+    if abs(n) < 1 << 20:
+        return "0 MB" if n < 512 << 10 else "1 MB"
+    n /= 1024
+    for u in ("MB", "GB", "TB"):
+        n /= 1024
+        if abs(n) < 1000 or u == "TB":
+            if n >= 100 or u == "MB":
+                return f"{n:.0f} {u}"
+            return f"{n:.1f} {u}".replace(".0 ", " ")
+    return f"{n:.1f} TB"
+
+
+# The words people see, one meaning each (docs/glossary.md is generated from this; the dashboard's Home tab and
+# `box help words` show it too). Change a word here and in the UI together.
+GLOSSARY = (
+    ("Machine", "A computer treehouse runs on, called by its name (for example {machine}). Each machine has its own "
+                "memory and disk, and your files stay on the machine where they were made."),
+    ("Dashboard", "This website. Its tabs are Home, Messages, Servers, Machines and Account."),
+    ("T3", "The chat app where you talk to your AI agent. Open it in this browser with Open T3, or use the T3 app on "
+           "your phone or laptop (it's called T3 Code in the app stores)."),
+    ("AI account", "Your own Claude, ChatGPT or Google subscription. Agents use it to think. You need only one, and "
+                   "that company bills you for it, not treehouse."),
+    ("Agent", "An AI coding assistant (Claude Code, Codex, or Google's Antigravity, which uses Gemini) that works on "
+              "the machine for you. An agent session is one chat with it."),
+    ("Server", "An app, site or bot of yours that keeps running on the machine, with its own link."),
+    ("Group server", "A server the whole group shares. Anyone in the group can start, stop or change it."),
+    ("Database or container", "A program your agent started with Docker, such as a Postgres or Supabase database. It "
+                              "keeps running until someone stops it."),
+    ("Friend", "Someone with an account on the machine. The owner runs the machines and invites friends."),
+    ("Request", "Something an agent asks the owner for: a program to install for everyone, or a setting to change."),
+    ("Archive", "Where a project nobody opened for a while goes, once all its work is saved on GitHub. You can bring "
+                "it back from your Account tab."),
+)
 
 
 def printable(s):
@@ -939,7 +1076,7 @@ BOX_IP_RE = re.compile(r"100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2
 
 def boxes(cfg):
     """BOXES as an ordered {name: ip}. Entries are "name=ip" split on spaces/commas; a bad entry or a repeated
-    name or ip is dropped. This box is in the list too (the same line goes on every box). Never raises."""
+    name or ip is dropped. This machine is in the list too (the same line goes on every machine). Never raises."""
     out = {}
     for item in re.split(r"[\s,]+", str(cfg.get("BOXES") or "")):
         name, _, ip = item.partition("=")
@@ -1284,7 +1421,7 @@ def boost_start(cfg, name, why="", now=None):
     now = int(now or time.time())
     acct = limited_accounts(cfg).get(name)
     if not acct:
-        return {"ok": False, "until": 0, "error": f"{name} has no account on this box"}
+        return {"ok": False, "until": 0, "error": f"{name} has no account on this machine"}
     uid, rec = acct
     if rec and rec.get("status", "active") != "active":
         return {"ok": False, "until": 0, "error": "the account is suspended"}
@@ -1301,7 +1438,7 @@ def boost_start(cfg, name, why="", now=None):
         avail = _mem_available()
         if need > 0 and avail < need:
             return {"ok": False, "until": 0,
-                    "error": f"the box doesn't have enough free memory for a boost right now ({human(avail)} free, "
+                    "error": f"the machine doesn't have enough free memory for a boost right now ({human(avail)} free, "
                              f"{human(need)} needed). Try again later, or stop something you don't need."}
     until = now + int(float(cfg["BOOST_HOURS"]) * 3600)
     r = subprocess.run(["systemctl", "set-property", "--runtime", f"user-{uid}.slice", *props],

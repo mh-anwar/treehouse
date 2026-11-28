@@ -201,7 +201,7 @@ class Posts(unittest.TestCase):
 
 
 class Antigravity(unittest.TestCase):
-    """Log in with Google (Antigravity): the start card offers it, the paste-code finish says how to turn it on in T3,
+    """Sign in with Google Gemini: the start card offers it, the paste-code finish says how to turn it on in T3,
     the owner's Account tab has the same logins as friends."""
     EMAIL, handler, post, tearDown = Posts.EMAIL, Posts.handler, Posts.post, Posts.tearDown
     card = staticmethod(Posts.card)
@@ -227,8 +227,8 @@ class Antigravity(unittest.TestCase):
 
     def test_start_card_offers_google(self):
         page = self.handler("GET", "/_box/me")["body"]
-        self.assertIn("Log in with Claude", page)
-        self.assertIn("Log in with Google (Antigravity)", page)
+        self.assertIn("Sign in with Claude", page)
+        self.assertIn("Sign in with Google Gemini", page)
 
     def test_paste_login_then_t3_note(self):
         r = self.post({"action": "login", "key": "antigravity"}, (("X-Requested-With", "fetch"),))
@@ -242,8 +242,8 @@ class Antigravity(unittest.TestCase):
     def test_rows(self):
         btn = w.portal_btn("tok", "/_box")
         page = w.ai_accounts_section({"box": "here", "boxes": {}}, {"antigravity": {"ok": False}}, btn, "tok", "/_box")
-        self.assertIn("Google (Antigravity)", page)
-        self.assertIn("Sign in to Google (Antigravity) on here", page)
+        self.assertIn("Google Gemini", page)
+        self.assertIn("Sign in to Google Gemini on", page)
         self.assertIn("T3 keeps its own sign-in", page)
         rows = w.owner_login_rows({"accounts": {"gh": "octo"}}, {"claude": {"ok": True}, "gh": {"ok": True}}, btn)
         self.assertEqual([r[0] for r in rows], ["GitHub"])  # Claude/ChatGPT/Google: the per-machine table

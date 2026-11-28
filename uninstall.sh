@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Remove sharedbox's services and files. Friend accounts and their homes are KEPT
-# unless --remove-users is given. Never touches sshd, tailscaled or networking.
+# unless --remove-users is given. Never touches sshd or tailscaled. Networking: only the Wi-Fi goes back from
+# treehouse's any-dongle config to netplan's (kept as it is if that would leave the box offline).
 #
 #   sudo ./uninstall.sh [--remove-users]
 set -euo pipefail
@@ -21,6 +22,24 @@ rm -rf /var/lib/sharedbox/trap /var/lib/sharedbox/alerts
 rm -f /var/lib/sharedbox/canary.jsonl /var/lib/sharedbox/canary-planted.json
 # retired per-user agent version pins (`box updates manual`)
 rm -rf /var/lib/sharedbox/agent-pins
+# network self-recovery: the Wi-Fi goes back to netplan first. Exit 3 = kept on treehouse's any-dongle config,
+# because netplan's config names another dongle and there's no cable (the box would go offline); those files stay.
+systemctl disable --now sharedbox-netguard.timer 2>/dev/null || true
+KEEP_WIFI=0
+if [[ -x /usr/lib/sharedbox/sharedbox-netguard ]]; then
+    rc=0
+    systemd-run --wait --collect --quiet --unit=sharedbox-wifi-restore -p SyslogIdentifier=sharedbox-netguard \
+        /usr/lib/sharedbox/sharedbox-netguard wifi-restore || rc=$?
+    [[ $rc == 3 ]] && KEEP_WIFI=1
+fi
+if [[ $KEEP_WIFI == 1 ]]; then
+    cp /etc/systemd/system/sharedbox-wifi@.service /run/sharedbox-wifi@.service.keep 2>/dev/null || true
+    echo "kept: Wi-Fi on /etc/sharedbox/wifi, /etc/systemd/network/80-sharedbox-wifi.network, /etc/udev/rules.d/99-sharedbox-wifi.rules (netplan's Wi-Fi config names another dongle)"
+else
+    rm -f /etc/systemd/network/80-sharedbox-wifi.network /etc/udev/rules.d/99-sharedbox-wifi.rules
+    udevadm control --reload 2>/dev/null || true
+    networkctl reload 2>/dev/null || true
+fi
 # shared servers (box shared): stopped and their units removed; their code in /srv/shared is kept
 for u in /etc/systemd/system/sb-shared-*.service; do
     [[ -e $u ]] && systemctl disable --now "$(basename "$u")" 2>/dev/null || true
@@ -28,6 +47,9 @@ done
 rm -f /etc/systemd/system/sb-shared-*.service /etc/systemd/system/sharedbox-shared.slice
 rm -f /etc/systemd/system/sharedbox-*.{service,timer,path}
 rm -rf /etc/systemd/system/sharedbox-gate.service.d
+if [[ $KEEP_WIFI == 1 && -e /run/sharedbox-wifi@.service.keep ]]; then
+    mv /run/sharedbox-wifi@.service.keep /etc/systemd/system/sharedbox-wifi@.service
+fi
 # apt timer drop-ins exist only on Debian/Ubuntu (install.sh adds nothing like it on Arch); no-ops elsewhere
 rm -f /etc/systemd/system/apt-daily.timer.d/sharedbox.conf /etc/systemd/system/apt-daily-upgrade.timer.d/sharedbox.conf
 rmdir /etc/systemd/system/apt-daily.timer.d /etc/systemd/system/apt-daily-upgrade.timer.d 2>/dev/null || true
