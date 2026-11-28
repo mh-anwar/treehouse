@@ -4231,7 +4231,8 @@ TELEMETRY_SCHEMA = """Tables (unix-time `ts`; minute rows kept 14 days, `*_hourl
   oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
   unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
   samples for value seconds: the machine stalled), container_start, container_stop (value = peak MB), hung_task,
-  disk_error.
+  disk_error, net_guard (network self-recovery: unit = reconfigure, restart, usb_reset, reboot, reboot_blocked,
+  recovered, wifi_fix, wifi_setup[_failed]; value = seconds the network had been down; detail = why and each link).
 - Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
   oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
   swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
