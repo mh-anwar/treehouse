@@ -1,4 +1,4 @@
-"""Presence (`box where`): where is someone, in their own words, plus a coarse "active on the box" hint.
+"""Presence (`box where`): where is someone, in their own words, plus a coarse "active on the machine" hint.
 
   box where                         everyone
   box where mohammad                one person, by account or display name
@@ -198,7 +198,7 @@ def describe(user, rec, now):
         s = v["status"] + (f", until {v['until_text']}" if v.get("until") else "")
     else:
         s = "no status set"
-    return f"{who}: {s}. On the box: {v['activity']}."
+    return f"{who}: {s}. On the machine: {v['activity']}."
 
 
 def find(query, people, d, aliases=None):
@@ -277,7 +277,7 @@ def add_parsers(s, sb, cfg, user, request):
     x.add_argument("--clear", action="store_true", help="remove your status")
     x.add_argument("--name", help="your display name, what people ask for (\"Mohammad\")")
     g = x.add_mutually_exclusive_group()
-    g.add_argument("--private", action="store_true", help="hide whether you're active on the box")
+    g.add_argument("--private", action="store_true", help="hide whether you're active on the machine")
     g.add_argument("--public", action="store_true", help="show it again")
     x.add_argument("--json", action="store_true")
     x.set_defaults(fn=lambda a: cli(a, sb, cfg, user, request))

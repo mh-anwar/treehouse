@@ -693,7 +693,7 @@ def metrics_tail(seconds):
 def real_disk():
     """(total, free) bytes of the disk people's files are on. This service can't see /home (ProtectHome gives it an
     empty private mount, so sb.disk_free("/home") said "1.4M / 3.0G"): use the root-run health sampler's numbers,
-    else "/" (on the boxes /home is part of the root filesystem). None if neither is known."""
+    else "/" (on the machines /home is part of the root filesystem). None if neither is known."""
     rows = metrics_tail(900)
     last = rows[-1] if rows else {}
     free, total, pct = last.get("disk_free_b"), last.get("disk_total_b"), last.get("disk_free")
@@ -875,7 +875,7 @@ def ago_text(ts):
 
 
 def reboot_text():
-    """"next reboot Wed 04:00" for the box line, or "" when no reboot is planned."""
+    """"next reboot Wed 04:00" for the machine line, or "" when no reboot is planned."""
     rb = sb.reboot_info(sb.load_config())
     if not rb["at"]:
         return ""
@@ -890,7 +890,7 @@ def mem_limit(lim):
 
 
 def you_strip(name, rec, st, btn, rng="24h", base=""):
-    """The Usage card's insides: your memory/CPU/disk now, one small memory chart, one line about the box."""
+    """The Usage card's insides: your memory/CPU/disk now, one small memory chart, one line about the machine."""
     e = html.escape
     rng = rng if rng in RANGES else "24h"
     now = time.time()
@@ -974,7 +974,7 @@ def machine_line(base=""):
 
 
 def activity_section(name, owner=False, rng="24h"):
-    """Collapsed: who's around, your own activity, what happened on the box."""
+    """Collapsed: who's around, your own activity, what happened on the machine."""
     e = html.escape
     now = time.time()
     rows = metrics_tail(RANGES["24h"])
@@ -1069,7 +1069,7 @@ def stop_text(it, user=None, viewer=None):
 
 
 def oom_notes(name, days=2):
-    """What the box stopped for this account when memory ran out (root's oom.jsonl, from the janitor tick)."""
+    """What the machine stopped for this account when memory ran out (root's oom.jsonl, from the janitor tick)."""
     out = []
     try:
         with open(os.path.join(sb.STATE_DIR, "oom.jsonl")) as f:
@@ -1440,7 +1440,7 @@ def last_active(rows, name, step, floor=0.05):
 
 
 def allowed_emails():
-    """Emails Cloudflare Access lets in, as far as this box knows without asking Cloudflare: the owners,
+    """Emails Cloudflare Access lets in, as far as this machine knows without asking Cloudflare: the owners,
     every account's email and every invite's (expired invites stay allowed until the janitor drops them)."""
     out = set(sb.owner_emails(CFG))
     out |= {str(r.get("email")).strip().lower() for r in (sb.registry().get("users") or {}).values()
@@ -1696,7 +1696,7 @@ PEER_EVERY = 30
 PEER_TIMEOUT = 3
 PEER_MAX_BYTES = 16384
 PEERS = {}       # box name -> {"ip", "data", "seen", "err", "busy"}
-BOX_LIST = []    # [(name, ip)] from BOXES, in its order (this box included)
+BOX_LIST = []    # [(name, ip)] from BOXES, in its order (this machine included)
 PEER_IPS = set()  # who may read /api/box
 peers_lock = threading.Lock()
 _box_cache = []  # [time, summary]
@@ -1705,7 +1705,7 @@ SUMMARY_PCT = ("mem", "disk_free")
 
 
 def box_summary():
-    """This box's numbers for the others: no per-user data. Cached 15 s; no subprocess."""
+    """This machine's numbers for the others: no per-user data. Cached 15 s; no subprocess."""
     now = time.time()
     if _box_cache and now - _box_cache[0] < 15:
         return _box_cache[1]
@@ -1789,10 +1789,10 @@ def fetch_peer(name, ip):
         with _OPENER.open(peer_url(ip), timeout=PEER_TIMEOUT) as r:
             body = r.read(PEER_MAX_BYTES + 1)
         data = clean_summary(json.loads(body)) if len(body) <= PEER_MAX_BYTES else None
-        err = "" if data else "gave an answer this box doesn't understand"
+        err = "" if data else "gave an answer this machine doesn't understand"
     except urllib.error.HTTPError as ex:
         ex.close()
-        err = {404: "needs a treehouse update", 403: "doesn't list this box in BOXES yet"}.get(ex.code, f"error {ex.code}")
+        err = {404: "needs a treehouse update", 403: "doesn't list this machine in BOXES yet"}.get(ex.code, f"error {ex.code}")
     except Exception:  # noqa: BLE001 - refused, timed out, bad JSON: all just "not reachable"
         err = "not reachable"
     with peers_lock:
@@ -1805,7 +1805,7 @@ def fetch_peer(name, ip):
 
 
 def peers_tick():
-    """Re-read BOXES (no restart needed after `box friends boxes`) and ask every other box once."""
+    """Re-read BOXES (no restart needed after `box friends boxes`) and ask every other machine once."""
     cur = sb.boxes(sb.load_config())
     todo = []
     with peers_lock:
@@ -1883,8 +1883,8 @@ def machines_tab(owner, allowed, where, base):
 
 OFFLINE_WHY = {"not reachable": "It doesn't answer. It may be turned off, asleep or off the network.",
                "needs a treehouse update": "It runs an older treehouse that can't share its numbers yet.",
-               "doesn't list this box in BOXES yet": "It doesn't list this machine as one of yours yet.",
-               "gave an answer this box doesn't understand": "It answered in a way this machine doesn't understand."}
+               "doesn't list this machine in BOXES yet": "It doesn't list this machine as one of yours yet.",
+               "gave an answer this machine doesn't understand": "It answered in a way this machine doesn't understand."}
 
 
 def machines_section(owner=False, allowed=None, names=None):
@@ -2323,7 +2323,7 @@ def pending_archive(name):
 
 
 def needs_items(base, msg, st, name, nreq=0, btn=None):
-    """Home's "Needs you": new messages, open requests (owner), servers that crashed, what the box stopped when
+    """Home's "Needs you": new messages, open requests (owner), servers that crashed, what the machine stopped when
     memory ran out, big things left running for days (Keep it / Stop it right here), projects about to be archived
     (Keep it). Each is (what, the buttons that answer it)."""
     e = html.escape
@@ -2597,7 +2597,7 @@ def page_script():
 
 
 def box_ip():
-    """The address friends' devices reach this box by: its Tailscale IP. Friends who joined the owner's tailnet
+    """The address friends' devices reach this machine by: its Tailscale IP. Friends who joined the owner's tailnet
     as shared-in users can't resolve the short MagicDNS name, so it is never used in an address."""
     if SELF_IP:
         return SELF_IP
@@ -2614,13 +2614,13 @@ def dashboard_url():
 
 
 def ts_facts(rec):
-    """What this box's Tailscale says about the friend's account (login, sharee/member/...): for the setup prompt."""
+    """What this machine's Tailscale says about the friend's account (login, sharee/member/...): for the setup prompt."""
     return sbconnect.ts_facts(sb.tailscale_status(), rec) if rec else {"login": "", "mode": ""}
 
 
 def app_prompt_result(res, rec=None):
     """root's answer to `t3app` -> what the start card shows: the setup prompt, or the one failure line.
-    `rec` (the friend's record) adds what the box knows about their Tailscale account; root's answer lists the T3
+    `rec` (the friend's record) adds what the machine knows about their Tailscale account; root's answer lists the T3
     apps already connected."""
     pair = res.get("pair_url") if res.get("ok") else ""
     ts = ts_facts(rec) if pair else {}
@@ -2869,7 +2869,7 @@ setTimeout(poll,3000)}})();</script>"""
 
 
 def telegram_setup_section(tg, tok, base, slot=None):
-    """Owner settings: give the box a Telegram bot (one token from @BotFather), or see that it's on."""
+    """Owner settings: give the machine a Telegram bot (one token from @BotFather), or see that it's on."""
     e = html.escape
     if tg.get("ready"):
         body = (f"<p style='margin-top:0'><span class='dot ok'></span><b>On</b> as "
@@ -2904,8 +2904,8 @@ T3_ANDROID = "https://play.google.com/store/apps/details?id=com.t3tools.t3code"
 
 
 def app_help(more=""):
-    """Under "Open T3 app" once T3 Connect is on: the app finds the box through the T3 account, no VPN.
-    more: a "set it up on your other boxes too" button when some aren't yet."""
+    """Under "Open T3 app" once T3 Connect is on: the app finds the machine through the T3 account, no VPN.
+    more: a "set it up on your other machines too" button when some aren't yet."""
     e = html.escape
     return (f"<div class='appbox'><p><b>Laptop:</b> open the T3 app and sign in with your T3 account. <b>{e(here_name())}</b> "
             f"shows up by itself. No app yet? <a href='{T3_DOWNLOAD}' target='_blank' rel='noopener'>Download T3</a>.</p>"
@@ -2935,7 +2935,7 @@ def owner_app_details(st):
 
 
 def owner_app_row(st, logins, btn, base):
-    """(label, description, action) for the owner's Account tab, or None when T3 isn't on this box."""
+    """(label, description, action) for the owner's Account tab, or None when T3 isn't on this machine."""
     t3c = (st.get("logins") or {}).get("t3connect")
     if not t3c or not CFG.get("OWNER_T3_PORT", "").strip().isdigit():
         return None
@@ -3149,8 +3149,8 @@ PROJECT_STATE = {"cloned": ("ok", "copied"), "updated": ("ok", "updated"), "curr
 
 
 def projects_section(st, tok, base, slot=None):
-    """"Projects on all your boxes" (lib/sbprojects.py): git repos in ~ with a remote, each with an on/off button;
-    per other box what the last sync did. Only shown when the person has more than one box."""
+    """"Projects on all your machines" (lib/sbprojects.py): git repos in ~ with a remote, each with an on/off button;
+    per other machine what the last sync did. Only shown when the person has more than one machine."""
     e = html.escape
     pj = st.get("projects")
     if not isinstance(pj, dict):
@@ -3556,7 +3556,7 @@ def portal_result(res, btn, base=""):
         return logs_card(res, btn, base)
     if view == "boost":  # older pages: boosts are gone, root explains why
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
-    if view == "projects":  # "Keep on all boxes" only queues the first copy: in progress, not a check mark
+    if view == "projects":  # "Keep on all machines" only queues the first copy: in progress, not a check mark
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]), "busy" if res.get("_busy") else "ok")
     if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team", "ai-account",
                 "serve-set", "running-any", "serve-describe", "shared-describe", "running-ok", "project-keep",
@@ -3614,7 +3614,7 @@ setTimeout(poll,4000)}})();</script>"""
 # ---------- http ----------
 
 def allowed_hosts(bind):
-    """Names this box is legitimately reached by: hostname, MagicDNS name, its IPs, WEB_HOSTS."""
+    """Names this machine is legitimately reached by: hostname, MagicDNS name, its IPs, WEB_HOSTS."""
     names = {HOST, "localhost", "127.0.0.1", "::1", bind, SELF_IP}
     try:
         st = json.loads(subprocess.run(["tailscale", "status", "--json", "--peers=false"],
@@ -3671,7 +3671,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def tailnet_owner(self):
         """True for the owner over Tailscale: the Tailscale user that owns this machine, or one of
-        CF_OWNER_EMAILS. Local users (loopback, this box's own IP) are friends too, so never."""
+        CF_OWNER_EMAILS. Local users (loopback, this machine's own IP) are friends too, so never."""
         ip, who = self.ident()
         if not who:
             return False
@@ -3689,11 +3689,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self.tailnet_owner():
                 return self.send(403, '{"error": "only the owner"}', "application/json")
             self.send(200, json.dumps(api_state()), "application/json")
-        elif path == "/api/box":  # box-level numbers for the owner's other boxes (BOXES), nobody else
+        elif path == "/api/box":  # box-level numbers for the owner's other machines (BOXES), nobody else
             if not peer_allowed(self.client_address[0]):
                 return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
             self.send(200, json.dumps(box_summary()), "application/json")
-        elif path == "/api/peer/key":  # federation: this box's public roster key, for first-contact pinning
+        elif path == "/api/peer/key":  # federation: this machine's public roster key, for first-contact pinning
             if not peer_allowed(self.client_address[0]):
                 return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
             try:
@@ -3702,7 +3702,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self.send(404, '{"error": "no key yet"}', "application/json")
             self.send(200, body, "text/plain")
-        elif path == "/api/peer/roster":  # federation (lib/sbfed.py): root's signed roster, for the other boxes only
+        elif path == "/api/peer/roster":  # federation (lib/sbfed.py): root's signed roster, for the other machines only
             if not peer_allowed(self.client_address[0]):
                 return self.send(403, '{"error": "not a box in BOXES"}', "application/json")
             try:
@@ -3944,7 +3944,7 @@ class Handler(BaseHTTPRequestHandler):
             res = portal_call(ip, who, "telegram-setup", **({"op": "off"} if form.get("op") == "off" else
                                                            {"token": form.get("tgtoken", "").strip()[:200]}))
             return self.after_post(ip, who, name, rec, dict(res, _view="telegram-setup"))
-        if action == "projects":  # "Projects on all your boxes": keep one repo in ~ on every box, or stop
+        if action == "projects":  # "Projects on all your machines": keep one repo in ~ on every machine, or stop
             op = form.get("op", "")
             if not PROJECT_RE.fullmatch(key) or op not in ("on", "off"):
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "no such project", "_view": "projects"})
@@ -4095,7 +4095,7 @@ def connect_section(name):
     e = html.escape
     ssh_host = live_ssh_host()
     if not ssh_host:
-        return ""  # not switched on for this box yet: show nothing rather than a dead end
+        return ""  # not switched on for this machine yet: show nothing rather than a dead end
     text = sbconnect.connect_text(name, PUBLIC, ssh_host)
     return f"""<p>Reach this machine from your laptop's terminal. Paste this into the AI agent on your laptop.</p>
 <div class="line"><button type="button" class="sm secondary" id="connect-copy" data-copy="connect-prompt">Copy terminal prompt</button></div>
@@ -4110,14 +4110,15 @@ AGENT_KEY_PATH = "/_box/api/ssh-key"
 def agent_identity(handler):
     """(who, None) for a friend, else (None, (status, error)) for the JSON API (cloudflare mode only)."""
     if not CF:
-        return None, (404, "this needs the machine's Cloudflare login (PUBLIC_MODE=cloudflare)")
+        return None, (404, "This only works through the machine's public site, which isn't set up here. Use "
+                           "Tailscale instead.")
     who = handler.who()
     if who and who.get("name") and who.get("cf_jwt"):
         return who, None
     email = handler.cf_email() or ""
     if email in sb.owner_emails(CFG):
-        return None, (403, f"{email} is the owner's login and has no friend account here. SSH in as yourself "
-                           "the usual way, or link an account: sudo sharedbox-admin access add EMAIL --user NAME")
+        return None, (403, f"{email} is the owner's login and has no friend account here. Sign in to the machine "
+                           "as yourself the usual way.")
     return None, (403, f"no account on this machine for {email or 'this login'}; ask the person who runs it to "
                        "invite this email")
 
@@ -4161,8 +4162,8 @@ def agent_add_key(who, body):
     out = {"ok": True, "user": who["name"], "ssh_host": ssh_host,
            "ssh_config": sbconnect.ssh_config_block(who["name"], ssh_host) if ssh_host else ""}
     if not ssh_host:
-        out["note"] = ("key added, but SSH through Cloudflare isn't on yet: ask the owner to run "
-                       "sudo sharedbox-admin cloudflare ssh")
+        out["note"] = ("Key added, but SSH through the public site isn't turned on for this machine yet. Ask the owner "
+                       "to turn it on; your key will work as soon as they do.")
     return 200, out
 
 

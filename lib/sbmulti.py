@@ -1,25 +1,25 @@
 """Multi-box: see every treehouse box's load and run heavy work on whichever has room.
 
-  box boxes [--json]                         load on each box in BOXES, whether you can reach it, the best pick
-  box boxes setup                            (re)connect your account on the other boxes now: T3 links, GitHub
-  box boxes login claude|codex|gh --on NAME [--code X | --wait]   log an agent in on another box (device login)
+  box boxes [--json]                         load on each machine in BOXES, whether you can reach it, the best pick
+  box boxes setup                            (re)connect your account on the other machines now: T3 links, GitHub
+  box boxes login claude|codex|gh --on NAME [--code X | --wait]   log an agent in on another machine (device login)
   box run [--anywhere|--on NAME] [--shards N] [--prep CMD] [--back PATH]... [--git] -- CMD...
-                                             run CMD on the least-loaded box: sync this project there
+                                             run CMD on the least busy machine: sync this project there
                                              (incrementally), stream the output back, exit with CMD's code
 
 Design (docs/multibox.md):
-- Load comes from each box's existing GET /api/box (sharedbox-web, port WEB_PORT, answers only boxes in BOXES),
+- Load comes from each machine's existing GET /api/box (sharedbox-web, port WEB_PORT, answers only boxes in BOXES),
   so `box boxes` costs one small HTTP call per box and no SSH.
-- Work runs over plain SSH as the same user on the other box. Destination: a Host in ~/.ssh/config whose
-  HostName is the box's IP (the owner's alias, or the `Host <box>` block federation writes for every friend,
+- Work runs over plain SSH as the same user on the other machine. Destination: a Host in ~/.ssh/config whose
+  HostName is the machine's IP (the owner's alias, or the `Host <box>` block federation writes for every friend,
   with their per-user ~/.ssh/id_treehouse key and pinned host keys: lib/sbfed.py), else ~/.sharedbox/boxes.json {"name": "user@host"}, else
   <same username>@<tailscale ip> (what the provisioner sets up for friends).
-- The project goes to a persistent mirror on the other box (~/.sharedbox/mirror/<slug>), synced with rsync
-  using the project's .gitignore files as the filter: only source changes travel, and the other box's own
+- The project goes to a persistent mirror on the other machine (~/.sharedbox/mirror/<slug>), synced with rsync
+  using the project's .gitignore files as the filter: only source changes travel, and the other machine's own
   node_modules/.venv/build outputs (ignored, so excluded) survive between runs instead of being re-copied.
 - `--prep CMD` (e.g. "npm ci") runs there only when the lockfiles or CMD change.
 - Anything wrong before CMD starts there (no BOXES, box down, no SSH, sync failed) -> run here instead, through
-  `box heavy`, with one line on stderr saying why. Never fails *because* another box exists.
+  `box heavy`, with one line on stderr saying why. Never fails *because* another machine exists.
 Stdlib only. Every function that touches the network or a subprocess takes its inputs explicitly so the
 planning logic (score, pick, shard plan, rsync/ssh argv, remote script) is unit-testable without either.
 """
@@ -46,7 +46,7 @@ LOCKFILES = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "u
 # never copied when the folder isn't a git repo (no .gitignore to go by); rebuilt on the other side instead
 NONGIT_EXCLUDES = ("node_modules", ".venv", "venv", "__pycache__", "target", ".next", ".cache", "dist", "build",
                    ".pytest_cache", ".mypy_cache", ".turbo", ".gradle")
-REMOTE_BEAT = 1.5   # another box must have this many times our free capacity...
+REMOTE_BEAT = 1.5   # another machine must have this many times our free capacity...
 REMOTE_MIN = 1.0    # ...and at least this many free (speed-weighted) cores more, to be worth a sync
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -69,7 +69,7 @@ def speeds(cfg):
 
 
 def local_summary(sb, name):
-    """This box's numbers, in the same shape as a peer's /api/box answer."""
+    """This machine's numbers, in the same shape as a peer's /api/box answer."""
     b = sb.box_load()
     mem = round(100 * (1 - b["mem_avail"] / b["mem_total"]), 1) if b["mem_total"] else None
     free = round(100 * b["disk_free"] / b["disk_total"], 1) if b.get("disk_total") else None
@@ -86,14 +86,14 @@ def fetch_box(ip, port, timeout=API_TIMEOUT):
             return d, ""
         return None, "odd answer"
     except urllib.error.HTTPError as ex:
-        return None, {403: "doesn't list this box in BOXES", 404: "needs a treehouse update"}.get(ex.code,
+        return None, {403: "doesn't list this machine in BOXES", 404: "needs a treehouse update"}.get(ex.code,
                                                                                                   f"error {ex.code}")
     except Exception:  # noqa: BLE001 - refused, timeout, bad JSON: all "down"
         return None, "not reachable"
 
 
 def score(d, speed=1.0):
-    """Free capacity in speed-weighted cores, 0 when the box shouldn't take more work."""
+    """Free capacity in speed-weighted cores, 0 when the machine shouldn't take more work."""
     if not d:
         return 0.0
     ncpu, load = d.get("ncpu") or 0, d.get("load1") or 0.0
@@ -108,7 +108,7 @@ def score(d, speed=1.0):
 
 
 def pick(rows, self_name):
-    """The box to run on: the best reachable one, but only leave this box when another clearly has more room
+    """The machine to run on: the best reachable one, but only leave this machine when another clearly has more room
     (a sync costs time). rows: [{"name", "score", "ok"}]. Returns a name."""
     here = next((r for r in rows if r["name"] == self_name), None)
     here_s = here["score"] if here else 0.0
@@ -119,8 +119,8 @@ def pick(rows, self_name):
 
 
 def plan_shards(n, rows, self_name):
-    """Spread N shards over boxes in proportion to free capacity (largest remainder). Always at least one box;
-    this box gets whatever nobody else has room for. Returns [(shard_index, box_name)]."""
+    """Spread N shards over boxes in proportion to free capacity (largest remainder). Always at least one machine;
+    this machine gets whatever nobody else has room for. Returns [(shard_index, box_name)]."""
     usable = [r for r in rows if r["ok"] or r["name"] == self_name]
     total = sum(r["score"] for r in usable)
     if total <= 0:
@@ -209,7 +209,7 @@ def cmd_boxes(sb, cfg, user, home, as_json=False):
             {k: r[k] for k in ("name", "ip", "here", "ok", "why", "score")} | {"load": r["data"]} for r in rows]}))
         return
     if len(rows) == 1:
-        print(f"only this box ({me}). The owner lists more with: box friends boxes \"NAME=IP NAME=IP\"")
+        print(f"only this machine ({me}). The owner lists more with: box friends boxes \"NAME=IP NAME=IP\"")
     for r in rows:
         d = r["data"] or {}
         tag = " (here)" if r["here"] else ""
@@ -246,7 +246,7 @@ def mirror_rel(host, root):
 def rsync_argv(root, is_git, dest, rel, with_git=False):
     """rsync the project to dest:~/rel. Git projects: .gitignore files are the filter (dir-merge, so nested ones
     count) and --delete removes what was deleted here; ignored things on the far side (its node_modules, build
-    outputs) are excluded and so never deleted. -z: the boxes may talk over Wi-Fi."""
+    outputs) are excluded and so never deleted. -z: the machines may talk over Wi-Fi."""
     argv = ["rsync", "-az", "--delete", "--mkpath", "-e", shlex.join(["ssh", *SSH_OPTS])]
     if is_git:
         argv += ["--filter=:- .gitignore"]
@@ -269,7 +269,7 @@ def prep_key(root, prep):
 
 
 def remote_script(rel, sub, cmd, env=None, prep="", key=""):
-    """The sh script run on the other box (in ~/rel/sub). CMD runs in its own session/process group (setsid)
+    """The sh script run on the other machine (in ~/rel/sub). CMD runs in its own session/process group (setsid)
     with stdin from /dev/null; a watcher reads our stdin and kills that group when it closes (we were
     interrupted or the link dropped), so a Ctrl-C here never leaves an orphaned test run there. The --prep stamp
     lives next to the mirror (~/rel.prep), not in it, so a sync's --delete doesn't wipe it."""
@@ -351,7 +351,7 @@ def cmd_run(sb, cfg, user, home, a, box_bin):
     if os.environ.get("SHAREDBOX_REMOTE") == "1":  # already on the far side: no ping-pong
         run_local(cmd, "", box_bin)
     if not sb.boxes(cfg):
-        run_local(cmd, "no other boxes listed", box_bin)
+        run_local(cmd, "no other machines listed", box_bin)
     rows, me = survey(sb, cfg, user, home)
     if a.on:
         r = next((r for r in rows if r["name"] == a.on), None)
@@ -441,16 +441,16 @@ def remote_json(dest, cmd, stdin_text=None, timeout=120):
                            timeout=timeout)
         return json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
     except (OSError, subprocess.TimeoutExpired, ValueError):
-        return {"ok": False, "error": "no answer from that box (try box boxes)"}
+        return {"ok": False, "error": "no answer from that machine (try box boxes)"}
 
 
 def login_text(name, key, out):
-    """What the agent tells the human after starting a login on another box."""
+    """What the agent tells the human after starting a login on another machine."""
     if out.get("done"):
         return f"{key}: already logged in on {name}."
     if not out.get("ok"):
         return f"{key} on {name}: {out.get('error', 'failed')}"
-    lines = [f"Ask the human to open this link and approve the {key} login for the box {name}:", "", f"  {out['url']}"]
+    lines = [f"Ask the human to open this link and approve the {key} login for the machine {name}:", "", f"  {out['url']}"]
     if out.get("code"):
         lines += ["", f"and type this code there: {out['code']}", "",
                   f"Then run: box boxes login {key} --on {name} --wait"]
@@ -491,7 +491,7 @@ def cmd_boxes_setup(sb, cfg, user, home, box_bin):
     me = next((n for n, ip in boxes.items() if ip == sb.tailscale_ip4()), socket.gethostname().split(".")[0])
     peers = {n: ip for n, ip in boxes.items() if n != me}
     if not peers:
-        sys.exit("only this box; nothing to connect")
+        sys.exit("only this machine; nothing to connect")
     rec = (sb.registry().get("users") or {}).get(user) or {}
     req = json.dumps({"peers": peers, "self": me, "home": (rec.get("home_box") or me) == me})
     r = subprocess.run([box_bin, "_fed-user", "link"], input=req, capture_output=True, text=True, timeout=900)
@@ -517,7 +517,7 @@ def add_parsers(s, sb, cfg, user, home, box_bin):
                      help="load on each of the owner's machines and the best place for heavy work (also: box machines)")
     x.add_argument("op", nargs="?", default="status", choices=["status", "setup", "login"])
     x.add_argument("key", nargs="?", help="login: claude | codex | gh")
-    x.add_argument("--on", metavar="NAME", help="login: which box")
+    x.add_argument("--on", metavar="NAME", help="login: which machine")
     x.add_argument("--code", help="login: the code the browser showed (Claude)")
     x.add_argument("--wait", action="store_true", help="login: wait for a device login to finish")
     x.add_argument("--json", action="store_true")
@@ -529,10 +529,10 @@ def add_parsers(s, sb, cfg, user, home, box_bin):
             return cmd_boxes_setup(sb, cfg, user, home, box_bin)
         return cmd_boxes(sb, cfg, user, home, a.json)
     x.set_defaults(fn=boxes_fn)
-    x = s.add_parser("run", help="run a heavy command on the least-loaded box (falls back to here)")
+    x = s.add_parser("run", help="run a heavy command on the least busy machine (falls back to here)")
     g = x.add_mutually_exclusive_group()
-    g.add_argument("--anywhere", action="store_true", help="the default: pick the box with the most room")
-    g.add_argument("--on", metavar="NAME", help="this box by name")
+    g.add_argument("--anywhere", action="store_true", help="the default: pick the machine with the most room")
+    g.add_argument("--on", metavar="NAME", help="this machine by name")
     x.add_argument("--shards", type=int, default=1, help="split into N runs (env BOX_SHARD/BOX_SHARDS)")
     x.add_argument("--prep", default="", help="setup run there only when lockfiles change, e.g. 'npm ci'")
     x.add_argument("--back", action="append", default=[], help="path to copy back afterwards (repeatable)")

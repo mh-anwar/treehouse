@@ -1,4 +1,4 @@
-"""Security self-audit: look at the box the way an attacker (or a compromised friend account) would.
+"""Security self-audit: look at the machine the way an attacker (or a compromised friend account) would.
 
 Run as root by `sharedbox-health audit` and by the weekly report. Read-only: it never changes
 the system. Each finding has a stable id so the report can say what is new since last time.
