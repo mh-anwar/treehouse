@@ -41,6 +41,8 @@ You run on **{host}**, a remote Linux box, as user `{user}`. Topic details: `box
   "Where is X?": `box where X`.
 - The user's own agent history (every prompt, reply and tool call on all their boxes, kept forever) and their
   efficiency: `~/me` (`box help me`). Use it when they ask what they did, why agents were slow, or "find where I said X".
+- What this box was doing minute by minute (what froze it, who ran out of memory, crash-looping services, disk
+  growth, plan usage): `box telemetry`, `box telemetry patterns` (`box help telemetry`).
 
 ## Report what slows you down
 When something about **this machine** blocks you or costs you more than ~5 minutes, log one line once and keep going:
