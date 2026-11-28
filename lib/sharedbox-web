@@ -407,8 +407,8 @@ background:var(--panel);padding:0 4px;border-radius:3px;line-height:1.3}.plot .y
 table.acct th[scope=row]{font-size:14px;color:var(--fg);font-weight:600;white-space:nowrap}table.acct td{min-width:150px;overflow-wrap:anywhere}
 @media(max-width:560px){.tw:has(table.fr){margin:0;overflow:visible}table.fr{min-width:0!important}table.fr thead{display:none}
 table.fr tr{display:block;border-bottom:1px solid var(--line);padding:10px 0}table.fr tr:last-child{border:0}
-table.fr td{display:grid;grid-template-columns:96px 1fr;gap:8px;padding:4px 0;border:0;white-space:normal}
-table.fr td::before{content:attr(data-label);color:var(--mut);font-size:13px}table.fr td.fa{display:block;padding-top:8px}
+table.fr td{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 6px;padding:4px 0;border:0;white-space:normal}
+table.fr td::before{content:attr(data-label);flex:0 0 90px;color:var(--mut);font-size:13px}table.fr td .dot{align-self:center}table.fr td.fa{display:block;padding-top:8px}
 table.fr td.fa::before{content:none}table.fr td:first-child{display:block;font-size:15px}table.fr td:first-child::before{content:none}}
 @media(max-width:560px){.tw:has(table.acct){margin:0;overflow:visible}table.acct{min-width:0!important}table.acct thead{display:none}
 table.acct tr{display:block;border-bottom:1px solid var(--line);padding:10px 0}table.acct tr:last-child{border:0}
