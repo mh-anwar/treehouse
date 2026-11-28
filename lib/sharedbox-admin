@@ -1204,6 +1204,8 @@ def handle_portal(cfg, rid, req):
         return box_portal(pw, ["t3-pair"])
     if action == "t3app":  # the same pairing, labelled for the T3 app on their laptop (the dashboard's setup prompt)
         return box_portal(pw, ["t3-pair", "app"])
+    if action == "t3app-all":  # the same, from every machine their account is on (the all-machines setup prompt)
+        return box_portal(pw, ["t3-pair-all"])
     if action == "add-key":
         key, err = sb.validate_pubkey(str(req.get("sshkey", "")))
         return {"ok": False, "error": err} if err else box_portal(pw, ["add-key"], input_text=key + "\n")

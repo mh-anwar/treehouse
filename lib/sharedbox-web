@@ -210,7 +210,7 @@ def submit_join(ip, who, username, key, email=""):
 
 def portal_call(ip, who, action, **kw):
     # logins wait ~25 s for a code; T3's very first start downloads it
-    wait = {"status": 30, "t3": 240, "t3app": 240, "peer-login": 200, "peer-check": 120}.get(action, 90)
+    wait = {"status": 30, "t3": 240, "t3app": 240, "t3app-all": 290, "peer-login": 200, "peer-check": 120}.get(action, 90)
     if who.get("cf_jwt"):  # cloudflare mode: root re-verifies the Access token itself
         return spool_call(dict({"action": action, "cf_jwt": who["cf_jwt"]}, **kw), wait=wait)
     return spool_call(dict({"action": action, "ip": ip, "ts_id": who["id"]}, **kw), wait=wait)
@@ -477,6 +477,7 @@ details.cf[open]{display:block;flex-basis:100%;order:9}details.cf[open]>summary{
 .cfb a.cfx{font-size:13px}ul.sw{list-style:none;padding:0;margin:4px 0 0;font-size:13px;color:var(--mut)}ul.sw li{margin:2px 0}
 ul.sw b{color:var(--fg);font-weight:500}ul.sw form{display:inline}.act .sub{white-space:normal}
 ul.hkl{margin:0 0 8px;padding-left:20px;font-size:14px}ul.hkl li{margin:2px 0}pre.logs .le{color:var(--bad);font-weight:600}.attn{margin-left:6px}
+ul.machines{list-style:none;padding:0;margin:8px 0}ul.machines li{margin:3px 0}ul.machines .ck{color:var(--ok);margin-right:6px}ul.machines li.no{padding-left:18px}
 ol.steps3{margin:12px 0 4px;padding:0;list-style:none;counter-reset:st}
 ol.steps3>li{position:relative;padding:0 0 16px 40px;counter-increment:st;max-width:82ch;color:var(--mut)}
 ol.steps3>li::before{content:counter(st);position:absolute;left:0;top:-1px;width:26px;height:26px;border-radius:50%;
@@ -2657,12 +2658,34 @@ def app_prompt_result(res, rec=None):
             "_view": "t3prompt"}
 
 
+def fleet_prompt_result(res):
+    """root's answer to `t3app-all` -> the start card's all-machines setup prompt (one link per machine, and why a
+    machine has none), or the one failure line."""
+    machines = [m for m in (res.get("machines") or ()) if isinstance(m, dict) and m.get("box")] if res.get("ok") else []
+    prompt = sbconnect.fleet_prompt(machines, dashboard_url(), ts_login=str(res.get("ts_login") or ""),
+                                    expires=str(res.get("expires") or "")) if machines else ""
+    if not prompt:
+        return {"ok": False, "error": PROMPT_FAIL, "_view": "t3prompt"}
+    return {"ok": True, "app_prompt": prompt, "fleet": machines, "_view": "t3prompt"}
+
+
+def many_machines():
+    """More than one treehouse machine (BOXES): the setup prompt covers all of them by default."""
+    with peers_lock:
+        return len(BOX_LIST) > 1
+
+
 CHECK = ("<svg class='ck' viewBox='0 0 12 12' width='12' height='12' aria-hidden='true'><path d='M2.5 6.3l2.3 2.3 4.7-5' "
          "fill='none' stroke='currentColor' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/></svg>")
 
 
-def prompt_body(res):
+def prompt_body(res, btn=None):
     e = html.escape
+    if res.get("fleet"):
+        return fleet_prompt_body(res, btn)
+    other = ("<div class='sub'>Want the T3 app connected to all your machines at once? "
+             + btn("t3prompt", "Get the prompt for all your machines", link=True, attrs=" data-busy='1'") + "</div>"
+             if btn and many_machines() else "")
     return f"""<h3>Your setup prompt</h3>
 <p class="sub">This is for the AI agent on your laptop, not for you to follow. Copy it, paste it into that agent, and
 answer its questions.</p>
@@ -2678,7 +2701,32 @@ then <a href="{e(res['app_link'])}">open this link in the T3 app</a>.</p>
 and paste this into Host:</p>
 <div class="copyrow"><input id="app-pair" readonly class="mono" value="{e(res['app_pair_url'])}" onclick="this.select()"
 aria-label="Pairing link"><button type="button" class="sm secondary" data-copy="app-pair">Copy</button></div>
-</details>"""
+</details>{other}"""
+
+
+def fleet_prompt_body(res, btn=None):
+    """The all-machines setup prompt: which machines gave a link (and why one didn't), the prompt, and the
+    single-machine prompt as the other choice."""
+    e = html.escape
+    rows = []
+    for m in res["fleet"]:
+        if m.get("pair_url"):
+            rows.append(f"<li>{CHECK}<b>{e(m['box'])}</b>: ready. "
+                        f"<a href=\"{e(sbconnect.t3_app_link(m['pair_url']))}\">Open in the T3 app</a></li>")
+        else:
+            rows.append(f"<li class='no'><b>{e(m['box'])}</b>: no link ({e(str(m.get('error') or 'no answer'))})</li>")
+    one = (f"<div class='sub'>Only want {e(here_name())}? "
+           + btn("t3prompt", f"Get the prompt for {here_name()} only", "here", link=True, attrs=" data-busy='1'")
+           + "</div>" if btn else "")
+    return f"""<h3>Your setup prompt for all your machines</h3>
+<p class="sub">This is for the AI agent on your laptop, not for you to follow. Copy it, paste it into that agent, and
+answer its questions. It connects the T3 app to each of these machines and tells you which ones worked:</p>
+<ul class="machines">{''.join(rows)}</ul>
+<textarea id="app-prompt" readonly rows="7" class="prompt">{e(res['app_prompt'])}</textarea>
+<div class="line"><button type="button" data-copy="app-prompt">Copy prompt</button></div>
+<p>Paste it into Claude Code, Codex or any agent on your laptop. It contains one-time keys to your T3 on each machine,
+so it works once and only for the next 30 minutes. If that time passes, come back here and press the button again
+for a fresh one.</p>{one}"""
 
 
 # ---------- people: messages, who's here, phone alerts (the dashboard's human side of box msg / box where) ----------
@@ -3325,7 +3373,7 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
     busy = ("<div id='start-busy' hidden>" + notice("Waking up T3. This can take a minute.", "busy") + "</div>")
     sc = []
     if in_start and result.get("ok") and result.get("app_prompt"):
-        sc.append(prompt_body(result))
+        sc.append(prompt_body(result, btn))
     elif in_start and result.get("ok") and not result.get("done") and not result.get("pair_url") \
             and (result.get("url") or result.get("code") or result.get("paste")):
         sc.append(portal_result(result, btn, base))  # a login in progress: its steps are the card
@@ -3390,7 +3438,8 @@ def portal_page(ip, who, name, rec, result=None, welcome=False, rng="24h", tab="
                            + btn("login", "Set up the T3 app", "t3connect", primary=False, small=True) + "</div>")
             if not linked:
                 adv.append("<p><b>Your laptop's own AI agent</b> (Claude Code or Codex) can set up the T3 desktop app "
-                           "for you over Tailscale, a private network app. " + (
+                           + ("on all your machines at once " if many_machines() else "")
+                           + "for you over Tailscale, a private network app. " + (
                                "Setting up another laptop? " if state == "S3" else "")
                            + btn("t3prompt", "Get new setup instructions" if state == "S3" else "Get setup instructions",
                                  link=True, attrs=" data-busy='1'") + "</p>")
@@ -4016,7 +4065,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.after_post(ip, who, name, rec, dict(res, _view="restore"))
         actions = ("t3", "t3app", "t3prompt", "login", "code", "check", "add-key")
         keys = ("", "claude", "codex", "gh", "t3connect", "antigravity")
-        if action not in actions or key not in keys:
+        if action not in actions or key not in keys and (action, key) != ("t3prompt", "here"):  # here: this machine only
             return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action"})
         if action == "add-key":
             key_txt = form.get("sshkey", "")
@@ -4030,7 +4079,10 @@ class Handler(BaseHTTPRequestHandler):
             kw["code"] = form.get("code", "")[:1000]
         if action in ("t3prompt", "t3app"):  # the T3 app's setup prompt: keep the tailnet address (the app can't
             # go through Cloudflare); "t3app" is the older button's name, still on pages open in someone's browser
-            res = app_prompt_result(portal_call(ip, who, "t3app"), rec)
+            if action == "t3prompt" and key != "here" and many_machines():
+                res = fleet_prompt_result(portal_call(ip, who, "t3app-all"))
+            else:
+                res = app_prompt_result(portal_call(ip, who, "t3app"), rec)
             return self.after_post(ip, who, name, rec, dict(res, _tok=token_for(ip, who["id"])))
         res = portal_call(ip, who, action, **kw)
         if (who.get("cf_jwt")) and res.get("pair_url"):

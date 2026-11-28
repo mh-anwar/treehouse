@@ -626,6 +626,49 @@ class Web(unittest.TestCase):
         self.assertIn("note bad", page)
         self.assertNotIn("class='ic' aria-hidden='true'>!<", page)  # an SVG mark, not a font glyph
 
+    def test_fleet_prompt_result(self):
+        """Several machines: the setup button makes one prompt for all of them; "only this machine" stays."""
+        w = self.web
+        pair = "http://100.64.0.5:31000/pair#token=abc123"
+        res = w.fleet_prompt_result({"ok": True, "ts_login": "sam@github", "expires": "2026-11-28 10:00 UTC",
+                                     "machines": [{"box": "treebox", "pair_url": pair, "ts_mode": "sharee"},
+                                                  {"box": "oak", "error": "oak is offline or not reachable"}]})
+        self.assertTrue(res["ok"])
+        self.assertIn("treebox, oak", res["app_prompt"])
+        self.assertIn("oak: no pairing link (oak is offline or not reachable)", res["app_prompt"])
+        old = list(w.BOX_LIST)
+        w.BOX_LIST[:] = [("treebox", "100.64.0.5"), ("oak", "100.64.0.6")]
+        try:
+            page = self.render({"claude": True}, result=res)
+        finally:
+            w.BOX_LIST[:] = old
+        self.assertIn("Your setup prompt for all your machines", page)
+        self.assertIn('href="t3code://pair?pairingUrl=http%3A%2F%2F100.64.0.5', page)
+        self.assertIn("value='here'", page.replace('"', "'"))  # the single-machine prompt is one click away
+        self.assertEqual([a or b for a, b in self.start_mains(page)], ["Copy prompt"])
+        self.assertEqual(w.fleet_prompt_result({"ok": True, "machines": [{"box": "oak", "error": "x"}]})["error"],
+                         w.PROMPT_FAIL)
+
+    def test_prompt_button_asks_all_machines(self):
+        w = self.web
+        asked = []
+        w_call, w.portal_call = w.portal_call, lambda ip, who, action, **kw: asked.append(action) or {"ok": False}
+        old = list(w.BOX_LIST)
+        who = w.cf_who("friend@example.com", "jwt")
+        h = object.__new__(w.GateHandler)
+        h.headers = email_parser.parsestr("\r\n")
+        h.redirect = lambda where, headers=(): None
+        try:
+            w.BOX_LIST[:] = [("treebox", "100.64.0.5"), ("oak", "100.64.0.6")]
+            h.portal_post("gate", who, {"action": "t3prompt", "key": ""})
+            h.portal_post("gate", who, {"action": "t3prompt", "key": "here"})
+            w.BOX_LIST[:] = [("treebox", "100.64.0.5")]
+            h.portal_post("gate", who, {"action": "t3prompt", "key": ""})
+            h.portal_post("gate", who, {"action": "t3", "key": "here"})  # "here" is only for the prompt
+        finally:
+            w.portal_call, w.BOX_LIST[:] = w_call, old
+        self.assertEqual(asked, ["t3app-all", "t3app", "t3app"])
+
     def test_prompt_redirects_without_cookie(self):
         w = self.web
         w.portal_call = lambda ip, who, action, **kw: (
@@ -886,6 +929,24 @@ class AppLink(unittest.TestCase):
         self.assertEqual(f(st, {"email": "Owner@X"})["mode"], "none")  # matched by email, no peers of theirs
         self.assertEqual(f(st, {"email": "nobody@x"}), {"login": "", "mode": ""})
         self.assertEqual(f(None, {"ts_id": "2", "login": "sam@github"}), {"login": "sam@github", "mode": ""})
+        self.assertEqual(f(None, {"login": "cloudflare"}), {"login": "", "mode": ""})  # invited by email: no account name
+        self.assertEqual(f(st, {"email": "k@gmail.com", "login": "Kim@X"}), {"login": "kim@x", "mode": "sharee"})
+
+    def test_fleet_prompt(self):
+        ok = {"box": "treebox", "pair_url": "http://100.64.0.5:31000/pair#token=a", "ts_mode": "reverse",
+              "apps": [{"os": "Darwin"}]}
+        t = sbconnect.fleet_prompt([ok, {"box": "oak", "pair_url": "http://100.64.0.6:31000/pair#token=b"},
+                                    {"box": "elm", "error": "elm is offline"}], SITE + "/_box/me", ts_login="sam@github",
+                                   expires="2026-11-28 10:00 UTC")
+        for must in ("treebox, oak, elm", "- treebox: http://100.64.0.5:31000",
+                     "link: 't3code://pair?pairingUrl=http%3A%2F%2F100.64.0.6%3A31000%2Fpair%23token%3Db'",
+                     "hasn't seen any device of sam@github", "A T3 app paired with treebox before (Darwin)",
+                     "elm: no pairing link (elm is offline)", "100.64.0.5 100.64.0.6", "expire at 2026-11-28 10:00 UTC",
+                     "one line per machine", "please share <machine> with my Tailscale account",
+                     "Never open a link in a web browser", SITE + "/_box/me"):
+            self.assertIn(must, t)
+        self.assertNotIn("100.64.0.7", t)
+        self.assertEqual(sbconnect.fleet_prompt([{"box": "elm", "error": "x"}], SITE), "")
 
 
 email_parser = email.parser.Parser(_class=__import__("http.client").client.HTTPMessage)

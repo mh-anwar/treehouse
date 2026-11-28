@@ -46,12 +46,14 @@ def ts_facts(status, rec):
     box isn't shared back), "none" (no device of theirs seen) or "" (unknown)."""
     rec = rec or {}
     login, ts_id = rec.get("login") or "", str(rec.get("ts_id") or "")
+    if "@" not in login:  # "cloudflare" (invited by email): not a Tailscale account name
+        login = ""
     if not isinstance(status, dict):
         return {"login": login, "mode": ""}
     users = status.get("User") or {}
-    if not ts_id:  # an email-invited friend: match their email against the logins the machine knows
-        email = (rec.get("email") or "").lower()
-        ts_id = next((str(k) for k, u in users.items() if email and (u.get("LoginName") or "").lower() == email), "")
+    if not ts_id:  # an email-invited friend: match their email (or a Tailscale login on record) against the machine's
+        names = {x.lower() for x in (rec.get("email") or "", login) if x}
+        ts_id = next((str(k) for k, u in users.items() if (u.get("LoginName") or "").lower() in names), "")
     if not ts_id:
         return {"login": login, "mode": ""}
     login = (users.get(ts_id) or {}).get("LoginName") or login
@@ -144,6 +146,75 @@ My T3: {origin} (always use this IP address; the name {box} doesn't resolve for 
 
 Never open the link in a web browser: that uses it up on the browser. If it has expired or was used, ask me to make a new prompt at {dashboard}. Each computer needs its own prompt.
 At the end, tell me in one line: it works, or what blocks it and the Tailscale account this computer uses (and how to switch back, if you switched accounts).
+"""
+
+
+
+def _fleet_line(m, ts_login):
+    """One machine's lines in the all-machines prompt: its address and pairing link, or why there is none."""
+    box = m.get("box") or "?"
+    origin = app_origin(m.get("pair_url"))
+    if not origin:
+        why = m.get("error") or "it didn't answer"
+        return (f"- {box}: no pairing link ({why.rstrip('.')}). Don't try to reach it. In the final report, the fix is: "
+                f"\"Ask the owner to check {box}\" if it says offline or not connected, otherwise make a new prompt "
+                f"later.")
+    out = [f"- {box}: {origin}", f"  link: '{t3_app_link(m['pair_url'])}'", f"  pairing URL: {m['pair_url']}"]
+    mode = m.get("ts_mode") or ""
+    if ts_login and mode in ("sharee", "member"):
+        out.append(f"  Tailscale: {box} has seen devices of {ts_login}, so that account can reach it.")
+    elif ts_login and mode in ("reverse", "none"):
+        out.append(f"  Tailscale: {box} hasn't seen any device of {ts_login} yet (not shared with it yet, the share "
+                   f"isn't accepted, or this computer uses another account).")
+    if m.get("apps"):
+        out.append(f"  A T3 app paired with {box} before ({', '.join(a.get('os') or '?' for a in m['apps'])}).")
+    return "\n".join(out)
+
+
+def fleet_prompt(machines, dashboard, *, ts_login="", expires=""):
+    """The setup prompt for the agent on the friend's laptop that connects the T3 Code app to their T3 on EVERY
+    treehouse machine their account is on, from one paste. `machines`: [{box, pair_url, ts_mode, apps, error}]
+    (pair_url empty + error: no link from that machine). Same rules as app_prompt (look first, fix only what's
+    broken, never open a link in a browser), but per machine, and it ends with one line per machine: works, or why
+    not and the fix. "" when no machine gave a link."""
+    ok = [m for m in machines if app_origin(m.get("pair_url"))]
+    if not ok:
+        return ""
+    names = ", ".join(m.get("box") or "?" for m in machines)
+    ips = " ".join(urllib.parse.urlsplit(app_origin(m["pair_url"])).hostname for m in ok)
+    until = f"expire at {expires} (check the clock with date -u)" if expires else "last 30 minutes"
+    acct = (f"{ts_login}, the Tailscale account the machines know for me" if ts_login else
+            "the account that accepted the machines' shares, usually the one I use for Tailscale")
+    lines = "\n".join(_fleet_line(m, ts_login) for m in machines)
+    return f"""Connect the T3 Code desktop app on this computer to my T3 on each of my treehouse machines ({names}): shared Linux machines, reached over Tailscale. Do the work yourself; I only sign in, approve permission prompts, click Confirm, or type this computer's password. You can't see the apps' windows: when something should appear, ask me what I see. Look before you change anything. Never repeat a step that failed unless you changed something since; after two rounds that change nothing, stop. Never sign out of or remove a Tailscale account, never use --reset or --force-reauth, don't set up T3 Connect, and don't change anything else on this computer. If your own sandbox blocks the network or a command, ask me to allow it: that isn't a Tailscale problem. One machine failing never stops the others: finish every machine you can, then report.
+
+My machines. Always use these IP addresses (the names don't resolve for shared devices). Each link works once and the links {until}:
+{lines}
+
+0. Already working? If the T3 Code app is installed, ask me: "In the T3 app, open Settings, Environments. Which of these show as connected: {names}?" Machines that are connected at the address above are done: skip them everywhere below and don't open their links.
+1. Look, read-only. Work out the OS, then:
+   a. For each machine: curl -s --noproxy '*' --max-time 15 <its address>/.well-known/t3/environment   (Windows: curl.exe). A JSON reply with environmentId means it's reachable.
+   b. Find the Tailscale command: tailscale on PATH, else /Applications/Tailscale.app/Contents/MacOS/Tailscale (macOS), else & 'C:\\Program Files\\Tailscale\\tailscale.exe' (PowerShell, keep the &). Run tailscale status --json and note BackendState, this computer's account (LoginName of the User entry whose ID is Self.UserID), and which of these IPs are in some Peer's TailscaleIPs: {ips}
+2. Fix Tailscale, only if a curl failed. Fix what 1b found, run 1b again and handle the new state; then run the failed curls again.
+   - Not installed: macOS: curl -fLo ~/Downloads/Tailscale.pkg https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg and open it; I click through the installer and type my password. Windows: winget install --id Tailscale.Tailscale -e (I click Yes). Linux: unless you can get root without a password, give me ONE line to paste in a terminal that runs https://tailscale.com/install.sh, then tailscale set --operator=$USER as root, then tailscale up. Never install a second Tailscale next to an existing one.
+   - The command can't talk to Tailscale: start it (macOS: open -a Tailscale; Windows: Tailscale from the Start menu; Linux: the tailscaled service). If it's already open on macOS, ask me to finish the Tailscale window (Allow the VPN, or System Settings, Privacy and Security, Allow) and wait for me.
+   - Linux, Access denied: give me ONE line to paste that runs tailscale set --operator=$USER as root.
+   - Stopped: tailscale up. If it asks for more flags, don't add any: ask me to turn Tailscale on from its menu-bar or tray icon.
+   - NeedsLogin: start tailscale up in the background (tailscale login if tailscale switch --list shows other accounts, so they stay), show me the login link it prints (or AuthURL in tailscale status --json), wait until BackendState is Running. Tell me to sign in as {acct}.
+   - NeedsMachineAuth: an admin of that tailnet must approve this computer. Tell me and stop.
+   - Running, but a machine's IP is in no Peer: wait a minute and check again (a new sign-in or share takes a moment). Still missing: this account can't see that machine. If tailscale switch --list shows another account that has it, ask me before switching (it turns off my other Tailscale until I switch back; never on a computer my employer manages). Otherwise ask me: "Do you have an email from Tailscale about <machine>? Click Accept, signed in as <this computer's account> with the same Google, GitHub or Microsoft button this computer's Tailscale uses. Tell me when you're done." No email: that machine isn't shared with this account; the fix is the line for the owner in the report.
+   - Running, peer there, curl fails: tailscale ping --c 3 --timeout 3s <its IP>. A pong: a proxy, firewall or work tailnet's rules block the port. No reply: that machine or this computer is offline, or another VPN blocks it. Ask me before touching another VPN.
+3. The T3 Code app, if any machine is reachable. Find it: macOS: /Applications or ~/Applications, T3 Code*.app (version: defaults read with its Contents/Info and CFBundleShortVersionString; older than 0.1.9 needs an update). Windows: winget list --id T3Tools.T3Code -e, or the Start menu. Linux: dpkg -s t3-code, the Exec line of ~/.local/share/applications/com.t3tools.T3Code.desktop, or a T3*Code*.AppImage in my home folder. Not sure: ask me before installing. Missing: macOS: brew install --cask t3-code if brew exists, else the .dmg for this CPU (uname -m) from https://github.com/pingdotgg/t3code/releases/latest, copied into /Applications. Windows: winget install --id T3Tools.T3Code -e. Linux: the AppImage for this CPU from https://t3.codes, kept in ~/Applications. Not t3.codes' install.sh: that is only the server. Start it detached and ask me whether its window is up. I can skip its welcome screens.
+4. Pair each reachable machine, one at a time. First check that links can open the app (Windows: reg query HKCU\\Software\\Classes\\t3code or HKCR\\t3code finds something; Linux: xdg-mime query default x-scheme-handler/t3code prints a .desktop name); if not, use step 5 for every machine. For each machine: tell me "The T3 app should ask: Add the backend at <its address>? Click Confirm." Then open its link with the system link opener (macOS: open, Linux: xdg-open, Windows: PowerShell's Start-Process), keeping the single quotes, and ask me what the app showed:
+   - "Backend added": that machine is done.
+   - Nothing within 30 seconds: open the same link once more (only Confirm uses it up). Still nothing: step 5 for that machine.
+   - "already saved": the app has that machine under another address. If that entry connects, it's done. Otherwise copy its pairing URL to my clipboard and tell me: "In the T3 app, go to Settings, Environments, open <machine>, click Add route, paste this into Host and click Add route. Then click Remove route on every address that isn't <its address>."
+   - Anything about updating or versions: update the app (step 3), start it again and reopen the same link.
+   - Any other message: that link probably expired or was used; don't reuse it.
+5. If a link can't open the app: copy that machine's pairing URL to my clipboard (pbcopy, clip, wl-copy or xclip) and tell me: "In the T3 app, go to Settings, Environments, Add environment, pick Remote link, paste this into Host and click Add environment."
+
+Never open a link in a web browser: that uses it up there. Each computer needs its own prompt.
+At the end, report one line per machine: connected (or already connected), or not connected with the reason and the fix. Fixes: not shared on Tailscale: "Ask the owner: please share <machine> with my Tailscale account <this computer's account>." Link expired or used: "Make a new prompt at {dashboard} (Advanced, Get setup instructions)." Machine offline or blocked: what you saw, and "ask the owner to check <machine>". Also say which Tailscale account this computer uses, and how to switch back if you switched.
 """
 
 
@@ -249,8 +320,11 @@ A browser opening: Cloudflare wants the login again; tell the human to finish it
 - Memory: each account has a guaranteed share and may use most of the machine while it's quiet; `ssh {alias} box running`
   shows what's using it, `box help memory` explains. `box help` lists more topics.
 
-To add the T3 Code app on this computer too (it needs Tailscale here): run `ssh {alias} box t3 app-link --prompt`
-and follow the steps it prints (it checks Tailscale first, then pairs the app).
+## 8. The T3 Code app on this computer, for every treehouse machine
+If the human wants the T3 Code desktop app here (or asked to "connect me to all my treehouse machines"): run
+`ssh {alias} box t3 app-link --all --prompt` and follow the steps it prints. It covers every treehouse machine their
+account is on: it checks Tailscale here first, pairs the app with each machine, and ends with a line per machine.
+(`box t3 app-link --prompt` instead: only the machine `ssh {alias}` reaches.)
 """
 
 
