@@ -16,6 +16,7 @@ Used by tests/e2e_browser.py (a TLS front + Chromium on top) and tests/demo_site
 reset() puts every fake back to its starting state; RESET_HOOKS run after it (the demo adds data there).
 """
 import asyncio
+import atexit
 import hashlib
 import html as htmlmod
 import importlib.machinery
@@ -23,6 +24,7 @@ import importlib.util
 import json
 import os
 import pwd
+import shutil
 import socket
 import sys
 import tempfile
@@ -92,6 +94,7 @@ def write_conf():
 
 write_conf()
 sock_dir = tempfile.mkdtemp(prefix="sbw-", dir="/tmp" if len(TMP) > 60 else None)  # AF_UNIX path limit
+atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True) for d in (TMP, sock_dir)])
 os.environ.update(SHAREDBOX_CONF=CONF, SHAREDBOX_LIB=os.path.join(WT, "lib"),
                   SHAREDBOX_STATE=STATE, SHAREDBOX_WEB_SOCK=os.path.join(sock_dir, "gate.sock"),
                   SHAREDBOX_SHARE=os.path.join(WT, "share"))

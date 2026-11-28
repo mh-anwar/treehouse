@@ -23,6 +23,7 @@ import html
 import http.client
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -495,6 +496,7 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
+    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))  # `box serve stop`, tests: clean up the temp box
     srv = Server((ARGS.host, ARGS.port), Front)
     print(f"treehouse demo on http://{ARGS.host}:{srv.server_port}/_demo (fake box in {fb.TMP})", flush=True)
     try:

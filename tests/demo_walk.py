@@ -379,7 +379,8 @@ def main():
         except OSError:
             pass
         if proc:
-            proc.kill()
+            proc.terminate()
+            proc.wait(30)
     if FAILS:
         print(f"\n{len(FAILS)} problem(s)")
         sys.exit(1)

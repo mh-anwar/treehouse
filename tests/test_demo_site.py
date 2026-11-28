@@ -46,8 +46,8 @@ class DemoSite(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.proc.kill()
-        cls.proc.wait()
+        cls.proc.terminate()
+        cls.proc.wait(30)
         cls.proc.stderr.close()
 
     def browser(self):
