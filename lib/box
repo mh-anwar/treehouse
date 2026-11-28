@@ -207,6 +207,16 @@ def advice(g):
     for k in recent_oom_kills():
         out.append(f"{fmt_ts(k['ts'])}: the box ran out of memory and stopped {k['what']} to keep everything "
                    "else running. Tell the user in a line; start it again if it's needed, with less memory.")
+    gone = broken_services()
+    if gone:
+        out.append("Your `box serve` service(s) " + ", ".join(f"{x['name']} (folder {x['dir']})" for x in gone)
+                   + " can't start: the folder is gone. If one is still needed, `box serve rm NAME`, then `box serve "
+                     "add` it again from a lasting folder; tell the user in a line.")
+    down = [s_["name"] for s_ in (g.get("janitor") or {}).get("services", [])
+            if s_.get("state") == "failed" and s_["name"] not in {x["name"] for x in gone}]
+    if down:
+        out.append("Your `box serve` service(s) " + ", ".join(down) + " stopped and won't restart by themselves "
+                   "(`box serve logs NAME` says why). Mention it to the user; restart or `box serve rm` them.")
     big = g.get("running")
     if big:
         out.append("Running for this user: " + "; ".join(running_line(it) for it in big[:6])
@@ -494,6 +504,62 @@ def list_services():
     return out
 
 
+def temporary_dir(d):
+    """A folder that gets deleted on its own: a T3 worktree (removed with its thread), /tmp and the like. A service
+    started there fails forever once it's gone (systemd: 200/CHDIR), silently."""
+    d = os.path.realpath(d)
+    under = lambda r: d == r or d.startswith(r + "/")  # noqa: E731
+    if under(os.path.realpath(os.path.join(HOME, ".t3", "worktrees"))):
+        return True
+    if under(os.path.realpath(HOME)):
+        return False
+    return any(under(r) for r in ("/tmp", "/var/tmp", "/dev/shm", "/run/user"))
+
+
+def serve_workdir(cwd, cmd):
+    """(WorkingDirectory, note) for `box serve add`; (None, error) when the service would break later.
+    From a temporary folder: the command's own folder if that lasts, else ~. Refused when the command or a file it
+    names lives in the temporary folder: it would stop working as soon as the folder is deleted."""
+    if not temporary_dir(cwd):
+        return cwd, ""
+    fix = ("Run `box serve add` from the project's own folder in ~ (or put the code in ~/services/NAME) "
+           "and use full paths.")
+    if temporary_dir(cmd[0]):
+        return None, (f"box serve: {cmd[0]} is in a temporary folder (a T3 worktree or /tmp); the service would stop "
+                      f"for good once that folder is deleted. {fix}")
+    for arg in cmd[1:]:
+        if arg.startswith("-") or os.path.isabs(arg) or "/" not in arg and "." not in arg:
+            continue
+        if os.path.exists(os.path.join(cwd, arg)):
+            return None, (f"box serve: {arg} is in {cwd}, a temporary folder (a T3 worktree or /tmp); the service "
+                          f"would stop for good once that folder is deleted. {fix}")
+    exe_dir = os.path.dirname(cmd[0])
+    wd = exe_dir if exe_dir.startswith(HOME + "/") and not temporary_dir(exe_dir) else HOME
+    return wd, (f"note: {cwd} is a temporary folder, so the service runs in {wd} instead "
+                "(it would stop for good once the folder is deleted).")
+
+
+def broken_services():
+    """This account's `box serve` units whose folder is gone (they fail with 200/CHDIR at every start)."""
+    out = []
+    try:
+        files = sorted(os.listdir(UNIT_DIR))
+    except OSError:
+        return out
+    for fn in files:
+        if not (fn.startswith("sb-") and fn.endswith(".service")) or fn in ("sb-t3.service", T3_PROXY):
+            continue
+        try:
+            with open(os.path.join(UNIT_DIR, fn)) as f:
+                wd = next((ln.split("=", 1)[1].strip() for ln in f if ln.startswith("WorkingDirectory=")), "")
+        except OSError:
+            continue
+        wd = wd.replace("%%", "%").replace("$$", "$")
+        if wd and not wd.startswith(("~", "-")) and not os.path.isdir(wd):
+            out.append({"name": fn[3:-8], "dir": wd})
+    return out
+
+
 def cmd_serve(a):
     act = a.action
     if act == "ls":
@@ -521,7 +587,12 @@ def cmd_serve(a):
         exe = shutil.which(cmd[0])
         if not exe:
             sys.exit(f"command not found: {cmd[0]}")
-        cmd[0] = exe
+        cmd[0] = os.path.abspath(exe)
+        wd, why = serve_workdir(os.getcwd(), cmd)
+        if wd is None:
+            sys.exit(why)
+        if why:
+            print(why, file=sys.stderr)
         r = ports()
         port = a.port
         if r and port is None:
@@ -530,7 +601,6 @@ def cmd_serve(a):
             sys.exit(f"port {port} is reserved for your T3 Code server; pick one from {r[0] + 1}-{r[1] - 1}")
         if r and port is not None and not (r[0] <= port <= r[1]):
             print(f"warning: port {port} is outside your range {r[0]}-{r[1]}", file=sys.stderr)
-        wd = os.getcwd()
         if wd.startswith(HOME + "/") and wd != HOME:
             print(f"note: the project this runs from won't be archived while this service exists (even if stopped). "
                   f"`box serve rm {a.name}` releases it.", file=sys.stderr)
