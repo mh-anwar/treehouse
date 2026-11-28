@@ -414,6 +414,9 @@ table.acct td[colspan]{display:block}table.acct td[colspan]::before{content:none
 .people li:last-child{border:0}.people .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .people svg{width:90px;height:22px;flex:none}.people .c{min-width:110px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;color:var(--mut)}
 pre.logs{max-height:420px;white-space:pre-wrap;word-break:break-all;font-size:12px}
+table.aw tr:last-child th,table.aw tr:last-child td{border-bottom:0}.awrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:4px 0 12px}table.aw{width:auto;min-width:100%}
+table.aw td,table.aw th[scope=col]{text-align:center;min-width:72px;padding:8px}table.aw input{width:18px;height:18px;margin:0}
+table.aw th[scope=row]{font-weight:500;text-align:left;padding:8px 12px 8px 0}table.aw th[scope=row] .sub{display:block;font-weight:400}
 .hk .grid{display:flex;flex-wrap:wrap;gap:8px 20px;margin:8px 0}.hk .grid label{display:flex;align-items:center;gap:8px;margin:0;color:var(--fg);font-weight:400;min-height:32px}
 .hk .when{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.hk .when input{width:auto}
 .hk{display:block!important}.foot{margin-top:32px;display:flex;justify-content:flex-end}
@@ -1952,6 +1955,73 @@ def hackathon_section(btn, slot=None):
             f"{form}<div style='margin-top:10px'>{off}</div></section></div>")
 
 
+def access_from_form(form):
+    """The grid's ticks as a table: per-person machines; teams whose members' ticks all match their team's
+    machines stay teams, group-server limits are kept (they're set with `box hackathon server`)."""
+    cfg = sb.load_config()
+    machines = list(sb.boxes(cfg)) or [sb.this_machine(cfg)]
+    cur = sb.clean_access(sb.read_json(sb.HACKATHON_ACCESS, {}) or {})[0]
+    friends = sorted(sb.friend_users())
+    ticked = {p: [m for m in machines if form.get(f"aw_{p}__{m}") == "1"] for p in friends}
+    doc = {"v": 1, "open": [m for m in machines if form.get(f"ao_{m}") == "1"], "teams": {}, "people": {},
+           "servers": cur["servers"]}
+    for t, r in cur["teams"].items():
+        if all(ticked.get(p) == [m for m in machines if m in r["machines"]] for p in r["members"]):
+            doc["teams"][t] = r
+    in_team = {p for r in doc["teams"].values() for p in r["members"]}
+    for p, ms in ticked.items():
+        if ms and p not in in_team:
+            doc["people"][p] = ms
+    return doc
+
+
+def access_section(btn, slot=None):
+    """Owner settings: who works where during hackathon mode (lib/sbcommon.py "hackathon access"). Machines across,
+    people down; a ticked box gives that person that machine. People with nothing ticked can use every machine.
+    Teams and group-server limits come from `box hackathon` (shown here, kept when saved unless a member changes)."""
+    e = html.escape
+    cfg = sb.load_config()
+    import sbfed
+    machines = list(sb.boxes(cfg)) or [sb.this_machine(cfg)]
+    if sbfed.role(cfg) == "secondary":
+        return ""  # the primary's table applies here; it's set there
+    doc = sb.clean_access(sb.read_json(sb.HACKATHON_ACCESS, {}) or {})[0]
+    active = sb.access_active() is not None
+    friends = sorted(n for n, r in sb.friend_users().items() if r.get("status", "active") == "active")
+    if not friends or len(machines) < 2:
+        return ""
+    team_of = {m: t for t, r in doc["teams"].items() for m in r["members"]}
+    head = "".join(f"<th scope='col'>{e(m)}</th>" for m in machines)
+    rows = ["<tr><th scope='row'>Everyone<span class='sub'>keeps these</span></th>"
+            + "".join(f"<td><input type='checkbox' name='ao_{e(m)}' value='1' aria-label='Everyone keeps {e(m)}'"
+                      f"{' checked' if m in doc['open'] else ''}></td>" for m in machines) + "</tr>"]
+    for p in friends:
+        mine = set(doc["people"].get(p) or []) | set((doc["teams"].get(team_of.get(p)) or {}).get("machines") or [])
+        tag = f"<span class='sub'>team {e(team_of[p])}</span>" if p in team_of else ""
+        rows.append(f"<tr><th scope='row'>{e(p)}{tag}</th>" + "".join(
+            f"<td><input type='checkbox' name='aw_{e(p)}__{e(m)}' value='1' aria-label='{e(p)} on {e(m)}'"
+            f"{' checked' if m in mine else ''}></td>" for m in machines) + "</tr>")
+    servers = "".join(f"<li>{e(sv)}: only {e(', '.join(ppl) or 'you')} on the public site</li>"
+                      for sv, ppl in sorted(doc["servers"].items()))
+    state = ("<span class='dot ok'></span>Applies now, on every machine within 5 minutes." if active else
+             "<span class='dot'></span>Applies only while hackathon mode is on." if not sb.access_empty(doc) else
+             "<span class='dot'></span>No limits: everyone can use every machine.")
+    form = btn("hackathon", "Save who works where", primary=False, small=True, attrs=" class='hk'",
+               extra="<input type='hidden' name='op' value='access-grid'>"
+                     f"<div class='awrap'><table class='aw'><thead><tr><th></th>{head}</tr></thead>"
+                     f"<tbody>{''.join(rows)}</tbody></table></div>")
+    clear = btn("hackathon", "Clear", primary=False, small=True, link=True,
+                extra="<input type='hidden' name='op' value='access-clear'>") if not sb.access_empty(doc) else ""
+    return ("<div class='blk' id='access' data-card='access'><h2>Who works where</h2><section class='sec'>"
+            + (slot or NO_SLOT)("access") + f"<p style='margin-top:0'>{state}</p>"
+            "<p class='sub'>During hackathon mode, a person with machines ticked can use only those (and the ones "
+            "everyone keeps). Elsewhere their T3 shows a page naming their machines; anything already running "
+            "keeps running. People with nothing ticked, and you, can use every machine. It clears itself when "
+            "hackathon mode ends. Agents can do the same with <code>box hackathon assign</code>.</p>"
+            + (f"<ul class='sub'>{servers}</ul>" if servers else "")
+            + f"{form}<div style='margin-top:8px'>{clear}</div></section></div>")
+
+
 # ---------- tabs and in-place results ----------
 # /_box/me is split into tabs, each its own URL (?tab=...). Everyone gets the first four; the owner also gets the
 # admin tabs, in the same bar after a divider. A button's result shows at the top of the card holding the button:
@@ -1970,7 +2040,7 @@ HASH_TAB = {"start": "home", "app": "home", "people": "home", "activity": "home"
             "archive": "account", "more": "account", "projects": "account",
             "admin": "admin", "friends": "people", "invite": "people", "requests": "requests", "boxes": "machines",
             "machines": "machines",
-            "settings": "settings", "hackathon": "settings", "telegram-setup": "settings", "update": "settings",
+            "settings": "settings", "hackathon": "settings", "access": "settings", "telegram-setup": "settings", "update": "settings",
             "events": "events"}
 # where each button's result goes (tab, card) when the page can't say (no JavaScript): by what was pressed
 VIEW_PLACE = {"running-ctl": ("servers", "running"), "serve-ctl": ("servers", "servers"),
@@ -1980,7 +2050,7 @@ VIEW_PLACE = {"running-ctl": ("servers", "running"), "serve-ctl": ("servers", "s
               "telegram": ("account", "account"), "peer-login": ("account", "accounts"),
               "ai-account": ("account", "accounts"), "team": ("account", "team"),
               "restore": ("account", "archive"), "projects": ("account", "projects"), "boost": ("account", "dash"), "add-key": ("account", "more"),
-              "invite": ("people", "invite"), "hackathon": ("settings", "hackathon"),
+              "invite": ("people", "invite"), "hackathon": ("settings", "hackathon"), "access": ("settings", "access"),
               "telegram-setup": ("settings", "telegram-setup"), "request-update": ("settings", "update")}
 CARD_RE = re.compile(r"[a-z][a-z-]{0,30}")
 
@@ -2218,6 +2288,7 @@ def owner_page(ip, who, name, rec, result=None, rng="24h", tab="", card=""):
                 parts.append(running_all_section(ip, who, btn, name, slot))
             elif tab == "settings":
                 parts.append(hackathon_section(btn, slot))
+                parts.append(access_section(btn, slot))
                 parts.append(telegram_setup_section(tg, tok, base, slot))
                 parts.append(update_section(btn, slot))
             else:
@@ -2825,20 +2896,31 @@ def peer_card(res, tok, base):
 
 
 def hackathon_banner(me):
-    """Friends see when hackathon mode is on (and whether their package requests are open)."""
+    """Friends see when hackathon mode is on (and whether their package requests are open), and which machines they
+    work on when the owner assigned them (their T3 here is closed if this isn't one of them)."""
     e = html.escape
     try:
         cfg = sb.load_config()
         until = sb.hackathon_until(cfg)
+        doc = sb.access_active()
     except Exception:  # noqa: BLE001
         return ""
-    if not until:
+    if not until and not doc:
         return ""
     chosen = set(u for u in re.split(r"[\s,]+", cfg.get("HACKATHON_USERS") or "") if u)
-    when = time.strftime("%a %H:%M", time.localtime(until))
+    when = time.strftime("%a %H:%M", time.localtime(until or doc["until"]))
     extra = (" Programs your agent asks to install are approved straight away." if me in chosen else "")
+    mine = sb.access_machines(doc, me)
+    where = ""
+    if mine is not None:
+        here = sb.this_machine(cfg)
+        names = ", ".join(e(m) for m in mine)
+        where = (f" You work on <b>{names}</b>." if here in mine else
+                 f" You work on <b>{names}</b> during it, so T3 on {e(here)} is closed for you until then (your files "
+                 "here are untouched). Open T3 there from its own dashboard, under Machines.")
     return (f"<div class='note hk-on' role='status'><span class='ic' aria-hidden='true'></span><p><b>Hackathon mode</b> "
-            f"is on until {e(when)}.{extra} Group servers, messages and statuses here keep the team up to date.</p></div>")
+            f"is on until {e(when)}.{extra}{where} Group servers, messages and statuses here keep the team up to "
+            "date.</p></div>")
 
 
 PROJECT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")  # same rule as lib/sbprojects.py and sharedbox-admin
@@ -3222,7 +3304,7 @@ def portal_result(res, btn, base=""):
         return notice(e(str(res.get("message") or "Memory limits are automatic now.")))
     if view == "projects":  # "Keep on all boxes" only queues the first copy: in progress, not a check mark
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]), "busy" if res.get("_busy") else "ok")
-    if view in ("hackathon", "msg", "where", "telegram", "telegram-setup", "restore", "team", "ai-account",
+    if view in ("hackathon", "access", "msg", "where", "telegram", "telegram-setup", "restore", "team", "ai-account",
                 "serve-set", "running-any"):
         return notice(e(sb.printable(str(res.get("message") or "Done."))[:300]))
     if view.endswith("-ctl") or view.startswith("request-"):
@@ -3496,6 +3578,10 @@ class Handler(BaseHTTPRequestHandler):
                 else:  # <input type=datetime-local> sends 2026-11-15T18:00
                     kw["until"] = form.get("until", "").strip().replace("T", " ")[:16]
                 kw["users"] = " ".join(n for n in sorted(sb.friend_users()) if form.get(f"hu_{n}") == "1")
+            elif op in ("access-grid", "access-clear"):  # the "Who works where" grid
+                res = portal_call(ip, who, "hackathon", op="access-clear" if op == "access-clear" else "access-set",
+                                  doc=access_from_form(form))
+                return self.after_post(ip, who, name, rec, dict(res, _view="access"))
             elif op != "off":
                 return self.after_post(ip, who, name, rec, {"ok": False, "error": "unknown action", "_view": "hackathon"})
             res = portal_call(ip, who, "hackathon", **kw)

@@ -71,6 +71,7 @@ _ts_ip = (0.0, None)
 _rate = {}         # bucket -> deque[timestamps]
 _cf_tokens = {}    # sha256(jwt) -> (checked_at, claims | None)
 _shared = (0.0, {})
+_access = (0.0, None, "")  # (checked, hackathon access table or None, this machine's name)
 
 
 def users(max_age=REGISTRY_CACHE_SECS):
@@ -109,6 +110,31 @@ def backend_for(user):
         return None, None
     lo, _ = sb.port_range(CFG, rec["uid"])
     return backend_host(), lo
+
+
+# ---------- hackathon access: people the owner put on other machines (lib/sbcommon.py) ----------
+
+def access(max_age=REGISTRY_CACHE_SECS):
+    """(table or None, this machine's name), re-read every few seconds."""
+    global _access
+    if time.monotonic() - _access[0] > max_age:
+        here = _access[2] if _access[2] and time.monotonic() - _access[0] < 3600 else sb.this_machine(CFG)
+        _access = (time.monotonic(), sb.access_active(), here)
+    return _access[1], _access[2]
+
+
+def access_page(user, doc, here):
+    """(code, title, text) for someone assigned to other machines during the hackathon."""
+    mine = [m for m in (sb.access_machines(doc, user) or []) if m != here]
+    boxes = doc.get("boxes") or {}
+    rec = users().get(user) or {}
+    lo = sb.port_range(CFG, rec["uid"])[0] if rec.get("uid") is not None else None
+    links = ", ".join(f"<b>{m}</b> (<a href='http://{boxes[m]}:{lo}/'>its T3</a>, over Tailscale)" if m in boxes and lo
+                      else f"<b>{m}</b>" for m in mine)  # names and IPs are [a-z0-9-.] only: safe in HTML as is
+    until = time.strftime("%a %H:%M", time.localtime(doc["until"]))
+    return (403, "Use another machine",
+            f"During the hackathon (until {until}) you work on {links or 'another machine'}, so your T3 Code on "
+            f"{here} is closed until then. Your files here are untouched. Your page: <a href='/_box/me'>dashboard</a>.")
 
 
 # ---------- public links to friends' servers: /s/NAME/ (group) and /p/PORT/ (own) ----------
@@ -562,6 +588,13 @@ async def handle_request(reader, writer, head, peer):
         owner = (sess and sess[0] == OWNER) or bool(claims["email"] in sb.owner_emails(CFG))
         user = sess[0] if sess else None
         port, err = app_port(app_kind, key, user, owner)
+        doc, here = access()
+        if not err and doc and user and not owner:
+            if app_kind == "s" and not sb.access_server_allowed(doc, user, key):
+                err = (403, "Not during the hackathon", f"During the hackathon <b>{key}</b> is only for the people the "
+                       "owner picked. It opens to everyone again when the hackathon ends.")
+            elif app_kind == "p" and not sb.access_allowed(doc, user, here):
+                err = access_page(user, doc, here)
         if err:
             await respond(writer, err[0], page(err[1], err[2]))
             return False
@@ -572,6 +605,14 @@ async def handle_request(reader, writer, head, peer):
         host = backend_host()
         dest = ("tcp", host or "127.0.0.1", port)
         fwd_target = rest
+    elif sess and sess[0] != OWNER and access()[0] and not sb.access_allowed(access()[0], sess[0], access()[1]):
+        # hackathon access: the owner put this person on other machines; their T3 here is closed until it ends
+        if method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and opened_as_page(headers):
+            await respond(writer, 303, "", headers=[("Location", "/_box/me")])  # the dashboard says where to go
+        else:
+            code, title, text = access_page(sess[0], *access())
+            await respond(writer, code, page(title, text))
+        return False
     elif sess and method == "GET" and not upgrade and target.split("?", 1)[0] == "/" and welcome_pending(sess[0]):
         await respond(writer, 303, "", headers=[("Location", "/_box/me?welcome=1")])
         return False

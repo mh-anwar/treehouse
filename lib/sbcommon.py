@@ -316,6 +316,16 @@ def hackathon_reconcile(cfg):
     write_json(path, {"active": active, "ts": int(time.time()), "until": cfg.get("HACKATHON_UNTIL", "")},
                mode=0o644)
     log_event("hackathon_on" if active else "hackathon_off", None, until=cfg.get("HACKATHON_UNTIL", ""))
+    if not active and os.path.exists(HACKATHON_ACCESS):  # who-works-where belongs to that hackathon only
+        try:
+            os.unlink(HACKATHON_ACCESS)
+            log_event("hackathon_access_cleared", None, why="hackathon mode ended")
+        except OSError:
+            pass
+    try:
+        access_publish(cfg)
+    except Exception:  # noqa: BLE001 - the transition itself is recorded either way
+        pass
     try:
         moved = hackathon_servers(cfg, active)
     except Exception as e:  # noqa: BLE001 - pausing servers must never block the switch itself
@@ -372,6 +382,134 @@ def hackathon_servers(cfg, active):
                     n += 1
     write_json(path, {"paused": {}, "ts": int(time.time())}, mode=0o644)
     return f"started {n} paused server{'s' if n != 1 else ''} again" if n else ""
+
+
+# ---------- hackathon access: who may use which machines while hackathon mode is on ----------
+# The owner sets a table on the primary box (`box hackathon assign`, the dashboard's Settings grid):
+#   {"v": 1, "open": [machines everyone keeps],
+#    "teams": {"A": {"members": [people], "machines": [machines]}}, "people": {"alice": [machines]},
+#    "servers": {"group-server": [people who may open it on the public site]}}
+# Anyone named in a team or under people may use only open + their own machines; everyone else is unrestricted, and
+# the owner's accounts always are. It applies while the primary's hackathon mode is on: the primary writes the
+# "active" copy (with `until`), every other box gets it in the primary's signed roster (lib/sbfed.py) and writes its
+# own. When hackathon mode ends the table is cleared; a box that stops hearing from the primary drops it at `until`.
+
+HACKATHON_ACCESS = os.path.join(STATE_DIR, "hackathon-access.json")                # primary: the owner's table
+HACKATHON_ACCESS_ACTIVE = os.path.join(STATE_DIR, "hackathon-access-active.json")  # every box: what applies now
+ACCESS_PERSON_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+ACCESS_TEAM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}")
+ACCESS_SERVER_RE = re.compile(r"[a-z][a-z0-9-]{1,30}")
+
+
+def clean_access(doc, machines=None, people=None, servers=None):
+    """(table, problems): `doc` reduced to the known shape. With machines/people/servers given, names not in them
+    are problems (and dropped). Never raises."""
+    probs = []
+    doc = doc if isinstance(doc, dict) else {}
+
+    def names(v, rx, known, what):
+        out = []
+        for n in (v if isinstance(v, list) else []):
+            n = str(n).strip()
+            if not rx.fullmatch(n):
+                probs.append(f"not a {what} name: {n[:40]!r}")
+            elif known is not None and n not in known:
+                probs.append(f"no {what} called {n}")
+            elif n not in out:
+                out.append(n)
+        return out[:200]
+    out = {"v": 1, "open": names(doc.get("open"), BOX_NAME_RE, machines, "machine"), "teams": {}, "people": {},
+           "servers": {}}
+    for t, rec in list((doc.get("teams") if isinstance(doc.get("teams"), dict) else {}).items())[:50]:
+        t = str(t).strip()
+        if not ACCESS_TEAM_RE.fullmatch(t) or not isinstance(rec, dict):
+            probs.append(f"not a team name: {t[:40]!r}")
+            continue
+        m = names(rec.get("members"), ACCESS_PERSON_RE, people, "person")
+        if m:
+            out["teams"][t] = {"members": m, "machines": names(rec.get("machines"), BOX_NAME_RE, machines, "machine")}
+    for p, ms in list((doc.get("people") if isinstance(doc.get("people"), dict) else {}).items())[:500]:
+        p = str(p).strip()
+        if not ACCESS_PERSON_RE.fullmatch(p) or (people is not None and p not in people):
+            probs.append(f"no person called {p[:40]}")
+            continue
+        out["people"][p] = names(ms, BOX_NAME_RE, machines, "machine")
+    for sv, ppl in list((doc.get("servers") if isinstance(doc.get("servers"), dict) else {}).items())[:100]:
+        sv = str(sv).strip()
+        if not ACCESS_SERVER_RE.fullmatch(sv) or (servers is not None and sv not in servers):
+            probs.append(f"no group server called {sv[:40]}")
+            continue
+        out["servers"][sv] = names(ppl, ACCESS_PERSON_RE, people, "person")
+    return out, probs
+
+
+def access_empty(doc):
+    return not (doc and (doc.get("teams") or doc.get("people") or doc.get("servers")))
+
+
+def access_machines(doc, user):
+    """Machines `user` may use under `doc`, or None when they're unrestricted (not named, or no table)."""
+    if not doc or not user:
+        return None
+    teams = [t for t in (doc.get("teams") or {}).values() if user in (t.get("members") or [])]
+    if user not in (doc.get("people") or {}) and not teams:
+        return None
+    out = set(doc.get("open") or []) | set((doc.get("people") or {}).get(user) or [])
+    for t in teams:
+        out |= set(t.get("machines") or [])
+    return sorted(out)
+
+
+def access_allowed(doc, user, machine):
+    m = access_machines(doc, user)
+    return m is None or machine in m
+
+
+def access_server_allowed(doc, user, server):
+    """May `user` open group server `server` on the public site? Only a server listed under servers is limited."""
+    lim = (doc or {}).get("servers") or {}
+    return server not in lim or user in lim[server]
+
+
+def access_active(now=None, path=None):
+    """The table that applies on this box right now (with "until", "boxes": {name: ip}), else None."""
+    d = read_json(path or HACKATHON_ACCESS_ACTIVE, None)
+    if not isinstance(d, dict) or not isinstance(d.get("until"), (int, float)) or (now or time.time()) >= d["until"]:
+        return None
+    return d
+
+
+def access_publish(cfg, doc=None, until=None, path=None):
+    """Write (or remove) this box's active copy. On the primary: the owner's table while hackathon mode is on. On a
+    secondary the federation pass passes the primary's `doc` and `until`. Returns True if the file changed."""
+    path = path or HACKATHON_ACCESS_ACTIVE
+    if doc is None:
+        import sbfed
+        if sbfed.role(cfg) == "secondary":
+            return False
+        until = hackathon_until(cfg)
+        doc = read_json(HACKATHON_ACCESS, None) if until else None
+    want = None
+    if doc and until and not access_empty(doc):
+        want = dict(clean_access(doc)[0], until=int(until), boxes=boxes(cfg))
+    cur = read_json(path, None)
+    if want == cur:
+        return False
+    if want is None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return False
+        return True
+    write_json(path, want, mode=0o644)
+    return True
+
+
+def this_machine(cfg):
+    """This box's name as BOXES calls it (else its hostname)."""
+    import socket
+    import sbfed
+    return sbfed.self_name(boxes(cfg), tailscale_ip4(), socket.gethostname())
 
 
 def brand(cfg):

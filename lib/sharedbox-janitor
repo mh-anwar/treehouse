@@ -249,6 +249,62 @@ def oom_append(path, rec, group):
     os.replace(tmp, path)
 
 
+# ---------- hackathon access (lib/sbcommon.py): close T3 here for people assigned to other machines ----------
+ACCESS_STATE = os.path.join(sb.STATE_DIR, "hackathon-closed.json")  # {user: {closed, use}} as last applied
+
+
+def access_plans(cfg, users, doc, here):
+    """{user: plan for `box _t3-access`} for every friend with a T3 socket."""
+    boxes = (doc or {}).get("boxes") or sb.boxes(cfg)
+    until = time.strftime("%Y-%m-%d %H:%M", time.localtime(doc["until"])) if doc else ""
+    out = {}
+    for name, rec in sorted(users.items()):
+        if rec.get("status", "active") != "active" or not os.path.exists(
+                os.path.join(rec["home"], ".config", "systemd", "user", "sb-t3.socket")):
+            continue
+        allowed = sb.access_machines(doc, name)
+        closed = allowed is not None and here not in allowed
+        lo = sb.port_range(cfg, rec["uid"])[0]
+        use = [{"name": m, "url": f"http://{boxes[m]}:{lo}/"} for m in (allowed or []) if m != here and m in boxes]
+        out[name] = {"closed": closed, "use": use if closed else [], "until": until if closed else "", "here": here}
+    return out
+
+
+def access_pass(cfg, dry=False):
+    doc = sb.access_active()
+    here = sb.this_machine(cfg)
+    users = sb.friend_users()
+    plans = access_plans(cfg, users, doc, here)
+    prev = sb.read_json(ACCESS_STATE, {}) or {}
+    done = {}
+    for name, plan in plans.items():
+        want = {"closed": plan["closed"], "use": plan["use"]}
+        if prev.get(name) == want or (not plan["closed"] and not prev.get(name, {}).get("closed")):
+            done[name] = want
+            continue  # nothing to change (an open T3 that was never closed is left alone)
+        if dry:
+            print(f"{name}: would {'close' if plan['closed'] else 'reopen'} T3 here")
+            continue
+        try:
+            rep = user_pass(pwd.getpwnam(name), plan, "_t3-access",
+                            check=lambda r: isinstance(r, dict) and isinstance(r.get("changed"), bool))
+        except Exception as e:  # one person's trouble must not stop the others
+            print(f"{name}: hackathon access: {str(e)[-300:]!r}", file=sys.stderr)
+            continue
+        done[name] = want
+        if rep["changed"]:
+            sb.log_event("hackathon_closed" if plan["closed"] else "hackathon_reopened", name, machine=here,
+                         use=",".join(u["name"] for u in plan["use"]))
+            print(f"{name}: T3 Code {'closed' if plan['closed'] else 'open again'} on {here}")
+    if not dry:
+        sb.write_json(ACCESS_STATE, done, mode=0o644)
+
+
+def cmd_access(cfg, a):
+    """Apply the hackathon access table on this box now (also part of every tick)."""
+    access_pass(cfg, a.dry_run)
+
+
 def cmd_tick(cfg, a):
     if not a.dry_run:
         try:
@@ -277,6 +333,11 @@ def cmd_tick(cfg, a):
                     print(f"{what}: {done}")
             except Exception as e:  # noqa: BLE001 - one part never stops the rest
                 print(f"{what}: {e!r}", file=sys.stderr)
+        try:  # who works where: the primary's table may have started or ended (secondaries: sharedbox-fed)
+            sb.access_publish(cfg)
+            access_pass(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"hackathon access: {e!r}", file=sys.stderr)
     state = sb.read_json(TICK_STATE, {}) or {}
     users = sb.friend_users()
     for name, rec in sorted(users.items()):
@@ -677,6 +738,7 @@ def main():
     x = s.add_parser("weekly"); x.add_argument("--dry-run", action="store_true"); x.add_argument("--force", action="store_true")
     x.add_argument("--user"); x.set_defaults(fn=cmd_weekly)
     x = s.add_parser("reboot"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_reboot)
+    x = s.add_parser("access"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_access)
     a = p.parse_args()
     a.fn(cfg, a)
 

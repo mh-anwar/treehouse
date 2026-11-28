@@ -174,6 +174,33 @@ def run_tests():
     c, h, b = req("/s/web/p", "A", method="POST", body=b"hello")
     check("POST with body", c == 200 and json.loads(b)["path"] == "/p", (c, b[:200]))
 
+    # hackathon access: alice works on "other" (not this machine), group server "web" only for bob
+    import time as _t
+    g.sb.this_machine = lambda cfg: "here"
+    with open(g.sb.HACKATHON_ACCESS_ACTIVE, "w") as f:
+        json.dump({"v": 1, "open": [], "teams": {"A": {"members": ["alice"], "machines": ["other"]}}, "people": {},
+                   "servers": {"web": ["bob"]}, "until": int(_t.time()) + 3600,
+                   "boxes": {"here": "100.64.0.1", "other": "100.64.0.2"}}, f)
+    g._access = (0.0, None, "")
+    c, h, b = req("/", "A", extra=["Sec-Fetch-Dest: document", "Sec-Fetch-Site: same-origin"])
+    check("access: closed friend's T3 page load -> dashboard", c == 303 and hv(h, "location") == ["/_box/me"], (c, h))
+    c, h, b = req("/api/x", "A")
+    check("access: closed friend's T3 API -> 403 naming the machine",
+          c == 403 and b"other" in b and b"http://100.64.0.2:31000/" in b, (c, b[:300]))
+    c, h, b = req("/p/31001/x", "A")
+    check("access: closed friend's own /p/ link -> 403", c == 403 and b"another machine" in b, (c, b[:200]))
+    c, h, b = req("/s/web/x", "A")
+    check("access: group server limited to bob -> 403 for alice", c == 403 and b"hackathon" in b, (c, b[:200]))
+    for tok in "BO":
+        c, h, b = req("/s/web/x", tok)
+        check(f"access: group server open for {tok}", c == 200, (c, b[:200]))
+    c, h, b = req("/_box/me", "A")
+    check("access: closed friend still gets their dashboard", c == 200, c)
+    os.unlink(g.sb.HACKATHON_ACCESS_ACTIVE)
+    g._access = (0.0, None, "")
+    c, h, b = req("/p/31001/x", "A")
+    check("access: table gone -> open again", c == 200, (c, b[:200]))
+
     # own ports
     c, h, b = req("/p/31001/a", "A")
     check("/p/own port alice", c == 200 and json.loads(b)["port"] == 31001 and json.loads(b)["path"] == "/a", (c, b))

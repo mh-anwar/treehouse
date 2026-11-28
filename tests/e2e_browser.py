@@ -513,6 +513,15 @@ def _fake_root(req):
     if action == "hackathon":  # root: sharedbox-admin hackathon_set
         if not owner:
             return {"ok": False, "error": "not the owner"}
+        if req.get("op") in ("access-set", "access-clear"):  # who works where (hackathon_access_set)
+            doc = sb.clean_access(req.get("doc"))[0] if req["op"] == "access-set" else None
+            ROOT_LOG.append(("hackathon-access", doc))
+            if doc:
+                sb.write_json(sb.HACKATHON_ACCESS, doc)
+            elif os.path.exists(sb.HACKATHON_ACCESS):
+                os.unlink(sb.HACKATHON_ACCESS)
+            return {"ok": True, "active": False, "access": doc or {},
+                    "message": "Saved. It applies while hackathon mode is on." if doc else "Cleared."}
         if req.get("op") == "off":
             sb.set_config({"HACKATHON_UNTIL": ""})
             return {"ok": True, "active": False, "until": "", "users": ""}
@@ -1430,6 +1439,47 @@ def boxes_card(browser):
         s.close()
 
 
+def access_grid(browser):
+    """Settings' "Who works where": machines across, friends down. Ticking alice on minastirith and saving sends
+    the table to root and shows the result in the card (no reload, no jump); Clear empties it."""
+    for width, scheme in ((1280, "light"), (390, "dark")):
+        s = Session(browser, "owner", "tok-owner", width=width, scheme=scheme)
+        s.page.goto(url("/_box/me?tab=settings"))
+        where = f"who works where @{width}"
+        card = s.page.locator("#access")
+        if not card.count():
+            fail("owner", where, "no Who works where card on Settings")
+            s.close()
+            continue
+        if SHOTS:
+            os.makedirs(SHOTS, exist_ok=True)
+            card.screenshot(path=os.path.join(SHOTS, f"owner-access-{width}-{scheme}.png"))
+        inspect(s, where)
+        for m in ("treebox", "minastirith", "krishbox", "Everyone", "alice", "bob"):
+            if m not in card.inner_text():
+                fail("owner", where, f"grid lacks {m!r}")
+        if width == 1280:
+            ROOT_LOG.clear()
+            card.locator("input[name='aw_alice__minastirith']").check()
+            card.locator("input[name='ao_treebox']").check()
+            press(s.page, card.locator("button", has_text="Save who works where"))
+            out = s.page.locator("#access").inner_text()
+            sent = next((e[1] for e in ROOT_LOG if isinstance(e, tuple) and e[0] == "hackathon-access"), None)
+            if not sent or sent["people"] != {"alice": ["minastirith"]} or sent["open"] != ["treebox"]:
+                fail("owner", where, f"root got {sent!r}")
+            if "Saved" not in out or not stayed(s.page):
+                fail("owner", where, f"no result in place: {out[:200]!r}")
+            if not s.page.locator("#access input[name='aw_alice__minastirith']").is_checked():
+                fail("owner", where, "the tick didn't stick after saving")
+            if SHOTS:
+                s.page.locator("#access").screenshot(path=os.path.join(SHOTS, f"owner-access-saved-{width}.png"))
+            press(s.page, s.page.locator("#access button", has_text="Clear"))
+            if os.path.exists(sb.HACKATHON_ACCESS):
+                fail("owner", where, "Clear left the table")
+        s.drain(where)
+        s.close()
+
+
 def running_card(browser):
     """The Running card (alice: rows, the forgotten-database flag, Stop with its result in the card), the owner's
     Running tab, and group-server descriptions (escaped; a missing one asks for it)."""
@@ -1736,6 +1786,7 @@ def main():
         start_cards(browser)  # the start card's states, the setup prompt, the tailnet page: in every mode
         tailnet_view()
         boxes_card(browser)
+        access_grid(browser)
         running_card(browser)
         in_place(browser)
         w.portal_rate.clear()

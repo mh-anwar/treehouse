@@ -1134,7 +1134,7 @@ def handle_portal(cfg, rid, req):
         if req.get("action") == "running-stop-any":  # All running's Stop: anyone's item, as that account
             return running_stop_any(cfg, name, req)
         if req.get("action") == "hackathon":  # {"op": "on"|"off", "until": "YYYY-MM-DD HH:MM", "users": "a b"}
-            return hackathon_set(cfg, {k: req.get(k) for k in ("op", "until", "users")}, name)
+            return hackathon_set(cfg, {k: req.get(k) for k in ("op", "until", "users", "doc")}, name)
         if req.get("action") == "invite":  # the owner's dashboard: same as `box invite --email ... --note ...`
             try:
                 res = invite_account(cfg, None, str(req.get("note") or "")[:120], by=name,
@@ -1965,9 +1965,77 @@ def boxes_set(value, by):
 HACKATHON_MAX_DAYS = 7
 
 
+def access_apply_soon():
+    """Close or reopen people's T3 on this box for hackathon access (`sharedbox-janitor access`), in the background:
+    the answer to the owner doesn't wait for every account."""
+    try:
+        subprocess.Popen([os.path.join(sb.LIB_DIR, "sharedbox-janitor"), "access"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        print(f"access apply: {e}", file=sys.stderr)
+
+
+def access_known(cfg):
+    """(machines, people, group servers) a hackathon access table may name."""
+    machines = set(sb.boxes(cfg)) or {sb.this_machine(cfg)}
+    people = set(sb.friend_users())
+    servers = set(sbshared.registry())
+    return machines, people, servers
+
+
+def hackathon_access_set(cfg, req, by):
+    """Who may use which machines during hackathon mode (lib/sbcommon.py, "hackathon access"). op access-set
+    replaces the whole table with `doc` (the CLI and the dashboard both send the full table); access-clear empties
+    it. Only on the primary: the other boxes follow its signed roster."""
+    if sbfed.role(cfg) == "secondary":
+        prim = next((p for p, d in (fed_state().get("docs") or {}).items() if d.get("role") == "primary"), "")
+        return {"ok": False, "error": "This machine follows the main machine's table" + (f" ({prim})" if prim else "")
+                + ". Set who works where there."}
+    if req["op"] == "access-clear":
+        try:
+            os.unlink(sb.HACKATHON_ACCESS)
+        except FileNotFoundError:
+            pass
+        sb.log_event("hackathon_access_cleared", by)
+        doc = None
+    else:
+        machines, people, servers = access_known(cfg)
+        doc, probs = sb.clean_access(req.get("doc"), machines, people, servers)
+        if probs:
+            return {"ok": False, "error": "Nothing was changed: " + "; ".join(dict.fromkeys(probs))[:600] + "."}
+        admins = set(sb.admin_users(cfg)) | {(sb.owner_account(cfg) or pwd.getpwuid(0)).pw_name}
+        named = set(doc["people"]) | {m for t in doc["teams"].values() for m in t["members"]}
+        for p in named:
+            if not sb.access_machines(doc, p):
+                return {"ok": False, "error": f"Nothing was changed: {p} would have no machine at all. Give them one, "
+                        "or add a machine everyone keeps."}
+        if named & admins:
+            return {"ok": False, "error": "Nothing was changed: the owner's accounts can always use every machine."}
+        if sb.access_empty(doc) and not doc["open"]:
+            doc = None
+            try:
+                os.unlink(sb.HACKATHON_ACCESS)
+            except FileNotFoundError:
+                pass
+        else:
+            sb.write_json(sb.HACKATHON_ACCESS, dict(doc, set_by=by, ts=int(time.time())), mode=0o644)
+        sb.log_event("hackathon_access_set", by, teams=len(doc["teams"]) if doc else 0,
+                     people=len(doc["people"]) if doc else 0)
+    changed = sb.access_publish(cfg)
+    if changed:
+        access_apply_soon()
+    active = sb.access_active() is not None
+    return {"ok": True, "active": active, "access": doc or {},
+            "message": ("Saved. " if doc else "Cleared. ") + (
+                "It applies now, on every machine within 5 minutes." if active else
+                "It applies while hackathon mode is on." if doc else "Everyone can use every machine.")}
+
+
 def hackathon_set(cfg, req, by):
     """`box hackathon on|off` from an admin: write HACKATHON_UNTIL/USERS and apply the change right away."""
     op = str(req.get("op") or "")
+    if op in ("access-set", "access-clear"):
+        return hackathon_access_set(cfg, dict(req, op=op), by)
     if op == "off":
         sb.set_config({"HACKATHON_UNTIL": ""})
     elif op == "on":
@@ -1987,6 +2055,8 @@ def hackathon_set(cfg, req, by):
         return {"ok": False, "error": "op must be on or off"}
     new = sb.load_config()
     sb.hackathon_reconcile(new)
+    if sb.access_publish(new):  # who-works-where starts, moves its end, or ends with it
+        access_apply_soon()
     sb.log_event("hackathon_set", by, op=op, until=new.get("HACKATHON_UNTIL", ""),
                  users=new.get("HACKATHON_USERS", ""))
     return {"ok": True, "active": new.get("HACKATHON") == "1", "until": new.get("HACKATHON_UNTIL", ""),
@@ -2947,7 +3017,10 @@ def fed_sync(cfg, a=None):
         host_key = open("/etc/ssh/ssh_host_ed25519_key.pub").read()
     except OSError:
         host_key = ""
-    doc = sbfed.build_roster(me, my_role, users, time.time_ns() // 1_000_000, now, host_key)
+    if my_role == "primary":
+        sb.access_publish(cfg)  # hackathon mode may have started or ended since the last pass
+    doc = sbfed.build_roster(me, my_role, users, time.time_ns() // 1_000_000, now, host_key,
+                             access=sb.access_active() if my_role == "primary" else None)
     os.makedirs(os.path.dirname(FED_ROSTER), exist_ok=True)
     sb.write_json(FED_ROSTER, sbfed.wire(doc, FED_KEY), mode=0o644)
     # 2. the other boxes' rosters (signed, newer than the last one seen)
@@ -2970,10 +3043,16 @@ def fed_sync(cfg, a=None):
     # 3. a secondary copies the primary's accounts (fresh rosters only: a box that's been down for days
     #    never suspends anyone)
     if my_role == "secondary":
+        access, until = None, None
         for peer, pdoc in st["docs"].items():
             if pdoc.get("role") == "primary" and sbfed.fresh(pdoc, now):
                 fed_apply_accounts(cfg, st, pdoc)
+                access, until = sbfed.roster_access(pdoc, now)
         friends = sb.friend_users()
+        # hackathon who-works-where: the primary's table, while its hackathon mode is on (else this box drops it)
+        if sb.access_publish(cfg, doc=access or {}, until=until):
+            fed_log(st, "hackathon access " + ("updated from the primary" if access else "ended"))
+            access_apply_soon()
     # 4. keys + ssh config + pinned host keys, then (as the user) T3 links, gh token, git identity
     docs = {p: d for p, d in st["docs"].items() if p in boxes}
     local_uids = {n: r["uid"] for n, r in friends.items() if r.get("status", "active") == "active"}

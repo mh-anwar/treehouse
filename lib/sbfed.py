@@ -122,8 +122,9 @@ def own_keys(authorized_text):
 
 # ---------- roster ----------
 
-def build_roster(box, box_role, users, serial, now, host_key=""):
-    """users: {name: {uid, status, home, limits, keys}}. Keys are cleaned here; bad entries dropped."""
+def build_roster(box, box_role, users, serial, now, host_key="", access=None):
+    """users: {name: {uid, status, home, limits, keys}}. Keys are cleaned here; bad entries dropped.
+    access: the primary's hackathon who-works-where table while it applies (sbcommon.access_active), else None."""
     out = {}
     for name, u in sorted(users.items()):
         if not NAME_RE.fullmatch(name) or not isinstance(u.get("uid"), int):
@@ -132,8 +133,21 @@ def build_roster(box, box_role, users, serial, now, host_key=""):
         lim = {k: str(v) for k, v in (u.get("limits") or {}).items() if k in LIMIT_KEYS and v not in (None, "")}
         out[name] = {"uid": u["uid"], "status": u.get("status") if u.get("status") in STATUSES else "suspended",
                      "home": u.get("home") or box, "limits": lim, "keys": keys}
-    return {"v": 1, "box": box, "role": box_role, "serial": int(serial), "ts": int(now),
-            "host_key": clean_key(host_key) or "", "users": out}
+    doc = {"v": 1, "box": box, "role": box_role, "serial": int(serial), "ts": int(now),
+           "host_key": clean_key(host_key) or "", "users": out}
+    if access and box_role == "primary":
+        doc["hackathon_access"] = {k: access[k] for k in ("v", "open", "teams", "people", "servers", "until")
+                                   if k in access}
+    return doc
+
+
+def roster_access(doc, now):
+    """(table, until) a primary's roster carries for hackathon access, or (None, None): only from a primary, only
+    while `until` is ahead. The receiving box cleans the table again (sbcommon.clean_access)."""
+    a = doc.get("hackathon_access") if isinstance(doc, dict) and doc.get("role") == "primary" else None
+    if not isinstance(a, dict) or not isinstance(a.get("until"), int) or a["until"] <= now:
+        return None, None
+    return a, a["until"]
 
 
 def encode(doc):

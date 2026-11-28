@@ -301,6 +301,19 @@ on; `box hackathon` shows the state. While on:
 It ends by itself at its end time. Owner only: `box hackathon on --until "YYYY-MM-DD HH:MM" --users name1,name2`
 (or `--hours N`), `box hackathon off`.
 
+Who works where (owner only, set on the main machine; every other machine follows within 5 minutes):
+- `box hackathon assign alice,bob minastirith --team A` (a team), `box hackathon assign carol nar-shaddaa` (one
+  person), `box hackathon open sietchtabr` (machines everyone keeps; `open none`), `box hackathon unassign carol`
+  (or `--team A`), `box hackathon server NAME alice,bob` (a group server's public link only for them; `--everyone`
+  lifts it), `box hackathon clear`. `box hackathon access [--json]` shows the table and each person's machines;
+  `box hackathon access --set FILE|-` replaces it with that JSON (the `table` of `--json`). Changes print the new
+  table; add `--json` for it as JSON.
+- Someone named there can use only their machines plus the ones everyone keeps. Anyone not named, and the owner,
+  can use every machine. The dashboard's Settings tab has the same table as a grid.
+- It applies only while hackathon mode is on and clears itself when it ends. Elsewhere that person's T3 (the public
+  site and its Tailscale port) shows a page naming their machines; their `box serve` links on the public site are
+  closed too. Nothing running is stopped, their files stay, and SSH still works (agents and `box run` use it).
+
 @@ boxes
 The owner may have more than one machine (`box help boxes` is the topic name). The owner's own agents can reach the second machine, minastirith (a Dell,
 Tailscale 100.94.44.25), with `ssh minastirith`. It's SLOWER than sietchtabr (i3, 2 cores/4 threads, about 40-45%

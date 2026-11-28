@@ -288,18 +288,110 @@ def hackathon_line(cfg=None):
     cfg = cfg or CFG
     if cfg.get("HACKATHON") != "1":
         return ""
-    return (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: package requests open for "
+    line = (f"Hackathon mode until {cfg['HACKATHON_UNTIL']}: package requests open for "
             f"{cfg.get('REQUEST_OPEN_USERS') or 'the owner'} (`box help hackathon`)")
+    mine = sb.access_machines(sb.access_active(), ME.pw_name)
+    if mine is not None:
+        here = sb.this_machine(cfg)
+        line += (f". During it {ME.pw_name} works on {', '.join(mine)}"
+                 + ("" if here in mine else f", not here: T3 Code on {here} is closed to them until it ends"))
+    return line
+
+
+def access_lines(doc, active, until=""):
+    """The who-works-where table as plain lines."""
+    if sb.access_empty(doc) and not (doc or {}).get("open"):
+        return ["Who works where: no limits (everyone can use every machine)."]
+    out = ["Who works where" + (f" (applies now, until {until}):" if active else
+                                " (saved; applies while hackathon mode is on):")]
+    if doc.get("open"):
+        out.append(f"  everyone keeps: {', '.join(doc['open'])}")
+    for t, rec in sorted((doc.get("teams") or {}).items()):
+        out.append(f"  team {t}: {', '.join(rec['members'])} -> {', '.join(rec['machines']) or '(only the shared ones)'}")
+    for p, ms in sorted((doc.get("people") or {}).items()):
+        out.append(f"  {p} -> {', '.join(ms) or '(only the shared ones)'}")
+    for sv, ppl in sorted((doc.get("servers") or {}).items()):
+        out.append(f"  group server {sv}: only {', '.join(ppl) or 'the owner'} on the public site")
+    out.append("  Anyone not listed can use every machine; the owner always can.")
+    return out
+
+
+def names_arg(v):
+    return [x for x in re.split(r"[\s,]+", v or "") if x]
+
+
+def access_change(a, doc):
+    """The table after `box hackathon assign|unassign|open|server|clear` (a copy; nothing is sent here)."""
+    doc = json.loads(json.dumps(doc or {}))
+    for k in ("open", "teams", "people", "servers"):
+        doc.setdefault(k, [] if k == "open" else {})
+    args = list(a.args or [])
+    if a.op == "clear":
+        return {"v": 1, "open": [], "teams": {}, "people": {}, "servers": {}}
+    if a.op == "assign":
+        if len(args) != 2:
+            sys.exit("box hackathon assign PEOPLE MACHINES [--team NAME], e.g. assign alice,bob minastirith --team A")
+        ppl, ms = names_arg(args[0]), names_arg(args[1])
+        if a.team:
+            doc["teams"][a.team] = {"members": ppl, "machines": ms}
+            for p in ppl:  # one place per person: the team decides now
+                doc["people"].pop(p, None)
+        else:
+            for p in ppl:
+                doc["people"][p] = ms
+                for t in doc["teams"].values():
+                    t["members"] = [m for m in t["members"] if m != p]
+    elif a.op == "unassign":
+        if a.team:
+            doc["teams"].pop(a.team, None)
+        if not args and not a.team:
+            sys.exit("box hackathon unassign PEOPLE  (or --team NAME)")
+        for p in names_arg(args[0]) if args else []:
+            doc["people"].pop(p, None)
+            for t in doc["teams"].values():
+                t["members"] = [m for m in t["members"] if m != p]
+    elif a.op == "open":
+        if len(args) != 1:
+            sys.exit("box hackathon open MACHINES   (machines everyone keeps, e.g. open sietchtabr; `open none`)")
+        doc["open"] = [] if args[0] == "none" else names_arg(args[0])
+    elif a.op == "server":
+        if not args or (len(args) < 2 and not a.everyone):
+            sys.exit("box hackathon server NAME PEOPLE   (or --everyone to lift the limit)")
+        if a.everyone:
+            doc["servers"].pop(args[0], None)
+        else:
+            doc["servers"][args[0]] = names_arg(args[1])
+    doc["teams"] = {t: r for t, r in doc["teams"].items() if r.get("members")}
+    return doc
+
+
+def hackathon_access_json():
+    active = sb.access_active()
+    table = active if active is not None else sb.clean_access(sb.read_json(sb.HACKATHON_ACCESS, {}) or {})[0]
+    table = {k: table.get(k) for k in ("v", "open", "teams", "people", "servers")}
+    named = set(table["people"]) | {m for t in table["teams"].values() for m in t["members"]}
+    return {"active": active is not None, "until": CFG.get("HACKATHON_UNTIL", "") if active else "",
+            "this_machine": sb.this_machine(CFG), "table": table,
+            "machines": {p: sb.access_machines(table, p) for p in sorted(named)}}
 
 
 def cmd_hackathon(a):
-    if a.op in (None, "status"):
-        line = hackathon_line()
-        print(line or "Hackathon mode is off. The owner turns it on: box hackathon on --until \"YYYY-MM-DD HH:MM\" "
-                      "[--users a,b]")
+    if a.op in (None, "status", "access") and not getattr(a, "set", None):
+        info = hackathon_access_json()
+        if a.json:
+            print(json.dumps(dict(info, hackathon=CFG.get("HACKATHON") == "1",
+                                  hackathon_until=CFG.get("HACKATHON_UNTIL", "") if CFG.get("HACKATHON") == "1" else ""),
+                             indent=2, sort_keys=True))
+            return
+        if a.op != "access":
+            line = hackathon_line()
+            print(line or "Hackathon mode is off. The owner turns it on: box hackathon on --until \"YYYY-MM-DD HH:MM\" "
+                          "[--users a,b]")
+        if a.op == "access" or ME.pw_name in sb.admin_users(CFG):
+            print("\n".join(access_lines(info["table"], info["active"], info["until"])))
         return
     if ME.pw_name not in sb.admin_users(CFG):
-        sys.exit("Only the owner can turn hackathon mode on or off.")
+        sys.exit("Only the owner can change hackathon mode or who works where.")
     req = {"action": "hackathon", "op": a.op}
     if a.op == "on":
         until = a.until
@@ -308,9 +400,27 @@ def cmd_hackathon(a):
         if not until:
             sys.exit('give an end: --until "YYYY-MM-DD HH:MM" or --hours N')
         req.update(until=until, users=a.users or "")
+    elif a.op == "access":  # --set FILE|-: the whole table as JSON (the shape `box hackathon access --json` prints)
+        try:
+            raw = sys.stdin.read() if a.set == "-" else open(a.set).read()
+            doc = json.loads(raw)
+        except (OSError, ValueError) as e:
+            sys.exit(f"box hackathon access --set: can't read that JSON ({e})")
+        req.update(op="access-set", doc=doc.get("table", doc) if isinstance(doc, dict) else doc)
+    elif a.op in ("assign", "unassign", "open", "server", "clear"):
+        cur = sb.read_json(sb.HACKATHON_ACCESS, {}) or {}
+        new = access_change(a, sb.clean_access(cur)[0])
+        req.update(op="access-clear" if a.op == "clear" else "access-set", doc=new)
     res = admin_request(req, 60)
     if not res.get("ok"):
         sys.exit(res.get("error", "that didn't work"))
+    if "access" in res:
+        if a.json:
+            print(json.dumps(hackathon_access_json(), indent=2, sort_keys=True))
+            return
+        print(res.get("message", "Saved."))
+        print("\n".join(access_lines(res["access"], res.get("active"), CFG.get("HACKATHON_UNTIL", ""))))
+        return
     print(f"Hackathon mode on until {res['until']} (open package requests: {res['users']})" if res.get("active")
           else "Hackathon mode is off.")
 
@@ -1450,6 +1560,111 @@ def t3_ensure(host, port, env, quiet=False):
         sctl("restart", T3_SOCKET, capture=True)
     sctl("enable", "--now", T3_SOCKET, capture=True)
     sctl("start", "--no-block", T3_UNIT, capture=quiet)
+
+
+# ---------- hackathon access: T3 closed on machines this person isn't assigned to (janitor `access`) ----------
+# While hackathon mode is on and the owner's table gives this person other machines, their T3 port here answers with
+# a short page naming those machines instead of T3: a socket drop-in points sb-t3.socket at sb-t3-closed.service
+# (`box _t3-closed`). T3 itself is never stopped by this (an agent mid-turn finishes); only new visits are turned
+# away. When the table or hackathon mode ends, the drop-in goes and the next visit reaches T3 again.
+
+T3_CLOSED_UNIT = "sb-t3-closed.service"
+T3_CLOSED_DROPIN = os.path.join(UNIT_DIR, T3_SOCKET + ".d", "hackathon.conf")
+T3_CLOSED_JSON = os.path.join(HOME, ".sharedbox", "t3-closed.json")
+
+
+def t3_access_apply(plan):
+    """Close or reopen this account's T3 port for hackathon access. plan: {closed, use: [{name, url}], until,
+    here}. Returns {"changed", "closed"}."""
+    closed = bool(plan.get("closed"))
+    if not os.path.exists(os.path.join(UNIT_DIR, T3_SOCKET)):
+        return {"changed": False, "closed": False}
+    if closed:
+        os.makedirs(os.path.dirname(T3_CLOSED_JSON), exist_ok=True)
+        sb.write_json(T3_CLOSED_JSON, {k: plan.get(k) for k in ("use", "until", "here")}, mode=0o644)
+    have = os.path.exists(T3_CLOSED_DROPIN)
+    if closed == have:
+        return {"changed": False, "closed": closed}
+    if closed:
+        env = [f"Environment={k}={sd_escape(v)}" for k, v in os.environ.items()
+               if k in ("SHAREDBOX_LIB", "SHAREDBOX_SHARE", "SHAREDBOX_CONF", "SHAREDBOX_STATE")]
+        with open(os.path.join(UNIT_DIR, T3_CLOSED_UNIT), "w") as f:
+            f.write("\n".join(["[Unit]", "Description=T3 Code closed during the hackathon (box hackathon)", "",
+                               "[Service]", *env,
+                               f"ExecStart=/usr/bin/python3 -I {os.path.join(sb.LIB_DIR, 'box')} _t3-closed", ""]))
+        os.makedirs(os.path.dirname(T3_CLOSED_DROPIN), exist_ok=True)
+        with open(T3_CLOSED_DROPIN, "w") as f:
+            f.write(f"# {BRAND}: hackathon mode gives this person other machines; removed when it ends\n"
+                    f"[Socket]\nService={T3_CLOSED_UNIT}\n")
+    else:
+        for path in (T3_CLOSED_DROPIN, T3_CLOSED_JSON):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+    # the wake-up proxy (or the closed page) holds the socket's connections: stop it, never T3 itself
+    sctl("stop", T3_PROXY, T3_CLOSED_UNIT, capture=True)
+    sctl("daemon-reload", capture=True)
+    if sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active":
+        sctl("restart", T3_SOCKET, capture=True)
+    return {"changed": True, "closed": closed}
+
+
+def cmd_t3_access(a):
+    try:
+        plan = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        plan = {}
+    print(json.dumps(t3_access_apply(plan if isinstance(plan, dict) else {})))
+
+
+def t3_closed_page():
+    e = __import__("html").escape
+    info = sb.read_json(T3_CLOSED_JSON, {}) or {}
+    use = [u for u in info.get("use") or [] if isinstance(u, dict)]
+    links = "".join(f"<li><b>{e(str(u.get('name') or ''))}</b>: <a href='{e(str(u.get('url') or ''))}'>"
+                    f"{e(str(u.get('url') or ''))}</a></li>" for u in use)
+    until = f" until {e(str(info['until']))}" if info.get("until") else ""
+    here = e(str(info.get("here") or socket.gethostname()))
+    body = (f"<p>During the hackathon{until}, your T3 Code on {here} is closed: the owner put you on "
+            + (f"{'these machines' if len(use) > 1 else 'this machine'}:</p><ul>{links}</ul>"
+               "<p>The links work over Tailscale. Your files here are untouched, and T3 here opens again by "
+               "itself when the hackathon ends.</p>" if use else
+               "other machines.</p><p>Ask the owner which one. T3 here opens again by itself when the hackathon ends.</p>"))
+    return ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,"
+            "initial-scale=1'><title>Use another machine</title><style>body{margin:0;background:#f6f7f9;color:#111;"
+            "font:15px/1.5 system-ui,sans-serif}main{max-width:560px;margin:12vh auto;padding:0 20px}a{color:#2563eb}"
+            "@media(prefers-color-scheme:dark){body{background:#0d0f12;color:#e6e9ef}a{color:#5aa9ff}}</style></head>"
+            f"<body><main><h2>Use another machine</h2>{body}</main></body></html>")
+
+
+def cmd_t3_closed(a):
+    """sb-t3-closed.service: the T3 port's answer while this person is assigned elsewhere (a socket from systemd)."""
+    import threading
+    if os.environ.get("LISTEN_PID") != str(os.getpid()) or int(os.environ.get("LISTEN_FDS") or 0) < 1:
+        sys.exit("box _t3-closed: runs from sb-t3.socket only")
+    srv = socket.socket(fileno=3)
+    page = t3_closed_page().encode()
+    resp = (b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n"
+            b"Connection: close\r\nContent-Length: " + str(len(page)).encode() + b"\r\n\r\n" + page)
+
+    def serve(c):
+        try:
+            c.settimeout(10)
+            data = b""
+            while b"\r\n\r\n" not in data and len(data) < 16384:
+                chunk = c.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            c.sendall(resp)
+        except OSError:
+            pass
+        finally:
+            c.close()
+    while True:
+        c, _ = srv.accept()
+        threading.Thread(target=serve, args=(c,), daemon=True).start()
 
 
 def owner_t3():
@@ -4388,8 +4603,14 @@ def main():
     x = s.add_parser("restore", help="put an archived project back in ~ (lists them without NAME)")
     x.add_argument("name", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_restore)
     s.add_parser("rules").set_defaults(fn=cmd_rules)
-    x = s.add_parser("hackathon", help="develop freely until a set time: open installs")
-    x.add_argument("op", nargs="?", choices=["status", "on", "off"])
+    x = s.add_parser("hackathon", help="develop freely until a set time: open installs, who works where")
+    x.add_argument("op", nargs="?", choices=["status", "on", "off", "access", "assign", "unassign", "open", "server",
+                                             "clear"])
+    x.add_argument("args", nargs="*", help="assign PEOPLE MACHINES | unassign PEOPLE | open MACHINES | server NAME PEOPLE")
+    x.add_argument("--team", help="assign/unassign: a team name (assign --team A alice,bob minastirith)")
+    x.add_argument("--everyone", action="store_true", help="server NAME --everyone: lift that server's limit")
+    x.add_argument("--set", metavar="FILE", help="access --set FILE|-: replace the whole table with JSON")
+    x.add_argument("--json", action="store_true", help="status/access and changes: print the table as JSON")
     x.add_argument("--until", help='local end time, "YYYY-MM-DD HH:MM"')
     x.add_argument("--hours", type=float, help="or: end this many hours from now")
     x.add_argument("--users", help="friends who get open package requests too (the owner always does)")
@@ -4502,6 +4723,8 @@ def main():
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_cache-pass").set_defaults(fn=cmd_cache_pass)
     s.add_parser("_weekly-clean").set_defaults(fn=cmd_weekly_clean)
+    s.add_parser("_t3-access").set_defaults(fn=cmd_t3_access)  # the janitor: hackathon access, as each friend
+    s.add_parser("_t3-closed").set_defaults(fn=cmd_t3_closed)  # sb-t3-closed.service
     s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
