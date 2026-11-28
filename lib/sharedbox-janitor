@@ -5,6 +5,11 @@
   sharedbox-janitor tick [--dry-run]                 every 10 min: note what systemd-oomd stopped, end old boosts, start T3 Code for
                                                      scheduled tasks after a reboot, hackathon on/off, rule refresh,
                                                      projects kept on all of a person's boxes (as that person)
+  sharedbox-janitor weekly [--dry-run] [--user NAME] [--force]
+                                                     the weekly safe cleanup (caches that rebuild themselves, old
+                                                     Playwright builds, Docker build cache + dangling images, journal
+                                                     trim). `run` starts it by itself on WEEKLY_CLEAN_DAY; --force
+                                                     ignores the schedule (busy agents are still skipped)
   sharedbox-janitor reboot [--dry-run]               the scheduled reboot (sharedbox-reboot.service): waits up
                                                      to 2 hours while a friend's agent is mid-turn, then reboots
 
@@ -26,9 +31,11 @@ import time
 sys.path.insert(0, os.environ.get("SHAREDBOX_LIB", "/usr/lib/sharedbox"))
 import sbcommon as sb  # noqa: E402
 import sbrunning  # noqa: E402
+import sbweekly  # noqa: E402
 
 STATE = os.path.join(sb.STATE_DIR, "janitor-state.json")
 TICK_STATE = os.path.join(sb.STATE_DIR, "tick.json")
+WEEKLY_STATE = os.path.join(sb.STATE_DIR, "weekly-clean.json")
 PASS_TIMEOUT = 900          # per user; a friend must not stall the whole run
 PASS_MAX_OUT = 4 << 20      # reply cap; root never buffers more than this from a friend
 REBOOT_WAIT_MAX = 2 * 3600  # a scheduled reboot waits at most this long for agents to finish their turn
@@ -498,6 +505,11 @@ def cmd_run(cfg, a):
     if not a.dry_run:
         sb.write_json(STATE, state, mode=0o600)
         sb.write_json(sb.USAGE, usage_out, mode=0o644)
+        if not a.user:
+            try:
+                weekly_pass(cfg, dry=False, force=False)
+            except Exception as e:  # noqa: BLE001 - the weekly part never fails the 6-hourly run
+                print(f"weekly clean: {e!r}", file=sys.stderr)
     else:
         print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "services"}
                           for k, v in usage_out["users"].items()}, indent=2))
@@ -526,6 +538,83 @@ def owner_cache_passes(cfg, users, a):
                 sb.log_event("caches_pruned", name, bytes=rep["freed"])
         except Exception as e:  # one account's trouble must not stop the rest of the pass
             print(f"{name}: cache pass error: {str(e)[-500:]!r}", file=sys.stderr)
+
+
+# ---------- weekly safe cleanup (lib/sbweekly.py) ----------
+
+def weekly_accounts(cfg):
+    """Every account the weekly pass covers: active friends, ADMIN_USERS and the owner's account."""
+    users = sb.friend_users()
+    names = {n for n, r in users.items() if r.get("status", "active") == "active"} | set(sb.admin_users(cfg))
+    owner = sb.owner_account(cfg)
+    if owner:
+        names.add(owner.pw_name)
+    out = {}
+    for n in sorted(names):
+        try:
+            out[n] = pwd.getpwnam(n)
+        except KeyError:
+            pass
+    return out
+
+
+def _weekly_reply(r):
+    return (isinstance(r, dict) and _is_int(r.get("freed")) and r["freed"] >= 0
+            and _rows(r.get("deleted"), {"path": lambda v: isinstance(v, str), "reason": lambda v: isinstance(v, str),
+                                         "bytes": _is_int}))
+
+
+def weekly_pass(cfg, dry, force, only=None):
+    """Run the weekly pass for every account it's due for (or all, with force), each AS that account, skipping
+    any account whose agent is mid-turn (it's retried at the next 6-hourly run). Then root's part (system Docker,
+    journal). Logs one weekly_clean event per account with what was freed."""
+    st = sb.read_json(WEEKLY_STATE, {}) or {}
+    now = time.time()
+    plan = sbweekly.plan_from(cfg, dry)
+    if not (force or dry) and not sbweekly.enabled(cfg):
+        return
+    accounts = {n: pw for n, pw in weekly_accounts(cfg).items() if not only or n == only}
+    todo = {n: pw for n, pw in accounts.items() if force or dry or sbweekly.due(cfg, st.get(n), now)}
+    root_due = not only and (force or dry or sbweekly.due(cfg, st.get("_root"), now))
+    if not todo and not root_due:
+        return
+    busy = sb.busy_agents({pw.pw_uid for pw in todo.values()}, seconds=5) if todo else {}
+    busy_uids = {u for u, _ in busy.values()}
+    total = 0
+    for name, pw in todo.items():
+        if pw.pw_uid in busy_uids:
+            print(f"{name}: weekly clean skipped, an agent is mid-turn (tried again at the next run)")
+            continue
+        try:
+            rep = user_pass(pw, plan, "_weekly-clean", check=_weekly_reply)
+        except Exception as e:  # one account's trouble must not stop the others
+            print(f"{name}: weekly clean error: {str(e)[-500:]!r}", file=sys.stderr)
+            continue
+        total += _weekly_report(name, rep, dry)
+        if not dry:
+            st[name] = int(now)
+    if root_due:
+        rep = sbweekly.run_root(plan)
+        total += _weekly_report("(system)", rep, dry, user=None)
+        if not dry:
+            st["_root"] = int(now)
+    print(f"weekly clean: {'would free about' if dry else 'freed'} {sb.human(total)} in total")
+    if not dry:
+        sb.write_json(WEEKLY_STATE, st, mode=0o600)
+
+
+def _weekly_report(name, rep, dry, user="same"):
+    for line in sbweekly.summarize(rep["deleted"], dry, sb.human):
+        print(f"{name}: {sb.printable(line)}")
+    if not dry:
+        sb.log_event("weekly_clean", name if user == "same" else user, bytes=rep["freed"],
+                     by=sbweekly.by_reason(rep["deleted"]),
+                     errors=sum(1 for d in rep["deleted"] if d.get("error")))
+    return rep["freed"]
+
+
+def cmd_weekly(cfg, a):
+    weekly_pass(cfg, dry=a.dry_run, force=a.force, only=a.user)
 
 
 # ---------- scheduled reboot ----------
@@ -584,6 +673,8 @@ def main():
     x.add_argument("--user"); x.set_defaults(fn=cmd_run)
     for n in ("tick", "t3-naps"):  # t3-naps: the old name, until install.sh swaps the timer
         x = s.add_parser(n); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_tick)
+    x = s.add_parser("weekly"); x.add_argument("--dry-run", action="store_true"); x.add_argument("--force", action="store_true")
+    x.add_argument("--user"); x.set_defaults(fn=cmd_weekly)
     x = s.add_parser("reboot"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_reboot)
     a = p.parse_args()
     a.fn(cfg, a)

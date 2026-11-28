@@ -30,8 +30,22 @@ Never ask for passwords or tokens in chat.
   caches and build outputs (`node_modules`, `target/`, `.venv`, …) go right away, then archives, then the oldest
   idle fully-pushed projects. Unpushed work is never deleted.
 - `/tmp` files older than {tmp_ttl} days are deleted.
+- Once a week caches that rebuild themselves are cleared too (`box help clean`).
 - Paths from the user's computer (`~/Downloads`, `C:\...`) don't exist here and the clipboard isn't shared. To hand
   over a file: push it to git, serve it on a port, or give them `scp {user}@{ip}:<absolute path> .`
+
+@@ clean
+A safe cleanup runs {clean_when}, in every account, while no agent of that account is mid-turn (a busy
+account is retried a few hours later). It only clears what rebuilds itself:
+- uv cache (`uv cache prune`; cleared when over the box's cap), npm `_cacache`, Go build cache, sccache, pip and
+  node-gyp caches, Chrome caches and headless Chrome leftovers older than a day, `pnpm store prune`
+- old Playwright builds (the newest of each browser stays)
+- your Docker daemon (only if it's running): build cache unused for 7 days and untagged (dangling) images
+Never touched: Docker volumes, tagged images and containers, `~/keep`, anything in a git repo, `~/.claude`,
+`~/.codex`, `~/.t3`. A cache whose tool is running right now (npm, go, pip, chrome, ...) waits for next week.
+- `box clean --dry-run` shows what it would free in your account now; `box clean` does it. Run it when the user
+  asks for space back or you're near the disk budget, never in the middle of someone's install or build.
+- Docker sizes in a dry run are estimates (build cache: an upper bound, Docker can't filter its estimate by age).
 
 @@ memory
 - Every account is guaranteed {mem_low} of RAM and may use up to {mem_max} while nobody else needs it. Nothing to
@@ -236,7 +250,8 @@ Docker runs rootless here: your own Docker daemon, under your account and your l
 - Published ports must be in your range ({ports}); bind them on `0.0.0.0` like any server. Ports under 1024 don't work.
 - Images live in `~/.local/share/docker` and count toward your disk budget. Prune (`docker image prune`) only when
   the user asks or you're over budget. Never `docker system prune` (it deletes stopped databases' containers) and never
-  anything with `--volumes` (it deletes their data).
+  anything with `--volumes` (it deletes their data). The weekly cleanup already clears old build cache and untagged
+  images (`box help clean`).
 - Never stop a database yourself because a task seems done; the user decides that.
 - Containers that should outlive your session: `--restart unless-stopped` (the user service starts after reboots).
 - `docker compose` works the same way.
