@@ -953,6 +953,12 @@ BASE_PATH_NOTE = ("It's served under that path (prefix stripped, `X-Forwarded-Pr
                   "`--server.baseUrlPath`).")
 
 
+def t3_idle_text():
+    try:
+        h = float(CFG.get("T3_IDLE_STOP_HOURS") or 0)
+    except ValueError:
+        h = 0
+    return "never (T3_IDLE_STOP_HOURS=0 on this machine)" if h <= 0 else f"{h:g} hour" + ("" if h == 1 else "s")
 def machine_name():
     """This machine's name as people see it: its name in BOXES (the dashboard and the other machines use it), else
     the hostname."""
@@ -980,6 +986,7 @@ def rule_fields(tl="", extras=(), nt=""):
         oom_seconds=CFG.get("OOM_PRESSURE_SECONDS", "30"),
         boost_mem=size_text(lim["MEMORY_MAX"]), boost_hours=CFG["BOOST_HOURS"],  # old templates only
         disk=f"{lim['DISK_BUDGET_GB']} GB", ports=f"{r[0]}-{r[1]}", t3_ports=f"{r[0]} and {r[1]}",
+        t3_quiet=CFG.get("T3_RESTART_QUIET_MIN") or "20", t3_idle=t3_idle_text(),
         ports_line=(f"Ports: **{r[0]}-{r[1]}** only (the first and last are the user's T3)." if r != (0, 0) else
                     "Ports: no fixed range for this account; check `ss -ltn` and pick a free one."),
         project_ttl=CFG["PROJECT_TTL_DAYS"], warn=CFG["WARN_DAYS"],
@@ -1079,6 +1086,7 @@ TOPIC_LINES = {  # `box help`: one line per topic (a test checks every topic has
     "browsers": "headless Chrome and Playwright without root",
     "skills": "extra abilities for agents, installed on request",
     "updates": "how the coding agents stay up to date",
+    "t3": "T3's version, its restarts onto new releases, and sleep when unused",
     "connect": "the user's laptop agent and the T3 app",
     "requests": "asking the owner for a program or a change; problem reports",
     "friends": "(owner) friends, invites, requests, the machine list",
@@ -1193,7 +1201,7 @@ def sync_agent_files(notices=()):
 def cmd_t3_wake(a):
     """The janitor's check on a stopped (e.g. rebooted) T3: scheduled tasks on = start it, so they run on time."""
     woke = False
-    if shutil.which("t3") and ports() and sb.tailscale_ip4() and t3_db_state()[1]:
+    if shutil.which("t3") and t3_ports() and sb.tailscale_ip4() and t3_db_state()[1]:
         host, port, env = t3_env()
         if not t3_up(host, env):
             t3_ensure(host, port, env, quiet=True)
@@ -1347,6 +1355,12 @@ def cmd_rules(a):
 T3_UNIT = "sb-t3.service"
 T3_SOCKET = "sb-t3.socket"        # holds the friend's T3 port; the first connection starts T3 (e.g. after a reboot)
 T3_PROXY = "sb-t3-proxy.service"  # passes connections from that port to T3's own port
+T3_OLD = "t3code.service"         # T3's own boot service (`t3 up`, the desktop app): the owner's T3 before the move
+T3_MANAGED_MARK = os.path.join(HOME, ".sharedbox", "t3-managed")  # the owner's T3 runs as sb-t3; t3code.service can't
+T3_OLD_DROPIN = os.path.join(UNIT_DIR, T3_OLD + ".d", "sb-managed.conf")
+T3_OWNER_JSON = os.path.join(HOME, ".sharedbox", "t3-owner.json")  # {"listen": "all"|"tailscale", "moved": ts}
+T3_TICK_STATE = os.path.join(HOME, ".sharedbox", "t3-tick.json")   # last time work/clients were seen (the tick)
+T3_BACKUP = os.path.join(HOME, ".t3", "sb-backup", "statev2-before-move.sqlite")
 PROXYD = "/usr/lib/systemd/systemd-socket-proxyd"
 
 # T3 Code starts on the first connection (after a reboot, or after `box t3 stop`), so it's always "there" for
@@ -1427,20 +1441,64 @@ def t3_app_paired():
     return bool(t3_app_sessions())
 
 
+def is_t3_owner():
+    """This is the owner's own account (OWNER_T3_USER, default the first ADMIN_USERS), not a friend's."""
+    pw = sb.owner_account(CFG)
+    return bool(pw) and pw.pw_uid == ME.pw_uid and not is_friend()
+
+
+def owner_t3_ports():
+    """(public, inner) for the owner's T3: OWNER_T3_PORT (default 3773, T3's own default, so paired apps keep
+    working) and OWNER_T3_INNER_PORT (default the next port)."""
+    pub = CFG.get("OWNER_T3_PORT", "").strip()
+    pub = int(pub) if pub.isdigit() else 3773
+    inner = CFG.get("OWNER_T3_INNER_PORT", "").strip()
+    return pub, int(inner) if inner.isdigit() else pub + 1
+
+
+def t3_ports():
+    """(public, inner) ports of this account's T3 under `box t3`: a friend's block (first, last), the owner's once it
+    has moved from T3's own t3code.service (T3_MANAGED_MARK), else None."""
+    if is_friend():
+        return ports()
+    if is_t3_owner() and os.path.exists(T3_MANAGED_MARK):
+        return owner_t3_ports()
+    return None
+
+
+def t3_service_env():
+    """KEY=VALUE lines of ~/.t3/service.env (what T3's own boot service gave its server, e.g. DOCKER_HOST): the
+    owner's sb-t3 keeps them. Host and port come from `box t3`."""
+    out = {}
+    try:
+        with open(os.path.join(HOME, ".t3", "service.env")) as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if (sep and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and re.fullmatch(r"[^\s'\"\\]*", v)
+                        and k not in ("T3CODE_HOST", "T3CODE_PORT", "T3CODE_HOME", "T3_BOOT_SERVICE_UNIT")):
+                    out[k] = v
+    except OSError:
+        pass
+    return out
+
+
 def t3_env():
-    """(tailscale ip, public T3 port, env for `t3 serve`/`t3 pair`). T3 itself listens on the block's last port."""
-    r = ports()
+    """(tailscale ip, public T3 port, env for `t3 serve`/`t3 pair`). T3 itself listens on the inner port (a friend's
+    block's last port; the owner's OWNER_T3_INNER_PORT)."""
+    r = t3_ports()
     host = sb.tailscale_ip4()
     if not r or not host:
-        sys.exit("box t3: needs a friend account and Tailscale running on the machine")
-    return host, r[0], {"T3CODE_HOST": host, "T3CODE_PORT": str(r[1]),
-                        "T3CODE_PROJECT_ROOT": HOME, "T3CODE_NO_BROWSER": "1"}
+        sys.exit("box t3: needs a friend account (or the owner's, once its T3 has moved to `box t3`) and Tailscale "
+                 "running on the machine")
+    env = t3_service_env() if not is_friend() else {}
+    env.update({"T3CODE_HOST": host, "T3CODE_PORT": str(r[1]), "T3CODE_PROJECT_ROOT": HOME, "T3CODE_NO_BROWSER": "1"})
+    return host, r[0], env
 
 
 def t3_legacy(host):
     """An older T3 (from before the socket) still running on the public port itself, without the socket?"""
     return (sctl("is-active", T3_SOCKET, capture=True).stdout.strip() != "active"
-            and listening(host, ports()[0]))
+            and listening(host, t3_ports()[0]))
 
 
 def t3_up(host, env):
@@ -1450,7 +1508,7 @@ def t3_up(host, env):
 
 def t3_live_env(host, env):
     """Env for talking to the running T3 (`t3 pair`): an older one listens on the public port."""
-    return dict(env, T3CODE_PORT=str(ports()[0])) if t3_legacy(host) else env
+    return dict(env, T3CODE_PORT=str(t3_ports()[0])) if t3_legacy(host) else env
 
 
 def public_t3_url(url, host, port):
@@ -1509,21 +1567,27 @@ def listening(host, port):
 
 def t3_write_units(host, env):
     """Write the T3, proxy and socket user units. True if any changed (then daemon-reload has run)."""
-    public, inner = ports()[0], env["T3CODE_PORT"]
+    public, inner = t3_ports()[0], env["T3CODE_PORT"]
+    # the owner's T3 keeps answering where T3's own service listened: every address (its LAN mode) or Tailscale's
+    listen = str(public) if not is_friend() and (sb.read_json(T3_OWNER_JSON, {}) or {}).get("listen") == "all" \
+        else f"{host}:{public}"
+    # started = answering; gives up at once if T3 itself exited (a bad port, a database it can't open)
     ready = (f"for i in $(seq 600); do c=$(curl -s -o /dev/null -w %{{http_code}} --max-time 2 "
-             f"http://{host}:{inner}/api/auth/session); [ \"$c\" = 200 ] && exit 0; sleep 0.5; done; exit 1")
+             f"http://{host}:{inner}/api/auth/session); [ \"$c\" = 200 ] && exit 0; "
+             "[ -n \"$MAINPID\" ] && ! kill -0 \"$MAINPID\" 2>/dev/null && exit 1; sleep 0.5; done; exit 1")
     t3 = ["[Unit]", "Description=T3 Code (box t3; " + T3_SOCKET + " starts it)",
           "StartLimitIntervalSec=600", "StartLimitBurst=10", "",
           "[Service]", "WorkingDirectory=%h",
-          "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"]
+          "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+          "Environment=T3CODE_TELEMETRY_ENABLED=false"]  # no usage telemetry from a shared box
     t3 += [f"Environment={k}={sd_escape(v)}" for k, v in env.items()]
     t3 += ["ExecStart=/usr/local/bin/t3 serve",
            f"ExecStartPost=/bin/bash -c '{sd_escape(ready)}'",  # started = answering (first start downloads T3)
-           "TimeoutStartSec=330", "SuccessExitStatus=143 SIGTERM", "Restart=on-failure", "RestartSec=5", ""]
+           "TimeoutStartSec=330", "SuccessExitStatus=130 143 SIGTERM", "Restart=on-failure", "RestartSec=5", ""]
     proxy = ["[Unit]", "Description=T3 Code wake-up proxy", f"Requires={T3_UNIT}", f"After={T3_UNIT}",
              f"BindsTo={T3_UNIT}", "", "[Service]", f"ExecStart={PROXYD} {host}:{inner}", ""]
     sock = ["[Unit]", "Description=T3 Code port (wakes T3 on the first connection)", "",
-            "[Socket]", f"ListenStream={host}:{public}", "FreeBind=yes", f"Service={T3_PROXY}", "",
+            "[Socket]", f"ListenStream={listen}", "FreeBind=yes", f"Service={T3_PROXY}", "",
             "[Install]", "WantedBy=sockets.target", ""]
     changed = False
     for name, lines in ((T3_UNIT, t3), (T3_PROXY, proxy), (T3_SOCKET, sock)):
@@ -1566,16 +1630,21 @@ def owner_t3():
 
 
 def cmd_t3(a):
-    own = owner_t3() if not is_friend() else None
-    if own:  # the owner's account: their own T3 runs on OWNER_T3_PORT, not under `box t3`
-        host, port = own
+    if a.action == "versions":
+        return t3_versions(a)
+    own = owner_t3() if is_t3_owner() and not t3_ports() else None
+    if own or (is_t3_owner() and not t3_ports()):  # the owner's T3 still runs as T3's own t3code.service
+        host, port = own or (sb.tailscale_ip4() or "127.0.0.1", owner_t3_ports()[0])
         up = listening(host, port) or listening("127.0.0.1", port)
+        move = (f"{BRAND} moves it to `box t3` (stable releases, sleeps when unused) the first time no agent has "
+                f"worked in it for {sb.cfg_int(CFG, 'T3_RESTART_QUIET_MIN')} minutes.")
         if a.action == "status":
-            pub = f"; on the public site: {sb.public_url(CFG)}/" if sb.public_url(CFG) else ""
-            print(f"T3 (the owner's own): {'running' if up else 'NOT running'} on port {port}{pub}")
+            pub = f"; on the public site: {sb.public_url(CFG)}/" if sb.public_url(CFG) and own else ""
+            print(f"T3 (the owner's own, T3's t3code.service): {'running' if up else 'NOT running'} on port "
+                  f"{port}{pub}. " + (move if t3_old_installed() else ""))
             return
-        sys.exit(f"box t3 {a.action}: this is the owner's account; its T3 is the owner's own on port "
-                 f"{port} ({'running' if up else 'not running'}), not managed by `box t3`.")
+        sys.exit(f"box t3 {a.action}: this is the owner's account; its T3 still runs as T3's own t3code.service "
+                 f"on port {port} ({'running' if up else 'not running'}). " + (move if t3_old_installed() else ""))
     if not shutil.which("t3"):
         sys.exit('T3 is not installed on this machine. Ask the owner: box request "install t3 (npm)"')
     host, port, env = t3_env()
@@ -1587,8 +1656,12 @@ def cmd_t3(a):
     if a.action == "status":
         up = t3_up(host, env)
         wakes = sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active"
-        state = ("running" if up else "stopped (it starts by itself in a few seconds when opened)"
+        ver, target = t3_running_version() if up else "", sb.t3_box_version()
+        state = ("running" + (f" {ver}" if ver else "") if up else "asleep (wakes when you open it)"
                  if wakes else "not running (`box t3` starts it)")
+        if up and ver and target and ver != target:
+            state += f"; moves to {target} the next time no agent has worked in it for " \
+                     f"{sb.cfg_int(CFG, 'T3_RESTART_QUIET_MIN')} minutes"
         print(f"T3: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in this browser")
         return
     if a.action == "app-link" and getattr(a, "all", False):  # every machine at once, for one laptop agent
@@ -1652,6 +1725,438 @@ Open this link in your browser within 30 minutes to pair it:
 Easiest from now on: open {portal_url()} on any device and click "Open T3 in this browser".
 First time? Log in to your agent on that page too; T3 uses that login.
 T3_PAIR_URL={url}""")
+
+
+# ---------- T3 Code: idle restarts onto the box's version, sleep, the owner's move (janitor tick) ----------
+# The janitor's tick (every 10 min, root) runs `box _t3-tick` as every account with a T3. Root only reads and decides
+# what it passes in (the target version, the hackathon flag, whether this account's agents used CPU in its own
+# sample); this side reads T3's database read-only and its own process tree, then at most:
+#   - restarts T3 (sb-t3.service; the socket stays, so a client reconnects by itself) onto the box's version, once
+#     nothing has run in it for T3_RESTART_QUIET_MIN;
+#   - puts it to sleep (stops sb-t3 + its proxy, the socket stays and the next visit wakes it in a few seconds)
+#     after T3_IDLE_STOP_HOURS with no client and no work, never during hackathon mode or with scheduled tasks on;
+#   - wakes a sleeping T3 that has scheduled tasks (T3 skips a fixed-time run it was down for);
+#   - the owner only, once: moves their T3 from T3's own t3code.service (which T3 and its desktop app update to
+#     any channel, from a launcher path pinned at install time) to sb-t3 like everyone's, when idle; if the new one
+#     doesn't answer, t3code.service comes back (with the database copy, if anything migrated it).
+# "Work" is judged by "not finished" in T3's tables (unknown is never idle) plus processes: agents using CPU,
+# commands an agent started (background jobs, watchers), programs in T3's terminals.
+
+T3_DONE = ("completed", "failed", "cancelled", "interrupted", "rolled_back", "resolved", "expired")
+T3_STALE = 86400  # a row still "running" after a day without an update is a leftover from a crash
+T3_MOVE_RETRY = 86400  # a failed move of the owner's T3 is tried again after this long (or for a new version)
+
+
+def iso_ts(v):
+    """'2026-11-28T06:17:37.784Z' -> epoch (UTC), else 0."""
+    import calendar
+    try:
+        return calendar.timegm(time.strptime(str(v)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return 0
+
+
+def t3_db_path():
+    return os.path.join(os.environ.get("T3CODE_HOME") or os.path.join(HOME, ".t3"), "userdata", "statev2.sqlite")
+
+
+def t3_db_work(db=None, now=None):
+    """(reasons T3 is working, last time work started or ended, last time a client connected) from a read-only look
+    at T3's database. A table this T3 version doesn't have counts as nothing; any other trouble counts as working."""
+    import sqlite3
+    db, now = db or t3_db_path(), now or time.time()
+    if not os.path.exists(db):
+        return [], 0, 0
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t))  # noqa: E731
+    done = ", ".join(f"'{x}'" for x in T3_DONE)
+    old = iso(now - T3_STALE)
+    checks = [
+        ("an agent turn is running", "SELECT count(*) FROM orchestration_v2_projection_runs "
+         f"WHERE status NOT IN ({done}) AND completed_at IS NULL AND requested_at > ?", (old,)),
+        ("an agent turn is running", "SELECT count(*) FROM orchestration_v2_projection_provider_turns "
+         "WHERE status = 'running' AND completed_at IS NULL AND started_at > ?", (old,)),
+        ("a command, tool or subagent is running", "SELECT count(*) FROM orchestration_v2_projection_turn_items "
+         f"WHERE type IN ('command_execution', 'dynamic_tool', 'subagent') AND status NOT IN ({done}) AND updated_at > ?",
+         (old,)),
+        ("a subagent is running", "SELECT count(*) FROM orchestration_v2_projection_subagents "
+         f"WHERE status NOT IN ({done}) AND completed_at IS NULL AND updated_at > ?", (old,)),
+        ("an agent is waiting for an answer", "SELECT count(*) FROM orchestration_v2_projection_runtime_requests "
+         f"WHERE status NOT IN ({done}) AND resolved_at IS NULL AND created_at > ?", (old,)),
+        ("a new thread is being set up", "SELECT count(*) FROM orchestration_v2_thread_launch_workflows "
+         f"WHERE status NOT IN ({done}, 'committed', 'succeeded') AND updated_at > ?", (old,)),
+        ("a scheduled task is due", "SELECT count(*) FROM scheduled_tasks WHERE enabled = 1 AND next_run_at BETWEEN ? AND ?",
+         (iso(now - 300), iso(now + 1800))),
+    ]
+    out, last_work, last_client = [], 0, 0
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=10)
+    except sqlite3.Error as ex:
+        return [f"can't read T3's database ({ex})"], now, 0
+    try:
+        for what, sql, args in checks:
+            try:
+                if con.execute(sql, args).fetchone()[0] and what not in out:
+                    out.append(what)
+            except sqlite3.Error as ex:
+                if "no such table" not in str(ex) and "no such column" not in str(ex):
+                    out.append(f"can't tell whether {what.split(' is ')[0]} is running ({ex})")
+        for sql in ("SELECT max(max(requested_at, coalesce(completed_at, ''))) FROM orchestration_v2_projection_runs",
+                    "SELECT max(max(started_at, coalesce(completed_at, ''))) FROM orchestration_v2_projection_provider_turns"):
+            try:
+                last_work = max(last_work, iso_ts(con.execute(sql).fetchone()[0]))
+            except sqlite3.Error:
+                pass
+        try:
+            last_client = iso_ts(con.execute("SELECT max(last_connected_at) FROM auth_sessions "
+                                             "WHERE revoked_at IS NULL").fetchone()[0])
+        except sqlite3.Error:
+            pass
+    finally:
+        con.close()
+    return out, last_work, last_client
+
+
+def t3_agents_cgroup():
+    """T3 starts each agent session, terminal and preview browser in its own scope under app-t3code.slice."""
+    uid = ME.pw_uid
+    return f"{sb.CGROUP_ROOT}/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/app-t3code.slice"
+
+
+SHELLS = {"bash", "sh", "zsh", "fish", "dash"}
+
+
+def t3_proc_work(cg=None):
+    """Reasons from T3's process tree: commands an agent session still runs (Claude Code's background jobs and
+    watchers outlive the turn in T3's database) and programs other than a shell in T3's terminals."""
+    cg = cg or t3_agents_cgroup()
+    agent_cmds = terminal = 0
+    for root, _, files in os.walk(cg):
+        if "cgroup.procs" not in files:
+            continue
+        name = os.path.basename(root)
+        is_term = name.startswith("t3code-terminal-")
+        try:
+            pids = open(os.path.join(root, "cgroup.procs")).read().split()
+        except OSError:
+            continue
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read(4096)
+                with open(f"/proc/{pid}/comm") as f:
+                    comm = f.read().strip()
+            except OSError:
+                continue
+            if is_term and comm not in SHELLS:
+                terminal += 1
+            elif not is_term and b"/shell-snapshots/snapshot-" in cmd:
+                agent_cmds += 1
+    out = []
+    if agent_cmds:
+        out.append("commands an agent started are still running")
+    if terminal:
+        out.append("a program is running in a T3 terminal")
+    return out
+
+
+def t3_runtime_info():
+    """~/.t3/userdata/server-runtime.json when the server it describes is still running as this account, else {}."""
+    rt = sb.read_json(os.path.join(HOME, ".t3", "userdata", "server-runtime.json"), {}) or {}
+    pid = rt.get("pid") if isinstance(rt, dict) else None
+    try:
+        if not isinstance(pid, int) or os.stat(f"/proc/{pid}").st_uid != ME.pw_uid:
+            return {}
+    except OSError:
+        return {}
+    return rt
+
+
+def t3_running_version():
+    v = str(t3_runtime_info().get("serverVersion") or "")
+    return v if sb.T3_VERSION_RE.fullmatch(v) else ""
+
+
+def t3_old_installed():
+    return os.path.exists(os.path.join(UNIT_DIR, T3_OLD))
+
+
+def t3_old_active():
+    return sctl("is-active", T3_OLD, capture=True).stdout.strip() in ("active", "activating", "reloading")
+
+
+def t3_http_ok(host, port):
+    import urllib.request
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://{host}:{port}/api/auth/session", timeout=5) as r:
+            return r.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def t3_migration(db):
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=10)
+        try:
+            return con.execute("SELECT max(migration_id) FROM effect_sql_migrations").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def t3_backup(db, dest):
+    """A consistent copy of T3's database while it runs (SQLite's online backup), owner-only."""
+    import sqlite3
+    os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+    tmp = dest + ".tmp"
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    src = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=30)
+    dst = sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, dest)
+
+
+def t3_stage(db):
+    """Download the T3 version the box runs (touches no database) and ask it whether it can open this one.
+    Returns (version, problem)."""
+    env = dict(user_env(), T3CODE_HOME=os.path.join(HOME, ".t3"))
+    try:
+        r = subprocess.run(["/usr/local/bin/t3", "--version"], env=env, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as ex:
+        return "", f"couldn't download T3 ({ex})"
+    vers = sb.T3_VERSION_RE.findall(r.stdout)
+    if r.returncode != 0 or not vers:
+        return "", "couldn't download T3: " + (r.stdout + r.stderr)[-300:]
+    ver = vers[-1]
+    binary = os.path.join(HOME, ".t3", "runtime", "versions", ver, "t3")
+    if not os.path.exists(db):
+        return ver, ""
+    try:
+        p = subprocess.run([binary, "__service-preflight", "--database-path", db, "--launcher-protocol", "4"],
+                           env=env, capture_output=True, text=True, timeout=300)
+        res = json.loads((p.stdout.strip().splitlines() or ["null"])[-1])
+    except (OSError, subprocess.SubprocessError, ValueError) as ex:
+        return "", f"T3 {ver} couldn't check the database ({ex})"
+    if not isinstance(res, dict) or res.get("status") != "ready":
+        return "", f"T3 {ver} can't open this database yet: {str((res or {}).get('reason') or res)[:300]}"
+    return ver, ""
+
+
+def t3_move_owner(plan):
+    """The owner's one-time move from t3code.service to sb-t3 (see the comment above). Returns "" or the problem;
+    on a problem t3code.service is running again."""
+    db = t3_db_path()
+    ver, why = t3_stage(db)
+    if why:
+        return why
+    rt = sb.read_json(os.path.join(HOME, ".t3", "userdata", "server-runtime.json"), {}) or {}
+    listen = "all" if str(rt.get("host") or "") in ("0.0.0.0", "::", "") and rt else "tailscale"
+    mig_before = t3_migration(db)
+    if os.path.exists(db):
+        t3_backup(db, T3_BACKUP)
+    os.makedirs(os.path.dirname(T3_MANAGED_MARK), exist_ok=True)
+    sb.write_json(T3_OWNER_JSON, {"listen": listen, "moved": int(time.time()), "from": rt.get("serverVersion") or ""},
+                  mode=0o600)
+    # one of the two always starts at boot: sb-t3.socket is on before t3code.service is kept from starting
+    open(T3_MANAGED_MARK, "w").close()
+    host, port, env = t3_env()
+    os.makedirs(os.path.dirname(T3_OLD_DROPIN), exist_ok=True)
+    with open(T3_OLD_DROPIN, "w") as f:
+        f.write(f"# {BRAND} runs this T3 Code as {T3_UNIT} (`box t3`). Delete this file and\n"
+                f"# {T3_MANAGED_MARK} to give it back to T3's own service.\n"
+                f"[Unit]\nConditionPathExists=!{T3_MANAGED_MARK}\n")
+    t3_write_units(host, env)
+    sctl("daemon-reload", capture=True)
+    sctl("stop", T3_OLD, capture=True)
+    sctl("disable", T3_OLD, capture=True)
+    try:  # T3 refuses to start outside its service while this says a restart of it is pending
+        os.unlink(os.path.join(HOME, ".t3", "runtime", ".restart-pending"))
+    except OSError:
+        pass
+    for _ in range(30):  # the old server lets go of the port and the database
+        if not listening(host, port) and not listening("127.0.0.1", port):
+            break
+        time.sleep(1)
+    sctl("reset-failed", T3_UNIT, T3_SOCKET, capture=True)
+    sctl("enable", "--now", T3_SOCKET, capture=True)
+    r = sctl("start", T3_UNIT, capture=True)  # returns once it answers (ExecStartPost), or fails
+    why = "" if r.returncode == 0 else f"{T3_UNIT} didn't start: {(r.stderr or '').strip()[-300:]}"
+    if not why:
+        for i in range(3):
+            if i:
+                time.sleep(3)
+            if not t3_http_ok(host, port):
+                why = f"T3 doesn't answer on {host}:{port} through {T3_SOCKET}"
+                break
+    if not why:
+        return ""
+    # back to T3's own service, with the database as it was if the new version changed it
+    sctl("stop", T3_PROXY, T3_UNIT, capture=True)
+    sctl("disable", "--now", T3_SOCKET, capture=True)
+    for path in (T3_MANAGED_MARK, T3_OLD_DROPIN):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    sctl("daemon-reload", capture=True)
+    if os.path.exists(T3_BACKUP) and t3_migration(db) != mig_before:
+        for ext in ("-wal", "-shm"):
+            try:
+                os.unlink(db + ext)
+            except FileNotFoundError:
+                pass
+        shutil.copyfile(T3_BACKUP, db + ".sb-restore")
+        os.replace(db + ".sb-restore", db)
+        why += f"; the database was put back (T3 {ver} had migrated it)"
+    sctl("reset-failed", T3_OLD, capture=True)
+    sctl("enable", "--now", T3_OLD, capture=True)
+    return why
+
+
+def t3_prune_runtimes(keep):
+    """Remove ~/.t3/runtime/versions/* no process runs and that aren't in `keep` (T3 prunes its own on start, but
+    keeps whatever t3code.service names: the owner's launcher pinned at install time held ~260 MB)."""
+    base = os.path.join(HOME, ".t3", "runtime", "versions")
+    used = set()
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                exe = os.readlink(f"/proc/{pid}/exe")
+            except OSError:
+                continue
+            if exe.startswith(base + "/"):
+                used.add(exe[len(base) + 1:].split("/", 1)[0])
+    freed = []
+    for v in os.listdir(base) if os.path.isdir(base) else []:
+        if v not in used and v not in keep and sb.T3_VERSION_RE.fullmatch(v):
+            shutil.rmtree(os.path.join(base, v), ignore_errors=True)
+            freed.append(v)
+    return freed
+
+
+def t3_tick(plan, now=None):
+    """One tick for this account (see the comment above). Returns the record root keeps in t3.json."""
+    now = now or time.time()
+    target = str(plan.get("target") or "")
+    quiet = max(60, int(plan.get("quiet_min") or 20) * 60)
+    idle_s = max(0.0, float(plan.get("idle_hours") or 0)) * 3600
+    out = {"state": "none", "version": "", "target": target, "action": "", "why": "", "clients": 0, "busy": [],
+           "idle_min": 0, "owner": is_t3_owner()}
+    if not shutil.which("t3") or not sb.tailscale_ip4():
+        return out
+    st = sb.read_json(T3_TICK_STATE, {}) or {}
+    work, last_work, last_client = t3_db_work(now=now)
+    work += t3_proc_work()
+    if plan.get("busy_cpu"):
+        work.append("an agent is using the CPU")
+    out["busy"] = work
+
+    def save(**kw):
+        st.update(kw)
+        os.makedirs(os.path.dirname(T3_TICK_STATE), exist_ok=True)
+        sb.write_json(T3_TICK_STATE, st, mode=0o600)
+
+    if is_t3_owner() and not t3_ports():  # still T3's own t3code.service
+        if not t3_old_installed():
+            return out
+        rt = t3_runtime_info()
+        out.update(state="legacy" if t3_old_active() else "off", version=t3_running_version())
+        seen = max(last_work, st.get("work_ts", 0), now if work else 0)
+        save(work_ts=seen, first_ts=st.get("first_ts") or now)
+        quiet_for = now - max(seen, st["first_ts"])  # a full quiet stretch watched by the tick itself, too
+        out["idle_min"] = int(quiet_for // 60)
+        if work or quiet_for < quiet:
+            out["why"] = "waiting for a quiet moment to move it to box t3"
+            return out
+        if now - st.get("move_failed", 0) < T3_MOVE_RETRY and st.get("move_target") == target:
+            out["why"] = f"the last move failed ({st.get('move_why', '')[:200]}); trying again later"
+            return out  # each try restarts the owner's T3: once a day, or sooner when the box gets a new version
+        why = t3_move_owner(plan)
+        if why:
+            save(move_failed=int(now), move_why=why[:300], move_target=target)
+            out.update(action="move-failed", why=why[:300])
+            return out
+        out.update(action="moved", state="running", version=t3_running_version() or target,
+                   why=f"from t3code.service {rt.get('serverVersion') or ''}".strip())
+        out["freed"] = t3_prune_runtimes({out["version"], target})
+        save(work_ts=0, client_ts=now, first_ts=now)
+        return out
+    if not t3_ports():
+        return out
+    host, port, env = t3_env()
+    inner = int(env["T3CODE_PORT"])
+    t3_write_units(host, env)  # current unit files (a change applies at T3's next start; nothing restarts here)
+    if not t3_up(host, env):
+        wakes = sctl("is-active", T3_SOCKET, capture=True).stdout.strip() == "active"
+        out["state"] = "asleep" if wakes else "off"
+        if wakes and t3_db_state()[1]:  # scheduled tasks: T3 skips a fixed-time run it was down for
+            t3_ensure(host, port, env, quiet=True)
+            out.update(action="woke", why="scheduled tasks are on", state="running")
+        save(work_ts=0, client_ts=0)
+        return out
+    out.update(state="running", version=t3_running_version())
+    out["clients"] = clients = sb.tcp_clients(inner)
+    started = iso_ts(t3_runtime_info().get("startedAt")) or now
+    work_ts = max(last_work, st.get("work_ts", 0), now if work else 0, started)
+    client_ts = max(last_client, st.get("client_ts", 0), now if clients else 0, started)
+    save(work_ts=work_ts, client_ts=client_ts)
+    out["idle_min"] = int((now - max(work_ts, client_ts)) // 60)
+    if work:
+        return out
+    if target and out["version"] and out["version"] != target and now - work_ts >= quiet:
+        t3_write_units(host, env)  # a changed unit (the owner's env, a port) applies with this restart
+        r = sctl("restart", T3_UNIT, capture=True)  # the socket stays: open tabs and apps reconnect by themselves
+        new = t3_running_version()
+        out.update(action="restarted" if r.returncode == 0 else "restart-failed", version=new or out["version"],
+                   why=f"from {out['version']}" if r.returncode == 0 else (r.stderr or "").strip()[-300:])
+        if r.returncode == 0:
+            out["freed"] = t3_prune_runtimes({new, target})
+        save(work_ts=now, client_ts=now)
+        return out
+    if (idle_s and not plan.get("hackathon") and not clients and not t3_db_state()[1]
+            and now - max(work_ts, client_ts) >= idle_s):
+        sctl("stop", T3_PROXY, T3_UNIT, capture=True)  # the socket stays: the next visit wakes it
+        sctl("reset-failed", T3_UNIT, capture=True)  # older units count T3's exit code on a stop as a failure
+        m = out["idle_min"]
+        out.update(action="asleep", state="asleep",
+                   why="no client and no work for " + (f"{m // 60} h {m % 60} min" if m >= 60 else f"{m} min"))
+        save(work_ts=0, client_ts=0)
+    return out
+
+
+def cmd_t3_tick(a):
+    try:
+        plan = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        plan = {}
+    print(json.dumps(t3_tick(plan if isinstance(plan, dict) else {})))
+
+
+def t3_versions(a):
+    """Every account's T3 on this machine, from the janitor's last tick (/var/lib/sharedbox/t3.json)."""
+    st = sb.read_json(sb.T3_STATE, {}) or {}
+    data = {"target": st.get("target") or sb.t3_box_version(), "channel": sb.t3_channel(CFG),
+            "checked": st.get("ts") or 0, "accounts": st.get("accounts") or {}}
+    if getattr(a, "json", False):
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    print(f"T3 on this machine: {data['target'] or '?'} ({data['channel']} channel); checked "
+          + (fmt_ts(data["checked"]) if data["checked"] else "never (the janitor tick hasn't run yet)"))
+    for name, r in sorted(data["accounts"].items()):
+        state = {"running": "running", "asleep": "asleep, wakes when opened", "off": "off", "legacy":
+                 "running as T3's own t3code.service"}.get(r.get("state"), r.get("state") or "?")
+        ver = r.get("version") or "-"
+        note = "" if not r.get("version") or ver == data["target"] else \
+            "  (moves to the machine's version when idle)"
+        print(f"  {name:<16}{ver:<32}{state}{note}")
 
 
 # ---------- agents / onboarding ----------
@@ -2789,7 +3294,7 @@ def portal_status():
                 mark_setup_done(key)  # also covers friends who logged in before setup-done was written here
     if out["logins"].get("gh", {}).get("ok") and not all(git_ident()):
         gh_finish()
-    r, host = ports(), sb.tailscale_ip4()
+    r, host = t3_ports(), sb.tailscale_ip4()
     if r and host and shutil.which("t3"):
         _, _, env = t3_env()
         out["t3"] = {"url": f"http://{host}:{r[0]}/", "running": t3_up(host, env)}
@@ -2820,7 +3325,7 @@ def portal_status():
 def portal_t3(pair, app=False, label=None, ttl="30m"):
     if not shutil.which("t3"):
         return {"ok": False, "error": "T3 isn't installed on this machine yet. Ask the owner."}
-    r, host = ports(), sb.tailscale_ip4()
+    r, host = t3_ports(), sb.tailscale_ip4()
     if not r or not host:
         return {"ok": False, "error": "Tailscale isn't running on the machine. Ask the owner."}
     host, port, env = t3_env()
@@ -4419,7 +4924,9 @@ TELEMETRY_SCHEMA = """Tables (unix-time `ts`; minute rows kept 14 days, `*_hourl
   unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
   samples for value seconds: the machine stalled), container_start, container_stop (value = peak MB), hung_task,
   disk_error, net_guard (network self-recovery: unit = reconfigure, restart, usb_reset, reboot, reboot_blocked,
-  recovered, wifi_fix, wifi_setup[_failed]; value = seconds the network had been down; detail = why and each link).
+  recovered, wifi_fix, wifi_setup[_failed]; value = seconds the network had been down; detail = why and each link),
+  t3_asleep / t3_restarted / t3_moved (+ `_failed`; user's T3 went to sleep, restarted onto the machine's version,
+  moved off t3code.service; detail = version, value = idle minutes).
 - Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
   oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
   swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
@@ -4817,10 +5324,10 @@ def build_parser():
     x.add_argument("action", nargs="?", choices=["status"])
     x.set_defaults(fn=cmd_updates)
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
-                                           choices=["start", "pair", "app-link", "status", "stop", "logs"])
+                                           choices=["start", "pair", "app-link", "status", "stop", "logs", "versions"])
     x.add_argument("--prompt", action="store_true", help="app-link: print the setup steps for an agent on the laptop")
     x.add_argument("--all", action="store_true", help="app-link: a link from every treehouse machine you have an account on")
-    x.add_argument("--json", action="store_true", help="app-link --all: the links and per-machine problems as JSON")
+    x.add_argument("--json", action="store_true", help="versions, or app-link --all: as JSON (links and per-machine problems)")
     x.set_defaults(fn=cmd_t3)
     s.add_parser("welcome", help="the first-time welcome text for this account").set_defaults(fn=cmd_welcome)
     x = s.add_parser("request", help="ask for a system package (install PKG...), anything else, or: status")
@@ -4912,7 +5419,8 @@ def build_parser():
     s.add_parser("_pass").set_defaults(fn=cmd_pass)
     s.add_parser("_cache-pass").set_defaults(fn=cmd_cache_pass)
     s.add_parser("_weekly-clean").set_defaults(fn=cmd_weekly_clean)
-    s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # the janitor, for a T3 that isn't running
+    s.add_parser("_t3-wake").set_defaults(fn=cmd_t3_wake)  # older janitors, for a T3 that isn't running
+    s.add_parser("_t3-tick").set_defaults(fn=cmd_t3_tick)  # the janitor tick, as each account: versions, sleep
     s.add_parser("_sync-rules").set_defaults(fn=cmd_sync_rules)
     s.add_parser("_auto-issues").set_defaults(fn=lambda a: auto_issues())  # silent; for agent hooks
     import sbmsg  # noqa: E402

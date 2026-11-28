@@ -215,6 +215,18 @@ DEFAULTS = {
     # same site as everyone's T3 Code a malicious script there could act as whoever opens it. Tailnet links only.
     "SHARED_PUBLIC_LINKS": "no",
     "OWNER_T3_USER": "",   # account that runs that T3 (default: the first ADMIN_USERS)
+    # T3 Code release channel for every account on this box (the owner's too): stable = npm's `latest` release, and
+    # /etc/t3code/policy.json makes T3 refuse nightly/preview builds (the desktop app's "update server" included);
+    # nightly = npm's `nightly` tag. A new version reaches a running T3 when it restarts while idle (below).
+    "T3_CHANNEL": "stable",
+    # a T3 Code with no client connected and no agent work for this many hours goes to sleep (its socket stays, so
+    # the next visit wakes it in a few seconds). Never during hackathon mode or while anything runs. 0 = never.
+    "T3_IDLE_STOP_HOURS": "3",
+    # a T3 on an older version than the box's restarts once nothing has run in it for this many minutes
+    "T3_RESTART_QUIET_MIN": "20",
+    # the owner's T3 under `box t3`: sb-t3.socket holds the public port (OWNER_T3_PORT, else 3773) and T3 itself
+    # listens on this one (empty = the public port + 1)
+    "OWNER_T3_INNER_PORT": "",
     "CF_TOKEN_FILE": "/etc/sharedbox/cloudflare-token",
     "CF_TUNNEL_ENV": "/etc/sharedbox/cloudflared.env",
     "CF_SESSION_HOURS": "720",
@@ -414,6 +426,70 @@ def cfg_int(cfg, key):
 
 def admin_users(cfg):
     return [u.strip() for u in cfg["ADMIN_USERS"].split(",") if u.strip()]
+
+
+# ---------- T3 Code: one release channel, idle restarts and sleep (lib/box `_t3-tick`, janitor tick) ----------
+
+T3_POLICY = os.environ.get("SHAREDBOX_T3_POLICY", "/etc/t3code/policy.json")  # T3 reads this machine-wide file
+T3_STATE = os.path.join(STATE_DIR, "t3.json")   # root writes after each tick: every account's T3 version + state
+T3_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+
+
+def t3_channel(cfg):
+    return "nightly" if str(cfg.get("T3_CHANNEL") or "").strip().lower() == "nightly" else "stable"
+
+
+def t3_policy(cfg):
+    """T3's managed policy document (schemaVersion 1). Only `limits.updates` is set: with allowNightly false every
+    T3 on the box (the owner's desktop app asking the server to update included) refuses nightly/preview builds.
+    Nothing else changes; T3 shows "Managed by <brand>" next to updates."""
+    doc = {"schemaVersion": 1, "organization": brand(cfg),
+           "limits": {"updates": {"mode": "auto", "allowNightly": t3_channel(cfg) == "nightly"}}}
+    url = public_url(cfg)
+    if url:
+        doc["supportUrl"] = url + "/_box/me"
+    return doc
+
+
+def write_t3_policy(cfg, path=None):
+    """Write /etc/t3code/policy.json (root). A policy someone else wrote (another organization) is left alone.
+    Returns what happened, for the log."""
+    path = path or T3_POLICY
+    want = t3_policy(cfg)
+    cur = read_json(path, None) if os.path.exists(path) else None
+    if os.path.exists(path) and not (isinstance(cur, dict) and cur.get("organization") == want["organization"]):
+        return f"left {path} alone: it was written by someone else"
+    if cur == want:
+        return ""
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    write_json(path, want, mode=0o644)
+    return f"wrote {path} (T3 channel: {t3_channel(cfg)})"
+
+
+def t3_box_version():
+    """The T3 Code version the box installed for everyone (/opt/sharedbox/agents/t3/current), or ""."""
+    try:
+        v = os.path.basename(os.readlink(os.path.join(AGENTS_DIR, "t3", "current")))
+    except OSError:
+        return ""
+    return v if T3_VERSION_RE.fullmatch(v) else ""
+
+
+def tcp_clients(port, procnet="/proc/net"):
+    """Established TCP connections to local `port` (any address): open T3 tabs and apps, through the gate or the
+    wake-up proxy. Read from /proc/net/tcp{,6}, which every account may read."""
+    n = 0
+    for name in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(procnet, name)) as f:
+                next(f, None)
+                for line in f:
+                    cols = line.split()
+                    if len(cols) > 3 and cols[3] == "01" and cols[1].rsplit(":", 1)[-1].upper() == f"{port:04X}":
+                        n += 1
+        except OSError:
+            pass
+    return n
 
 
 # ---------- json files ----------

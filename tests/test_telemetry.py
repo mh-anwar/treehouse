@@ -235,6 +235,29 @@ class CollectorTest(unittest.TestCase):
         data, _ = self.collector(st2).collect(NOW + 7200)
         self.assertEqual([e["kind"] for e in data["events"] if e["kind"] in ("boot", "sample_gap")], ["boot"])
 
+    def test_t3_events_from_the_box_log(self):
+        b = self.box
+        log = os.path.join(self.tmp.name, "events.jsonl")
+        write(log, json.dumps({"ts": 1, "kind": "t3_asleep", "user": "old"}) + "\n")
+
+        def coll(state):
+            return T.Collector("testbox", state, proc=b.proc, sys_dir=b.sys, cgroup=b.cg, journal=False, box_events=log)
+        data, st = coll({}).collect(NOW)
+        self.assertEqual([e for e in data["events"] if e["kind"].startswith("t3_")], [])  # no backfill on the first run
+        with open(log, "a") as f:
+            f.write(json.dumps({"ts": NOW + 5, "kind": "t3_asleep", "user": "alice", "version": "0.1.13",
+                                "idle_min": 190}) + "\n")
+            f.write(json.dumps({"ts": NOW + 6, "kind": "boost", "user": "bob"}) + "\n")
+            f.write('{"ts": 7, "kind": "t3_restarted", "user": "half a li')  # still being written
+        data, st = coll(st).collect(NOW + 60)
+        t3 = [e for e in data["events"] if e["kind"].startswith("t3_")]
+        self.assertEqual([(e["kind"], e["user"], e["detail"], e["value"], e["unit"]) for e in t3],
+                         [("t3_asleep", "alice", "0.1.13", 190, "sb-t3.service")])
+        with open(log, "a") as f:
+            f.write('ne", "version": "0.1.13"}\n')
+        data, _ = coll(st).collect(NOW + 120)
+        self.assertEqual([e["kind"] for e in data["events"] if e["kind"].startswith("t3_")], ["t3_restarted"])
+
     def test_for_user_keeps_only_own_rows(self):
         data = {"samples": [{"ts": 1}], "slices": [{"user": "a"}, {"user": "b"}, {"user": ""}],
                 "procs": [{"user": "a"}, {"user": "b"}], "events": [{"user": ""}, {"user": "b"}],
@@ -510,7 +533,7 @@ class RootJob(unittest.TestCase):
                 admin_users = staticmethod(lambda cfg: [])
 
             class FakeCollector:
-                def __init__(self, box, state):
+                def __init__(self, box, state, **kw):
                     self.box = box
 
                 def collect(self, now):

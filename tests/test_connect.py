@@ -745,8 +745,10 @@ class Boxes(unittest.TestCase):
         self.assertEqual(r["code"], 200)
         self.assertEqual(set(json.loads(r["body"])), {"v", "name", "version", "ncpu", "load1", "level", "mem",
                                                       "disk_free", "dashboard", "t3", "cpu", "mem_used_b",
-                                                      "mem_total_b", "disk_free_b", "disk_total_b", "people"})
-        # per user only the names of who's active now (the Machines tab's "Active now"), never their usage
+                                                      "mem_total_b", "disk_free_b", "disk_total_b", "people",
+                                                      "t3_target", "t3_accounts"})
+        # per user only the names of who's active now (the Machines tab's "Active now") and which T3 Code version
+        # each account runs (the owner's Machines card), never their usage
         self.assertIsInstance(json.loads(r["body"])["people"], list)
         self.assertEqual(self.get("/api/box", ip="::ffff:100.64.0.2")["code"], 200)
         self.assertEqual(self.get("/api/box", ip="100.64.0.3")["code"], 403)  # a friend's laptop on the tailnet
