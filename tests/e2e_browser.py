@@ -1217,7 +1217,7 @@ def logout_hrefs(browser):
         s = Session(browser, persona, tok)
         s.page.goto(url("/_box/me"))
         hrefs = [a.get_attribute("href") for a in s.page.locator("a").all()
-                 if re.search(r"log ?out|sign out", (a.inner_text() or ""), re.I)]
+                 if re.search(r"log ?out|sign out|different email", (a.inner_text() or ""), re.I)]
         if not hrefs or any(h != "/cdn-cgi/access/logout" for h in hrefs):
             fail(persona, "log out", f"log out links: {hrefs}")
         s.drain("logout")
@@ -1569,7 +1569,7 @@ def running_card(browser):
         fail("owner", where, f"a browser pop-up appeared: {s.dialogs}")
     s.drain(where)
     # the Machines tab and the per-machine AI accounts
-    for tab, musts in (("machines", ("Machines", "Online", "CPU", "Memory", "Disk", "Waiting programs", "Using it now")),
+    for tab, musts in (("machines", ("Machines", "Online", "CPU", "Memory", "Disk", "Load", "Using it now")),
                        ("account", ("AI accounts on each machine", "minastirith", "krishbox",
                                     "owner.chatgpt@x.io", "Sign in"))):
         s.page.goto(url(f"/_box/me?tab={tab}"))
