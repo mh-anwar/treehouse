@@ -1,0 +1,27 @@
+# managed by treehouse (installed as /etc/systemd/network/80-sharedbox-wifi.network): DHCP on any Wi-Fi interface,
+# so a different or replaced USB dongle just works (netplan's networkd backend only takes Wi-Fi by interface name, and
+# a dongle's name is wlx + its MAC). The supplicant is sharedbox-wifi@<iface> (started by udev). Route metric 600,
+# above the wired ports' 100: with a cable and a dongle both in, traffic takes the cable, and when the cable goes
+# networkd drops its routes and the Wi-Fi route takes over by itself. A netplan file naming the interface itself
+# (10-netplan-*.network) sorts first and still wins.
+[Match]
+Type=wlan
+Name=wl*
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+DHCP=yes
+LinkLocalAddressing=ipv6
+IPv6AcceptRA=yes
+
+[DHCPv4]
+RouteMetric=600
+UseMTU=yes
+
+[DHCPv6]
+RouteMetric=600
+
+[IPv6AcceptRA]
+RouteMetric=600
