@@ -637,6 +637,15 @@ def _fake_root(req):
         pair = f"http://{TS_IP}:{port}/pair#token={tok}"
         return {"ok": True, "pair_url": pair, "url": f"http://{TS_IP}:{port}/",
                 **({"app_link": "t3code://pair?pairingUrl=" + urllib.parse.quote(pair, safe="")} if action == "t3app" else {})}
+    if action == "t3app-all":  # `box _portal t3-pair-all`: this machine plus the others over SSH; one is down
+        if acct.get("no_t3"):
+            return {"ok": False, "error": "T3 Code isn't installed on this box yet. Ask the owner."}
+        tok = hashlib.sha256(os.urandom(8)).hexdigest()[:24]
+        PAIR_TOKENS.add(tok)
+        return {"ok": True, "ts_login": "", "expires": "2026-11-28 10:00 UTC", "machines": [
+            {"box": "treebox", "pair_url": f"http://{TS_IP}:{port}/pair#token={tok}", "apps": []},
+            {"box": "minastirith", "pair_url": f"http://100.64.0.6:{port}/pair#token={tok[::-1]}", "apps": []},
+            {"box": "krishbox", "error": "krishbox is offline or not reachable from this machine"}]}
     if action == "add-key":
         k, err = sb.validate_pubkey(req.get("sshkey", ""))
         return {"ok": False, "error": err} if err else {"ok": True, "key_added": True}
@@ -1302,6 +1311,9 @@ def screenshots(browser):
                     else:
                         press(s.page, b.first)
                         inspect(s, f"setup prompt @{width} {scheme}")
+                        s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-prompt-all-{width}-{scheme}.png"), full_page=True)
+                        press(s.page, s.page.locator("#start button", has_text="Get the prompt for treebox only"))
+                        inspect(s, f"single-machine setup prompt @{width} {scheme}")
                         s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-prompt-{width}-{scheme}.png"), full_page=True)
                         s.page.locator("#start summary", has_text="Do it by hand").click()
                         s.page.screenshot(path=os.path.join(SHOTS, f"alice-app-byhand-{width}-{scheme}.png"), full_page=True)
@@ -1369,6 +1381,22 @@ def start_cards(browser):
     page.goto(url("/_box/me"))
     page.locator("#start summary", has_text="Advanced").click()
     press(page, page.locator("#start button:visible", has_text="Get setup instructions"))
+    inspect(s, "setup prompt for all machines")
+    # several machines (BOXES): one prompt for all of them by default, one link per machine, the dead one explained
+    prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
+    port = PORT_OF["alice"]
+    for must in ("each of my treehouse machines (treebox, minastirith, krishbox)",
+                 f"- treebox: http://{TS_IP}:{port}\n", f"- minastirith: http://100.64.0.6:{port}\n",
+                 "krishbox: no pairing link (krishbox is offline or not reachable from this machine)",
+                 "report one line per machine", f"{PUBLIC}/_box/me"):
+        if must not in prompt:
+            fail("alice", "setup prompt for all machines", f"missing {must!r}")
+    if page.locator("#start a[href^='t3code://']").count() != 2:
+        fail("alice", "setup prompt for all machines", "not one t3code:// link per machine that gave one")
+    if page.evaluate(MAIN_JS) != ["Copy prompt"]:
+        fail("alice", "setup prompt for all machines", f"main buttons {page.evaluate(MAIN_JS)}")
+    no_hostname_addresses(s, "setup prompt for all machines")
+    press(page, page.locator("#start button", has_text="Get the prompt for treebox only"))
     inspect(s, "setup prompt")
     prompt = page.locator("#app-prompt").input_value() if page.locator("#app-prompt").count() else ""
     pair = page.locator("#start input.mono").input_value() if page.locator("#start input.mono").count() else ""

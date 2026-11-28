@@ -1517,14 +1517,42 @@ def public_t3_url(url, host, port):
     return urllib.parse.urlunsplit(u._replace(netloc=f"{host}:{port}")) if u.netloc else url
 
 
+T3_SKEW = "ServerOwnsDatabaseError"  # `t3 pair` from a newer T3 than the server that's still running
+
+
+def t3_pair_once(ttl, label, run_env):
+    """(pairing URL or None, t3's output) from one `t3 pair`."""
+    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", label], env=run_env, capture_output=True, text=True,
+                       errors="replace", timeout=60, stdin=subprocess.DEVNULL)
+    url = next((ln.split(":", 1)[1].strip() for ln in r.stdout.splitlines() if ln.startswith("Pairing URL:")), None)
+    return url, r.stderr + r.stdout
+
+
+def t3_pair_run(host, env, ttl, label, run_env):
+    """(pairing URL, "") or (None, why). T3 updates every night, but a running T3 keeps its version until it restarts,
+    and a newer `t3 pair` refuses to touch the older server's database (ServerOwnsDatabaseError). Then, when no agent
+    turn is running, restart T3 on the installed version and try once more; never under a working agent."""
+    url, out = t3_pair_once(ttl, label, run_env)
+    if url or T3_SKEW not in out:
+        return url, ""
+    if t3_db_state()[0]:
+        return None, ("Your T3 on this machine is still running an older version, and an agent is working in it right now. It "
+                      "moves to the new version when it next restarts: try again once the agent has finished.")
+    sctl("restart", T3_UNIT, capture=True)
+    deadline = time.time() + 150
+    while not t3_up(host, env):
+        if time.time() > deadline:
+            return None, "T3 is restarting on its new version. Try again in a minute."
+        time.sleep(2)
+    time.sleep(2)
+    url, out = t3_pair_once(ttl, label, run_env)
+    return url, "" if url else t3_error_line(out)
+
+
 def t3_pair(host, port, env, ttl="30m", label=None):
-    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", label or f"{ME.pw_name} (box t3)"],
-                       env=dict(os.environ, **env), capture_output=True, text=True, timeout=60)
-    url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines()
-                if l.startswith("Pairing URL:")), None)
+    url, why = t3_pair_run(host, env, ttl, label or f"{ME.pw_name} (box t3)", dict(os.environ, **env))
     if not url:
-        first = next((ln.strip() for ln in (r.stderr + r.stdout).splitlines() if ln.strip()), "no output")
-        sys.exit(f"box t3: T3 couldn't make a pairing link ({sb.printable(first)[:160]}). Try again in a minute; "
+        sys.exit(f"box t3: T3 couldn't make a pairing link ({why or 'no output'}). Try again in a minute; "
                  "details: box t3 logs")
     return public_t3_url(url, host, port)
 
@@ -1635,6 +1663,23 @@ def cmd_t3(a):
             state += f"; moves to {target} the next time no agent has worked in it for " \
                      f"{sb.cfg_int(CFG, 'T3_RESTART_QUIET_MIN')} minutes"
         print(f"T3: {state} at http://{host}:{port}/\nEasiest way in: {portal_url()} → Open T3 in this browser")
+        return
+    if a.action == "app-link" and getattr(a, "all", False):  # every machine at once, for one laptop agent
+        res = t3_app_fleet()
+        if getattr(a, "json", False):
+            print(json.dumps(res, indent=2))
+        elif not res["ok"]:
+            sys.exit("box t3 app-link --all: no machine gave a pairing link:\n" + "\n".join(
+                f"  {m['box']}: {m.get('error') or '?'}" for m in res["machines"]))
+        elif getattr(a, "prompt", False):
+            print(fleet_setup_prompt(res))
+        else:
+            print("T3 app pairing links, one per machine (each works once, for 30 minutes). Open each ON THE LAPTOP "
+                  "that has the T3 Code app and Tailscale, and click Confirm:\n")
+            for m in res["machines"]:
+                print(f"  {m['box']}: {m['app_link']}" if m.get("pair_url") else f"  {m['box']}: no link ({m.get('error')})")
+            print("\nAn agent on that laptop should use `box t3 app-link --all --prompt` instead: it checks Tailscale and "
+                  "reports per machine.")
         return
     # start (if needed) + pair
     t3_ensure(host, port, env)
@@ -3297,11 +3342,9 @@ def portal_t3(pair, app=False, label=None, ttl="30m"):
     env = t3_live_env(host, env)
     t3_starter(env)
     label = label or (f"{ME.pw_name} T3 app" if app else f"{ME.pw_name} (join page)")  # the label spots the app later
-    r = subprocess.run(["t3", "pair", "--ttl", ttl, "--label", label],
-                       env=dict(user_env(), **env), capture_output=True, text=True, timeout=60)
-    url = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines() if l.startswith("Pairing URL:")), None)
+    url, why = t3_pair_run(host, env, ttl, label, dict(user_env(), **env))
     if not url:
-        return {"ok": False, "error": "pairing failed; try again, or ask the owner to check `box t3 logs`"}
+        return {"ok": False, "error": why or "pairing failed; try again, or ask the owner to check `box t3 logs`"}
     url = public_t3_url(url, host, port)
     out = {"ok": True, "pair_url": url, "app_link": sbconnect.t3_app_link(url), "url": f"http://{host}:{port}/"}
     if app:  # for the setup prompt: the apps already connected (the laptop agent can't read the app's settings)
@@ -3316,6 +3359,86 @@ def app_setup_prompt(url):
     ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
     return sbconnect.app_prompt(url, portal_url(), socket.gethostname(), ts_login=ts["login"], ts_mode=ts["mode"],
                                 apps=t3_app_sessions(), expires=sbconnect.pair_expires(time.time()))
+
+
+
+def my_ts_identity():
+    """What the machines need to recognize this person's Tailscale account (users.json record: email, ts_id, login)."""
+    rec = (sb.registry().get("users") or {}).get(ME.pw_name) or {}
+    return {k: str(rec.get(k) or "") for k in ("email", "ts_id", "login")}
+
+
+def t3_app_here(ident=None):
+    """This machine's part of the all-machines setup prompt: a one-time pairing link for the T3 app (portal_t3) plus
+    what this machine's own Tailscale says about the person's account. `ident` comes from the machine that asked
+    (their home machine knows their email and Tailscale id; a copy of the account here may not)."""
+    out = portal_t3(True, app=True)
+    rec = {k: v for k, v in (ident or {}).items() if v} or my_ts_identity()
+    ts = sbconnect.ts_facts(sb.tailscale_status(), rec)
+    import sbfed
+    out.update(box=sbfed.self_name(sb.boxes(CFG), sb.tailscale_ip4(), socket.gethostname()),
+               ts_login=ts["login"], ts_mode=ts["mode"])
+    return out
+
+
+FLEET_PEER_TIMEOUT = 240  # the first T3 start on a machine downloads T3 (~1-2 min)
+
+
+def fleet_peer_link(name, dest, ident):
+    """One other machine's answer for t3_app_fleet, over the federation's SSH as this person. Falls back to the
+    older `box _portal t3-pair app` on machines that don't have `t3-app-here` yet (no Tailscale facts then)."""
+    row = {"box": name}
+    try:
+        r = fed_ssh(dest, "box _portal t3-app-here", json.dumps(ident), timeout=FLEET_PEER_TIMEOUT)
+        if '"unknown action"' in r.stdout:  # an older treehouse there
+            r = fed_ssh(dest, "box _portal t3-pair app", timeout=FLEET_PEER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return dict(row, error=f"{name} took too long to answer. Try again in a few minutes")
+    except OSError as ex:
+        return dict(row, error=str(ex)[:120])
+    if r.returncode == 255:
+        err = r.stderr.strip().splitlines()[-1:] or [""]
+        why = ("your account there isn't connected to this machine yet (machines connect by themselves within a few "
+               "minutes)" if "Permission denied" in err[0] else f"{name} is offline or not reachable from this machine")
+        return dict(row, error=why)
+    try:
+        ans = json.loads((r.stdout.strip().splitlines() or ["{}"])[-1])
+    except ValueError:
+        return dict(row, error=f"{name} gave no answer")
+    if not isinstance(ans, dict):
+        return dict(row, error=f"{name} gave no answer")
+    if not ans.get("ok") or not sbconnect.app_origin(ans.get("pair_url")):
+        return dict(row, error=str(ans.get("error") or "no pairing link")[:200])
+    row.update(pair_url=ans["pair_url"], ts_login=str(ans.get("ts_login") or ""), ts_mode=str(ans.get("ts_mode") or ""),
+               apps=[a for a in ans.get("apps") or () if isinstance(a, dict)])
+    return row
+
+
+def t3_app_fleet():
+    """Pairing links for the T3 app from EVERY treehouse machine (BOXES) this account can reach: this one directly,
+    the others in parallel over the federation's SSH (`box _portal t3-app-here` there, as this person). Machines
+    without a link say why. {"ok", "machines": [{box, pair_url, app_link, ts_login, ts_mode, apps, error}],
+    "ts_login", "expires"}. ok = at least one link."""
+    from concurrent.futures import ThreadPoolExecutor
+    ident = my_ts_identity()
+    peers = projects_peers()
+    with ThreadPoolExecutor(max_workers=max(1, len(peers))) as pool:
+        futs = {n: pool.submit(fleet_peer_link, n, d, ident) for n, d in sorted(peers.items())}
+        here = t3_app_here(ident)
+        rows = [{"box": here.get("box") or socket.gethostname(), "pair_url": here.get("pair_url") or "",
+                 "ts_login": here.get("ts_login", ""), "ts_mode": here.get("ts_mode", ""),
+                 "apps": here.get("apps") or [], "error": "" if here.get("ok") else str(here.get("error") or "")}]
+        rows += [f.result() for f in futs.values()]
+    for m in rows:
+        m["app_link"] = sbconnect.t3_app_link(m.get("pair_url") or "")
+    login = next((m["ts_login"] for m in rows if m.get("ts_login")), "")
+    return {"ok": any(m.get("pair_url") for m in rows), "machines": rows, "ts_login": login,
+            "expires": sbconnect.pair_expires(time.time())}
+
+
+def fleet_setup_prompt(res):
+    return sbconnect.fleet_prompt(res.get("machines") or [], portal_url(), ts_login=res.get("ts_login", ""),
+                                  expires=res.get("expires", ""))
 
 
 def t3_json(args, env=None, timeout=60):
@@ -4015,6 +4138,16 @@ def cmd_portal(a):
             out = portal_shared_logs(a.key)
         elif a.action in ("t3-start", "t3-pair"):
             out = portal_t3(a.action == "t3-pair", app=a.key == "app")
+        elif a.action == "t3-app-here":  # another machine's t3_app_fleet asking (JSON on stdin: email, ts_id, login)
+            try:
+                ident = json.loads(sys.stdin.read(4096) or "{}")
+            except ValueError:
+                ident = {}
+            ident = {k: str(ident.get(k) or "")[:200] for k in ("email", "ts_id", "login")} \
+                if isinstance(ident, dict) else {}
+            out = t3_app_here(ident)
+        elif a.action == "t3-pair-all":  # the dashboard's all-machines setup prompt
+            out = t3_app_fleet()
         elif a.action == "login-start" and a.key in PORTAL_LOGINS:
             if a.key == "claude" and a.arg == "local":  # signed in for this machine only (the per-machine table)
                 claude_own(True)
@@ -4268,6 +4401,24 @@ def fed_remote_json(dest, cmd, input_text=None, timeout=120):
         return {"ok": False, "error": "no answer"}
 
 
+def ts_dns_name(ip):
+    """The MagicDNS name (machine.tailnet.ts.net) of the Tailscale peer with this IPv4, or "". `t3 environment link`
+    refuses plain http to a bare 100.x address (T3 counts only *.ts.net names and Tailscale IPv6 as tailnet), and
+    T3 listens on the IPv4 only; the name resolves to that IPv4 on the machines, so it passes and connects."""
+    for p in ((sb.tailscale_status() or {}).get("Peer") or {}).values():
+        if ip in (p.get("TailscaleIPs") or ()):
+            name = str(p.get("DNSName") or "").rstrip(".")
+            return name if re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net", name) else ""
+    return ""
+
+
+def t3_error_line(text):
+    """The message in a failed t3 command's output, without its stack trace (fed-status shows it)."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    msg = [ln for ln in lines if ln != "ERROR" and not ln.startswith("at ") and "file://" not in ln]
+    return sb.printable(msg[0] if msg else (lines[-1] if lines else "no output"))[:150]
+
+
 def fed_link_peer(peer, ip, home, notes):
     """One other machine: can we log in; T3 there linked into T3 here; GitHub token + git identity (from the home
     box only); which agent logins are missing there."""
@@ -4306,7 +4457,7 @@ def fed_link_peer(peer, ip, home, notes):
     # T3: link the other box's T3 into this one (each box does this, so the link goes both ways)
     if shutil.which("t3") and is_friend():
         lo = ports()[0]
-        url = f"http://{ip}:{lo}"
+        url = f"http://{ts_dns_name(ip) or ip}:{lo}"
         try:
             envs = json.loads(subprocess.run(["t3", "environment", "list", "--json"], env=user_env(),
                                              capture_output=True, text=True, timeout=60).stdout or "[]")
@@ -4321,7 +4472,7 @@ def fed_link_peer(peer, ip, home, notes):
                                    timeout=120)
                 out["t3"] = r.returncode == 0
                 notes.append(f"T3 on {peer} linked" if r.returncode == 0 else
-                             f"T3 link to {peer} failed: {(r.stderr or r.stdout).strip()[-150:]}")
+                             f"T3 link to {peer} failed: {t3_error_line(r.stderr or r.stdout)}")
             else:
                 notes.append(f"T3 on {peer} didn't give a pairing code: {pr.get('error', '')[:100]}")
         else:
@@ -5175,7 +5326,8 @@ def build_parser():
     x = s.add_parser("t3"); x.add_argument("action", nargs="?", default="start",
                                            choices=["start", "pair", "app-link", "status", "stop", "logs", "versions"])
     x.add_argument("--prompt", action="store_true", help="app-link: print the setup steps for an agent on the laptop")
-    x.add_argument("--json", action="store_true", help="versions: as JSON")
+    x.add_argument("--all", action="store_true", help="app-link: a link from every treehouse machine you have an account on")
+    x.add_argument("--json", action="store_true", help="versions, or app-link --all: as JSON (links and per-machine problems)")
     x.set_defaults(fn=cmd_t3)
     s.add_parser("welcome", help="the first-time welcome text for this account").set_defaults(fn=cmd_welcome)
     x = s.add_parser("request", help="ask for a system package (install PKG...), anything else, or: status")

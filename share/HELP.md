@@ -200,9 +200,15 @@ account. SSH goes through the public site (Cloudflare), so the laptop needs no T
   `box ssh-key add < key.pub`.
 - The T3 app on their phone or laptop: once they sign in to a T3 account (`box login t3connect`, or Set up the T3 app
   under Advanced on Home) the app finds this machine by itself, no Tailscale needed. The older way, the T3 desktop
-  app over Tailscale: Home's "Get setup instructions" (or `box t3 app-link --prompt`) gives their laptop's agent the
-  steps (check Tailscale and the account first, fix only what's broken, then open a one-time pairing link). Always
-  works without either: T3 in the browser (Home, Open T3).
+  app over Tailscale: Home's "Get setup instructions" (or `box t3 app-link --all --prompt`) gives their laptop's agent
+  the steps for every treehouse machine their account is on at once (check Tailscale and which machines it can see,
+  fix only what's broken, open one one-time pairing link per machine, then report per machine what worked and the
+  fix for what didn't). `box t3 app-link --prompt` (or "only this machine" on Home) is the same for this machine
+  alone; `--all --json` lists the links and each machine's problem. Always works without either: T3 in the browser
+  (Home, Open T3).
+- From nothing: their laptop's agent can start from the SSH prompt above ("Copy terminal prompt" under Terminal
+  access on the dashboard, or /_box/connect.md). Its last step runs `ssh treehouse box t3 app-link --all --prompt` and follows it, so one paste
+  ends with the T3 app connected to all their machines.
 
 @@ requests
 - A system package (apt/pacman) you can't install into your home: `box request install PKG [PKG...] --why "<why>"`.
@@ -455,7 +461,7 @@ results). Never send them to the page for something listed here.
 - Projects on all your machines: `box projects everywhere NAME on|off`. Archived projects: `box restore [NAME]`.
 - Teammates' agents in your T3: `box teammates ls`, `box teammates allow NAME --access read-only|approval-required|
   full-access`, `box teammates stop NAME`.
-- SSH key for this account: `box ssh-key add < key.pub`. T3 in the browser or app: `box t3 pair`, `box t3 app-link`;
+- SSH key for this account: `box ssh-key add < key.pub`. T3 in the browser or app: `box t3 pair`, `box t3 app-link [--all]`;
   T3 won't start: `box t3 logs`.
 - Home's "Still need it?": `box running keep KEY` (don't ask for a week) or `box running stop KEY`. A project about to
   move to the archive: `box projects keep NAME`. Problem reports for the owner: `box issue off|on`.

@@ -115,3 +115,93 @@ class HelpAndRules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Fleet(unittest.TestCase):
+    """`box t3 app-link --all`: one pairing link per machine, fetched from the others over the federation's SSH."""
+
+    def peer(self, answers):
+        calls = []
+
+        def fake_ssh(dest, cmd, input_text=None, timeout=120):
+            calls.append(cmd)
+            rc, out, err = answers[cmd]
+            return box.subprocess.CompletedProcess([], rc, out, err)
+        orig, box.fed_ssh = box.fed_ssh, fake_ssh
+        try:
+            return box.fleet_peer_link("minastirith", "minastirith", {"email": "k@x"}), calls
+        finally:
+            box.fed_ssh = orig
+
+    def test_new_peer(self):
+        pair = "http://100.94.44.25:20300/pair#token=T"
+        row, calls = self.peer({"box _portal t3-app-here": (0, '{"ok": true, "pair_url": "%s", "ts_mode": "sharee", '
+                                                               '"ts_login": "k@github", "apps": []}\n' % pair, "")})
+        self.assertEqual(calls, ["box _portal t3-app-here"])
+        self.assertEqual((row["pair_url"], row["ts_mode"], row["ts_login"]), (pair, "sharee", "k@github"))
+
+    def test_older_peer_falls_back(self):
+        pair = "http://100.94.44.25:20300/pair#token=T"
+        row, calls = self.peer({"box _portal t3-app-here": (0, '{"ok": false, "error": "unknown action"}\n', ""),
+                                "box _portal t3-pair app": (0, '{"ok": true, "pair_url": "%s"}\n' % pair, "")})
+        self.assertEqual(calls, ["box _portal t3-app-here", "box _portal t3-pair app"])
+        self.assertEqual((row["pair_url"], row["ts_mode"]), (pair, ""))
+
+    def test_unreachable_peer_says_why(self):
+        row, _ = self.peer({"box _portal t3-app-here": (255, "", "frodo@100.94.44.25: Permission denied (publickey).")})
+        self.assertNotIn("pair_url", row)
+        self.assertIn("isn't connected to this machine yet", row["error"])
+        row, _ = self.peer({"box _portal t3-app-here": (255, "", "ssh: connect to host 100.94.44.25: No route")})
+        self.assertIn("offline or not reachable", row["error"])
+        row, _ = self.peer({"box _portal t3-app-here": (0, '{"ok": false, "error": "T3 is still starting"}\n', "")})
+        self.assertEqual(row["error"], "T3 is still starting")
+
+
+class FedT3Link(unittest.TestCase):
+    def test_magicdns_name_for_peer_links(self):
+        orig = box.sb.tailscale_status
+        box.sb.tailscale_status = lambda: {"Peer": {"a": {"TailscaleIPs": ["100.94.44.25", "fd7a:115c:a1e0::1"],
+                                                          "DNSName": "minastirith.tail-x.ts.net."}}}
+        try:
+            self.assertEqual(box.ts_dns_name("100.94.44.25"), "minastirith.tail-x.ts.net")
+            self.assertEqual(box.ts_dns_name("100.94.44.26"), "")
+        finally:
+            box.sb.tailscale_status = orig
+
+    def test_error_line_skips_stack(self):
+        out = ("ERROR\n  Linked environments is off on this machine. Turn it on in Settings → Labs.\n"
+               "    at environment.runWithPeerLinks (definition) (file:///home/x/.t3/runtime/versions/0.1.13/t3:1:2)\n")
+        self.assertEqual(box.t3_error_line(out), "Linked environments is off on this machine. Turn it on in Settings → Labs.")
+
+
+class PairVersionSkew(unittest.TestCase):
+    """A T3 started before the nightly update keeps its old version; a newer `t3 pair` then refuses its database."""
+
+    def run_pair(self, outs, busy):
+        calls = {"restart": 0}
+        seq = list(outs)
+        saved = (box.t3_pair_once, box.t3_db_state, box.sctl, box.t3_up, box.time.sleep)
+        box.t3_pair_once = lambda ttl, label, env: seq.pop(0)
+        box.t3_db_state = lambda: (busy, False)
+        box.sctl = lambda *a, **k: calls.__setitem__("restart", calls["restart"] + (a[0] == "restart"))
+        box.t3_up = lambda host, env: True
+        box.time.sleep = lambda s: None
+        try:
+            return box.t3_pair_run("100.64.0.5", {"T3CODE_PORT": "31009"}, "30m", "x", {}), calls["restart"]
+        finally:
+            box.t3_pair_once, box.t3_db_state, box.sctl, box.t3_up, box.time.sleep = saved
+
+    SKEW = (None, "ERROR (#2): ServerOwnsDatabaseError: Another T3 Code process ... owns /home/k/.t3/userdata")
+
+    def test_idle_restarts_and_retries(self):
+        got, restarts = self.run_pair([self.SKEW, ("http://100.64.0.5:31009/pair#token=a", "")], busy=False)
+        self.assertEqual((got, restarts), (("http://100.64.0.5:31009/pair#token=a", ""), 1))
+
+    def test_never_restarts_under_a_working_agent(self):
+        (url, why), restarts = self.run_pair([self.SKEW], busy=True)
+        self.assertEqual((url, restarts), (None, 0))
+        self.assertIn("an agent is working in it", why)
+
+    def test_other_failures_untouched(self):
+        (url, why), restarts = self.run_pair([(None, "something else")], busy=False)
+        self.assertEqual((url, why, restarts), (None, "", 0))
