@@ -269,7 +269,7 @@ RUNNING = {  # what `box _portal status` says under "running" (lib/sbrunning.py)
         {"key": "u:sb-blog.service", "kind": "server", "name": "blog", "detail": "node", "mem": 220 * M,
          "age": 86400 * 2, "pids": 3, "stop": "server", "cpu_usec": 1000, "keep": True,
          "about": "Alice's blog about the hackathon, read by the whole class"},
-        {"key": "u:sb-t3.service", "kind": "t3", "name": "T3 Code", "detail": "node", "mem": 180 * M,
+        {"key": "u:sb-t3.service", "kind": "t3", "name": "T3", "detail": "node", "mem": 180 * M,
          "age": 86400, "pids": 4, "stop": "t3", "cpu_usec": 1000},
         {"key": "c:3e184558f4de", "kind": "database", "name": "legacy-siege-mongo-with-a-really-long-container-name",
          "detail": "mongodb-atlas-local:8.0", "mem": 120 * M, "age": 600, "pids": 30, "stop": "containers",
@@ -1101,15 +1101,15 @@ def flow_login(browser):
     if "welcome=1" not in page.url or "Welcome" not in page.inner_text("body"):
         fail("bob", "first visit", f"expected the welcome page, got {page.url}")
     inspect(s, "welcome")
-    press(page, page.get_by_role("button", name="Log in with Claude"))
+    press(page, page.get_by_role("button", name="Sign in with Claude"))
     inspect(s, "claude login card")
     if not page.locator("#start a.btn[href^='https://claude.ai']").count():
         fail("bob", "claude login", "no 'Open the login page' link in the start card")
     page.fill("input[name=code]", "sk-paste-code-123")
     press(page, page.get_by_role("button", name="Finish"))
     inspect(s, "claude code pasted")
-    if "Logged in" not in page.locator("#start").inner_text():
-        fail("bob", "claude login", "no 'Logged in' confirmation in the start card")
+    if "Signed in" not in page.locator("#start").inner_text():
+        fail("bob", "claude login", "no 'Signed in' confirmation in the start card")
     if not stayed(page):
         fail("bob", "claude login", "the page reloaded instead of showing the result in place")
     page.goto(url("/_box/me?tab=account"))
@@ -1280,10 +1280,10 @@ def no_hostname_addresses(s, where, page=None):
 def start_cards(browser):
     """The start card: exactly one main button per state (S0..S3), and the T3 app setup prompt."""
     cases = [("erin", "tok-erin", [], "T3 isn't set up on this machine yet"),
-             ("bob", "tok-bob", ["Log in with Claude"], "Log in with ChatGPT"),
-             ("alice", "tok-alice", ["Open T3 in this browser"], "Already on Tailscale?"),
-             ("dave", "tok-dave", ["Open T3 in this browser"], "Get setup instructions"),  # no Tailscale id on record
-             ("alice", "tok-alice", ["Open T3 in this browser"], "Open T3 app", 390)]
+             ("bob", "tok-bob", ["Sign in with Claude"], "Sign in with ChatGPT"),
+             ("alice", "tok-alice", ["Open T3"], "Already on Tailscale?"),
+             ("dave", "tok-dave", ["Open T3"], "Get setup instructions"),  # no Tailscale id on record
+             ("alice", "tok-alice", ["Open T3"], "Use the T3 app", 390)]
     for persona, tok, want, text, *width in cases:
         s = Session(browser, persona, tok, **({"width": width[0]} if width else {}))
         s.page.goto(url("/_box/me"))
@@ -1352,12 +1352,12 @@ def start_cards(browser):
     if any(c["name"] == "tb_app" for c in s.ctx.cookies()):
         fail("alice", "setup prompt", "sets the old tb_app cookie")
     page.goto(url("/_box/me"))  # only made a prompt, the app never connected: still the setup prompt
-    if page.evaluate(MAIN_JS) != ["Open T3 in this browser"]:
+    if page.evaluate(MAIN_JS) != ["Open T3"]:
         fail("alice", "after the prompt, app not connected", f"main buttons {page.evaluate(MAIN_JS)}")
     ACCOUNTS["alice"]["app"] = True
     try:
         page.goto(url("/_box/me"))
-        if page.evaluate(MAIN_JS) != ["Open T3 in this browser"]:
+        if page.evaluate(MAIN_JS) != ["Open T3"]:
             fail("alice", "app connected (S3)", f"main buttons {page.evaluate(MAIN_JS)}")
         if not page.locator("#start button.linkbtn", has_text="Get new setup instructions").count():
             fail("alice", "app connected (S3)", "no 'Get new setup instructions'")
@@ -1390,8 +1390,8 @@ def boxes_card(browser):
             fail("owner", where, f"expected 3 machines, got {texts}")
         else:
             this, peer, gone = texts
-            for row, musts in ((this, ["treebox", "Online", "this page comes from it"]),
-                               (peer, ["minastirith", "Online", "23% busy", "13.0G", "of 31.0G", "86.0G", "1.2",
+            for row, musts in ((this, ["treebox", "Online", "(this machine)"]),
+                               (peer, ["minastirith", "Online", "23% busy", "13 GB", "of 31 GB", "86 GB", "1.2",
                                        "8 cores", "Alice", "dave", "abc1234", "Open its dashboard"]),
                                (gone, ["krishbox", "Offline", "doesn't answer"])):
                 for m in musts:
@@ -1409,7 +1409,7 @@ def boxes_card(browser):
             s.page.screenshot(path=os.path.join(SHOTS, f"alice-machines-{width}-light.png"), full_page=True)
         inspect(s, where)
         body = s.page.locator("#machines").inner_text() if s.page.locator("#machines").count() else ""
-        for m in ("treebox", "minastirith", "krishbox", "Memory", "Active now"):
+        for m in ("treebox", "minastirith", "krishbox", "Memory", "Using it now"):
             if m not in body:
                 fail("alice", where, f"lacks {m!r}")
         if s.page.locator("#machines a[href*='3773']").count() or "treehouse version" in body:
@@ -1441,7 +1441,7 @@ def running_card(browser):
     inspect(s, where)
     card = s.page.locator("#running section")
     text = card.inner_text() if card.count() else ""
-    for must in ("shop-db", "Supabase · 5 containers", "1.4G", "running 3d 2h", "Claude session", "blog",
+    for must in ("shop-db", "Supabase · 5 containers", "1.4 GB", "running 3d 2h", "Claude session", "blog",
                  "Show 1 more", "always get", "Your agent can list"):
         if must not in text:
             fail("alice", where, f"card lacks {must!r}")
@@ -1473,7 +1473,7 @@ def running_card(browser):
     where = "owner running tab"
     inspect(s, where)
     t = s.page.locator(".runall").inner_text() if s.page.locator(".runall").count() else ""
-    for must in ("alice", "bob", "uoft-index", "Nothing running", "of memory in use by 3 people", "Keep running",
+    for must in ("alice", "bob", "uoft-index", "Nothing running", "People's programs use", "Keep running",
                  "No description yet. Started with"):
         if must not in t:
             fail("owner", where, f"tab lacks {must!r}")
@@ -1491,7 +1491,7 @@ def running_card(browser):
         fail("owner", where, f"no in-place result for stopping alice's database: {out!r}")
     # T3 Code: says chats disconnect; keep-running: asked twice, sent with force
     s.dialogs.clear()
-    press(s.page, s.page.locator(".runall li", has_text="T3 Code").filter(has=s.page.locator("button")).last.locator("button"))
+    press(s.page, s.page.locator(".runall li", has_text=re.compile(r"^T3")).filter(has=s.page.locator("button")).last.locator("button"))
     if not any("open chats will disconnect" in d for d in s.dialogs):
         fail("owner", where, f"stopping a T3 Code didn't warn about chats: {s.dialogs}")
     s.dialogs.clear()
@@ -1503,7 +1503,7 @@ def running_card(browser):
         fail("owner", where, "the second confirmation didn't send force")
     s.drain(where)
     # the Machines tab and the per-machine AI accounts
-    for tab, musts in (("machines", ("Machines", "Online", "CPU", "Memory", "Disk", "Load", "Active now")),
+    for tab, musts in (("machines", ("Machines", "Online", "CPU", "Memory", "Disk", "Waiting programs", "Using it now")),
                        ("account", ("AI accounts on each machine", "minastirith", "krishbox",
                                     "owner.chatgpt@x.io", "Sign in"))):
         s.page.goto(url(f"/_box/me?tab={tab}"))
@@ -1673,7 +1673,7 @@ def tailnet_view():
     w.ALLOWED_HOSTS.add("127.0.0.1")
     import urllib.error
     import urllib.request
-    for app, want in ((False, ["Open T3 in this browser"]), (True, ["Open T3 in this browser"])):
+    for app, want in ((False, ["Open T3"]), (True, ["Open T3"])):
         ACCOUNTS["alice"]["app"] = app
         try:
             body = urllib.request.urlopen(f"http://127.0.0.1:{srv.server_port}/me", timeout=60).read().decode()
