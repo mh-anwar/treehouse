@@ -1084,6 +1084,7 @@ TOPIC_LINES = {  # `box help`: one line per topic (a test checks every topic has
     "friends": "(owner) friends, invites, requests, the machine list",
     "lean": "finding and fixing wasted memory and CPU",
     "tune": "how efficient the machine itself is",
+    "network": "how the machine recovers its network by itself",
     "docker": "rootless Docker for your account",
     "hackathon": "hackathon mode: what changes while it's on",
     "machines": "the owner's other machines, and when to move work there",
