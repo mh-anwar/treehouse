@@ -366,6 +366,61 @@ Where someone is: their own status plus a rough "active on the box" hint.
   only when the user hasn't set it).
 - Never copy their prompts off the box or into other people's places.
 
+@@ telemetry
+Every box records what it was doing every minute, for finding bad patterns later: what froze a box, who ran out of
+memory, agents that spin for hours, services crash-looping, disks filling up. Collected by a plain timer (no agent
+involved); only process names and numbers are stored, never command lines, prompts or file contents.
+- `box telemetry` (last 24 h: peaks, the worst moments and who/what was using the box then, events, top accounts and
+  agent sessions; `--hours N`), `box telemetry patterns` (detectors over 14 days, `--days N`), `box telemetry sql
+  "SELECT ..."` (read-only), `box telemetry info`. `--json` on all; `--box NAME` to pick one box.
+- What you can read: the owner reads everything; anyone else reads their own rows plus the box-wide ones (box
+  metrics, disks, system slices, events not about another account).
+- All boxes at once: `box telemetry pull` (also runs by itself hourly) copies what you can read on every box into
+  `~/me/telemetry.db`; then add `--fleet` to any command (rows carry a `box` column).
+- Claude plan usage: `box telemetry usage on` checks the user's own Claude login every ~10 minutes into
+  `~/me/telemetry.db` (table plan_usage) and sends them a `box msg` (Telegram relays it) at 80% and 90%.
+  `box telemetry usage now` checks once; `off` stops it.
+Tables (unix-time `ts`; minute rows kept 14 days, `*_hourly` roll-ups and `events` ~400 days):
+- `samples` one per minute: load1/5/15, ncpu, cpu_pct, iowait_pct, steal_pct, procs, procs_running, procs_blocked,
+  psi_cpu, psi_mem, psi_mem_full, psi_io, psi_io_full (% of the minute something waited / everything was blocked),
+  mem_total_mb, mem_used_mb (really in use: total minus available), mem_avail_mb, mem_anon_mb, mem_cache_mb
+  (reclaimable cache), mem_shmem_mb, swap_total_mb, swap_used_mb, swap_in_mb/swap_out_mb (per minute), majfaults,
+  oom_kills (kernel kills that minute), disk_total_gb/disk_free_gb (of /), temp_max_c, cpu_mhz, throttles
+  (thermal throttle events), collect_ms.
+- `slices` per account (user-UID.slice, `user`) and system slice (`user` = ''): cpu_pct (100 = one core), mem_mb
+  (real: anon + shmem + kernel), cache_mb, swap_mb, pids, psi_mem, psi_mem_full, oom_kills, mem_high_events,
+  mem_max_events (times it hit its memory limit).
+- `procs` the top processes each minute by CPU and by memory: user, pid, name (comm, plus an allowlisted tool for
+  interpreters such as `python3 pytest`), cpu_pct, rss_mb, age_s.
+- `agents` one row per running agent session per minute: user, agent (claude, codex, opencode, gemini,
+  antigravity...), pid, started, cpu_pct/rss_mb (the agent itself), tree_cpu_pct/tree_rss_mb/tree_procs (with
+  everything it started: builds, tests, servers).
+- `containers` Docker containers per minute: user ('' = the system Docker), id, name, cpu_pct, mem_mb, peak_mb.
+- `disks` (mount, dev, total_gb, free_gb), `diskio` (dev, read_mb, write_mb, util_pct per minute).
+- `events` (ts, kind, user, unit, detail, value): oom_kill (kernel; detail = process, value = MB), earlyoom_kill,
+  oomd_kill, unit_oom, unit_failed (detail = result), unit_restart (value = restart counter), boot (detail = clean,
+  unclean, watchdog, panic or unknown: how the previous boot ended; value = seconds it was down), sample_gap (no
+  samples for value seconds: the box stalled), container_start, container_stop (value = peak MB), hung_task,
+  disk_error.
+- Roll-ups: `samples_hourly` (n, avg and `_max` of each gauge, sums of swap_in_mb, swap_out_mb, majfaults,
+  oom_kills, throttles; min disk_free_gb), `slices_hourly` (cpu_pct, cpu_pct_max, mem_mb, mem_mb_max, cache_mb,
+  swap_mb_max, pids_max, psi_mem, psi_mem_max, psi_mem_full_max, oom_kills, mem_high_events, mem_max_events),
+  `agents_hourly` (sessions = average running, sessions_max, cpu_s, tree_cpu_s, rss_mb_max, tree_rss_mb_max),
+  `procs_hourly` (per user + name: n, cpu_s, cpu_pct_max, rss_mb_max), `containers_hourly`, `disks_hourly`,
+  `diskio_hourly`. Rows from before telemetry started came from the older health samples (memory estimated from a
+  percentage, account memory including cache).
+Example queries:
+- Worst memory minutes this week: `SELECT datetime(ts,'unixepoch','localtime'), mem_used_mb, psi_mem, psi_mem_full
+  FROM samples WHERE ts > strftime('%s','now','-7 days') ORDER BY psi_mem_full DESC, psi_mem DESC LIMIT 20`
+- Who used the most memory, per day: `SELECT date(ts,'unixepoch','localtime') AS day, user, max(mem_mb_max) FROM
+  slices_hourly WHERE user != '' GROUP BY day, user ORDER BY day DESC, 3 DESC`
+- What was running just before a restart: `SELECT * FROM procs WHERE ts BETWEEN (SELECT max(ts) FROM events WHERE
+  kind='boot') - 900 AND (SELECT max(ts) FROM events WHERE kind='boot') ORDER BY ts DESC, rss_mb DESC`
+- Agent CPU-hours per account and agent, last 30 days: `SELECT user, agent, round(sum(tree_cpu_s)/3600, 1) FROM
+  agents_hourly WHERE ts > strftime('%s','now','-30 days') GROUP BY 1, 2 ORDER BY 3 DESC`
+- Crash loops: `SELECT unit, user, count(*) FROM events WHERE kind IN ('unit_failed','unit_restart') GROUP BY 1, 2
+  ORDER BY 3 DESC`
+
 @@ settings
 Everything on the user's dashboard ({portal}) has a command, so when they ask you for it, do it (add `--json` to read
 results). Never send them to the page for something listed here.

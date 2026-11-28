@@ -3501,6 +3501,10 @@ def cmd_me_tick(a):
             import sbmulti
             sbme.pull(HOME, peers, sbmulti.SSH_OPTS)
         ran = True
+    try:
+        telemetry_tick()
+    except Exception as e:  # noqa: BLE001 - telemetry never stops the history pass
+        print(f"telemetry: {e!r}", file=sys.stderr)
     print(json.dumps({"ok": True, "ran": ran}))
 
 
@@ -3511,6 +3515,142 @@ def cmd_me_export(a):
         return
     for line in sbme.export_since(HOME, a.since, me_box()):
         print(line)
+
+
+def telemetry_source(a):
+    """(path, label) of the telemetry this command reads: ~/me/telemetry.db with --fleet (what `box telemetry pull`
+    copied from every box), else this box's file (everything for the owner, your own rows otherwise)."""
+    import sbtelemetry
+    if getattr(a, "fleet", False):
+        p = sbtelemetry.fleet_path(ME.pw_dir)
+        if not os.path.exists(p):
+            sys.exit("no fleet copy yet: run `box telemetry pull` first")
+        return p, "all your boxes"
+    p, scope = sbtelemetry.readable_db(sb.STATE_DIR, ME.pw_name)
+    if not p:
+        sys.exit(f"box telemetry: {scope}")
+    return p, ("this box" if scope == "all" else "this box (your own rows plus box-wide ones)")
+
+
+TELEMETRY_USAGE = """usage: box telemetry [--hours N] [--box NAME] [--fleet] [--json]   the last 24 h: worst moments and why
+       box telemetry patterns [--days N] [--box NAME] [--fleet] [--json]   built-in detectors
+       box telemetry sql "SELECT ..." [--fleet] [--json]               read-only SQL (tables: box help telemetry)
+       box telemetry pull [--json]                    copy every box's telemetry you may read into ~/me/telemetry.db
+       box telemetry usage [on|off|now] [--json]      your Claude plan usage (on: checked every ~10 min, box msg at
+                                                      80% and 90%)
+       box telemetry info [--json]                    which file you read, its size and time span"""
+
+
+def cmd_telemetry(a):
+    """Box telemetry (lib/sbtelemetry.py): what this box was doing minute by minute, kept for a year in roll-ups."""
+    import sbtelemetry
+    op, args = a.op, a.args
+    if op == "summary":
+        path, label = telemetry_source(a)
+        res = sbtelemetry.read(path, lambda con: sbtelemetry.summary(con, a.hours, a.box))
+        print(json.dumps(res, default=str) if a.json else sbtelemetry.render_summary(res))
+    elif op == "patterns":
+        path, label = telemetry_source(a)
+        res = sbtelemetry.read(path, lambda con: sbtelemetry.patterns(con, a.days, a.box))
+        print(json.dumps(res, default=str) if a.json else sbtelemetry.render_patterns(res))
+    elif op == "sql":
+        if not args:
+            sys.exit('usage: box telemetry sql "SELECT ..." (read-only; tables and examples: box help telemetry)')
+        path, _ = telemetry_source(a)
+        try:
+            cols, rows = sbtelemetry.sql(path, " ".join(args))
+        except Exception as e:  # noqa: BLE001 - a bad query: say why
+            sys.exit(f"box telemetry sql: {e}")
+        if a.json:
+            print(json.dumps([dict(zip(cols, r)) for r in rows]))
+        else:
+            print("\t".join(cols))
+            for r in rows:
+                print("\t".join("" if v is None else str(v) for v in r))
+    elif op == "pull":
+        import sbmulti
+        local, _ = sbtelemetry.readable_db(sb.STATE_DIR, ME.pw_name)
+        sbme_dir()
+        out = sbtelemetry.pull(ME.pw_dir, local, projects_peers(), sbmulti.SSH_OPTS,
+                               max_mb=2 * sbtelemetry.cfg_num(CFG, "TELEMETRY_MAX_MB", 1024))
+        print(json.dumps(out) if a.json else "\n".join(f"{k}: {v}" for k, v in out.items()) or "nothing to pull")
+    elif op == "usage":
+        sub = args[0] if args else "status"
+        if sub not in ("status", "on", "off", "now"):
+            sys.exit("usage: box telemetry usage [on|off|now]")
+        sbme_dir()
+        if sub in ("on", "off"):
+            sbtelemetry.usage_set(ME.pw_dir, sub == "on")
+        res = {"on": sbtelemetry.usage_on(ME.pw_dir)}
+        if sub in ("on", "now"):
+            res |= sbtelemetry.poll_usage(ME.pw_dir, ME.pw_name, me_box(), notify=telemetry_notify, force=True)
+        if a.json:
+            print(json.dumps(res))
+            return
+        print(f"Plan usage checks: {'on (every ~10 minutes, box msg at 80% and 90%)' if res['on'] else 'off'}")
+        for k, w in (res.get("windows") or {}).items():
+            print(f"  {k}: {w['utilization']:.0f}% (resets {w['resets_at'] or '?'})")
+        if res.get("error"):
+            print(f"  {res['error']}")
+        if sub == "status" and not res["on"]:
+            print("Turn on: box telemetry usage on")
+    elif op == "info":
+        path, label = telemetry_source(a)
+
+        def info(con):
+            q = lambda s: con.execute(s).fetchone()[0]  # noqa: E731
+            return {"path": path, "reads": label, "size_mb": round(os.path.getsize(path) / 1e6, 1),
+                    "boxes": sbtelemetry.boxes_in(con), "minute_rows_from": q("SELECT min(ts) FROM samples"),
+                    "hourly_rows_from": q("SELECT min(ts) FROM samples_hourly"), "events": q("SELECT count(*) FROM events")}
+        res = sbtelemetry.read(path, info)
+        if a.json:
+            print(json.dumps(res))
+            return
+        when = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "-"  # noqa: E731
+        print(f"{res['path']} ({res['reads']}): {res['size_mb']} MB, boxes {', '.join(res['boxes']) or '-'}, "
+              f"minute rows since {when(res['minute_rows_from'])}, hourly since {when(res['hourly_rows_from'])}, "
+              f"{res['events']} events")
+    else:
+        sys.exit(TELEMETRY_USAGE)
+
+
+def sbme_dir():
+    import sbme
+    sbme.ensure_dir(ME.pw_dir)
+
+
+def telemetry_notify(title, text):
+    """A plan-usage alert to yourself: your inbox (`box msg`), which Telegram relays when you linked it."""
+    shared_request({"action": "msg", "to": [ME.pw_name], "title": title[:60], "level": "high",
+                    "brief": {"context": text, "via": "telemetry"}}, 30)
+
+
+def cmd_telemetry_export(a):
+    """Another of your boxes pulls the telemetry you may read here (`box telemetry pull`), as JSON lines."""
+    import sbtelemetry
+    path, _ = sbtelemetry.readable_db(sb.STATE_DIR, ME.pw_name)
+    if not path:
+        return
+    con = sbtelemetry.open_ro(path)
+    try:
+        for line in sbtelemetry.export(con, a.since, a.raw_since):
+            print(line)
+    finally:
+        con.close()
+
+
+def telemetry_tick():
+    """Part of the janitor's tick, as this person: plan usage when on, and an hourly copy of every box's
+    telemetry into ~/me/telemetry.db."""
+    import sbtelemetry
+    if sbtelemetry.usage_on(ME.pw_dir):
+        sbtelemetry.poll_usage(ME.pw_dir, ME.pw_name, me_box(), notify=telemetry_notify)
+    local, _ = sbtelemetry.readable_db(sb.STATE_DIR, ME.pw_name)
+    peers = projects_peers()
+    if (local or peers) and sbtelemetry.pull_due(ME.pw_dir):
+        import sbmulti
+        sbtelemetry.pull(ME.pw_dir, local, peers, sbmulti.SSH_OPTS,
+                         max_mb=2 * sbtelemetry.cfg_num(CFG, "TELEMETRY_MAX_MB", 1024))
 
 
 def cmd_projects_here(a):
@@ -3841,6 +3981,15 @@ def main():
     x.add_argument("--thinking", action="store_true", help="search: include the agents' reasoning")
     x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_me)
     s.add_parser("_me-tick").set_defaults(fn=cmd_me_tick)  # the janitor tick, as this person
+    x = s.add_parser("telemetry", help="what this box was doing, minute by minute: summary (default), patterns, "
+                     "sql QUERY, pull, usage, info (box help telemetry)")
+    x.add_argument("op", nargs="?", default="summary", choices=["summary", "patterns", "sql", "pull", "usage", "info"])
+    x.add_argument("args", nargs="*"); x.add_argument("--hours", type=int, default=24)
+    x.add_argument("--days", type=int, default=14); x.add_argument("--box")
+    x.add_argument("--fleet", action="store_true", help="read ~/me/telemetry.db (every box, after pull)")
+    x.add_argument("--json", action="store_true"); x.set_defaults(fn=cmd_telemetry)
+    x = s.add_parser("_telemetry-export"); x.add_argument("--since", type=float, default=0)
+    x.add_argument("--raw-since", type=float); x.set_defaults(fn=cmd_telemetry_export)  # another box, over SSH
     x = s.add_parser("_me-export"); x.add_argument("--since", type=float, default=0)
     x.set_defaults(fn=cmd_me_export)  # another of your boxes, over SSH
     x = s.add_parser("_portal"); x.add_argument("action"); x.add_argument("key", nargs="?")

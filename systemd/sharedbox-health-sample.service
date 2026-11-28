@@ -1,8 +1,12 @@
 [Unit]
-Description=sharedbox health: record a metrics sample
+Description=sharedbox health: record a metrics sample and box telemetry
 
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/sharedbox/sharedbox-health sample
 Nice=10
+# lowest best-effort disk priority: behind people's work, but never starved (an idle-class sampler would stall
+# exactly when the disk is saturated, which is when the samples matter most)
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 LogLevelMax=warning

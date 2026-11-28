@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I
 """sharedbox-health: box health + security reporting by email (root).
 
-  sharedbox-health sample                 record a metrics sample (timer, every minute)
+  sharedbox-health sample                 record a metrics sample (timer, every minute) + box telemetry
+  sharedbox-health telemetry              just the telemetry sample (by hand; prints row counts)
   sharedbox-health report [--send]        weekly report; prints it unless --send
   sharedbox-health check  [--send]        urgent problems only; emails if anything is new (timer, hourly)
   sharedbox-health audit  [--quick]       run the security self-audit and print findings
@@ -132,6 +133,21 @@ def cmd_sample(cfg, a):
             for r in keep:
                 f.write(json.dumps(r, separators=(",", ":")) + "\n")
         os.replace(tmp, METRICS)
+    telemetry(cfg)
+
+
+def telemetry(cfg, verbose=False):
+    """Box telemetry (lib/sbtelemetry.py): the detailed minute sample into telemetry.db and each account's file;
+    roll-ups and retention once an hour. Its trouble never stops the health sample."""
+    try:
+        import sbtelemetry
+        sbtelemetry.run_root(cfg, sb, verbose=verbose)
+    except Exception as e:  # noqa: BLE001
+        print(f"telemetry: {e!r}", file=sys.stderr)
+
+
+def cmd_telemetry(cfg, a):
+    telemetry(cfg, verbose=True)
 
 
 AGENT_RE = re.compile(r"^(claude|codex|opencode|gemini|antigravity|aider|cursor-agent)", re.I)
@@ -748,6 +764,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest="cmd", required=True)
     s.add_parser("sample").set_defaults(fn=cmd_sample)
+    s.add_parser("telemetry").set_defaults(fn=cmd_telemetry)
     x = s.add_parser("report"); x.add_argument("--send", action="store_true"); x.set_defaults(fn=cmd_report)
     x = s.add_parser("check"); x.add_argument("--send", action="store_true"); x.set_defaults(fn=cmd_check)
     x = s.add_parser("audit"); x.add_argument("--quick", action="store_true"); x.set_defaults(fn=cmd_audit)

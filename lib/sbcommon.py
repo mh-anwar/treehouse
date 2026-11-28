@@ -176,6 +176,14 @@ DEFAULTS = {
     "SMTP_USER": "",
     "SMTP_PASSWORD_FILE": "/etc/sharedbox/smtp-password",
     "HEALTH_REPORT_TIME": "Mon 09:00",
+    # box telemetry (lib/sbtelemetry.py, sampled every minute by sharedbox-health): 0 turns it off. Minute rows
+    # are kept TELEMETRY_RAW_DAYS, hourly roll-ups and events TELEMETRY_KEEP_DAYS; the file is capped at
+    # TELEMETRY_MAX_MB (each account's own copy at TELEMETRY_USER_MAX_MB), oldest minute days going first
+    "TELEMETRY": "1",
+    "TELEMETRY_RAW_DAYS": "14",
+    "TELEMETRY_KEEP_DAYS": "400",
+    "TELEMETRY_MAX_MB": "1024",
+    "TELEMETRY_USER_MAX_MB": "128",
     # public front door (sharedbox-gate behind Cloudflare Tunnel + Access); empty PUBLIC_URL = off
     "PUBLIC_URL": "",
     "GATE_PORT": "8091",
