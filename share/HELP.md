@@ -282,7 +282,7 @@ Machines are often out of reach, so the network comes back by itself; nobody nee
   and a dongle that is unplugged and plugged back in, or replaced, connects again within seconds.
 - With a cable and a dongle both in, traffic takes the cable (route metric 100 vs 600); pull the cable and the Wi-Fi
   takes over by itself.
-- net-guard checks every 30 s (links, address, default route, gateway, Tailscale). While the network stays down it
+- net-guard checks every minute (links, address, default route, gateway, Tailscale). While the network stays down it
   re-applies the config after 2 min, restarts the network service and Tailscale (and re-plugs a wedged dongle in
   software) after 5 min, and reboots only after 20 min with no working link, at most once every 6 hours and never
   during a package install. The owner can change the minutes (NET_GUARD_* in sharedbox.conf).

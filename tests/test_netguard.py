@@ -361,8 +361,8 @@ class Shipped(unittest.TestCase):
         self.assertIn("Restart=always", text)
         self.assertIn("ConditionPathExists=/etc/sharedbox/wifi/wpa_supplicant.conf", text)
 
-    def test_timer_every_30s(self):
-        self.assertIn("OnUnitActiveSec=30s", self.read("systemd", "sharedbox-netguard.timer"))
+    def test_timer_every_60s(self):
+        self.assertIn("OnUnitActiveSec=60s", self.read("systemd", "sharedbox-netguard.timer"))
 
     def test_install_and_uninstall(self):
         inst = self.read("install.sh")

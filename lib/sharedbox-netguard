@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """sharedbox-netguard: a headless box gets its network back by itself, with nobody at the keyboard.
 
-  sharedbox-netguard tick              root, every 30 s (sharedbox-netguard.timer): check the network, fix it step
+  sharedbox-netguard tick              root, every 60 s (sharedbox-netguard.timer): check the network, fix it step
                                        by step while it stays down
   sharedbox-netguard status [--json]   anyone: links, how Wi-Fi is set up, net-guard's state and last action
   sharedbox-netguard wifi-setup [--retry]
